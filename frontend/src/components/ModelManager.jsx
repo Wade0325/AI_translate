@@ -39,7 +39,9 @@ const EnhancedCardHeader = ({ mainTitle, subtitle, extraContent }) => {
             color: 'rgba(0, 0, 0, 0.65)',
             margin: 0,
             marginTop: '2px',
-            lineHeight: 1.4
+            lineHeight: 1.4,
+            whiteSpace: 'normal',
+            overflowWrap: 'break-word',
           }}>
             {subtitle}
           </div>
