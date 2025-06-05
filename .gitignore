@@ -224,3 +224,6 @@ yarn-error.log*
 next-env.d.ts
 backend/config.json
 backend/setting.json
+
+# SQLite database files in backend
+backend/*.db
