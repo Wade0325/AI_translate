@@ -387,6 +387,7 @@ const ModelManager = () => {
         body: JSON.stringify({
           interfaceName: interfaceName,
           apiKeys: apiKeysToTest,
+          modelName: config.modelName,
         }),
       });
 
@@ -394,13 +395,19 @@ const ModelManager = () => {
 
       if (response.ok) {
         console.log(`接口 ${interfaceName} 測試成功:`, result);
-        message.success({ content: `${interfaceName} 接口測試成功: ${result.message || '所有密鑰均有效'}`, key: 'testInterface', duration: 3 });
-        if (result.details) {
-            console.log('測試詳情:', result.details);
+        if (result.status === 'Success') {
+          message.success({ content: result.message, key: 'testInterface', duration: 5 });
+        } else {
+          message.error({ content: `${result.message}`, key: 'testInterface', duration: 5 });
         }
       } else {
         console.error(`接口 ${interfaceName} 測試失敗:`, result);
-        message.error({ content: `${interfaceName} 接口測試失敗: ${result.detail || result.message || '未知錯誤'}`, key: 'testInterface', duration: 5 });
+        const errorMessage = result.message || '收到錯誤回應，但無法讀取詳細資訊。';
+        message.error({
+          content: `${interfaceName} 接口測試失敗: ${errorMessage}`,
+          key: 'testInterface',
+          duration: 6
+        });
       }
     } catch (error) {
       console.error(`測試接口 ${interfaceName} 時發生網絡錯誤:`, error);
