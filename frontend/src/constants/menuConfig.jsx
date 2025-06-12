@@ -30,7 +30,8 @@ export function getItem(label, key, icon, children, type) {
 
 // 側邊欄主選單項目
 export const siderMenuItems = [
-  getItem('接口管理', 'sub1', <ApiOutlined />),
+  getItem('模型管理', 'sub1', <ApiOutlined />),
+  getItem('語音轉錄', 'transcription', <TranslationOutlined />),
   getItem('项目设置', 'sub2', <SettingOutlined />),
   getItem('开始翻译', 'sub3', <TranslationOutlined />),
   getItem('基础设置', 'sub4', <ExperimentOutlined />),

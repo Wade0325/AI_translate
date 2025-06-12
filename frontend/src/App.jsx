@@ -1,31 +1,47 @@
-import React, { Children } from 'react';
-import { ApiOutlined} from '@ant-design/icons';
+import React, { useState } from 'react';
+import { ApiOutlined, TranslationOutlined } from '@ant-design/icons';
 import { Breadcrumb, Layout, Menu, theme } from 'antd';
 import ModelManager from './components/ModelManager';
+import Transcription from './components/Transcription';
 
 const { Header, Content, Sider } = Layout;
-const items1 = ['1', '2', '3'].map(key => ({
+const items1 = ['1', '2', '3'].map((key) => ({
   key,
   label: `nav ${key}`,
 }));
-const items2 = [ApiOutlined].map((icon, index) => {
-  const key = String(index + 1);
-  return {
-    key: `sub${key}`,
-    icon: React.createElement(icon),
-    label: "模型管理"
-  };
-});
+const items2 = [
+  {
+    key: `modelManager`,
+    icon: React.createElement(ApiOutlined),
+    label: '模型管理',
+  },
+  {
+    key: `transcription`,
+    icon: React.createElement(TranslationOutlined),
+    label: '語音轉錄',
+  },
+];
 const App = () => {
   const {
     token: { colorBgContainer, borderRadiusLG },
   } = theme.useToken();
+  const [selectedKey, setSelectedKey] = useState('modelManager');
+
+  const renderContent = () => {
+    switch (selectedKey) {
+      case 'modelManager':
+        return <ModelManager />;
+      case 'transcription':
+        return <Transcription />;
+      default:
+        return <ModelManager />;
+    }
+  };
+
   return (
     <Layout>
       <Header style={{ display: 'flex', alignItems: 'center' }}>
-        <div 
-        style={{marginLeft: '150px' }}
-        className="demo-logo" />
+        <div style={{ marginLeft: '150px' }} className="demo-logo" />
         <Menu
           theme="dark"
           mode="horizontal"
@@ -38,8 +54,8 @@ const App = () => {
         <Sider width={180} style={{ background: colorBgContainer }}>
           <Menu
             mode="inline"
-            defaultSelectedKeys={['1']}
-            defaultOpenKeys={[]}
+            selectedKeys={[selectedKey]}
+            onClick={({ key }) => setSelectedKey(key)}
             style={{ height: '100%', borderRight: 0 }}
             items={items2}
           />
@@ -58,7 +74,7 @@ const App = () => {
               borderRadius: borderRadiusLG,
             }}
           >
-          <ModelManager /> {/* 使用新的內容組件 */}
+            {renderContent()}
           </Content>
         </Layout>
       </Layout>
