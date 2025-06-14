@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import {
+  Layout,
   Upload,
   Button,
   Select,
@@ -21,8 +22,9 @@ import {
   CloseCircleOutlined,
   PlusOutlined,
 } from '@ant-design/icons';
-import axios from 'axios';
 
+// 從 Ant Design 引入所需元件
+const { Content } = Layout;
 const { Title, Text } = Typography;
 const { Option } = Select;
 
@@ -43,25 +45,34 @@ const formatOptions = [
   { value: 'txt', label: '純文字 (.txt)' },
 ];
 
-// --- 後端 API 通訊 ---
-const API_BASE_URL = 'http://localhost:8000/api/v1';
+// --- 模擬後端處理 ---
+const simulateTranscription = (file, sourceLang, targetLang) => {
+  console.log(`開始轉錄: ${file.name}, 來源語言: ${sourceLang}, 目標語言: ${targetLang}`);
+  return new Promise(resolve => {
+    const delay = Math.random() * 3000 + 2000;
+    setTimeout(() => {
+      const mockText = `這是"${file.name}"的模擬轉錄結果。\n來源語言是 ${sourceLang}，目標語言是 ${targetLang}。\n這是一段示範文字，用於生成不同格式的字幕檔案。`;
+      console.log(`完成轉錄: ${file.name}`);
+      resolve(mockText);
+    }, delay);
+  });
+};
 
-const transcribeFile = async (file, sourceLang, targetLang) => {
-  const formData = new FormData();
-  formData.append('file', file);
-  formData.append('source_lang', sourceLang);
-  formData.append('target_lang', targetLang);
-
-  try {
-    const response = await axios.post(`${API_BASE_URL}/transcribe`, formData, {
-      headers: {
-        'Content-Type': 'multipart/form-data',
-      },
-    });
-    return response.data;
-  } catch (error) {
-    console.error('Error uploading file:', error);
-    throw error.response ? error.response.data : new Error('Network error or server is down');
+const generateSubtitleContent = (format, text) => {
+  const lines = text.split('\n');
+  switch (format) {
+    case 'srt':
+      return lines.map((line, index) => 
+        `${index + 1}\n00:00:0${index * 2}.000 --> 00:00:0${index * 2 + 1}.500\n${line}\n`
+      ).join('\n');
+    case 'vtt':
+      return 'WEBVTT\n\n' + lines.map((line, index) => 
+        `00:00:0${index * 2}.000 --> 00:00:0${index * 2 + 1}.500\n${line}\n`
+      ).join('\n');
+    case 'lrc':
+      return lines.map((line, index) => `[00:0${index * 2}.00]${line}`).join('\n');
+    default:
+      return text;
   }
 };
 
@@ -79,7 +90,7 @@ const downloadFile = (content, fileName, format) => {
 
 
 // --- 主要應用程式元件 ---
-const Transcription = () => {
+const App = () => {
   const [fileList, setFileList] = useState([]);
   const [sourceLang, setSourceLang] = useState('zh-TW');
   const [targetLang, setTargetLang] = useState('zh-TW');
@@ -106,58 +117,36 @@ const Transcription = () => {
 
     setFileList(currentList =>
       currentList.map(file =>
-        filesToProcess.find(p => p.uid === file.uid)
+        filesToProcess.some(p => p.uid === file.uid)
           ? { ...file, status: 'processing' }
           : file
       )
     );
 
-    const uploadPromises = filesToProcess.map(async (file) => {
+    for (const file of filesToProcess) {
       try {
-        const response = await transcribeFile(
-          file.originFileObj,
-          sourceLang,
-          targetLang
+        const transcribedText = await simulateTranscription(file.originFileObj, sourceLang, targetLang);
+        
+        const results = {};
+        for (const format of outputFormats) {
+          results[format] = generateSubtitleContent(format, transcribedText);
+        }
+        
+        setFileList(currentList =>
+          currentList.map(f =>
+            f.uid === file.uid ? { ...f, status: 'completed', result: results, formats: outputFormats } : f
+          )
         );
         
-        console.log('API Response:', response);
-
-        // 將回傳的純文字稿，根據使用者選擇的格式，建立一個結果物件
-        // 注意：目前後端只回傳純文字，所以對於 SRT/VTT 等格式，內容是相同的。
-        // 未來若後端支援時間戳，此處邏輯需要擴充。
-        const resultObject = {};
-        outputFormats.forEach(format => {
-          resultObject[format] = response.transcribed_text;
-        });
-
-        setFileList(currentList => {
-          const newList = currentList.map(f => {
-            if (f.uid === file.uid) {
-              return {
-                ...f,
-                status: 'completed',
-                result: resultObject,
-                formats: outputFormats,
-              };
-            } else {
-              return f;
-            }
-          });
-          return newList;
-        });
-        return { status: 'fulfilled', uid: file.uid };
       } catch (error) {
-        console.error(`檔案 ${file.name} 上傳失敗:`, error);
+        console.error('轉錄失敗:', error);
         setFileList(currentList =>
           currentList.map(f =>
             f.uid === file.uid ? { ...f, status: 'error' } : f
           )
         );
-        return { status: 'rejected', uid: file.uid, error };
       }
-    });
-
-    await Promise.allSettled(uploadPromises);
+    }
 
     setIsProcessing(false);
     message.success('所有新任務處理完畢！');
@@ -188,7 +177,7 @@ const Transcription = () => {
         key: 'name', 
         width: '45%',
         render: (name) => (
-          <Tooltip title={name} popupStyle={{ maxWidth: '600px' }}>
+          <Tooltip title={name} overlayStyle={{ maxWidth: '600px' }}>
             <span style={{
               display: 'block',
               whiteSpace: 'nowrap',
@@ -337,7 +326,18 @@ const Transcription = () => {
     );
   };
 
-  return <TranscriptionPage />;
+  return (
+    <Layout style={{ minHeight: '100vh', background: '#f0f2f5' }}>
+      <style>{`
+        html {
+          overflow-y: scroll;
+        }
+      `}</style>
+      <Content style={{ padding: '24px 50px' }}>
+          <TranscriptionPage />
+      </Content>
+    </Layout>
+  );
 };
 
-export default Transcription;
+export default App;

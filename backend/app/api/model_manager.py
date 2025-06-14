@@ -4,7 +4,7 @@ from typing import Optional, List
 from pydantic import BaseModel
 from fastapi import status
 
-from app.models.model_manager_model import InterfaceConfigRequest, InterfaceConfigResponse, ModelConfigurationSchema
+from app.schemas.schemas import InterfaceConfigRequest, InterfaceConfigResponse, ModelConfigurationSchema, ServiceStatus, TestInterfaceRequest, TestInterfaceResponse
 from app.db.repository.model_manager_repository import ModelSettingsRepository
 from app.models.gemini import GeminiClient
 
@@ -15,7 +15,7 @@ def get_repository() -> ModelSettingsRepository:
     return ModelSettingsRepository()
 
 
-@router.post("/model_setting")
+@router.post("/setting")
 async def save_model_setting(
     config: InterfaceConfigRequest = Body(...),
     repo: ModelSettingsRepository = Depends(get_repository)
@@ -40,7 +40,7 @@ async def save_model_setting(
         raise HTTPException(status_code=500, detail=message)
 
 
-@router.get("/model_setting/{interface_name}", response_model=Optional[InterfaceConfigResponse])
+@router.get("/setting/{interface_name}", response_model=Optional[InterfaceConfigResponse])
 async def get_model_setting(interface_name: str):
     repository = ModelSettingsRepository()
 
@@ -70,13 +70,7 @@ async def get_model_setting(interface_name: str):
         raise HTTPException(status_code=500, detail=message)
 
 
-class TestInterfaceRequest(BaseModel):
-    interfaceName: str
-    apiKeys: List[str]
-    modelName: Optional[str] = None
-
-
-@router.post("/test_model_interface")
+@router.post("/test", response_model=TestInterfaceResponse)
 async def test_model_interface(
     request_data: TestInterfaceRequest = Body(...)
 ):
@@ -92,25 +86,24 @@ async def test_model_interface(
     if "google" in request_data.interfaceName.lower():
         try:
             gemini_client = GeminiClient(api_key=api_key_to_test)
-            test_result = gemini_client.test_connection()
+            test_result: ServiceStatus = gemini_client.test_connection()
 
             # 將後端 Client 的測試結果封裝成 API 回應
-            if test_result.get("success"):
-                return {
-                    "status": "Success",
-                    "message": "Gemini API (Google) 測試成功。",
-                    "details": test_result.get("message"),
-                    "testedInterface": request_data.interfaceName
-                }
+            if test_result.success:
+                return TestInterfaceResponse(
+                    success=True,
+                    message="Gemini API (Google) 測試成功。",
+                    details=test_result.message,
+                    testedInterface=request_data.interfaceName
+                )
             else:
-                message_from_client = test_result.get("message")
-                return {
-                    "status": "Failed",
-                    "message": message_from_client,
-                    "details": "",  # 保持為空，前端只顯示 message
-                    "testedInterface": request_data.interfaceName
-                }
-                
+                return TestInterfaceResponse(
+                    success=False,
+                    message=test_result.message or "測試失敗，但未提供具體原因。",
+                    details="",  # 保持為空，前端只顯示 message
+                    testedInterface=request_data.interfaceName
+                )
+
         except Exception as e:
             # 捕捉在創建 client 或測試過程中的其他意外錯誤
             print(f"測試 Gemini 時發生意外錯誤。Error: {e}")

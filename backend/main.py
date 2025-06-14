@@ -1,19 +1,22 @@
 from fastapi import FastAPI
-from app.api import transcribe
 from app.api import model_manager
+from app.api import transcription  # 更改此處
 
 from fastapi.middleware.cors import CORSMiddleware
 from app.db.database import init_db
 
 init_db()
 
-app = FastAPI()
+app = FastAPI(title="AI Voice Transcription API", version="1.0.0")
 
 
-app.include_router(transcribe.router, prefix="/transcribe",
+# 更新路由設定
+app.include_router(transcription.router, prefix="/api/v1/transcribe",
                    tags=["Transcription"])
-app.include_router(model_manager.router, prefix="/settings",
+app.include_router(model_manager.router,
+                   prefix="/api/v1/model-manager",
                    tags=["Model Settings"])
+
 
 origins = [
     "http://localhost:8000",

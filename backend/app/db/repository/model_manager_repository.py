@@ -1,7 +1,7 @@
 import sqlite3
 from typing import Optional, List
 from app.db.database import DATABASE_URL
-from app.models.model_manager_model import ModelConfigurationSchema
+from app.schemas.schemas import ModelConfigurationSchema
 
 
 class ModelSettingsRepository:

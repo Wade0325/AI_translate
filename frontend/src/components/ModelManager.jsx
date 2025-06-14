@@ -61,7 +61,7 @@ const ModelManager = () => {
   const [selectedModelName, setSelectedModelName] = useState(undefined);
   const [interfaceConfigs, setInterfaceConfigs] = useState({});
 
-  // 新增：編輯參數 Modal 相關狀態
+  // 編輯參數 Modal 相關狀態
   const [isParamsModalOpen, setIsParamsModalOpen] = useState(false);
   const [editingParamsInterfaceName, setEditingParamsInterfaceName] = useState('');
   const [promptText, setPromptText] = useState('');
@@ -79,7 +79,7 @@ const ModelManager = () => {
   const modelNameOptions = {
     Google: [
       { value: 'gemini-2.5-pro-exp-03-25', label: 'gemini-2.5-pro-exp-03-25' },
-      { value: 'gemini-1.0-pro', label: 'gemini-1.0-pro' },
+      { value: 'gemini-2.5-flash-preview-05-20', label: 'gemini-2.5-flash-preview-05-20' },
       { value: 'text-bison-001', label: 'text-bison-001' },
     ],
     OpenAI: [
@@ -124,121 +124,108 @@ const ModelManager = () => {
     ]
   });
 
-  // 修改 handleEditInterface 以從後端獲取數據
-  const handleEditInterface = async (interfaceName) => {
-    setEditingInterfaceName(interfaceName);
-    const defaultModelName = modelNameOptions[interfaceName]?.[0]?.value;
-
+  // 資料獲取函式
+  const getInterfaceConfig = async (interfaceName) => {
+    // 檢查本地快取
     const cachedConfig = interfaceConfigs[interfaceName];
-
-    if (cachedConfig && cachedConfig.apiKeys !== undefined && cachedConfig.modelName !== undefined) {
-        console.log(`Using cached config for ${interfaceName}`);
-        setApiKeys(cachedConfig.apiKeys && cachedConfig.apiKeys.length > 0 ? cachedConfig.apiKeys : ['']);
-        setSelectedModelName(cachedConfig.modelName);
-        setIsModalOpen(true);
-        return;
+    if (cachedConfig) {
+      return cachedConfig;
     }
 
+    // 如果快取沒有，則從後端獲取
     try {
-      console.log(`Fetching configuration for: ${interfaceName}`);
-      const response = await fetch(`http://localhost:8000/settings/model_setting/${interfaceName}`);
-
+      console.log(`統一獲取: ${interfaceName} (從後端)`);
+      const response = await fetch(`http://localhost:8000/api/v1/model-manager/setting/${interfaceName}`);
       if (response.ok) {
         const data = await response.json();
         if (data) {
-          console.log('Fetched data from backend:', data);
-          setApiKeys(data.apiKeys && data.apiKeys.length > 0 ? data.apiKeys : ['']);
-          setSelectedModelName(data.modelName);
+          // 存入快取並返回
           setInterfaceConfigs(prev => ({ ...prev, [interfaceName]: data }));
-        } else {
-          console.log(`No configuration found in DB for ${interfaceName}, using defaults.`);
-          const defaultConfig = {
-            interfaceName: interfaceName,
-            apiKeys: [''], 
-            modelName: defaultModelName, 
-            prompt: null 
-          };
-          setApiKeys(defaultConfig.apiKeys);
-          setSelectedModelName(defaultConfig.modelName);
-          setInterfaceConfigs(prev => ({ ...prev, [interfaceName]: defaultConfig }));
+          return data;
         }
-      } else {
-        const errorData = await response.json().catch(() => ({ detail: `Failed to fetch configuration, status: ${response.status}` }));
-        console.error(`Error fetching configuration for ${interfaceName}:`, response.status, errorData.detail);
-        message.error(`獲取配置失敗: ${errorData.detail || response.statusText || '未知錯誤'}`);
-        const errorConfig = {
-            interfaceName: interfaceName,
-            apiKeys: [''], 
-            modelName: defaultModelName, 
-            prompt: null
-        };
-        setApiKeys(errorConfig.apiKeys);
-        setSelectedModelName(errorConfig.modelName);
-        setInterfaceConfigs(prev => ({ ...prev, [interfaceName]: errorConfig }));
       }
+      // 如果後端沒資料或請求失敗，返回 null
+      return null;
     } catch (error) {
-      console.error(`Network error or other issue fetching configuration for ${interfaceName}:`, error);
-      message.error(`獲取配置時發生錯誤: ${error.message || '網絡錯誤'}`);
-      const catchConfig = {
-        interfaceName: interfaceName,
-        apiKeys: [''], 
-        modelName: defaultModelName, 
-        prompt: null
-      };
-      setApiKeys(catchConfig.apiKeys);
-      setSelectedModelName(catchConfig.modelName);
-      setInterfaceConfigs(prev => ({ ...prev, [interfaceName]: catchConfig }));
+      console.error(`獲取 ${interfaceName} 設定時發生網路錯誤:`, error);
+      message.error(`獲取 ${interfaceName} 設定失敗`);
+      return null;
     }
-
-    setIsModalOpen(true);
   };
 
-  // Modal 確認按鈕的處理函數
-  const handleOk = async () => {
-    const validApiKeys = apiKeys.filter(key => key.trim() !== '');
-    console.log('保存接口密鑰:', editingInterfaceName, validApiKeys);
-    console.log('選中的模型名稱:', selectedModelName);
 
-    const currentPrompt = interfaceConfigs[editingInterfaceName]?.prompt || null;
+  // 統一的資料儲存函式
+  const saveInterfaceConfig = async (interfaceName, partialConfig) => {
+    message.loading({ content: `正在保存 ${interfaceName} 的設定...`, key: 'saveConfig' });
+    
+    // 先獲取當前最新的完整設定，防止資料覆寫
+    const latestConfig = await getInterfaceConfig(interfaceName) || {};
 
-    const currentConfig = {
-      interfaceName: editingInterfaceName,
-      apiKeys: validApiKeys,
-      modelName: selectedModelName,
-      prompt: currentPrompt
+    // 合併舊設定與要更新的部分設定
+    const payload = {
+      ...latestConfig,          // 包含舊的 prompt, apiKeys, modelName 等
+      ...partialConfig,         // 用新的部分覆蓋舊的
+      interfaceName: interfaceName, // 確保 interfaceName 正確
+      // 如果 apiKeys 或 modelName 在 partialConfig 中是 undefined，它會自動使用 latestConfig 中的值
+      apiKeys: partialConfig.apiKeys || latestConfig.apiKeys || [''],
+      modelName: partialConfig.modelName || latestConfig.modelName || modelNameOptions[interfaceName]?.[0]?.value,
     };
-
+    
+    // 發送請求
     try {
-      const response = await fetch('http://localhost:8000/settings/model_setting', {
+      const response = await fetch('http://localhost:8000/api/v1/model-manager/setting', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(currentConfig),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
       });
 
       if (response.ok) {
         const result = await response.json();
-        message.success('接口配置保存成功！');
-        setInterfaceConfigs(prev => ({ ...prev, [editingInterfaceName]: result.data_received || currentConfig }));
+        message.success({ content: '設定保存成功！', key: 'saveConfig' });
+        setInterfaceConfigs(prev => ({ ...prev, [interfaceName]: result.data_received || payload }));
+        return true;
       } else {
-        const errorData = await response.json().catch(() => ({ detail: '保存配置到後端失敗，且無法解析錯誤回應' }));
-        console.error('保存配置到後端失敗:', response.status, errorData.detail || response.statusText);
-        message.error(`保存配置失敗: ${errorData.detail || response.statusText || '未知錯誤'}`);
+        const errorData = await response.json().catch(() => ({}));
+        message.error({ content: `保存失敗: ${errorData.detail || '未知錯誤'}`, key: 'saveConfig' });
+        return false;
       }
     } catch (error) {
-      console.error('調用後端 API 時發生網絡錯誤:', error);
-      message.error(`保存配置時發生錯誤: ${error.message || '網絡錯誤'}`);
+      message.error({ content: `保存時發生網路錯誤: ${error.message}`, key: 'saveConfig' });
+      return false;
     }
-
-    setIsModalOpen(false);
   };
 
-  // Modal 取消按鈕的處理函數
+  // 簡化所有事件處理函式
+
+  // handleEditInterface
+  const handleEditInterface = async (interfaceName) => {
+    setEditingInterfaceName(interfaceName);
+    const config = await getInterfaceConfig(interfaceName);
+    
+    const defaultModelName = modelNameOptions[interfaceName]?.[0]?.value;
+
+    setApiKeys(config?.apiKeys && config.apiKeys.length > 0 ? config.apiKeys : ['']);
+    setSelectedModelName(config?.modelName || defaultModelName);
+    setIsModalOpen(true);
+  };
+
+  // handleOk 現在只負責調用統一的儲存函式
+  const handleOk = async () => {
+    const validApiKeys = apiKeys.filter(key => key.trim() !== '');
+    const success = await saveInterfaceConfig(editingInterfaceName, {
+      apiKeys: validApiKeys,
+      modelName: selectedModelName,
+    });
+    if (success) {
+      setIsModalOpen(false);
+    }
+  };
+
+  // handleCancel (保持不變)
   const handleCancel = () => {
     setIsModalOpen(false);
   };
-
+  
   // 處理特定索引的 API Key 輸入變更
   const handleApiKeyChange = (index, event) => {
     const newApiKeys = [...apiKeys];
@@ -257,133 +244,45 @@ const ModelManager = () => {
     setApiKeys(newApiKeys.length > 0 ? newApiKeys : ['']); 
   };
 
-  // 新增：處理打開「編輯參數」彈窗
-  const handleEditParams = (interfaceName) => {
+  // handleEditParams 現在也極其簡潔
+  const handleEditParams = async (interfaceName) => {
     setEditingParamsInterfaceName(interfaceName);
-    const currentPrompt = interfaceConfigs[interfaceName]?.prompt || '';
-    setPromptText(currentPrompt);
+    const config = await getInterfaceConfig(interfaceName);
+    setPromptText(config?.prompt || '');
     setIsParamsModalOpen(true);
   };
 
-  // 新增：「編輯參數」彈窗的確認按鈕處理函數
+  // handleParamsOk 現在也只負責調用統一的儲存函式
   const handleParamsOk = async () => {
-    console.log(`保存接口 '${editingParamsInterfaceName}' 的提示詞:`, promptText);
-
-    const existingConfig = interfaceConfigs[editingParamsInterfaceName]; 
-    
-    let currentApiKeys;
-    let currentModelName;
-
-    if (existingConfig) {
-        currentApiKeys = existingConfig.apiKeys && existingConfig.apiKeys.length > 0 ? existingConfig.apiKeys : [''];
-        currentModelName = existingConfig.modelName || modelNameOptions[editingParamsInterfaceName]?.[0]?.value;
-    } else {
-        if (editingInterfaceName === editingParamsInterfaceName) {
-            currentApiKeys = apiKeys.filter(key => key.trim() !== '');
-            if (currentApiKeys.length === 0) currentApiKeys = [''];
-            currentModelName = selectedModelName || modelNameOptions[editingParamsInterfaceName]?.[0]?.value;
-        } else {
-            currentApiKeys = [''];
-            currentModelName = modelNameOptions[editingParamsInterfaceName]?.[0]?.value;
-        }
-    }
-    
-    if (!currentModelName) {
-      message.error(`無法確定接口 ${editingParamsInterfaceName} 的模型名稱，請先確保接口已在前端列表中定義或已編輯過其基本設置。`);
-      setIsParamsModalOpen(false);
-      return;
-    }
-
-    const payload = {
-      interfaceName: editingParamsInterfaceName,
-      apiKeys: currentApiKeys,
-      modelName: currentModelName,
+    const success = await saveInterfaceConfig(editingParamsInterfaceName, {
       prompt: promptText,
-    };
-
-    try {
-      const response = await fetch('http://localhost:8000/settings/model_setting', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-
-      if (response.ok) {
-        const result = await response.json();
-        message.success('參數配置保存成功！');
-        setInterfaceConfigs(prev => ({
-          ...prev,
-          [editingParamsInterfaceName]: result.data_received || payload 
-        }));
-      } else {
-        const errorData = await response.json().catch(() => ({}));
-        console.error('保存提示詞到後端失敗:', response.status, errorData.detail);
-        message.error(`保存提示詞失敗: ${errorData.detail || response.statusText || '未知錯誤'}`);
-      }
-    } catch (error) {
-      console.error('保存提示詞時發生網絡錯誤:', error);
-      message.error(`保存提示詞時發生錯誤: ${error.message}`);
+    });
+    if (success) {
+      setIsParamsModalOpen(false);
     }
-
-    setIsParamsModalOpen(false);
   };
 
-  // 「編輯參數」彈窗的取消按鈕處理函數
+  // handleParamsCancel (保持不變)
   const handleParamsCancel = () => {
     setIsParamsModalOpen(false);
   };
-
-  // 處理測試接口邏輯
+  
+  // handleTestInterface 也使用統一的獲取函式
   const handleTestInterface = async (interfaceName) => {
-    console.log(`準備測試接口: ${interfaceName}`);
-    let config = interfaceConfigs[interfaceName];
+    message.loading({ content: `正在測試 ${interfaceName} 接口...`, key: 'testInterface' });
 
-    // 配置的緩存不存在，嘗試從後端加載
-    if (!config) {
-      try {
-        console.log(`Fetching configuration for testing: ${interfaceName}`);
-        const response = await fetch(`http://localhost:8000/settings/model_setting/${interfaceName}`);
-        if (response.ok) {
-          const data = await response.json();
-          if (data) {
-            setInterfaceConfigs(prev => ({ ...prev, [interfaceName]: data }));
-            config = data;
-          } else {
-            message.warning({ content: `${interfaceName} 接口尚未配置，請先編輯接口。`, key: `fetchConfig-${interfaceName}`, duration: 3 });
-            return;
-          }
-        } else {
-          const errorData = await response.json().catch(() => ({ detail: `Failed to fetch configuration, status: ${response.status}` }));
-          message.error({ content: `獲取 ${interfaceName} 配置失敗: ${errorData.detail || response.statusText || '請先編輯接口並保存'}`, key: `fetchConfig-${interfaceName}`, duration: 3 });
-          return;
-        }
-      } catch (error) {
-        console.error(`Network error or other issue fetching configuration for ${interfaceName} during test:`, error);
-        message.error({ content: `獲取 ${interfaceName} 配置時發生錯誤: ${error.message || '網絡錯誤'}`, key: `fetchConfig-${interfaceName}`, duration: 3 });
-        return;
-      }
-    }
+    const config = await getInterfaceConfig(interfaceName);
+    const apiKeysToTest = config?.apiKeys?.filter(key => key) || [];
 
-    if (!config || !config.apiKeys || config.apiKeys.length === 0) {
-      message.warning(`請先為 ${interfaceName} 接口配置並保存至少一個 API Key。`);
-      handleEditInterface(interfaceName);
+    if (apiKeysToTest.length === 0) {
+      message.error({ content: '沒有可用的 API 金鑰來進行測試。', key: 'testInterface' });
       return;
     }
 
-    const apiKeysToTest = config.apiKeys.filter(key => key && key.trim() !== '');
-    if (apiKeysToTest.length === 0) {
-        message.warning(`請先為 ${interfaceName} 接口配置並保存有效的 API Key。`);
-        return;
-    }
-
-    message.loading({ content: `正在測試 ${interfaceName} 接口...`, key: 'testInterface' });
-
     try {
-      const response = await fetch('http://localhost:8000/settings/test_model_interface', { // 假設的後端端點
+      const response = await fetch('http://localhost:8000/api/v1/model-manager/test', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           interfaceName: interfaceName,
           apiKeys: apiKeysToTest,
@@ -394,8 +293,8 @@ const ModelManager = () => {
       const result = await response.json();
 
       if (response.ok) {
-        console.log(`接口 ${interfaceName} 測試成功:`, result);
-        if (result.status === 'Success') {
+        console.log(`接口 ${interfaceName} 測試結果:`, result);
+        if (result.success) {
           message.success({ content: result.message, key: 'testInterface', duration: 5 });
         } else {
           message.error({ content: `${result.message}`, key: 'testInterface', duration: 5 });
