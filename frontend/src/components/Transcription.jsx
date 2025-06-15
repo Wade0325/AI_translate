@@ -43,14 +43,19 @@ const formatOptions = [
   { value: 'txt', label: '純文字 (.txt)' },
 ];
 
+const modelOptions = [
+    { value: 'Google', label: 'Google' }
+]
+
 // --- 後端 API 通訊 ---
 const API_BASE_URL = 'http://localhost:8000/api/v1';
 
-const transcribeFile = async (file, sourceLang, targetLang) => {
+const transcribeFile = async (file, sourceLang, targetLang, model) => {
   const formData = new FormData();
   formData.append('file', file);
   formData.append('source_lang', sourceLang);
   formData.append('target_lang', targetLang);
+  formData.append('model', model);
 
   try {
     const response = await axios.post(`${API_BASE_URL}/transcribe`, formData, {
@@ -84,6 +89,7 @@ const Transcription = () => {
   const [sourceLang, setSourceLang] = useState('zh-TW');
   const [targetLang, setTargetLang] = useState('zh-TW');
   const [outputFormats, setOutputFormats] = useState(['srt']);
+  const [model, setModel] = useState('Google');
   const [isProcessing, setIsProcessing] = useState(false);
 
   const handleUploadChange = ({ fileList: newFileList }) => {
@@ -117,7 +123,8 @@ const Transcription = () => {
         const response = await transcribeFile(
           file.originFileObj,
           sourceLang,
-          targetLang
+          targetLang,
+          model
         );
         
         console.log('API Response:', response);
@@ -293,19 +300,25 @@ const Transcription = () => {
 
         <Card title="2. 轉錄設定">
           <Row gutter={[16, 16]} align="top">
-            <Col xs={24} sm={12} md={8}>
+            <Col xs={24} sm={12} md={6}>
+              <Text>選擇服務商</Text>
+              <Select value={model} style={{ width: '100%' }} onChange={setModel}>
+                {modelOptions.map(lang => <Option key={lang.value} value={lang.value}>{lang.label}</Option>)}
+              </Select>
+            </Col>
+            <Col xs={24} sm={12} md={6}>
               <Text>來源語言</Text>
               <Select value={sourceLang} style={{ width: '100%' }} onChange={setSourceLang}>
                 {languageOptions.map(lang => <Option key={lang.value} value={lang.value}>{lang.label}</Option>)}
               </Select>
             </Col>
-            <Col xs={24} sm={12} md={8}>
+            <Col xs={24} sm={12} md={6}>
               <Text>輸出語言</Text>
               <Select value={targetLang} style={{ width: '100%' }} onChange={setTargetLang}>
                 {languageOptions.map(lang => <Option key={lang.value} value={lang.value}>{lang.label}</Option>)}
               </Select>
             </Col>
-            <Col xs={24} sm={24} md={8}>
+            <Col xs={24} sm={12} md={6}>
               <Text>輸出格式</Text>
               <Select
                 mode="multiple"
