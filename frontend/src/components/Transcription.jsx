@@ -88,7 +88,7 @@ const Transcription = () => {
   const [fileList, setFileList] = useState([]);
   const [sourceLang, setSourceLang] = useState('zh-TW');
   const [targetLang, setTargetLang] = useState('zh-TW');
-  const [outputFormats, setOutputFormats] = useState(['srt']);
+  const [outputFormats, setOutputFormats] = useState(['lrc']);
   const [model, setModel] = useState('Google');
   const [isProcessing, setIsProcessing] = useState(false);
 
