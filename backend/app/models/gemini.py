@@ -51,70 +51,97 @@ class GeminiClient:
             return ServiceStatus(success=False, message=message)
 
 
-def count_tokens_for_file(file_path: Path, api_key: str, model_name: str) -> int:
+def upload_file_to_gemini(file_path: Path, api_key: str):
     """
-    計算給定媒體檔案和提示所需的輸入 token 數量。
+    上傳檔案到 Gemini API，返回 client 和 gemini_file 物件
     """
-    if not all([file_path.exists(), api_key, model_name]):
-        raise ValueError("缺少檔案路徑、API 金鑰或模型名稱。")
+    if not file_path.exists():
+        raise ValueError("檔案不存在。")
 
     client = genai.Client(api_key=api_key)
-    print(f"正在為檔案 '{file_path.name}' 計算輸入 tokens...")
+    print(f"正在上傳檔案至 Gemini API: {file_path.name}")
     gemini_file = client.files.upload(file=file_path)
 
-    try:
-        response = client.models.count_tokens(
-            model=model_name, contents=[gemini_file])
-        return response.total_tokens
-    finally:
-        # 計算完 token 後也應該清理檔案
-        client.files.delete(name=gemini_file.name)
-        print(f"已從 Gemini API 清理用於計算 token 的檔案: {gemini_file.name}")
+    # 等待檔案處理完成
+    while gemini_file.state.name == "PROCESSING":
+        print('.', end='', flush=True)
+        time.sleep(2)
+        gemini_file = client.files.get(name=gemini_file.name)
+
+    if gemini_file.state.name == "FAILED":
+        raise ValueError(f"Gemini 檔案處理失敗: {gemini_file.state}")
+
+    print(f"\n檔案 '{file_path.name}' 上傳並處理完畢。")
+    return client, gemini_file
 
 
-def transcribe_video_with_gemini(
-    file_path: Path,
-    api_key: str,
+def count_tokens_with_uploaded_file(client, gemini_file, model_name: str) -> int:
+    """
+    使用已上傳的檔案計算 token 數量
+    """
+    print(f"正在計算檔案的輸入 tokens...")
+    response = client.models.count_tokens(
+        model=model_name, contents=[gemini_file])
+    return response.total_tokens
+
+
+def transcribe_with_uploaded_file(
+    client,
+    gemini_file,
     model_name: str,
     prompt: str
 ) -> Dict[str, Any]:
     """
-    使用指定的 Gemini 模型與提示詞轉錄媒體檔案，並回傳轉錄結果與 token 用量。
+    使用已上傳的檔案進行轉錄
     """
-    if not all([api_key, model_name, prompt]):
-        raise ValueError("缺少 API 金鑰、模型名稱或提示詞。")
-
-    client = genai.Client(api_key=api_key)
-
-    print(f"正在上傳檔案至 Gemini API 進行轉錄: {file_path.name}")
-    gemini_file = client.files.upload(file=file_path)
-
-    try:
-        while gemini_file.state.name == "PROCESSING":
-            print('.', end='', flush=True)
-            time.sleep(2)
-            gemini_file = client.files.get(name=gemini_file.name)
-
-        if gemini_file.state.name == "FAILED":
-            raise ValueError(f"Gemini 檔案處理失敗: {gemini_file.state}")
-
-        print(f"\n檔案處理完畢。正在使用 {model_name} 進行轉錄...")
-        response = client.models.generate_content(
-            model=model_name,
-            contents=[prompt, gemini_file],
-            config=types.GenerateContentConfig(
-                thinking_config=types.ThinkingConfig(thinking_budget=0)
-            )
+    print(f"正在使用 {model_name} 進行轉錄...")
+    response = client.models.generate_content(
+        model=model_name,
+        contents=[prompt, gemini_file],
+        config=types.GenerateContentConfig(
+            thinking_config=types.ThinkingConfig(thinking_budget=0)
         )
+    )
 
-        # 從回傳中提取 token 用量
-        total_tokens_used = response.usage_metadata.total_token_count
+    # 檢查回應是否被阻擋
+    if not response.candidates:
+        print("\n--- Gemini 回應錯誤 ---")
+        print("警告: Gemini 沒有回傳任何內容。回應可能已被其安全機制阻擋。")
+        error_text = "[[轉錄失敗：Gemini 回應被阻擋]]"
+        try:
+            print(f"阻擋原因: {response.prompt_feedback.block_reason}")
+            error_text = f"[[轉錄失敗：請求被 Gemini 以 '{response.prompt_feedback.block_reason}' 原因阻擋。]]"
+        except Exception:
+            print("無法取得明確的阻擋原因。")
+        print("-----------------------")
+
+        # 即使被阻擋，也嘗試讀取 prompt token
+        total_tokens_used = 0
+        if hasattr(response.usage_metadata, 'prompt_token_count'):
+            total_tokens_used = response.usage_metadata.prompt_token_count
 
         return {
-            "text": response.text,
+            "text": error_text,
             "total_tokens_used": total_tokens_used
         }
-    finally:
-        # 確保無論成功或失敗，都清理檔案
-        client.files.delete(name=gemini_file.name)
-        print(f"已從 Gemini API 清理用於轉錄的檔案: {gemini_file.name}")
+
+    # 從回傳中提取 token 用量
+    total_tokens_used = response.usage_metadata.total_token_count
+    print("prompt_token_count:", response.usage_metadata.prompt_token_count)
+    print("candidates_token_count:",
+          response.usage_metadata.candidates_token_count)
+    print("thoughts_token_count:",
+          response.usage_metadata.thoughts_token_count)
+
+    return {
+        "text": response.text,
+        "total_tokens_used": total_tokens_used
+    }
+
+
+def cleanup_gemini_file(client, gemini_file):
+    """
+    清理 Gemini API 上的檔案
+    """
+    client.files.delete(name=gemini_file.name)
+    print(f"已從 Gemini API 清理檔案: {gemini_file.name}")

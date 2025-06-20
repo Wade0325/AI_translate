@@ -4,8 +4,14 @@ from pathlib import Path
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 
 # 導入新的函式
-from app.models.gemini import transcribe_video_with_gemini, count_tokens_for_file
+from app.models.gemini import (
+    upload_file_to_gemini,
+    count_tokens_with_uploaded_file,
+    transcribe_with_uploaded_file,
+    cleanup_gemini_file
+)
 from app.db.repository.model_manager_repository import ModelSettingsRepository
+from app.services.subtitle_converter import convert_to_all_formats
 
 # 建立一個新的 API 路由器
 router = APIRouter()
@@ -40,7 +46,7 @@ SUPPORTED_MIME_TYPES = {
 async def transcribe_media(
     file: UploadFile = File(..., description="要轉錄的音訊或視訊檔案"),
     source_lang: str = Form(..., description="來源語言代碼 (例如：zh-TW)"),
-    target_lang: str = Form(..., description="目標語言代碼 (例如：en-US)"),
+    model: str = Form(..., description="使用的模型名稱"),
 ):
     """
     接收音訊或視訊檔案，直接從資料庫讀取設定進行轉錄。
@@ -55,10 +61,11 @@ async def transcribe_media(
     # --- 讀取資料庫設定 ---
     try:
         repo = ModelSettingsRepository()
-        gemini_config = repo.get_by_name("Google")
+        # 使用前端傳來的 model 名稱來讀取設定
+        gemini_config = repo.get_by_name(model)
         if not gemini_config or not gemini_config.api_keys_json:
             raise HTTPException(
-                status_code=404, detail="在資料庫中找不到 'Google' 的設定或 API 金鑰。請先在模型設定頁面設定。")
+                status_code=404, detail=f"在資料庫中找不到 '{model}' 的設定或 API 金鑰。請先在模型設定頁面設定。")
 
         api_keys = json.loads(gemini_config.api_keys_json)
         api_key = api_keys[0] if api_keys else None
@@ -67,11 +74,11 @@ async def transcribe_media(
 
         if not all([api_key, model_name, prompt]):
             raise HTTPException(
-                status_code=404, detail="'Google' 的設定不完整，缺少 API 金鑰、模型名稱或提示詞。")
+                status_code=404, detail=f"'{model}' 的設定不完整，缺少 API 金鑰、模型名稱或提示詞。")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"從資料庫讀取設定時出錯: {e}")
 
-    # --- 檔案處理與 Token 計算 ---
+    # --- 檔案處理與上傳 ---
     save_path = TEMP_DIR / Path(file.filename).name
 
     try:
@@ -79,49 +86,57 @@ async def transcribe_media(
         with save_path.open("wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
 
-        # 2. 計算並印出輸入 token
+        # 2. 上傳到 Gemini API（只上傳一次）
+        client, gemini_file = upload_file_to_gemini(save_path, api_key)
+
         try:
-            input_tokens = count_tokens_for_file(
-                save_path, api_key, model_name)
-            print(f"--- Token 預估 ---")
-            print(f"轉錄前，檔案 '{save_path.name}' 需要的輸入 tokens: {input_tokens}")
+            # 3. 計算並印出輸入 token
+            try:
+                input_tokens = count_tokens_with_uploaded_file(
+                    client, gemini_file, model_name)
+                print(f"--- Token 預估 ---")
+                print(
+                    f"轉錄前，檔案 '{save_path.name}' 需要的輸入 tokens: {input_tokens}")
+                print(f"--------------------")
+            except Exception as e:
+                print(f"警告：無法計算輸入 token。錯誤: {e}")
+                input_tokens = 0
+
+            # 4. 執行轉錄
+            transcription_result = transcribe_with_uploaded_file(
+                client, gemini_file, model_name, prompt
+            )
+
+            lrc_text = transcription_result.get("text")
+            total_tokens_used = transcription_result.get(
+                "total_tokens_used", 0)
+
+            # 5. 將 LRC 格式轉換為所有其他格式
+            all_transcripts = convert_to_all_formats(lrc_text)
+
+            # 6. 印出花費的 token
+            print(f"--- Token 花費 ---")
+            print(f"轉錄完成後，總共花費的 tokens: {total_tokens_used}")
             print(f"--------------------")
-        except Exception as e:
-            print(f"警告：無法計算輸入 token。錯誤: {e}")
-            # 計算失敗不應中斷主流程，可以選擇設定為 0 或 None
-            input_tokens = 0
 
-        # 3. 執行轉錄
-        transcription_result = transcribe_video_with_gemini(
-            save_path,
-            api_key=api_key,
-            model_name=model_name,
-            prompt=prompt
-        )
+            # 假設一個簡單的計價模型 (例如: $0.00015 / token)
+            cost = total_tokens_used * 0.00015
 
-        transcribed_text = transcription_result.get("text")
-        total_tokens_used = transcription_result.get("total_tokens_used")
-
-        # 4. 印出花費的 token
-        print(f"--- Token 花費 ---")
-        print(f"轉錄完成後，總共花費的 tokens: {total_tokens_used}")
-        print(f"--------------------")
+        finally:
+            # 7. 清理 Gemini API 上的檔案
+            cleanup_gemini_file(client, gemini_file)
 
     finally:
-        # 5. 清理原始的暫存檔案
+        # 8. 清理本地暫存檔案
         await file.close()
         if save_path.exists():
             save_path.unlink()
-            print(f"已刪除原始暫存檔案: {save_path.name}")
+            print(f"已刪除本地暫存檔案: {save_path.name}")
 
     return {
-        "message": "轉錄成功。",
-        "filename": file.filename,
+        "transcripts": all_transcripts,
+        "tokens_used": total_tokens_used,
+        "cost": cost,
+        "model": model,
         "source_language": source_lang,
-        "target_language": target_lang,
-        "transcribed_text": transcribed_text,
-        "tokens_used": {
-            "input": input_tokens,
-            "total": total_tokens_used,
-        }
     }

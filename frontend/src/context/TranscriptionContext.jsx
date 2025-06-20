@@ -50,6 +50,7 @@ export const TranscriptionProvider = ({ children }) => {
     const updatedList = newFileList.map(f => ({
       ...f,
       status: f.status || 'waiting',
+      percent: f.percent === undefined ? 0 : f.percent,
     }));
     setFileList(updatedList);
   };
@@ -67,7 +68,7 @@ export const TranscriptionProvider = ({ children }) => {
     setFileList(currentList =>
       currentList.map(file =>
         filesToProcess.find(p => p.uid === file.uid)
-          ? { ...file, status: 'processing' }
+          ? { ...file, status: 'processing', percent: 20 }
           : file
       )
     );
@@ -76,7 +77,6 @@ export const TranscriptionProvider = ({ children }) => {
       try {
         const response = await transcribeFile(file.originFileObj, sourceLang, model);
         
-        // 假設後端回應包含一個 transcripts 物件，裡面有多種格式
         const resultObject = response.transcripts;
 
         setFileList(currentList => currentList.map(f => 
@@ -87,6 +87,7 @@ export const TranscriptionProvider = ({ children }) => {
                 result: resultObject,
                 tokens_used: response.tokens_used,
                 cost: response.cost,
+                percent: 100,
               }
             : f
         ));
@@ -94,7 +95,7 @@ export const TranscriptionProvider = ({ children }) => {
       } catch (error) {
         console.error(`檔案 ${file.name} 上傳失敗:`, error);
         setFileList(currentList => currentList.map(f =>
-            f.uid === file.uid ? { ...f, status: 'error' } : f
+            f.uid === file.uid ? { ...f, status: 'error', percent: 100 } : f
         ));
         return { status: 'rejected', uid: file.uid, error };
       }
@@ -104,6 +105,33 @@ export const TranscriptionProvider = ({ children }) => {
 
     setIsProcessing(false);
     message.success('所有新任務處理完畢！');
+  };
+
+  const handleReprocess = (uidToReprocess) => {
+    setFileList((currentList) => {
+      const fileToReprocess = currentList.find(f => f.uid === uidToReprocess);
+      if (fileToReprocess) {
+        message.info(`任務 "${fileToReprocess.name}" 已重新加入佇列。`);
+      }
+      return currentList.map(file => {
+          if(file.uid === uidToReprocess) {
+              return {
+                  ...file,
+                  status: 'waiting',
+                  percent: 0,
+                  tokens_used: 0,
+                  cost: 0,
+                  result: null,
+              };
+          }
+          return file;
+      });
+    });
+  };
+
+  const clearAllFiles = () => {
+    setFileList([]);
+    message.success("已清除所有任務");
   };
 
   const value = {
@@ -117,6 +145,8 @@ export const TranscriptionProvider = ({ children }) => {
     handleUploadChange,
     handleStartTranscription,
     downloadFile,
+    clearAllFiles,
+    handleReprocess,
   };
 
   return (
