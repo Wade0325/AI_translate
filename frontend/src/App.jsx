@@ -1,30 +1,18 @@
-import React, { useState } from 'react';
+import React from 'react';
 import { Layout, Menu, theme } from 'antd';
 import ModelManagerProvider, { ModelManagerDashboard } from './components/ModelManager';
 import Transcription from './components/Transcription';
 import { TranscriptionProvider } from './context/TranscriptionContext';
 
 const { Header, Content } = Layout;
-const items1 = ['1'].map((key) => ({
-  key,
-  label: '語音轉錄',
-}));
 
 const App = () => {
   const {
     token: { colorBgContainer, borderRadiusLG },
   } = theme.useToken();
-  const [selectedKey, setSelectedKey] = useState('transcription');
 
   const renderContent = () => {
-    switch (selectedKey) {
-      case 'modelManager':
-        return <ModelManagerDashboard />;
-      case 'transcription':
-        return <Transcription />;
-      default:
-        return <ModelManagerDashboard />;
-    }
+    return <Transcription />;
   };
 
   return (
@@ -37,7 +25,7 @@ const App = () => {
               theme="dark"
               mode="horizontal"
               defaultSelectedKeys={['1']}
-              items={items1}
+              items={[{ key: '1', label: '語音轉錄' }]}
               style={{ flex: 1, minWidth: 0 }}
             />
           </Header>
