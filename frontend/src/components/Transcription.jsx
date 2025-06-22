@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Upload,
   Button,
@@ -14,6 +14,7 @@ import {
   Statistic,
   Progress,
   Popconfirm,
+  Divider,
 } from 'antd';
 import {
   UploadOutlined,
@@ -27,8 +28,12 @@ import {
   InfoCircleOutlined,
   DeleteOutlined,
   ReloadOutlined,
+  EditOutlined,
+  SlidersOutlined,
+  PlayCircleOutlined,
 } from '@ant-design/icons';
 import { useTranscription } from '../context/TranscriptionContext'; // 引入 hook
+import { useModelManager } from './ModelManager'; // 引入新的 hook
 
 const { Title, Text } = Typography;
 const { Option } = Select;
@@ -43,9 +48,37 @@ const languageOptions = [
   { value: 'es-ES', label: '西班牙文' },
 ];
 
-const modelOptions = [
-    { value: 'Google', label: 'Google' }
-]
+// 建立一個包含所有服務商及其模型的完整物件
+const modelNameOptions = {
+  Google: [
+    { value: 'gemini-1.5-pro-latest', label: 'gemini-1.5-pro-latest' },
+    { value: 'gemini-1.5-flash-latest', label: 'gemini-1.5-flash-latest' },
+  ],
+  OpenAI: [
+    { value: 'gpt-4-turbo', label: 'gpt-4-turbo' },
+    { value: 'gpt-4o', label: 'gpt-4o' },
+    { value: 'gpt-3.5-turbo', label: 'gpt-3.5-turbo' },
+  ],
+  Claude: [
+    { value: 'claude-3-opus-20240229', label: 'claude-3-opus-20240229' },
+    { value: 'claude-3-sonnet-20240229', label: 'claude-3-sonnet-20240229' },
+    { value: 'claude-3-haiku-20240307', label: 'claude-3-haiku-20240307'},
+  ],
+  SakuraLLM: [
+    { value: 'Sakura-v0.8-Llama-3-8B-MLM', label: 'Sakura-v0.8-Llama-3-8B-MLM' },
+  ]
+};
+
+// 輔助函式：根據模型名稱尋找其服務商
+const findProviderForModel = (modelName) => {
+  if (!modelName) return null;
+  for (const provider in modelNameOptions) {
+    if (modelNameOptions[provider].some(option => option.value === modelName)) {
+      return provider;
+    }
+  }
+  return 'Google'; // 預設返回 Google
+};
 
 // --- 主要應用程式元件 ---
 const Transcription = () => {
@@ -64,6 +97,30 @@ const Transcription = () => {
     clearAllFiles,
     handleReprocess,
   } = useTranscription();
+  
+  // 從 ModelManager Context 獲取函式
+  const { handleEditInterface, handleEditParams, handleTestInterface } = useModelManager();
+
+  // 新增狀態來管理當前選擇的服務商
+  const [selectedProvider, setSelectedProvider] = useState(() => findProviderForModel(model));
+
+  // 當全局 model 狀態變化時，同步更新服務商
+  useEffect(() => {
+    const provider = findProviderForModel(model);
+    setSelectedProvider(provider);
+  }, [model]);
+
+  // 處理服務商變更的事件
+  const handleProviderChange = (newProvider) => {
+    setSelectedProvider(newProvider);
+    // 當服務商變更時，自動選擇該服務商的第一個模型
+    const defaultModel = modelNameOptions[newProvider]?.[0]?.value;
+    if (defaultModel) {
+      setModel(defaultModel);
+    } else {
+      setModel(null); // 如果該服務商沒有模型，則清空
+    }
+  };
 
   // --- 轉錄頁面元件 ---
   const uploadProps = {
@@ -244,18 +301,80 @@ const Transcription = () => {
       </Card>
 
       <Card title="2. 轉錄設定">
-        <Row gutter={[16, 16]} align="top">
-          <Col xs={24} sm={12} md={12}>
+        {/* 第一行：三個下拉選單，確保水平對齊 */}
+        <Row gutter={[16, 16]} align="bottom">
+          <Col xs={24} sm={8}>
             <Text>選擇服務商</Text>
-            <Select value={model} style={{ width: '100%' }} onChange={setModel}>
-              {modelOptions.map(lang => <Option key={lang.value} value={lang.value}>{lang.label}</Option>)}
+            <Select
+              value={selectedProvider}
+              style={{ width: '100%' }}
+              onChange={handleProviderChange}
+            >
+              {Object.keys(modelNameOptions).map(provider => (
+                <Option key={provider} value={provider}>{provider}</Option>
+              ))}
             </Select>
           </Col>
-          <Col xs={24} sm={12} md={12}>
+          <Col xs={24} sm={8}>
+            <Text>選擇模型</Text>
+            <Select
+              value={model}
+              style={{ width: '100%' }}
+              onChange={setModel}
+              disabled={!selectedProvider}
+            >
+              {selectedProvider && modelNameOptions[selectedProvider] ? (
+                modelNameOptions[selectedProvider].map(option => (
+                  <Option key={option.value} value={option.value}>{option.label}</Option>
+                ))
+              ) : (
+                <Option value={null} disabled>請先選擇服務商</Option>
+              )}
+            </Select>
+          </Col>
+          <Col xs={24} sm={8}>
             <Text>來源語言</Text>
             <Select value={sourceLang} style={{ width: '100%' }} onChange={setSourceLang}>
               {languageOptions.map(lang => <Option key={lang.value} value={lang.value}>{lang.label}</Option>)}
             </Select>
+          </Col>
+        </Row>
+        
+        {/* 第二行：只在第一欄下方顯示按鈕 */}
+        <Row gutter={[16, 16]} style={{ marginTop: '8px' }}>
+          <Col xs={24} sm={8}>
+            <Space.Compact style={{ width: '100%' }}>
+              <Tooltip title="編輯接口金鑰與模型">
+                <Button
+                  icon={<EditOutlined />}
+                  style={{ width: '33.33%' }}
+                  onClick={() => handleEditInterface(selectedProvider)}
+                  disabled={!selectedProvider}
+                >
+                  編輯接口
+                </Button>
+              </Tooltip>
+              <Tooltip title="編輯 Prompt 參數">
+                <Button
+                  icon={<SlidersOutlined />}
+                  style={{ width: '33.33%' }}
+                  onClick={() => handleEditParams(selectedProvider)}
+                  disabled={!selectedProvider}
+                >
+                  編輯參數
+                </Button>
+              </Tooltip>
+              <Tooltip title="測試此接口是否可用">
+                <Button
+                  icon={<PlayCircleOutlined />}
+                  style={{ width: '33.33%' }}
+                  onClick={() => handleTestInterface(selectedProvider)}
+                  disabled={!selectedProvider}
+                >
+                  測試接口
+                </Button>
+              </Tooltip>
+            </Space.Compact>
           </Col>
         </Row>
       </Card>

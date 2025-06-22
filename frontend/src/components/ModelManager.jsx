@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, createContext, useContext } from 'react';
 import { Card, Row, Col, Typography, Button, Dropdown, Space, Modal, Input, Select, message } from 'antd';
 import {
   DownOutlined,
@@ -11,6 +11,16 @@ import {
 
 const { Title } = Typography;
 const { Option } = Select;
+
+// 1. 建立 Context 和自訂 Hook
+const ModelManagerContext = createContext(null);
+export const useModelManager = () => {
+  const context = useContext(ModelManagerContext);
+  if (!context) {
+    throw new Error('useModelManager must be used within a ModelManagerProvider');
+  }
+  return context;
+};
 
 const EnhancedCardHeader = ({ mainTitle, subtitle, extraContent }) => {
   return (
@@ -53,7 +63,98 @@ const EnhancedCardHeader = ({ mainTitle, subtitle, extraContent }) => {
   );
 };
 
-const ModelManager = () => {
+// 將 Dashboard UI 導出，以便在主頁面使用
+export const ModelManagerDashboard = () => {
+  const { getDropdownMenuConfig } = useModelManager();
+
+  const dropdownButtonStyle = {
+    minWidth: '130px',
+    textAlign: 'left',
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  };
+
+  return (
+    <div>
+      <Title level={2} style={{ marginBottom: '24px' }}>
+        模型管理中心
+      </Title>
+      
+      <Row gutter={[16, 16]}>
+        <Col xs={24} sm={12} lg={8}>
+          <Card
+            title={
+              <EnhancedCardHeader
+                mainTitle="本地模型"
+                subtitle="管理本地部署的語言模型，包括模型配置、性能監控等功能。"
+                extraContent={null} 
+              />
+            }
+            hoverable
+          >
+            <Dropdown 
+              menu={getDropdownMenuConfig('SakuraLLM')}
+              trigger={['click']}
+              transitionName=""
+            >
+              <Button style={dropdownButtonStyle}>
+                SakuraLLM <DownOutlined />
+              </Button>
+            </Dropdown>
+          </Card>
+        </Col>
+
+        <Col xs={24} sm={12} lg={8}>
+          <Card
+            title={
+              <EnhancedCardHeader
+                mainTitle="線上模型"
+                subtitle="連接各種線上 AI 服務，如 OpenAI、Claude、Google 等第三方模型服務。"
+                extraContent={null}
+              />
+            }
+            hoverable
+          >
+            <Space wrap size={[12, 12]} style={{ marginBottom: '16px' }}>
+              <Dropdown 
+                menu={getDropdownMenuConfig('Google')}
+                trigger={['click']}
+                transitionName=""
+              >
+                <Button style={dropdownButtonStyle}>
+                  Google <DownOutlined />
+                </Button>
+              </Dropdown>
+              <Dropdown 
+                menu={getDropdownMenuConfig('OpenAI')}
+                trigger={['click']}
+                transitionName=""
+              >
+                <Button style={dropdownButtonStyle}>
+                  OpenAI <DownOutlined />
+                </Button>
+              </Dropdown>
+              <Dropdown 
+                menu={getDropdownMenuConfig('Claude')}
+                trigger={['click']}
+                transitionName=""
+              >
+                <Button style={dropdownButtonStyle}>
+                  Claude <DownOutlined />
+                </Button>
+              </Dropdown>
+            </Space>
+          </Card>
+        </Col>
+      </Row>
+    </div>
+  );
+};
+
+
+// Provider 現在只負責提供 Context 和渲染 Modals，不再渲染 UI
+const ModelManagerProvider = ({ children }) => {
   // Modal 相關狀態
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingInterfaceName, setEditingInterfaceName] = useState('');
@@ -314,80 +415,20 @@ const ModelManager = () => {
     }
   };
 
-  return (
-    <div>
-      <Title level={2} style={{ marginBottom: '24px' }}>
-        模型管理中心
-      </Title>
-      
-      <Row gutter={[16, 16]}>
-        <Col xs={24} sm={12} lg={8}>
-          <Card
-            title={
-              <EnhancedCardHeader
-                mainTitle="本地模型"
-                subtitle="管理本地部署的語言模型，包括模型配置、性能監控等功能。"
-                extraContent={null} 
-              />
-            }
-            hoverable
-          >
-            <Dropdown 
-              menu={getDropdownMenuConfig('SakuraLLM')}
-              trigger={['click']}
-              transitionName=""
-            >
-              <Button style={dropdownButtonStyle}>
-                SakuraLLM <DownOutlined />
-              </Button>
-            </Dropdown>
-          </Card>
-        </Col>
+  // 透過 Context 提供的數值
+  const contextValue = {
+    handleEditInterface,
+    handleEditParams,
+    handleTestInterface,
+    getDropdownMenuConfig,
+    interfaceConfigs,
+    // 將當前正在編輯的服務商名稱也傳遞出去，方便外部元件使用
+    selectedProvider: editingInterfaceName || editingParamsInterfaceName,
+  };
 
-        <Col xs={24} sm={12} lg={8}>
-          <Card
-            title={
-              <EnhancedCardHeader
-                mainTitle="線上模型"
-                subtitle="連接各種線上 AI 服務，如 OpenAI、Claude、Google 等第三方模型服務。"
-                extraContent={null}
-              />
-            }
-            hoverable
-          >
-            {/* 使用 Space 組件包裹三個固定的 Dropdown 按鈕 */}
-            <Space wrap size={[12, 12]} style={{ marginBottom: '16px' }}>
-              <Dropdown 
-                menu={getDropdownMenuConfig('Google')}
-                trigger={['click']}
-                transitionName=""
-              >
-                <Button style={dropdownButtonStyle}>
-                  Google <DownOutlined />
-                </Button>
-              </Dropdown>
-              <Dropdown 
-                menu={getDropdownMenuConfig('OpenAI')}
-                trigger={['click']}
-                transitionName=""
-              >
-                <Button style={dropdownButtonStyle}>
-                  OpenAI <DownOutlined />
-                </Button>
-              </Dropdown>
-              <Dropdown 
-                menu={getDropdownMenuConfig('Claude')}
-                trigger={['click']}
-                transitionName=""
-              >
-                <Button style={dropdownButtonStyle}>
-                  Claude <DownOutlined />
-                </Button>
-              </Dropdown>
-            </Space>
-          </Card>
-        </Col>
-      </Row>
+  return (
+    <ModelManagerContext.Provider value={contextValue}>
+      {children}
 
       {/* 編輯接口 Modal */}
       <Modal
@@ -435,30 +476,6 @@ const ModelManager = () => {
             添加更多密鑰
           </Button>
         </div>
-        
-        <div style={{ marginBottom: '16px' }}>
-          <div style={{ marginBottom: '8px', fontWeight: 500 }}>模型名稱</div>
-          <div style={{ color: 'rgba(0,0,0,0.45)', fontSize: '12px', marginBottom: '8px' }}>
-            請選擇或者輸入要使用的模型的名稱。
-          </div>
-          <Select
-            style={{ width: '100%' }}
-            placeholder="請選擇模型名稱"
-            value={selectedModelName}
-            onChange={(value) => setSelectedModelName(value)}
-            showSearch
-            optionFilterProp="children"
-            filterOption={(input, option) =>
-              (option?.label ?? '').toLowerCase().includes(input.toLowerCase())
-            }
-          >
-            {getCurrentModelOptions().map(option => (
-              <Option key={option.value} value={option.value} label={option.label}>
-                {option.label}
-              </Option>
-            ))}
-          </Select>
-        </div>
       </Modal>
 
       {/* 新增：編輯參數 Modal */}
@@ -485,8 +502,8 @@ const ModelManager = () => {
           />
         </div>
       </Modal>
-    </div>
+    </ModelManagerContext.Provider>
   );
 };
 
-export default ModelManager;
+export default ModelManagerProvider;

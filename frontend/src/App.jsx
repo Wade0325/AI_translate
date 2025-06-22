@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { ApiOutlined, TranslationOutlined } from '@ant-design/icons';
 import { Layout, Menu, theme } from 'antd';
-import ModelManager from './components/ModelManager';
+import ModelManagerProvider, { ModelManagerDashboard } from './components/ModelManager';
 import Transcription from './components/Transcription';
 import { TranscriptionProvider } from './context/TranscriptionContext';
 
@@ -31,53 +31,56 @@ const App = () => {
   const renderContent = () => {
     switch (selectedKey) {
       case 'modelManager':
-        return <ModelManager />;
+        return <ModelManagerDashboard />;
       case 'transcription':
         return <Transcription />;
       default:
-        return <ModelManager />;
+        return <ModelManagerDashboard />;
     }
   };
 
   return (
-    <TranscriptionProvider>
-      <Layout>
-        <Header style={{ display: 'flex', alignItems: 'center' }}>
-          <div style={{ marginLeft: '150px' }} className="demo-logo" />
-          <Menu
-            theme="dark"
-            mode="horizontal"
-            defaultSelectedKeys={['1']}
-            items={items1}
-            style={{ flex: 1, minWidth: 0 }}
-          />
-        </Header>
+    <ModelManagerProvider>
+      <TranscriptionProvider>
         <Layout>
-          <Sider width={180} style={{ background: colorBgContainer }}>
+          <Header style={{ display: 'flex', alignItems: 'center' }}>
+            <div style={{ marginLeft: '150px' }} className="demo-logo" />
             <Menu
-              mode="inline"
-              selectedKeys={[selectedKey]}
-              onClick={({ key }) => setSelectedKey(key)}
-              style={{ height: '100%', borderRight: 0 }}
-              items={items2}
+              theme="dark"
+              mode="horizontal"
+              defaultSelectedKeys={['1']}
+              items={items1}
+              style={{ flex: 1, minWidth: 0 }}
             />
-          </Sider>
-          <Layout style={{ padding: '0 24px 24px' }}>
-            <Content
-              style={{
-                padding: 24,
-                margin: 0,
-                minHeight: '85vh',
-                background: colorBgContainer,
-                borderRadius: borderRadiusLG,
-              }}
-            >
-              {renderContent()}
-            </Content>
+          </Header>
+          <Layout>
+            <Sider width={180} style={{ background: colorBgContainer }}>
+              <Menu
+                mode="inline"
+                selectedKeys={[selectedKey]}
+                onClick={({ key }) => setSelectedKey(key)}
+                style={{ height: '100%', borderRight: 0 }}
+                items={items2}
+              />
+            </Sider>
+            <Layout style={{ padding: '0 24px 24px' }}>
+              <Content
+                style={{
+                  padding: 24,
+                  margin: 0,
+                  minHeight: '85vh',
+                  background: colorBgContainer,
+                  borderRadius: borderRadiusLG,
+                  overflow: 'auto',
+                }}
+              >
+                {renderContent()}
+              </Content>
+            </Layout>
           </Layout>
         </Layout>
-      </Layout>
-    </TranscriptionProvider>
+      </TranscriptionProvider>
+    </ModelManagerProvider>
   );
 };
 export default App;
