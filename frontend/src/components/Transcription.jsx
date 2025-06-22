@@ -15,6 +15,7 @@ import {
   Progress,
   Popconfirm,
   Divider,
+  Modal,
 } from 'antd';
 import {
   UploadOutlined,
@@ -31,9 +32,10 @@ import {
   EditOutlined,
   SlidersOutlined,
   PlayCircleOutlined,
+  EyeOutlined,
 } from '@ant-design/icons';
-import { useTranscription } from '../context/TranscriptionContext'; // 引入 hook
-import { useModelManager } from './ModelManager'; // 引入新的 hook
+import { useTranscription } from '../context/TranscriptionContext';
+import { useModelManager } from './ModelManager';
 
 const { Title, Text } = Typography;
 const { Option } = Select;
@@ -41,28 +43,23 @@ const { Option } = Select;
 // --- 語言和格式選項 ---
 const languageOptions = [
   { value: 'zh-TW', label: '繁體中文 (台灣)' },
-  { value: 'zh-CN', label: '簡體中文 (中國)' },
   { value: 'en-US', label: '英文 (美國)' },
-  { value: 'ja-JP', label: '日文' },
-  { value: 'ko-KR', label: '韓文' },
-  { value: 'es-ES', label: '西班牙文' },
 ];
 
 // 建立一個包含所有服務商及其模型的完整物件
 const modelNameOptions = {
   Google: [
-    { value: 'gemini-1.5-pro-latest', label: 'gemini-1.5-pro-latest' },
-    { value: 'gemini-1.5-flash-latest', label: 'gemini-1.5-flash-latest' },
+    { value: 'gemini-2.5-flash-preview-05-20', label: 'gemini-2.5-flash-preview-05-20' },
+    { value: 'gemini-2.5-pro-exp-03-25', label: 'gemini-2.5-pro-exp-03-25' }
   ],
   OpenAI: [
     { value: 'gpt-4-turbo', label: 'gpt-4-turbo' },
-    { value: 'gpt-4o', label: 'gpt-4o' },
+    { value: 'gpt-4', label: 'gpt-4' },
     { value: 'gpt-3.5-turbo', label: 'gpt-3.5-turbo' },
   ],
   Claude: [
     { value: 'claude-3-opus-20240229', label: 'claude-3-opus-20240229' },
-    { value: 'claude-3-sonnet-20240229', label: 'claude-3-sonnet-20240229' },
-    { value: 'claude-3-haiku-20240307', label: 'claude-3-haiku-20240307'},
+    { value: 'claude-3-sonnet-20240229', label: 'claude-3-sonnet-20240229' }
   ],
   SakuraLLM: [
     { value: 'Sakura-v0.8-Llama-3-8B-MLM', label: 'Sakura-v0.8-Llama-3-8B-MLM' },
@@ -112,6 +109,11 @@ const Transcription = () => {
   // 從 ModelManager Context 獲取函式
   const { handleEditInterface, handleEditParams, handleTestInterface } = useModelManager();
 
+  // 預覽 Modal 狀態
+  const [isPreviewModalVisible, setIsPreviewModalVisible] = useState(false);
+  const [previewContent, setPreviewContent] = useState('');
+  const [previewTitle, setPreviewTitle] = useState('');
+
   // 新增狀態來管理當前選擇的服務商
   const [selectedProvider, setSelectedProvider] = useState(() => findProviderForModel(model));
 
@@ -144,6 +146,19 @@ const Transcription = () => {
     } else {
       setModel(null); // 如果該服務商沒有模型，則清空
     }
+  };
+
+  // Modal 處理函式
+  const handleOpenPreview = (record) => {
+    setPreviewTitle(`預覽內容: ${record.name}`);
+    setPreviewContent(record.result?.txt || '沒有可預覽的文字內容。');
+    setIsPreviewModalVisible(true);
+  };
+
+  const handleClosePreview = () => {
+    setIsPreviewModalVisible(false);
+    setPreviewContent('');
+    setPreviewTitle('');
   };
 
   // --- 轉錄頁面元件 ---
@@ -179,14 +194,14 @@ const Transcription = () => {
       title: '大小', 
       dataIndex: 'size', 
       key: 'size', 
-      width: '12%',
+      width: '10%',
       render: (size) => `${(size / 1024 / 1024).toFixed(2)} MB` 
     },
     {
       title: 'Tokens',
       dataIndex: 'tokens_used',
       key: 'tokens_used',
-      width: '12%',
+      width: '10%',
       render: (tokens) => (tokens ? tokens.toLocaleString() : '-'),
     },
     {
@@ -202,14 +217,14 @@ const Transcription = () => {
       ),
       dataIndex: 'cost',
       key: 'cost',
-      width: '13%',
+      width: '10%',
       render: (cost, record) => (record.status === 'completed' && cost ? `$${cost.toFixed(4)}` : '-'),
     },
     {
       title: '進度',
       dataIndex: 'status',
       key: 'status',
-      width: '15%',
+      width: '10%',
       render: (status, record) => {
         let progressStatus;
         if (status === 'completed') progressStatus = 'success';
@@ -223,11 +238,20 @@ const Transcription = () => {
     {
       title: '操作',
       key: 'action',
-      width: '15%',
+      width: '25%',
       render: (_, record) => {
         const availableFormats = ['lrc', 'srt', 'vtt', 'txt'];
         return (
           <Space>
+            {record.status === 'completed' && record.result?.txt && (
+              <Tooltip title="預覽內容">
+                <Button
+                  size="small"
+                  icon={<EyeOutlined />}
+                  onClick={() => handleOpenPreview(record)}
+                />
+              </Tooltip>
+            )}
             {record.status === 'completed' && record.result && availableFormats.map(format => (
               <Tooltip title={`下載 ${format.toUpperCase()}`} key={format}>
                 <Button
@@ -308,9 +332,21 @@ const Transcription = () => {
         pagination={{ pageSize: 5 }}
         tableLayout="fixed"
       />
+      <Row gutter={32} justify="end" style={{ marginTop: '16px', paddingRight: '8px' }}>
+        <Col>
+          <Statistic title={<span style={{fontSize: '14px', color: 'rgba(0, 0, 0, 0.45)'}}>完成檔案</span>} value={completedFilesCount} valueStyle={{fontSize: '20px'}} prefix={<CheckCircleOutlined />} />
+        </Col>
+        <Col>
+          <Statistic title={<span style={{fontSize: '14px', color: 'rgba(0, 0, 0, 0.45)'}}>總消耗 Tokens</span>} value={totalTokens} valueStyle={{fontSize: '20px'}} prefix={<DashboardOutlined />} />
+        </Col>
+        <Col>
+          <Statistic title={<span style={{fontSize: '14px', color: 'rgba(0, 0, 0, 0.45)'}}>預估總花費 (USD)</span>} value={totalCost} precision={4} valueStyle={{fontSize: '20px'}} prefix={<DollarCircleOutlined />} />
+        </Col>
+      </Row>
     </div>
   );
 
+  const completedFilesCount = fileList.filter(f => f.status === 'completed').length;
   const totalTokens = fileList
     .filter(f => f.status === 'completed')
     .reduce((acc, file) => acc + (file.tokens_used || 0), 0);
@@ -325,7 +361,6 @@ const Transcription = () => {
       </Card>
 
       <Card title="2. 轉錄設定">
-        {/* 第一行：三個下拉選單，確保水平對齊 */}
         <Row gutter={[16, 16]} align="bottom">
           <Col xs={24} sm={8}>
             <Text>選擇服務商</Text>
@@ -347,13 +382,9 @@ const Transcription = () => {
               onChange={setModel}
               disabled={!selectedProvider}
             >
-              {selectedProvider && modelNameOptions[selectedProvider] ? (
-                modelNameOptions[selectedProvider].map(option => (
+              {modelNameOptions[selectedProvider]?.map(option => (
                   <Option key={option.value} value={option.value}>{option.label}</Option>
-                ))
-              ) : (
-                <Option value={null} disabled>請先選擇服務商</Option>
-              )}
+              ))}
             </Select>
           </Col>
           <Col xs={24} sm={8}>
@@ -363,12 +394,10 @@ const Transcription = () => {
             </Select>
           </Col>
         </Row>
-        
-        {/* 第二行：只在第一欄下方顯示按鈕 */}
         <Row gutter={[16, 16]} style={{ marginTop: '8px' }}>
           <Col xs={24} sm={8}>
             <Space.Compact style={{ width: '100%' }}>
-              <Tooltip title="編輯接口金鑰與模型">
+              <Tooltip title="編輯接口金鑰與模型" placement="bottom">
                 <Button
                   icon={<EditOutlined />}
                   style={{ width: '33.33%' }}
@@ -378,7 +407,7 @@ const Transcription = () => {
                   編輯接口
                 </Button>
               </Tooltip>
-              <Tooltip title="編輯 Prompt 參數">
+              <Tooltip title="編輯 Prompt 參數" placement="bottom">
                 <Button
                   icon={<SlidersOutlined />}
                   style={{ width: '33.33%' }}
@@ -388,7 +417,7 @@ const Transcription = () => {
                   編輯參數
                 </Button>
               </Tooltip>
-              <Tooltip title="測試此接口是否可用">
+              <Tooltip title="測試此接口是否可用" placement="bottom">
                 <Button
                   icon={<PlayCircleOutlined />}
                   style={{ width: '33.33%' }}
@@ -417,16 +446,17 @@ const Transcription = () => {
         </Button>
       </Card>
 
-      <Card title="4. 任務摘要">
-        <Row gutter={[16, 16]}>
-          <Col xs={24} sm={12}>
-            <Statistic title="總消耗 Tokens" value={totalTokens} prefix={<DashboardOutlined />} />
-          </Col>
-          <Col xs={24} sm={12}>
-            <Statistic title="預估總花費 (USD)" value={totalCost} precision={4} prefix={<DollarCircleOutlined />} />
-          </Col>
-        </Row>
-      </Card>
+      <Modal
+        title={previewTitle}
+        visible={isPreviewModalVisible}
+        onCancel={handleClosePreview}
+        footer={null}
+        width="60vw"
+      >
+        <div style={{ maxHeight: '60vh', overflowY: 'auto', whiteSpace: 'pre-wrap' }}>
+          {previewContent}
+        </div>
+      </Modal>
     </Space>
   );
 };

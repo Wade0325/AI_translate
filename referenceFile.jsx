@@ -44,11 +44,7 @@ const { useToken } = antdTheme;
 // --- 語言和格式選項 ---
 const languageOptions = [
   { value: 'zh-TW', label: '繁體中文 (台灣)' },
-  { value: 'zh-CN', label: '簡體中文 (中國)' },
   { value: 'en-US', label: '英文 (美國)' },
-  { value: 'ja-JP', label: '日文' },
-  { value: 'ko-KR', label: '韓文' },
-  { value: 'es-ES', label: '西班牙文' },
 ];
 
 // 假設的計價模型
