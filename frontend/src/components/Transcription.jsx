@@ -80,6 +80,17 @@ const findProviderForModel = (modelName) => {
   return 'Google'; // 預設返回 Google
 };
 
+// 新增：检查模型名称是否有效
+const isModelValid = (modelName) => {
+  if (!modelName) return false;
+  for (const provider in modelNameOptions) {
+    if (modelNameOptions[provider].some(option => option.value === modelName)) {
+      return true;
+    }
+  }
+  return false;
+};
+
 // --- 主要應用程式元件 ---
 const Transcription = () => {
   // 從 Context 取用所有需要的狀態和函式
@@ -109,6 +120,19 @@ const Transcription = () => {
     const provider = findProviderForModel(model);
     setSelectedProvider(provider);
   }, [model]);
+
+  // 改进：在元件首次加載时检查并设定预设模型
+  useEffect(() => {
+    // 如果 model 的值不是一个有效的模型名称，则设定一个预设值
+    if (!isModelValid(model)) {
+      const defaultProvider = 'Google'; // 預設服務商
+      const defaultModel = modelNameOptions[defaultProvider]?.[0]?.value;
+      if (defaultModel) {
+        setModel(defaultModel);
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // 空依賴陣列確保此效果只在初始渲染時執行一次
 
   // 處理服務商變更的事件
   const handleProviderChange = (newProvider) => {
