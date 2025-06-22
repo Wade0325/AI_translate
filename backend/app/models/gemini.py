@@ -51,14 +51,13 @@ class GeminiClient:
             return ServiceStatus(success=False, message=message)
 
 
-def upload_file_to_gemini(file_path: Path, api_key: str):
+def upload_file_to_gemini(file_path: Path, client: genai.Client):
     """
-    上傳檔案到 Gemini API，返回 client 和 gemini_file 物件
+    上傳檔案到 Gemini API，返回 gemini_file 物件
     """
     if not file_path.exists():
         raise ValueError("檔案不存在。")
 
-    client = genai.Client(api_key=api_key)
     print(f"正在上傳檔案至 Gemini API: {file_path.name}")
     gemini_file = client.files.upload(file=file_path)
 
@@ -72,7 +71,7 @@ def upload_file_to_gemini(file_path: Path, api_key: str):
         raise ValueError(f"Gemini 檔案處理失敗: {gemini_file.state}")
 
     print(f"\n檔案 '{file_path.name}' 上傳並處理完畢。")
-    return client, gemini_file
+    return gemini_file
 
 
 def count_tokens_with_uploaded_file(client, gemini_file, model_name: str) -> int:
@@ -121,6 +120,7 @@ def transcribe_with_uploaded_file(
             total_tokens_used = response.usage_metadata.prompt_token_count
 
         return {
+            "success": False,
             "text": error_text,
             "total_tokens_used": total_tokens_used
         }
@@ -134,6 +134,7 @@ def transcribe_with_uploaded_file(
           response.usage_metadata.thoughts_token_count)
 
     return {
+        "success": True,
         "text": response.text,
         "total_tokens_used": total_tokens_used
     }
