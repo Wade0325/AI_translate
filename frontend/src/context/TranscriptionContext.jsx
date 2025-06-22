@@ -1,6 +1,7 @@
 import React, { createContext, useState, useContext } from 'react';
 import axios from 'axios';
 import { message } from 'antd';
+import { modelNameOptions } from '../constants/modelConfig';
 
 const API_BASE_URL = 'http://localhost:8000/api/v1';
 
@@ -14,7 +15,7 @@ export const useTranscription = () => useContext(TranscriptionContext);
 export const TranscriptionProvider = ({ children }) => {
   const [fileList, setFileList] = useState([]);
   const [sourceLang, setSourceLang] = useState('zh-TW');
-  const [model, setModel] = useState('Google');
+  const [model, setModel] = useState(modelNameOptions.Google[0].value);
   const [isProcessing, setIsProcessing] = useState(false);
 
   const transcribeFile = async (file, sourceLang, model) => {

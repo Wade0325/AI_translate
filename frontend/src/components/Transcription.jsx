@@ -36,6 +36,8 @@ import {
 } from '@ant-design/icons';
 import { useTranscription } from '../context/TranscriptionContext';
 import { useModelManager } from './ModelManager';
+// 引入統一的設定和輔助函數
+import { modelNameOptions, findProviderForModel, isModelValid } from '../constants/modelConfig';
 
 const { Title, Text } = Typography;
 const { Option } = Select;
@@ -45,48 +47,6 @@ const languageOptions = [
   { value: 'zh-TW', label: '繁體中文 (台灣)' },
   { value: 'en-US', label: '英文 (美國)' },
 ];
-
-// 建立一個包含所有服務商及其模型的完整物件
-const modelNameOptions = {
-  Google: [
-    { value: 'gemini-2.5-flash-preview-05-20', label: 'gemini-2.5-flash-preview-05-20' },
-    { value: 'gemini-2.5-pro-exp-03-25', label: 'gemini-2.5-pro-exp-03-25' }
-  ],
-  OpenAI: [
-    { value: 'gpt-4-turbo', label: 'gpt-4-turbo' },
-    { value: 'gpt-4', label: 'gpt-4' },
-    { value: 'gpt-3.5-turbo', label: 'gpt-3.5-turbo' },
-  ],
-  Claude: [
-    { value: 'claude-3-opus-20240229', label: 'claude-3-opus-20240229' },
-    { value: 'claude-3-sonnet-20240229', label: 'claude-3-sonnet-20240229' }
-  ],
-  SakuraLLM: [
-    { value: 'Sakura-v0.8-Llama-3-8B-MLM', label: 'Sakura-v0.8-Llama-3-8B-MLM' },
-  ]
-};
-
-// 輔助函式：根據模型名稱尋找其服務商
-const findProviderForModel = (modelName) => {
-  if (!modelName) return null;
-  for (const provider in modelNameOptions) {
-    if (modelNameOptions[provider].some(option => option.value === modelName)) {
-      return provider;
-    }
-  }
-  return 'Google'; // 預設返回 Google
-};
-
-// 新增：检查模型名称是否有效
-const isModelValid = (modelName) => {
-  if (!modelName) return false;
-  for (const provider in modelNameOptions) {
-    if (modelNameOptions[provider].some(option => option.value === modelName)) {
-      return true;
-    }
-  }
-  return false;
-};
 
 // --- 主要應用程式元件 ---
 const Transcription = () => {
@@ -122,19 +82,6 @@ const Transcription = () => {
     const provider = findProviderForModel(model);
     setSelectedProvider(provider);
   }, [model]);
-
-  // 改进：在元件首次加載时检查并设定预设模型
-  useEffect(() => {
-    // 如果 model 的值不是一个有效的模型名称，则设定一个预设值
-    if (!isModelValid(model)) {
-      const defaultProvider = 'Google'; // 預設服務商
-      const defaultModel = modelNameOptions[defaultProvider]?.[0]?.value;
-      if (defaultModel) {
-        setModel(defaultModel);
-      }
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // 空依賴陣列確保此效果只在初始渲染時執行一次
 
   // 處理服務商變更的事件
   const handleProviderChange = (newProvider) => {
@@ -448,7 +395,7 @@ const Transcription = () => {
 
       <Modal
         title={previewTitle}
-        visible={isPreviewModalVisible}
+        open={isPreviewModalVisible}
         onCancel={handleClosePreview}
         footer={null}
         width="60vw"

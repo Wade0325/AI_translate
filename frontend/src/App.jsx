@@ -11,10 +11,6 @@ const App = () => {
     token: { colorBgContainer, borderRadiusLG },
   } = theme.useToken();
 
-  const renderContent = () => {
-    return <Transcription />;
-  };
-
   return (
     <ModelManagerProvider>
       <TranscriptionProvider>
@@ -41,7 +37,7 @@ const App = () => {
                   overflow: 'auto',
                 }}
               >
-                {renderContent()}
+                <Transcription />
               </Content>
             </Layout>
           </Layout>
