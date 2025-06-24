@@ -354,7 +354,7 @@ const Transcription = () => {
                   編輯接口
                 </Button>
               </Tooltip>
-              <Tooltip title="編輯 Prompt 參數" placement="bottom">
+              {/* <Tooltip title="編輯 Prompt 參數" placement="bottom">
                 <Button
                   icon={<SlidersOutlined />}
                   style={{ width: '33.33%' }}
@@ -363,7 +363,7 @@ const Transcription = () => {
                 >
                   編輯參數
                 </Button>
-              </Tooltip>
+              </Tooltip> */}
               <Tooltip title="測試此接口是否可用" placement="bottom">
                 <Button
                   icon={<PlayCircleOutlined />}

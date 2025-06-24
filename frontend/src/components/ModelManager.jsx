@@ -1,16 +1,9 @@
-import React, { useState, useEffect, createContext, useContext } from 'react';
-import { Card, Row, Col, Typography, Button, Dropdown, Space, Modal, Input, Select, message } from 'antd';
+import React, { useState, createContext, useContext } from 'react';
+import { Modal, Input, Button, message } from 'antd';
 import {
-  DownOutlined,
-  EditOutlined,
-  SlidersOutlined,
-  PlayCircleOutlined,
   MinusCircleOutlined,
   PlusOutlined
 } from '@ant-design/icons';
-
-const { Title } = Typography;
-const { Option } = Select;
 
 // 1. 建立 Context 和自訂 Hook
 const ModelManagerContext = createContext(null);
@@ -21,137 +14,6 @@ export const useModelManager = () => {
   }
   return context;
 };
-
-const EnhancedCardHeader = ({ mainTitle, subtitle, extraContent }) => {
-  return (
-    <div style={{
-      display: 'flex',
-      justifyContent: 'space-between',
-      alignItems: 'center',
-      width: '100%',
-      padding: '8px 0',
-    }}>
-      {/* 左側文字區域 (主標題 + 副標題) */}
-      <div>
-        <div style={{
-          fontSize: '16px',
-          fontWeight: 600,
-          margin: 0,
-          lineHeight: 1.5,
-          color: 'rgba(0, 0, 0, 0.88)'
-        }}>
-          {mainTitle}
-        </div>
-        {subtitle && (
-          <div style={{
-            fontSize: '12px',
-            fontWeight: 400,
-            color: 'rgba(0, 0, 0, 0.65)',
-            margin: 0,
-            marginTop: '2px',
-            lineHeight: 1.4,
-            whiteSpace: 'normal',
-            overflowWrap: 'break-word',
-          }}>
-            {subtitle}
-          </div>
-        )}
-      </div>
-      {/* 右側按鈕區域 - 直接放置 extraContent */}
-      {extraContent}
-    </div>
-  );
-};
-
-// 將 Dashboard UI 導出，以便在主頁面使用
-export const ModelManagerDashboard = () => {
-  const { getDropdownMenuConfig } = useModelManager();
-
-  const dropdownButtonStyle = {
-    minWidth: '130px',
-    textAlign: 'left',
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  };
-
-  return (
-    <div>
-      <Title level={2} style={{ marginBottom: '24px' }}>
-        模型管理中心
-      </Title>
-      
-      <Row gutter={[16, 16]}>
-        <Col xs={24} sm={12} lg={8}>
-          <Card
-            title={
-              <EnhancedCardHeader
-                mainTitle="本地模型"
-                subtitle="管理本地部署的語言模型，包括模型配置、性能監控等功能。"
-                extraContent={null} 
-              />
-            }
-            hoverable
-          >
-            <Dropdown 
-              menu={getDropdownMenuConfig('SakuraLLM')}
-              trigger={['click']}
-              transitionName=""
-            >
-              <Button style={dropdownButtonStyle}>
-                SakuraLLM <DownOutlined />
-              </Button>
-            </Dropdown>
-          </Card>
-        </Col>
-
-        <Col xs={24} sm={12} lg={8}>
-          <Card
-            title={
-              <EnhancedCardHeader
-                mainTitle="線上模型"
-                subtitle="連接各種線上 AI 服務，如 OpenAI、Claude、Google 等第三方模型服務。"
-                extraContent={null}
-              />
-            }
-            hoverable
-          >
-            <Space wrap size={[12, 12]} style={{ marginBottom: '16px' }}>
-              <Dropdown 
-                menu={getDropdownMenuConfig('Google')}
-                trigger={['click']}
-                transitionName=""
-              >
-                <Button style={dropdownButtonStyle}>
-                  Google <DownOutlined />
-                </Button>
-              </Dropdown>
-              <Dropdown 
-                menu={getDropdownMenuConfig('OpenAI')}
-                trigger={['click']}
-                transitionName=""
-              >
-                <Button style={dropdownButtonStyle}>
-                  OpenAI <DownOutlined />
-                </Button>
-              </Dropdown>
-              <Dropdown 
-                menu={getDropdownMenuConfig('Claude')}
-                trigger={['click']}
-                transitionName=""
-              >
-                <Button style={dropdownButtonStyle}>
-                  Claude <DownOutlined />
-                </Button>
-              </Dropdown>
-            </Space>
-          </Card>
-        </Col>
-      </Row>
-    </div>
-  );
-};
-
 
 // Provider 現在只負責提供 Context 和渲染 Modals，不再渲染 UI
 const ModelManagerProvider = ({ children }) => {
@@ -167,63 +29,19 @@ const ModelManagerProvider = ({ children }) => {
   const [editingParamsInterfaceName, setEditingParamsInterfaceName] = useState('');
   const [promptText, setPromptText] = useState('');
 
-  // 卡片內容中的下拉選單的樣式
-  const dropdownButtonStyle = {
-    minWidth: '130px',
-    textAlign: 'left',
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  };
-
-  // 定義模型名稱選項
+  // 定義模型名稱選項 (保留，因為儲存邏輯可能會用到)
   const modelNameOptions = {
     Google: [
-      { value: 'gemini-2.5-pro-exp-03-25', label: 'gemini-2.5-pro-exp-03-25' },
-      { value: 'gemini-2.5-flash-preview-05-20', label: 'gemini-2.5-flash-preview-05-20' },
-      { value: 'text-bison-001', label: 'text-bison-001' },
-    ],
-    OpenAI: [
-      { value: 'gpt-4-turbo', label: 'gpt-4-turbo' },
-      { value: 'gpt-4', label: 'gpt-4' },
-      { value: 'gpt-3.5-turbo', label: 'gpt-3.5-turbo' },
-    ],
-    Claude: [
-      { value: 'claude-3-opus-20240229', label: 'claude-3-opus-20240229' },
-      { value: 'claude-3-sonnet-20240229', label: 'claude-3-sonnet-20240229' },
-      { value: 'claude-2.1', label: 'claude-2.1' },
+      { value: 'gemini-2.5-flash-preview-05-20', label: 'gemini-2.5-flash-preview-05-20' }
     ]
   };
-
+  
   const getCurrentModelOptions = () => {
-    return modelNameOptions[editingInterfaceName] || [];
+    const provider = Object.keys(modelNameOptions).find(p => 
+      modelNameOptions[p].some(m => m.value === editingInterfaceName)
+    );
+    return provider ? modelNameOptions[provider] : [];
   };
-
-  // 修改 getDropdownMenuConfig 以便在點擊時打開 Modal
-  const getDropdownMenuConfig = (interfaceName) => ({
-    items: [
-      {
-        key: 'edit-interface',
-        icon: <EditOutlined />,
-        label: '編輯接口',
-        onClick: () => handleEditInterface(interfaceName)
-      },
-      { type: 'divider' },
-      {
-        key: 'edit-params',
-        icon: <SlidersOutlined />,
-        label: '編輯參數',
-        onClick: () => handleEditParams(interfaceName)
-      },
-      { type: 'divider' },
-      {
-        key: 'test-interface',
-        icon: <PlayCircleOutlined />,
-        label: '測試接口',
-        onClick: () => handleTestInterface(interfaceName)
-      }
-    ]
-  });
 
   // 資料獲取函式
   const getInterfaceConfig = async (interfaceName) => {
@@ -253,7 +71,6 @@ const ModelManagerProvider = ({ children }) => {
       return null;
     }
   };
-
 
   // 統一的資料儲存函式
   const saveInterfaceConfig = async (interfaceName, partialConfig) => {
@@ -296,17 +113,23 @@ const ModelManagerProvider = ({ children }) => {
     }
   };
 
-  // 簡化所有事件處理函式
-
   // handleEditInterface
   const handleEditInterface = async (interfaceName) => {
     setEditingInterfaceName(interfaceName);
+    console.log('當前點擊 "編輯接口" 時，interfaceName 的值是:', interfaceName);
+    // 呼叫統一的資料獲取函式
     const config = await getInterfaceConfig(interfaceName);
-    
-    const defaultModelName = modelNameOptions[interfaceName]?.[0]?.value;
+    console.log('當前點擊 "編輯接口" 時，config 的值是:', config);
+    // 如果從後端獲取到了設定，則用它來填充 Modal
+    if (config) {
+      setApiKeys(config.apiKeys && config.apiKeys.length > 0 ? config.apiKeys : ['']);
+      setSelectedModelName(config.modelName);
+    } else {
+      // 如果後端沒有這個設定，則重設為空狀態
+      setApiKeys(['']);
+      setSelectedModelName(undefined);
+    }
 
-    setApiKeys(config?.apiKeys && config.apiKeys.length > 0 ? config.apiKeys : ['']);
-    setSelectedModelName(config?.modelName || defaultModelName);
     setIsModalOpen(true);
   };
 
@@ -415,15 +238,10 @@ const ModelManagerProvider = ({ children }) => {
     }
   };
 
-  // 透過 Context 提供的數值
   const contextValue = {
     handleEditInterface,
     handleEditParams,
     handleTestInterface,
-    getDropdownMenuConfig,
-    interfaceConfigs,
-    // 將當前正在編輯的服務商名稱也傳遞出去，方便外部元件使用
-    selectedProvider: editingInterfaceName || editingParamsInterfaceName,
   };
 
   return (

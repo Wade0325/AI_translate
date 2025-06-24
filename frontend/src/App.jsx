@@ -1,6 +1,6 @@
 import React from 'react';
 import { Layout, Menu, theme } from 'antd';
-import ModelManagerProvider, { ModelManagerDashboard } from './components/ModelManager';
+import ModelManagerProvider from './components/ModelManager';
 import Transcription from './components/Transcription';
 import { TranscriptionProvider } from './context/TranscriptionContext';
 

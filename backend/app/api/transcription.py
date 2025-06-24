@@ -147,7 +147,7 @@ def _recursive_transcribe_task(
     return result
 
 
-@router.post("/", tags=["Transcription"])
+@router.post("/transcribe", tags=["Transcription"])
 async def transcribe_media(
     file: UploadFile = File(..., description="要轉錄的音訊或視訊檔案"),
     source_lang: str = Form(..., description="來源語言代碼 (例如：zh-TW)"),
@@ -166,8 +166,10 @@ async def transcribe_media(
     # --- 讀取資料庫設定 ---
     try:
         repo = ModelSettingsRepository()
+        print(model)
         # 使用前端傳來的 model 名稱來讀取設定
-        gemini_config = repo.get_by_name(model)
+        gemini_config = repo.get_by_model_name(model)
+        print(gemini_config)
         if not gemini_config or not gemini_config.api_keys_json:
             raise HTTPException(
                 status_code=404, detail=f"在資料庫中找不到 '{model}' 的設定或 API 金鑰。請先在模型設定頁面設定。")
@@ -175,7 +177,25 @@ async def transcribe_media(
         api_keys = json.loads(gemini_config.api_keys_json)
         api_key = api_keys[0] if api_keys else None
         model_name = gemini_config.model_name
-        prompt = gemini_config.prompt
+        # 移除從資料庫讀取 prompt 的程式碼，並在此處寫死，以保持最佳效果
+        prompt = """# Role
+You are an expert audio transcription AI specializing in speaker diarization (identifying different speakers).
+
+# Task
+Transcribe the audio I provide into timestamped text, line by line. You must also identify which speaker uttered each line.
+
+# Output Format
+You must strictly adhere to the LRC format with speaker labels. Prepend each line with a label like "Speaker A:", "Speaker B:", etc., to differentiate the speakers.
+
+Example Format:
+[00:01.23] Speaker A: This is the first transcribed sentence.
+[00:04.56] Speaker B: This is the second sentence, spoken by another person.
+[00:08.79] Speaker A: Now the first speaker is talking again.
+
+# Constraints
+- **Do not** include any form of introduction, greeting, notes, explanations, or summaries.
+- Your response must **only** be the complete LRC content with speaker labels.
+- Start directly with the first line of the output."""
 
         if not all([api_key, model_name, prompt]):
             raise HTTPException(

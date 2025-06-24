@@ -48,18 +48,3 @@ async def upload_file_for_transcription(
         "saved_filename_on_server": saved_file_name,
         "requested_formats": formats
     }
-
-
-@router.websocket("/ws/transcribe")
-async def basic_websocket_endpoint(websocket: WebSocket):
-    await websocket.accept()
-    print("Basic WebSocket connection accepted.")
-    try:
-        while True:
-            data = await websocket.receive_text()
-            print(f"Basic WebSocket received: {data}")
-            await websocket.send_text("Basic WebSocket: Message received.")
-    except Exception as e:
-        print(f"Basic WebSocket error: {e}")
-    finally:
-        print("Basic WebSocket connection closed.")

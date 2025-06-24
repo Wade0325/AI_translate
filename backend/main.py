@@ -11,7 +11,7 @@ app = FastAPI(title="AI Voice Transcription API", version="1.0.0")
 
 
 # 更新路由設定
-app.include_router(transcription.router, prefix="/api/v1/transcribe",
+app.include_router(transcription.router, prefix="/api/v1",
                    tags=["Transcription"])
 app.include_router(model_manager.router,
                    prefix="/api/v1/model-manager",

@@ -46,6 +46,34 @@ class ModelSettingsRepository:
             if conn:
                 conn.close()
 
+    def get_by_model_name(self, model_name: str) -> Optional[ModelConfigurationSchema]:
+        """
+        根據 interface_name 從資料庫獲取模型配置。
+        返回 ModelConfigurationSchema 對象或 None。
+        """
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT interface_name, api_keys_json, model_name, prompt FROM model_configurations WHERE model_name = ?",
+                (model_name,)
+            )
+            row = cursor.fetchone()
+            if row:
+                return ModelConfigurationSchema(
+                    interface_name=row["interface_name"],
+                    api_keys_json=row["api_keys_json"],
+                    model_name=row["model_name"],
+                    prompt=row["prompt"]
+                )
+            return None
+        except sqlite3.Error as e:
+            print(f"Repository get_by_name error for '{model_name}': {e}")
+            raise e
+        finally:
+            if conn:
+                conn.close()
+
     def save(self, config_schema: ModelConfigurationSchema) -> ModelConfigurationSchema:
         """
         保存或更新模型配置到資料庫。

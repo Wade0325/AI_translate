@@ -4,18 +4,6 @@ export const modelNameOptions = {
   Google: [
     { value: 'gemini-2.5-flash-preview-05-20', label: 'gemini-2.5-flash-preview-05-20' },
     { value: 'gemini-2.5-pro-exp-03-25', label: 'gemini-2.5-pro-exp-03-25' }
-  ],
-  OpenAI: [
-    { value: 'gpt-4-turbo', label: 'gpt-4-turbo' },
-    { value: 'gpt-4', label: 'gpt-4' },
-    { value: 'gpt-3.5-turbo', label: 'gpt-3.5-turbo' },
-  ],
-  Claude: [
-    { value: 'claude-3-opus-20240229', label: 'claude-3-opus-20240229' },
-    { value: 'claude-3-sonnet-20240229', label: 'claude-3-sonnet-20240229' }
-  ],
-  SakuraLLM: [
-    { value: 'Sakura-v0.8-Llama-3-8B-MLM', label: 'Sakura-v0.8-Llama-3-8B-MLM' },
   ]
 };
 
