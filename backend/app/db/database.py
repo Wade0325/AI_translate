@@ -24,6 +24,15 @@ def init_db():
             )
         """)
 
+        # 檢查表格是否為空，如果為空則插入一筆預設紀錄
+        cursor.execute("SELECT COUNT(*) FROM model_configurations")
+        if cursor.fetchone()[0] == 0:
+            cursor.execute(
+                "INSERT INTO model_configurations (interface_name) VALUES (?)",
+                ('Google',)
+            )
+            print("Inserted default 'Google' record into 'model_configurations' table.")
+
         cursor.execute("PRAGMA table_info(model_configurations)")
         columns = [row[1] for row in cursor.fetchall()]
         if 'prompt' not in columns:

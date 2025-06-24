@@ -177,7 +177,6 @@ async def transcribe_media(
         api_keys = json.loads(gemini_config.api_keys_json)
         api_key = api_keys[0] if api_keys else None
         model_name = gemini_config.model_name
-        # 移除從資料庫讀取 prompt 的程式碼，並在此處寫死，以保持最佳效果
         prompt = """# Role
 You are an expert audio transcription AI specializing in speaker diarization (identifying different speakers).
 
