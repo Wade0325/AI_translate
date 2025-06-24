@@ -15,18 +15,19 @@ const App = () => {
     <ModelManagerProvider>
       <TranscriptionProvider>
         <Layout>
-          <Header style={{ display: 'flex'}}>
-            <div style={{ marginLeft: '270px' }}/>
-            <Menu
-              theme="dark"
-              mode="horizontal"
-              defaultSelectedKeys={['1']}
-              items={[{ key: '1', label: '語音轉錄' }]}
-              style={{ flex: 1, minWidth: 0 }}
-            />
+          <Header>
+            <div style={{ maxWidth: '1200px', margin: '0 auto', padding: '0 24px', display: 'flex' }}>
+              <Menu
+                theme="dark"
+                mode="horizontal"
+                defaultSelectedKeys={['1']}
+                items={[{ key: '1', label: '語音轉錄' }]}
+                style={{ flex: 1, minWidth: 0, lineHeight: '64px' }}
+              />
+            </div>
           </Header>
-          <Layout style={{ padding: '0 15%' }}>
-            <Layout style={{ padding: '0 24px 24px' }}>
+          <Layout style={{ maxWidth: '1200px', width: '100%', margin: '0 auto', padding: '0 24px' }}>
+            <Layout style={{ padding: '24px 0' }}>
               <Content
                 style={{
                   padding: 24,

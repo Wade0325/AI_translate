@@ -6,7 +6,6 @@ body {
     sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  background-color: #141414; /* 設定基礎背景色以匹配深色主題 */
 }
 
 #root {
