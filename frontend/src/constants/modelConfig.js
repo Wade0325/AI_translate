@@ -2,8 +2,7 @@
 // 作為整個應用程式的 "Single Source of Truth"
 export const modelNameOptions = {
   Google: [
-    { value: 'gemini-2.5-flash-preview-05-20', label: 'gemini-2.5-flash-preview-05-20' },
-    { value: 'gemini-2.5-pro-exp-03-25', label: 'gemini-2.5-pro-exp-03-25' }
+    { value: 'gemini-2.5-flash-preview-05-20', label: 'gemini-2.5-flash-preview-05-20' }
   ]
 };
 

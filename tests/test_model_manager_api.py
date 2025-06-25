@@ -1,4 +1,3 @@
-import pytest  # pytest 本身，雖然很多時候 fixture 會隱式使用它
 from fastapi.testclient import TestClient  # 類型提示
 from typing import Dict, Any
 

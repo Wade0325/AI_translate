@@ -260,10 +260,10 @@ const ModelManagerProvider = ({ children }) => {
         destroyOnHidden
       >
         <div style={{ marginBottom: '24px' }}>
-          <div style={{ marginBottom: '8px', fontWeight: 500 }}>接口密鑰 (按使用順序排列)</div>
-          <div style={{ color: 'rgba(0,0,0,0.45)', fontSize: '12px', marginBottom: '12px' }}>
+          <div style={{ marginBottom: '8px', fontWeight: 500 }}>接口密鑰</div>
+          {/* <div style={{ color: 'rgba(0,0,0,0.45)', fontSize: '12px', marginBottom: '12px' }}>
             請逐行輸入接口密鑰。系統將按從上到下的順序嘗試使用這些密鑰。
-          </div>
+          </div> */}
           
           {apiKeys.map((key, index) => (
             <div key={index} style={{ display: 'flex', alignItems: 'center', marginBottom: '8px' }}>
@@ -285,14 +285,14 @@ const ModelManagerProvider = ({ children }) => {
             </div>
           ))}
           
-          <Button 
+          {/* <Button 
             type="dashed" 
             onClick={addApiKeyInput} 
             style={{ width: '100%', marginTop: '8px' }}
             icon={<PlusOutlined />}
           >
             添加更多密鑰
-          </Button>
+          </Button> */}
         </div>
       </Modal>
 

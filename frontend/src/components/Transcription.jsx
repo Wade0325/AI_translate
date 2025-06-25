@@ -334,12 +334,12 @@ const Transcription = () => {
               ))}
             </Select>
           </Col>
-          <Col xs={24} sm={8}>
+          {/* <Col xs={24} sm={8}>
             <Text>來源語言</Text>
             <Select value={sourceLang} style={{ width: '100%' }} onChange={setSourceLang}>
               {languageOptions.map(lang => <Option key={lang.value} value={lang.value}>{lang.label}</Option>)}
             </Select>
-          </Col>
+          </Col> */}
         </Row>
         <Row gutter={[16, 16]} style={{ marginTop: '8px' }}>
           <Col xs={24} sm={8}>
