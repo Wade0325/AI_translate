@@ -4,6 +4,7 @@ import {
   MinusCircleOutlined,
   PlusOutlined
 } from '@ant-design/icons';
+import { useTranscription } from '../context/TranscriptionContext';
 
 // 1. 建立 Context 和自訂 Hook
 const ModelManagerContext = createContext(null);
@@ -54,7 +55,7 @@ const ModelManagerProvider = ({ children }) => {
     // 如果快取沒有，則從後端獲取
     try {
       console.log(`統一獲取: ${interfaceName} (從後端)`);
-      const response = await fetch(`http://localhost:8000/api/v1/model-manager/setting/${interfaceName}`);
+      const response = await fetch('/api/v1/model-manager/setting/' + interfaceName);
       if (response.ok) {
         const data = await response.json();
         if (data) {
@@ -91,7 +92,7 @@ const ModelManagerProvider = ({ children }) => {
     
     // 發送請求
     try {
-      const response = await fetch('http://localhost:8000/api/v1/model-manager/setting', {
+      const response = await fetch('/api/v1/model-manager/setting', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -204,7 +205,7 @@ const ModelManagerProvider = ({ children }) => {
     }
 
     try {
-      const response = await fetch('http://localhost:8000/api/v1/model-manager/test', {
+      const response = await fetch('/api/v1/model-manager/test', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

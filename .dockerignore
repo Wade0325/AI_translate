@@ -1,0 +1,47 @@
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Docker
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+.pdm-build/
+.pdm.toml
+.pdm-python
+.ruff_cache/
+.pytest_cache/
+.mypy_cache/
+
+# Virtualenv
+.venv
+venv/
+env/
+ENV/
+backend/.venv/
+backend/venv/
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+dist/
+build/
+.npm
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+
+.cursor/

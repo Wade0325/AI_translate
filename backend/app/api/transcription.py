@@ -156,6 +156,9 @@ async def transcribe_media(
     """
     接收音訊或視訊檔案，直接從資料庫讀取設定進行轉錄。
     """
+    print(
+        f"接收到轉錄請求: FileName='{file.filename}', Lang='{source_lang}', Model='{model}'", flush=True)
+
     if not file.filename:
         raise HTTPException(status_code=400, detail="沒有提供檔案名稱。")
 

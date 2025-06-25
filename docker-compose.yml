@@ -1,0 +1,24 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: backend-service
+    ports:
+      - "8088:8088"
+    volumes:
+      - ./backend/model_settings.db:/app/model_settings.db
+      - ./backend/temp_uploads:/app/temp_uploads
+    command: uvicorn main:app --host 0.0.0.0 --port 8088 --timeout-keep-alive 600
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: frontend-service
+    ports:
+      - "8081:80"
+    depends_on:
+      - backend
+    restart: unless-stopped

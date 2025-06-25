@@ -227,3 +227,4 @@ backend/setting.json
 
 # SQLite database files in backend
 backend/*.db
+.cursor/
