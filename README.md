@@ -32,5 +32,4 @@
     ```
 
 4.  **開啟應用**:
-    - 前端介面: [http://localhost:8081](http://localhost:8081)
-    - 後端 API 文件: [http://localhost:8088/docs](http://localhost:8088/docs)
+    - 瀏覽器輸入: [http://localhost:8081](http://localhost:8081)
