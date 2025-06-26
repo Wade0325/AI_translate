@@ -21,10 +21,9 @@
 
 1.  **Clone 專案庫**:
     ```bash
-    git clone <your-repository-url>
-    cd <repository-name>
+    git clone https://github.com/Wade0325/AI_translate.git
+    cd AI_translate
     ```
-
 
 3.  **啟動服務**:
     在專案根目錄下執行以下指令：
