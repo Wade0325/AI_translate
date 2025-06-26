@@ -1,4 +1,4 @@
-# AI 語音轉錄與翻譯工具
+# AI 語音轉錄工具
 
 這是一個利用 AI 技術進行語音轉錄的專案。前端使用 React，後端使用 Python FastAPI。
 
@@ -12,7 +12,7 @@
 ## 🛠️ 技術棧
 
 - **前端**: React, Vite, Ant Design, Axios
-- **後端**: Python, FastAPI, Celery, Uvicorn
+- **後端**: Python, FastAPI, Uvicorn
 - **AI / ML**: PyTorch, Silero VAD, Google Gemini
 - **容器化**: Docker
 
