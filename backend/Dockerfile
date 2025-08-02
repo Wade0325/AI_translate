@@ -7,6 +7,7 @@ WORKDIR /app
 # 安裝系統依賴，以防某些 Python 套件需要
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
+    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 # 複製 requirements.txt 並安裝依賴

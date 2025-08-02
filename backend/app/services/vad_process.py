@@ -1,9 +1,9 @@
 import torch
 import soundfile as sf
-from pprint import pprint
+import numpy as np
 import os
 import sys
-from typing import Tuple, Optional
+from typing import Tuple, Optional, List, Dict
 from pathlib import Path
 
 
@@ -20,16 +20,67 @@ class VADService:
         print("Initializing VADService and loading Silero VAD model...")
         self.SAMPLING_RATE = 16000
         try:
+            # force_reload=False 避免每次都重新下載
             self.model, self.utils = torch.hub.load(
                 repo_or_dir='snakers4/silero-vad',
                 model='silero_vad',
                 force_reload=False
             )
+            (self.get_speech_timestamps, _, self.read_audio, _, _) = self.utils
             print("VAD model loaded successfully.")
         except Exception as e:
             print(f"FATAL: Failed to load VAD model: {e}")
-            # 如果模型載入失敗，讓應用程式無法啟動是合理的
             raise e
+
+    def create_speech_only_audio(
+        self,
+        audio_path: str,
+        output_dir: str
+    ) -> Tuple[Optional[str], Optional[List[Dict[str, float]]]]:
+        """
+        使用VAD檢測人聲，提取所有人聲片段並拼接成一個新的音訊檔。
+
+        Args:
+            audio_path (str): 輸入音檔路徑。
+            output_dir (str): 輸出檔案的目錄。
+
+        Returns:
+            tuple: (new_file_path, speech_segments)
+                   如果失敗則返回 (None, None)。
+        """
+        try:
+            wav = self.read_audio(audio_path, sampling_rate=self.SAMPLING_RATE)
+        except Exception as e:
+            print(f"Error reading audio file for VAD '{audio_path}': {e}")
+            return None, None
+
+        # 獲取所有人聲片段的時間戳
+        speech_timestamps = self.get_speech_timestamps(
+            wav, self.model, sampling_rate=self.SAMPLING_RATE, return_seconds=True)
+
+        if not speech_timestamps:
+            print(f"No speech detected in '{Path(audio_path).name}'.")
+            return None, None
+
+        print(f"Detected {len(speech_timestamps)} speech segments.")
+
+        # 提取並拼接人聲片段的音訊數據
+        speech_chunks = [
+            wav[int(ts['start'] * self.SAMPLING_RATE)
+                    :int(ts['end'] * self.SAMPLING_RATE)]
+            for ts in speech_timestamps
+        ]
+        concatenated_speech = np.concatenate(speech_chunks)
+
+        # 建立新的輸出檔案路徑
+        base_name = Path(audio_path).stem
+        output_path = Path(output_dir) / f"{base_name}_speech_only.wav"
+
+        # 儲存純人聲檔案
+        sf.write(str(output_path), concatenated_speech, self.SAMPLING_RATE)
+        print(f"Created speech-only audio file: {output_path.name}")
+
+        return str(output_path), speech_timestamps
 
     def split_audio_on_silence(
         self,
@@ -146,9 +197,9 @@ def main():
         audio_path = os.path.join(input_dir, file_name)
         print(f"\n--- Processing file: {file_name} ---")
 
-        vad_service.split_audio_on_silence(
+        # 測試新的函式
+        vad_service.create_speech_only_audio(
             audio_path=audio_path,
-            min_silence_duration=1.0,
             output_dir=output_dir
         )
         print(f"--- Finished processing: {file_name} ---")

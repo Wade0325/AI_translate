@@ -35,6 +35,25 @@ export const TranscriptionProvider = ({ children }) => {
     }
   };
 
+  const transcribeYoutubeUrl = async (url, sourceLang, model) => {
+    const payload = {
+      youtube_url: url,
+      source_lang: sourceLang,
+      model: model,
+    };
+
+    try {
+      // 指向後端新的 /youtube 端點
+      const response = await axios.post('/api/v1/youtube', payload, {
+        headers: { 'Content-Type': 'application/json' },
+      });
+      return response.data;
+    } catch (error) {
+      console.error('Error transcribing YouTube URL:', error);
+      throw error.response ? error.response.data : new Error('Network error or server is down');
+    }
+  };
+
   const downloadFile = (content, fileName, format) => {
     const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
@@ -76,7 +95,13 @@ export const TranscriptionProvider = ({ children }) => {
 
     const uploadPromises = filesToProcess.map(async (file) => {
       try {
-        const response = await transcribeFile(file.originFileObj, sourceLang, model);
+        // 根據任務類型選擇不同的 API
+        let response;
+        if (file.uid.startsWith('yt-')) {
+          response = await transcribeYoutubeUrl(file.name, sourceLang, model);
+        } else {
+          response = await transcribeFile(file.originFileObj, sourceLang, model);
+        }
         
         const resultObject = response.transcripts;
 
@@ -94,9 +119,10 @@ export const TranscriptionProvider = ({ children }) => {
         ));
         return { status: 'fulfilled', uid: file.uid };
       } catch (error) {
-        console.error(`檔案 ${file.name} 上傳失敗:`, error);
+        const errorMessage = error.detail || (typeof error === 'string' ? error : '上傳失敗');
+        console.error(`檔案 ${file.name} 處理失敗:`, error);
         setFileList(currentList => currentList.map(f =>
-            f.uid === file.uid ? { ...f, status: 'error', percent: 100 } : f
+            f.uid === file.uid ? { ...f, status: 'error', percent: 100, error: errorMessage } : f
         ));
         return { status: 'rejected', uid: file.uid, error };
       }

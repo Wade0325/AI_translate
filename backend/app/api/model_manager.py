@@ -75,7 +75,7 @@ async def test_model_interface(
     request_data: TestInterfaceRequest = Body(...)
 ):
     print(
-        f"收到測試接口請求: Interface Name - '{request_data.interfaceName}', API Keys count: {len(request_data.apiKeys)}")
+        f"收到測試API請求: Interface Name - '{request_data.interfaceName}', API Keys count: {len(request_data.apiKeys)}")
     if not request_data.apiKeys:
         raise HTTPException(status_code=400, detail="未提供 API 金鑰進行測試。")
 
@@ -117,14 +117,14 @@ async def test_model_interface(
                 }
             )
 
-    # TODO: 在此處實現其他類型接口的測試邏輯，例如 OpenAI
+    # TODO: 在此處實現其他類型API的測試邏輯，例如 OpenAI
     # elif "openai" in request_data.interfaceName.lower():
     #     # ... OpenAI 測試邏輯 ...
     #     pass
 
     else:
         return {
-            "message": f"接口類型 '{request_data.interfaceName}' 的測試邏輯尚未實現。",
+            "message": f"API類型 '{request_data.interfaceName}' 的測試邏輯尚未實現。",
             "testedInterface": request_data.interfaceName,
             "status": "NotImplemented"
         }

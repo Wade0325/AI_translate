@@ -33,7 +33,7 @@ const ModelManagerProvider = ({ children }) => {
   // 定義模型名稱選項 (保留，因為儲存邏輯可能會用到)
   const modelNameOptions = {
     Google: [
-      { value: 'gemini-2.5-flash-preview-05-20', label: 'gemini-2.5-flash-preview-05-20' }
+      { value: 'gemini-2.5-pro', label: 'gemini-2.5-pro' }
     ]
   };
   
@@ -117,10 +117,10 @@ const ModelManagerProvider = ({ children }) => {
   // handleEditInterface
   const handleEditInterface = async (interfaceName) => {
     setEditingInterfaceName(interfaceName);
-    console.log('當前點擊 "編輯接口" 時，interfaceName 的值是:', interfaceName);
+    console.log('當前點擊 "編輯API" 時，interfaceName 的值是:', interfaceName);
     // 呼叫統一的資料獲取函式
     const config = await getInterfaceConfig(interfaceName);
-    console.log('當前點擊 "編輯接口" 時，config 的值是:', config);
+    console.log('當前點擊 "編輯API" 時，config 的值是:', config);
     // 如果從後端獲取到了設定，則用它來填充 Modal
     if (config) {
       setApiKeys(config.apiKeys && config.apiKeys.length > 0 ? config.apiKeys : ['']);
@@ -194,7 +194,7 @@ const ModelManagerProvider = ({ children }) => {
   
   // handleTestInterface 也使用統一的獲取函式
   const handleTestInterface = async (interfaceName) => {
-    message.loading({ content: `正在測試 ${interfaceName} 接口...`, key: 'testInterface' });
+    message.loading({ content: `正在測試 ${interfaceName} API...`, key: 'testInterface' });
 
     const config = await getInterfaceConfig(interfaceName);
     const apiKeysToTest = config?.apiKeys?.filter(key => key) || [];
@@ -218,24 +218,24 @@ const ModelManagerProvider = ({ children }) => {
       const result = await response.json();
 
       if (response.ok) {
-        console.log(`接口 ${interfaceName} 測試結果:`, result);
+        console.log(`API ${interfaceName} 測試結果:`, result);
         if (result.success) {
           message.success({ content: result.message, key: 'testInterface', duration: 5 });
         } else {
           message.error({ content: `${result.message}`, key: 'testInterface', duration: 5 });
         }
       } else {
-        console.error(`接口 ${interfaceName} 測試失敗:`, result);
+        console.error(`API ${interfaceName} 測試失敗:`, result);
         const errorMessage = result.message || '收到錯誤回應，但無法讀取詳細資訊。';
         message.error({
-          content: `${interfaceName} 接口測試失敗: ${errorMessage}`,
+          content: `${interfaceName} API測試失敗: ${errorMessage}`,
           key: 'testInterface',
           duration: 6
         });
       }
     } catch (error) {
-      console.error(`測試接口 ${interfaceName} 時發生網絡錯誤:`, error);
-      message.error({ content: `測試 ${interfaceName} 接口時發生錯誤: ${error.message || '網絡問題'}`, key: 'testInterface', duration: 5 });
+      console.error(`測試API ${interfaceName} 時發生網絡錯誤:`, error);
+      message.error({ content: `測試 ${interfaceName} API時發生錯誤: ${error.message || '網絡問題'}`, key: 'testInterface', duration: 5 });
     }
   };
 
@@ -249,9 +249,9 @@ const ModelManagerProvider = ({ children }) => {
     <ModelManagerContext.Provider value={contextValue}>
       {children}
 
-      {/* 編輯接口 Modal */}
+      {/* 編輯API Modal */}
       <Modal
-        title={`編輯接口 - ${editingInterfaceName}`}
+        title={`編輯API - ${editingInterfaceName}`}
         open={isModalOpen}
         onOk={handleOk}
         onCancel={handleCancel}
@@ -261,9 +261,9 @@ const ModelManagerProvider = ({ children }) => {
         destroyOnHidden
       >
         <div style={{ marginBottom: '24px' }}>
-          <div style={{ marginBottom: '8px', fontWeight: 500 }}>接口密鑰</div>
+          <div style={{ marginBottom: '8px', fontWeight: 500 }}>API密鑰</div>
           {/* <div style={{ color: 'rgba(0,0,0,0.45)', fontSize: '12px', marginBottom: '12px' }}>
-            請逐行輸入接口密鑰。系統將按從上到下的順序嘗試使用這些密鑰。
+            請逐行輸入API密鑰。系統將按從上到下的順序嘗試使用這些密鑰。
           </div> */}
           
           {apiKeys.map((key, index) => (

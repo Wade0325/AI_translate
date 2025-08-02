@@ -1,87 +1,117 @@
 import re
 from datetime import timedelta
 
+# --- 輔助函式 ---
 
-def _seconds_to_srt_time(seconds: float) -> str:
-    """將總秒數轉換為 SRT/VTT 的時間格式 (HH:MM:SS,ms)"""
+
+def _seconds_to_timestamp(seconds: float, separator: str = ',') -> str:
+    """將秒數轉換為 SRT 或 VTT 的時間格式 (HH:MM:SS,ms or HH:MM:SS.ms)"""
+    # 確保秒數不是負數
     if seconds < 0:
         seconds = 0
-    total_seconds_int = int(seconds)
-    milliseconds = int((seconds - total_seconds_int) * 1000)
+    # 使用 timedelta 進行時間計算
+    td = timedelta(seconds=seconds)
+    # 取得總秒數和微秒
+    total_seconds = int(td.total_seconds())
+    microseconds = td.microseconds
+    # 計算時、分、秒
+    hours = total_seconds // 3600
+    minutes = (total_seconds % 3600) // 60
+    secs = total_seconds % 60
+    # 格式化毫秒
+    milliseconds = microseconds // 1000
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}{separator}{milliseconds:03d}"
 
-    hours, remainder = divmod(total_seconds_int, 3600)
-    minutes, seconds_rem = divmod(remainder, 60)
-
-    return f"{hours:02d}:{minutes:02d}:{seconds_rem:02d},{milliseconds:03d}"
+# --- 核心轉換邏輯 ---
 
 
-def convert_to_all_formats(lrc_text: str) -> dict:
-    """
-    將一份完整的 LRC 格式字幕文本轉換為 SRT, VTT, 和 TXT 格式。
-    """
-    if not lrc_text or not isinstance(lrc_text, str):
-        return {"lrc": "", "srt": "", "vtt": "", "txt": ""}
-
-    lines = lrc_text.strip().split('\n')
-    srt_lines = []
-    vtt_lines = ["WEBVTT", ""]
-    txt_lines = []
-
-    time_regex = re.compile(r'\[(\d{2}):(\d{2})\.(\d{2,3})\](.*)')
-    srt_counter = 1
-
-    # 為了計算 SRT 的結束時間，需要窺探下一行的時間戳
-    timestamps = []
-    for line in lines:
-        match = time_regex.match(line)
+def _parse_lrc(lrc_text: str):
+    """從 LRC 文字中解析出 (時間, 文字) 的元組列表"""
+    # [分鐘]:[秒數].[百分秒]
+    lrc_line_re = re.compile(r'\[(\d{2}):(\d{2})\.(\d{2,3})\](.*)')
+    parsed_lines = []
+    for line in lrc_text.strip().split('\n'):
+        match = lrc_line_re.match(line)
         if match:
-            minutes, seconds, ms_str, text = match.groups()
-            total_seconds = int(minutes) * 60 + \
-                int(seconds) + float(f"0.{ms_str}")
-            timestamps.append({"time": total_seconds, "text": text.strip()})
+            minutes, seconds, ms, text = match.groups()
+            # 處理2位數或3位數的毫秒
+            ms_val = int(ms) if len(ms) == 3 else int(ms) * 10
+            time_in_seconds = int(minutes) * 60 + \
+                int(seconds) + ms_val / 1000.0
+            # 忽略沒有文字的行
+            if text.strip():
+                parsed_lines.append(
+                    {'time': time_in_seconds, 'text': text.strip()})
+    return parsed_lines
 
-    if not timestamps:
-        # 如果沒有時間戳，就當作純文本處理
-        plain_text = "\n".join(l for l in lines if not l.startswith('['))
-        return {
-            "lrc": lrc_text, "srt": "", "vtt": "", "txt": plain_text
-        }
 
-    for i, current in enumerate(timestamps):
-        start_time_sec = current["time"]
-        text = current["text"]
+def _to_srt(lrc_text: str, last_line_duration: float = 5.0) -> str:
+    """將 LRC 格式轉換為 SRT 格式"""
+    parsed_lines = _parse_lrc(lrc_text)
+    if not parsed_lines:
+        return ""
+
+    srt_blocks = []
+    for i in range(len(parsed_lines)):
+        start_time = parsed_lines[i]['time']
+        text = parsed_lines[i]['text']
 
         # 決定結束時間
-        if i + 1 < len(timestamps):
+        if i < len(parsed_lines) - 1:
             # 結束時間是下一行的開始時間
-            end_time_sec = timestamps[i+1]["time"]
+            end_time = parsed_lines[i+1]['time']
         else:
-            # 最後一行，假設持續 5 秒
-            end_time_sec = start_time_sec + 5.0
+            # 最後一行，給一個固定的持續時間
+            end_time = start_time + last_line_duration
 
-        start_time_srt = _seconds_to_srt_time(start_time_sec)
-        end_time_srt = _seconds_to_srt_time(end_time_sec)
-        start_time_vtt = start_time_srt.replace(',', '.')
-        end_time_vtt = end_time_srt.replace(',', '.')
+        # 建立 SRT 區塊
+        srt_blocks.append(
+            f"{i+1}\n"
+            f"{_seconds_to_timestamp(start_time, ',')} --> {_seconds_to_timestamp(end_time, ',')}\n"
+            f"{text}\n"
+        )
+    return "\n".join(srt_blocks)
 
-        # SRT
-        srt_lines.append(str(srt_counter))
-        srt_lines.append(f"{start_time_srt} --> {end_time_srt}")
-        srt_lines.append(text)
-        srt_lines.append("")
-        srt_counter += 1
 
-        # VTT
-        vtt_lines.append(f"{start_time_vtt} --> {end_time_vtt}")
-        vtt_lines.append(text)
-        vtt_lines.append("")
+def _to_vtt(lrc_text: str, last_line_duration: float = 5.0) -> str:
+    """將 LRC 格式轉換為 VTT 格式"""
+    parsed_lines = _parse_lrc(lrc_text)
+    if not parsed_lines:
+        return "WEBVTT\n\n"
 
-        # TXT
-        txt_lines.append(text)
+    vtt_blocks = ["WEBVTT\n"]
+    for i in range(len(parsed_lines)):
+        start_time = parsed_lines[i]['time']
+        text = parsed_lines[i]['text']
+
+        if i < len(parsed_lines) - 1:
+            end_time = parsed_lines[i+1]['time']
+        else:
+            end_time = start_time + last_line_duration
+
+        vtt_blocks.append(
+            f"{_seconds_to_timestamp(start_time, '.')} --> {_seconds_to_timestamp(end_time, '.')}\n"
+            f"{text}\n"
+        )
+    return "\n".join(vtt_blocks)
+
+
+def convert_to_all_formats(lrc_text: str):
+    """將 LRC 文字轉換為所有支援的格式"""
+    if not lrc_text or not lrc_text.strip():
+        return {
+            "lrc": "",
+            "srt": "",
+            "vtt": "",
+            "txt": ""
+        }
+
+    # 從LRC中提取純文字
+    plain_text = "\n".join(re.findall(r'\](.*)', lrc_text))
 
     return {
         "lrc": lrc_text,
-        "srt": "\n".join(srt_lines),
-        "vtt": "\n".join(vtt_lines),
-        "txt": "\n".join(txt_lines)
+        "srt": _to_srt(lrc_text),
+        "vtt": _to_vtt(lrc_text),
+        "txt": plain_text.strip()
     }

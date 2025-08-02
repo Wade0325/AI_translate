@@ -16,6 +16,8 @@ import {
   Popconfirm,
   Divider,
   Modal,
+  Input,
+  message,
 } from 'antd';
 import {
   UploadOutlined,
@@ -69,6 +71,9 @@ const Transcription = () => {
   // 從 ModelManager Context 獲取函式
   const { handleEditInterface, handleEditParams, handleTestInterface } = useModelManager();
 
+  // YT 連結輸入框狀態
+  const [youtubeUrl, setYoutubeUrl] = useState('');
+
   // 預覽 Modal 狀態
   const [isPreviewModalVisible, setIsPreviewModalVisible] = useState(false);
   const [previewContent, setPreviewContent] = useState('');
@@ -93,6 +98,33 @@ const Transcription = () => {
     } else {
       setModel(null); // 如果該服務商沒有模型，則清空
     }
+  };
+
+  // YT 連結加入佇列處理函式
+  const handleAddYoutubeUrl = () => {
+    if (!youtubeUrl.trim()) {
+      message.warning('請輸入 YouTube 連結');
+      return;
+    }
+    // 簡易 YouTube 連結格式驗證
+    const ytRegex = /^(https?:\/\/)?(www\.)?(youtube\.com|youtu\.?be)\/.+$/;
+    if (!ytRegex.test(youtubeUrl)) {
+      message.error('請輸入有效的 YouTube 連結');
+      return;
+    }
+
+    const newFile = {
+      uid: `yt-${Date.now()}`,
+      name: youtubeUrl,
+      status: 'waiting',
+      percent: 0,
+      size: 0, // 設為 0 以避免表格顯示錯誤
+      originFileObj: null, // 非實際檔案，設為 null
+    };
+
+    setFileList(list => [...list, newFile]);
+    setYoutubeUrl(''); // 清空輸入框
+    message.success('已成功將 YouTube 連結加入佇列');
   };
 
   // Modal 處理函式
@@ -305,6 +337,20 @@ const Transcription = () => {
     <Space direction="vertical" size="large" style={{ width: '100%' }}>
       <Card title="1. 上傳與管理檔案">
           {fileList.length === 0 ? <UploadArea /> : <FileListArea />}
+          <Divider></Divider>
+          <Row gutter={8}>
+            <Col flex="auto">
+              <Input
+                placeholder="貼上 YouTube 影片連結以加入轉錄佇列"
+                value={youtubeUrl}
+                onChange={(e) => setYoutubeUrl(e.target.value)}
+                onPressEnter={handleAddYoutubeUrl}
+              />
+            </Col>
+            <Col>
+              <Button type="primary" onClick={handleAddYoutubeUrl}>加入佇列</Button>
+            </Col>
+          </Row>
       </Card>
 
       <Card title="2. 轉錄設定">
@@ -344,14 +390,14 @@ const Transcription = () => {
         <Row gutter={[16, 16]} style={{ marginTop: '8px' }}>
           <Col xs={24} sm={8}>
             <Space.Compact style={{ width: '100%' }}>
-              <Tooltip title="編輯接口金鑰與模型" placement="bottom">
+              <Tooltip title="編輯API金鑰與模型" placement="bottom">
                 <Button
                   icon={<EditOutlined />}
                   style={{ width: '33.33%' }}
                   onClick={() => handleEditInterface(selectedProvider)}
                   disabled={!selectedProvider}
                 >
-                  編輯接口
+                  編輯API
                 </Button>
               </Tooltip>
               {/* <Tooltip title="編輯 Prompt 參數" placement="bottom">
@@ -364,14 +410,14 @@ const Transcription = () => {
                   編輯參數
                 </Button>
               </Tooltip> */}
-              <Tooltip title="測試此接口是否可用" placement="bottom">
+              <Tooltip title="測試此API是否可用" placement="bottom">
                 <Button
                   icon={<PlayCircleOutlined />}
                   style={{ width: '33.33%' }}
                   onClick={() => handleTestInterface(selectedProvider)}
                   disabled={!selectedProvider}
                 >
-                  測試接口
+                  測試API
                 </Button>
               </Tooltip>
             </Space.Compact>
