@@ -1,7 +1,20 @@
+from app.services.calculator.models import CalculationItem
+from app.services.calculator.service import CalculatorService
+from app.services.vad_process import VADService
+from app.services.subtitle_converter import convert_to_all_formats, _parse_lrc
+from app.db.repository.model_manager_repository import ModelSettingsRepository
+from app.models.gemini import (
+    upload_file_to_gemini,
+    transcribe_with_uploaded_file,
+    cleanup_gemini_file,
+    GeminiClient,
+    count_tokens_with_uploaded_file
+)
 import shutil
 import json
 import uuid
 import re
+import time
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 import soundfile as sf
@@ -11,17 +24,11 @@ from pydantic import BaseModel, HttpUrl
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Body
 from google import genai
 
+# 使用統一的 logger 設定
+from app.utils.logger import setup_logger
+logger = setup_logger(__name__)
+
 # 導入新的服務和函式
-from app.models.gemini import (
-    upload_file_to_gemini,
-    transcribe_with_uploaded_file,
-    cleanup_gemini_file,
-    GeminiClient,
-    count_tokens_with_uploaded_file
-)
-from app.db.repository.model_manager_repository import ModelSettingsRepository
-from app.services.subtitle_converter import convert_to_all_formats, _parse_lrc
-from app.services.vad_process import VADService
 
 # 建立一個新的 API 路由器
 router = APIRouter()
@@ -34,7 +41,7 @@ TEMP_DIR.mkdir(exist_ok=True)
 try:
     vad_service = VADService()
 except Exception as e:
-    print(f"CRITICAL: VADService failed to initialize. Error: {e}")
+    logger.error(f"CRITICAL: VADService failed to initialize. Error: {e}")
     vad_service = None
 
 # 支援的檔案類型
@@ -125,7 +132,7 @@ def _recursive_transcribe_task(
         with sf.SoundFile(str(local_path)) as f:
             duration_seconds = f.frames / f.samplerate
     except Exception as e:
-        print(f"Error getting duration for {local_path.name}: {e}")
+        logger.error(f"Error getting duration for {local_path.name}: {e}")
         return {"success": False, "text": f"[[無法讀取檔案 {local_path.name}]]", "total_tokens_used": 0}
 
     gemini_file = upload_file_to_gemini(local_path, client)
@@ -135,11 +142,11 @@ def _recursive_transcribe_task(
 
     if result["success"] or duration_seconds < 180:
         if not result["success"]:
-            print(
+            logger.info(
                 f"File {local_path.name} is shorter than 3 minutes, accepting failure without splitting.")
         return result
     elif not result["success"] and vad_service:
-        print(
+        logger.info(
             f"Transcription blocked. File > 3 mins. Attempting VAD fallback for {local_path.name}...")
         part1_path_str, part2_path_str, split_point = vad_service.split_audio_on_silence(
             audio_path=str(local_path), output_dir=str(TEMP_DIR)
@@ -172,15 +179,29 @@ async def _process_file_for_transcription(
     """
     核心轉錄邏輯，現在可選擇性地接收分段資訊以進行時間重對應。
     """
+    start_time = time.time()
+    logger.info(
+        f"開始處理轉錄任務: 檔案={local_path.name}, 模型={model}, 語言={source_lang}")
+
     local_files_to_cleanup = [local_path]
     gemini_files_to_cleanup = []
     final_lrc_text = ""
     total_tokens_used = 0
 
     try:
+        # 獲取音訊時長
+        try:
+            with sf.SoundFile(str(local_path)) as f:
+                audio_duration_seconds = f.frames / f.samplerate
+            logger.info(f"音訊時長: {audio_duration_seconds:.2f} 秒")
+        except Exception as e:
+            logger.warning(f"無法讀取音訊檔案時長 {local_path.name}。錯誤：{e}")
+            audio_duration_seconds = 0.0
+
         repo = ModelSettingsRepository()
         gemini_config = repo.get_by_model_name(model)
         if not gemini_config or not gemini_config.api_keys_json:
+            logger.error(f"在資料庫中找不到 '{model}' 的設定或 API 金鑰")
             raise HTTPException(
                 status_code=404, detail=f"在資料庫中找不到 '{model}' 的設定或 API 金鑰。")
 
@@ -203,14 +224,18 @@ Example Format:
 - Start directly with the first line of the output."""
 
         if not all([api_key, model_name]):
+            logger.error(f"'{model}' 的設定不完整，缺少 API 金鑰或模型名稱")
             raise HTTPException(
                 status_code=404, detail=f"'{model}' 的設定不完整，缺少 API 金鑰或模型名稱。")
 
+        logger.info(f"正在初始化 Gemini Client，模型: {model_name}")
         client = GeminiClient(api_key).client
         if not client:
+            logger.error("無法初始化 Gemini Client")
             raise HTTPException(
                 status_code=500, detail="無法初始化 Gemini Client，請檢查 API 金鑰。")
 
+        logger.info("開始執行轉錄任務")
         final_result = _recursive_transcribe_task(
             local_path=local_path, client=client, model_name=model_name, prompt=prompt,
             local_cleanup_list=local_files_to_cleanup, gemini_cleanup_list=gemini_files_to_cleanup
@@ -218,17 +243,18 @@ Example Format:
 
         raw_lrc_text = final_result.get("text", "")
         total_tokens_used = final_result.get("total_tokens_used", 0)
+        logger.info(f"轉錄完成，使用 tokens: {total_tokens_used}")
 
         # *** 時間戳重對應的關鍵邏輯 ***
         if segments_for_remapping and raw_lrc_text:
-            print("Remapping timestamps according to VAD segments...")
+            logger.info("開始重新對應時間戳")
             final_lrc_text = _remap_lrc_timestamps(
                 raw_lrc_text, segments_for_remapping)
         else:
             final_lrc_text = raw_lrc_text
 
     except Exception as e:
-        # 確保在發生異常時也能清理檔案
+        logger.error(f"轉錄過程中發生錯誤: {e}")
         raise e
     finally:
         if gemini_files_to_cleanup and api_key:
@@ -237,19 +263,48 @@ Example Format:
                 for gf in gemini_files_to_cleanup:
                     try:
                         cleanup_gemini_file(cleanup_client, gf)
+                        logger.info(f"已清理 Gemini 檔案: {gf.name}")
                     except Exception as e:
-                        print(
-                            f"Warning: Failed to cleanup Gemini file {gf.name}. Error: {e}")
+                        logger.warning(f"清理 Gemini 檔案 {gf.name} 失敗。錯誤: {e}")
         for local_file in local_files_to_cleanup:
             if local_file.exists():
                 local_file.unlink()
-                print(f"Cleaned up local temp file: {local_file.name}")
+                logger.info(f"已清理本地暫存檔案: {local_file.name}")
 
     final_transcripts = convert_to_all_formats(final_lrc_text)
-    cost = total_tokens_used * 0.00015
+
+    # 建立計費項目
+    items = []
+    if total_tokens_used > 0:
+        # 目前，我們將所有 token 視為一個整體項目。
+        # 未來若 `_recursive_transcribe_task` 能返回細分，可在此處擴展。
+        items.append(CalculationItem(
+            task_name="total_transcription", tokens=total_tokens_used))
+
+    # 計算處理時間
+    processing_time_seconds = time.time() - start_time
+    logger.info(f"轉錄任務總處理時間: {processing_time_seconds:.2f} 秒")
+
+    # 使用新的 CalculatorService 計算所有指標
+    calculator = CalculatorService()
+    metrics_response = calculator.calculate_metrics(
+        items=items,
+        model_name=model,
+        processing_time_seconds=processing_time_seconds,
+        audio_duration_seconds=audio_duration_seconds
+    )
+
+    logger.info(f"轉錄任務完成，總費用: {metrics_response.cost:.6f}")
+
     return {
-        "transcripts": final_transcripts, "tokens_used": total_tokens_used,
-        "cost": cost, "model": model, "source_language": source_lang,
+        "transcripts": final_transcripts,
+        "tokens_used": metrics_response.total_tokens,
+        "cost": metrics_response.cost,
+        "model": model,
+        "source_language": source_lang,
+        "processing_time_seconds": metrics_response.processing_time_seconds,
+        "audio_duration_seconds": metrics_response.audio_duration_seconds,
+        "cost_breakdown": metrics_response.breakdown
     }
 
 # --- API 端點 ---
@@ -262,31 +317,38 @@ async def transcribe_media(
     model: str = Form(..., description="使用的模型名稱"),
 ):
     """接收音訊或視訊檔案，進行轉錄。"""
-    print(
+    logger.info(
         f"接收到轉錄請求: FileName='{file.filename}', Lang='{source_lang}', Model='{model}'")
+
     if not file.filename:
+        logger.error("轉錄請求失敗: 沒有提供檔案名稱")
         raise HTTPException(status_code=400, detail="沒有提供檔案名稱。")
+
     if file.content_type not in SUPPORTED_MIME_TYPES:
+        logger.error(f"轉錄請求失敗: 不支援的檔案格式 {file.content_type}")
         raise HTTPException(
             status_code=400, detail=f"不支援的檔案格式: {file.content_type}。")
 
     save_path = TEMP_DIR / f"{uuid.uuid4()}{Path(file.filename).suffix}"
+    logger.info(f"正在儲存上傳檔案至: {save_path}")
+
     try:
         with save_path.open("wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
+        logger.info(f"檔案成功儲存: {save_path}")
     except Exception as e:
+        logger.error(f"無法儲存檔案: {e}")
         raise HTTPException(status_code=500, detail=f"無法儲存檔案: {e}")
     finally:
         await file.close()
 
-    # 此處不再包含清理邏輯，因為 _process_file_for_transcription 會處理
     return await _process_file_for_transcription(save_path, model, source_lang)
 
 
 @router.post("/youtube", tags=["Transcription"])
 async def transcribe_youtube(request: YouTubeTranscribeRequest = Body(...)):
     """接收 YouTube 連結，下載音訊並進行轉錄。"""
-    print(
+    logger.info(
         f"接收到 YouTube 轉錄請求: URL='{request.youtube_url}', VAD: {'Enabled' if request.enable_vad else 'Disabled'}")
 
     # 下載原始音訊
@@ -297,19 +359,23 @@ async def transcribe_youtube(request: YouTubeTranscribeRequest = Body(...)):
         'outtmpl': str(original_audio_path_base), 'quiet': True,
     }
 
+    logger.info(f"開始下載 YouTube 音訊: {request.youtube_url}")
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([str(request.youtube_url)])
+        logger.info("YouTube 音訊下載完成")
     except Exception as e:
-        print(f"下載 YouTube 音訊時出錯: {e}")
+        logger.error(f"下載 YouTube 音訊時出錯: {e}")
         raise HTTPException(status_code=500, detail=f"下載 YouTube 音訊時出錯: {e}")
 
     original_audio_path = original_audio_path_base.with_suffix('.mp3')
     if not original_audio_path.exists():
+        logger.error("下載後的原始檔案不存在")
         raise HTTPException(status_code=500, detail="下載後的原始檔案不存在。")
 
     # 如果 VAD 啟用，則處理；否則直接轉錄原始檔
     if request.enable_vad and vad_service:
+        logger.info("VAD 已啟用，正在建立純人聲檔案")
         # 建立純人聲檔案
         speech_only_path_str, segments = vad_service.create_speech_only_audio(
             audio_path=str(original_audio_path),
@@ -318,16 +384,20 @@ async def transcribe_youtube(request: YouTubeTranscribeRequest = Body(...)):
 
         # 清理原始下載的檔案
         original_audio_path.unlink()
+        logger.info("已清理原始下載檔案")
 
         if speech_only_path_str:
+            logger.info(f"準備轉錄純人聲檔案: {speech_only_path_str}")
             # 轉錄純人聲檔案，並傳入分段資訊以供重對應
             return await _process_file_for_transcription(
                 Path(speech_only_path_str), request.model, request.source_lang,
                 segments_for_remapping=segments
             )
         else:
+            logger.warning("VAD 未在音訊中偵測到任何人聲")
             # 如果 VAD 沒檢測到人聲，返回錯誤或空結果
             raise HTTPException(status_code=400, detail="VAD 未在音訊中偵測到任何人聲。")
     else:
+        logger.info("VAD 未啟用或不可用，直接處理原始檔案")
         # VAD 未啟用或不可用，直接處理原始檔案
         return await _process_file_for_transcription(original_audio_path, request.model, request.source_lang)
