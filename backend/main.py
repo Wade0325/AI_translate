@@ -4,11 +4,34 @@ from app.api import transcription  # 更改此處
 
 from fastapi.middleware.cors import CORSMiddleware
 from app.db.database import init_db
+from app.utils.logger import setup_logger
 
+# 建立 logger
+logger = setup_logger(__name__)
+
+# 初始化資料庫
 init_db()
 
 app = FastAPI(title="AI Voice Transcription API", version="1.0.0")
 
+
+@app.on_event("startup")
+async def startup_event():
+    """應用程式啟動事件"""
+    logger.info("正在啟動 AI Voice Transcription API...")
+
+    # 預先初始化 VAD 服務
+    try:
+        from app.services.vad.service import initialize_vad_service
+        vad_service = initialize_vad_service()
+        if vad_service:
+            logger.info("VAD 服務已在應用程式啟動時成功初始化")
+        else:
+            logger.warning("VAD 服務初始化失敗，將在首次使用時延遲載入")
+    except Exception as e:
+        logger.warning(f"無法預先初始化 VAD 服務: {e}")
+
+    logger.info("應用程式啟動完成")
 
 # 更新路由設定
 app.include_router(transcription.router, prefix="/api/v1",
@@ -16,7 +39,6 @@ app.include_router(transcription.router, prefix="/api/v1",
 app.include_router(model_manager.router,
                    prefix="/api/v1/model-manager",
                    tags=["Model Settings"])
-
 
 origins = [
     "http://localhost:8000",

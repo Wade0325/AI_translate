@@ -5,7 +5,6 @@ from .flows import calculate_price_flow
 from typing import List, Optional
 from app.utils.logger import setup_logger
 
-# 簡單取得 logger
 logger = setup_logger(__name__)
 
 
