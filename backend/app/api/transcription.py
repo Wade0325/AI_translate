@@ -25,13 +25,9 @@ TEMP_DIR.mkdir(exist_ok=True)
 # 建立服務實例
 transcription_service = TranscriptionService()
 
-# 建立 VAD 服務的單例（用於 YouTube 預處理）
-try:
-    vad_service = get_vad_service()
-    logger.info("使用 VAD 服務單例實例")
-except Exception as e:
-    logger.error(f"CRITICAL: VADService failed to initialize. Error: {e}")
-    vad_service = None
+# 不在此處立即初始化 VAD 服務，而是在需要時透過 get_vad_service() 獲取
+# 這樣可以避免在模組導入時阻塞事件循環
+# vad_service = get_vad_service() # <--- REMOVE THIS BLOCK
 
 # 支援的檔案類型
 SUPPORTED_MIME_TYPES = {
@@ -116,6 +112,9 @@ async def transcribe_youtube(request: YouTubeTranscribeRequest = Body(...)):
     """接收 YouTube 連結，下載音訊並進行轉錄。"""
     logger.info(
         f"接收到 YouTube 轉錄請求: URL='{request.youtube_url}', VAD: {'Enabled' if request.enable_vad else 'Disabled'}")
+
+    # 在需要時獲取 VAD 服務實例
+    vad_service = get_vad_service() if request.enable_vad else None
 
     # 下載原始音訊
     original_audio_path_base = TEMP_DIR / f"{uuid.uuid4()}"

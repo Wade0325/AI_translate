@@ -5,7 +5,7 @@ from typing import List, Dict, Any, Optional
 import soundfile as sf
 
 from app.utils.logger import setup_logger
-from app.models.gemini import (
+from app.provider.google.gemini import (
     upload_file_to_gemini,
     transcribe_with_uploaded_file,
     cleanup_gemini_file,
@@ -25,8 +25,6 @@ from .models import (
 )
 
 logger = setup_logger(__name__)
-
-# 移除全域 vad_service，改為在需要時建立實例
 
 
 def _remap_lrc_timestamps(lrc_text: str, segments: List[Dict[str, float]]) -> str:

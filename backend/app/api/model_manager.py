@@ -6,7 +6,7 @@ from fastapi import status
 
 from app.schemas.schemas import InterfaceConfigRequest, InterfaceConfigResponse, ModelConfigurationSchema, ServiceStatus, TestInterfaceRequest, TestInterfaceResponse
 from app.db.repository.model_manager_repository import ModelSettingsRepository
-from app.models.gemini import GeminiClient
+from app.provider.google.gemini import GeminiClient
 
 router = APIRouter()
 

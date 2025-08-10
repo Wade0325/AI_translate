@@ -5,9 +5,11 @@ from typing import Dict, List, Optional
 class ModelPrice(BaseModel):
     """
     定義了單一模型的 token 價格。
+    價格以每 1,000,000 個 token 為單位。
     """
-    input_price_per_token: float = Field(..., description="每單位輸入 token 的價格")
-    output_price_per_token: float = Field(..., description="每單位輸出 token 的價格")
+    input_text: float = Field(..., description="每百萬文字輸入 token 的價格")
+    input_audio: float = Field(..., description="每百萬音訊輸入 token 的價格")
+    output_text: float = Field(..., description="每百萬文字輸出 token 的價格")
 
 
 class CalculationItem(BaseModel):
@@ -15,7 +17,9 @@ class CalculationItem(BaseModel):
     代表一個獨立的計費項目，例如單次 API 呼叫或一個子任務。
     """
     task_name: str = Field(..., description="任務的唯一識別名稱")
-    tokens: int = Field(..., description="該任務消耗的 token 數量", gt=0)
+    input_tokens: int = Field(0, description="輸入 token 數量")
+    output_tokens: int = Field(0, description="輸出 token 數量")
+    content_type: str = Field("text", description="內容類型，例如 'text' 或 'audio'")
 
 
 class PriceCalculationRequest(BaseModel):

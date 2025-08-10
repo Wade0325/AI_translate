@@ -33,9 +33,11 @@ class CalculatorService:
         Returns:
             包含成本、token、性能指標和詳細細目的回應物件。
         """
-        total_input_tokens = sum(item.tokens for item in items)
+        total_input_tokens = sum(item.input_tokens for item in items)
+        total_output_tokens = sum(item.output_tokens for item in items)
         logger.info(f"執行計算指標，模型: {model_name}")
-        logger.info(f"輸入 Tokens: {total_input_tokens} (來自 {len(items)} 個項目)")
+        logger.info(
+            f"輸入 Tokens: {total_input_tokens}, 輸出 Tokens: {total_output_tokens} (來自 {len(items)} 個項目)")
         logger.info(
             f"輸入指標 - 處理時間: {processing_time_seconds:.4f}s, 音訊時長: {audio_duration_seconds:.4f}s")
 

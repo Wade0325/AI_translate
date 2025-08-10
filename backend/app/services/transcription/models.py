@@ -19,8 +19,10 @@ class TranscriptionTaskResult(BaseModel):
     單次轉錄任務的結果
     """
     success: bool = Field(..., description="轉錄是否成功")
-    text: str = Field(..., description="轉錄的文字內容")
-    total_tokens_used: int = Field(..., description="使用的 token 總數")
+    text: str = Field("", description="轉錄的文字內容")
+    input_tokens: int = Field(0, description="輸入 token 數量")
+    output_tokens: int = Field(0, description="輸出 token 數量")
+    total_tokens_used: int = Field(0, description="使用的 token 總數")
 
 
 class TranscriptionResponse(BaseModel):
