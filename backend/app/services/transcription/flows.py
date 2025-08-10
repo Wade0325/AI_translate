@@ -3,6 +3,7 @@ import time
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 import soundfile as sf
+from sqlalchemy.orm import Session
 
 from app.utils.logger import setup_logger
 from app.provider.google.gemini import (
@@ -11,7 +12,7 @@ from app.provider.google.gemini import (
     cleanup_gemini_file,
     GeminiClient
 )
-from app.db.repository.model_manager_repository import ModelSettingsRepository
+from app.database.service import get_by_model_name, get_db
 from app.services.subtitle_converter import convert_to_all_formats, _parse_lrc
 from app.services.vad.service import get_vad_service
 from app.services.calculator.service import CalculatorService
@@ -87,12 +88,11 @@ def _adjust_lrc_timestamps(lrc_text: str, offset_seconds: float) -> str:
     return "\n".join(adjusted_lines)
 
 
-def _get_model_configuration(model: str) -> ModelConfiguration:
+def _get_model_configuration(db: Session, model: str) -> ModelConfiguration:
     """取得模型配置資訊"""
     logger.info(f"取得模型配置: {model}")
 
-    repo = ModelSettingsRepository()
-    gemini_config = repo.get_by_model_name(model)
+    gemini_config = get_by_model_name(db, model)
 
     if not gemini_config or not gemini_config.api_keys_json:
         raise ValueError(f"在資料庫中找不到 '{model}' 的設定或 API 金鑰")
@@ -366,8 +366,14 @@ def transcription_flow(request: TranscriptionRequest) -> TranscriptionResponse:
             logger.warning(f"無法讀取音訊檔案時長 {local_path.name}。錯誤：{e}")
             audio_duration_seconds = 0.0
 
-        # 2. 取得模型配置
-        config = _get_model_configuration(request.model)
+        # 使用 get_db() 來管理資料庫 session
+        db_session_gen = get_db()
+        db = next(db_session_gen)
+        try:
+            # 2. 取得模型配置
+            config = _get_model_configuration(db, request.model)
+        finally:
+            next(db_session_gen, None)  # 確保 session 關閉
 
         # 3. 初始化 Gemini Client
         logger.info(f"正在初始化 Gemini Client，模型: {config.model_name}")
