@@ -3,7 +3,7 @@ from app.api import model_manager
 from app.api import transcription  # 更改此處
 
 from fastapi.middleware.cors import CORSMiddleware
-from app.database.service import init_db
+from app.database.session import init_db
 from app.utils.logger import setup_logger
 
 # 建立 logger

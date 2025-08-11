@@ -5,7 +5,8 @@ from sqlalchemy.orm import Session
 from fastapi import status
 
 from app.schemas.schemas import InterfaceConfigRequest, InterfaceConfigResponse, ModelConfigurationSchema, ServiceStatus, TestInterfaceRequest, TestInterfaceResponse
-from app.database.service import get_db, save_config, get_by_name
+from app.database.session import get_db
+from app.repositories.model_manager_repository import ModelSettingsRepository
 from app.provider.google.gemini import GeminiClient
 from app.utils.logger import setup_logger
 
@@ -13,10 +14,14 @@ logger = setup_logger(__name__)
 router = APIRouter()
 
 
+def get_repository() -> ModelSettingsRepository:
+    return ModelSettingsRepository()
+
+
 @router.post("/setting")
 async def save_model_setting(
     config: InterfaceConfigRequest = Body(...),
-    db: Session = Depends(get_db)
+    repo: ModelSettingsRepository = Depends(get_repository)
 ):
     logger.info(f"收到模型設定請求:'{config.interfaceName}'")
     try:
@@ -27,7 +32,7 @@ async def save_model_setting(
             model_name=config.modelName,
             prompt=config.prompt
         )
-        save_config(db, config_to_save)
+        repo.save(config_to_save)
         return {
             "data_received": config.dict()
         }
@@ -40,10 +45,10 @@ async def save_model_setting(
 @router.get("/setting/{interface_name}", response_model=Optional[InterfaceConfigResponse])
 async def get_model_setting(
     interface_name: str,
-    db: Session = Depends(get_db)
+    repo: ModelSettingsRepository = Depends(get_repository)
 ):
     try:
-        db_orm_config = get_by_name(db, interface_name)
+        db_orm_config = repo.get_by_name(interface_name)
 
         if db_orm_config:
             api_keys_list = []

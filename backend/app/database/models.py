@@ -1,8 +1,10 @@
+import uuid
 from dataclasses import dataclass
 from typing import Optional, List
 from datetime import datetime
 
-from sqlalchemy import Column, String, Text, DateTime, func
+from sqlalchemy import Column, String, Text, DateTime, func, Float, Integer
+from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.ext.declarative import declarative_base
 
 Base = declarative_base()
