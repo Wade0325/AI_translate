@@ -226,7 +226,9 @@ class TranscriptionTask:
             return TranscriptionTaskResult(
                 success=result["success"],
                 text=result.get("text", ""),
-                total_tokens_used=result.get("total_tokens_used", 0)
+                input_tokens=result.get("input_tokens", 0),
+                output_tokens=result.get("output_tokens", 0),
+                total_tokens_used=result.get("total_tokens", 0)
             )
         except Exception as e:
             logger.error(f"轉錄過程發生錯誤: {e}")
@@ -251,6 +253,8 @@ class TranscriptionTask:
 
         # 轉錄所有片段
         results = []
+        total_input_tokens = 0
+        total_output_tokens = 0
         total_tokens = 0
 
         for i, segment in enumerate(segments):
@@ -273,6 +277,8 @@ class TranscriptionTask:
                 segment.start_time
             )
             results.append(adjusted_text)
+            total_input_tokens += segment_result.input_tokens
+            total_output_tokens += segment_result.output_tokens
             total_tokens += segment_result.total_tokens_used
 
         # 合併所有結果
@@ -281,6 +287,8 @@ class TranscriptionTask:
         return TranscriptionTaskResult(
             success=True,
             text=combined_text,
+            input_tokens=total_input_tokens,
+            output_tokens=total_output_tokens,
             total_tokens_used=total_tokens
         )
 
@@ -394,8 +402,11 @@ def transcription_flow(request: TranscriptionRequest) -> TranscriptionResponse:
         transcription_result = task_manager.transcribe_audio(local_path)
 
         raw_lrc_text = transcription_result.text
+        input_tokens = transcription_result.input_tokens
+        output_tokens = transcription_result.output_tokens
         total_tokens_used = transcription_result.total_tokens_used
-        logger.info(f"轉錄完成，使用 tokens: {total_tokens_used:,}")
+        logger.info(
+            f"轉錄完成，輸入 tokens: {input_tokens:,}, 輸出 tokens: {output_tokens:,}, 總計: {total_tokens_used:,}")
 
         # 6. 時間戳重對應（如果需要）
         if request.segments_for_remapping and raw_lrc_text:
@@ -413,7 +424,8 @@ def transcription_flow(request: TranscriptionRequest) -> TranscriptionResponse:
         if total_tokens_used > 0:
             items.append(CalculationItem(
                 task_name="total_transcription",
-                tokens=total_tokens_used
+                input_tokens=input_tokens,
+                output_tokens=output_tokens
             ))
 
         processing_time_seconds = time.time() - start_time

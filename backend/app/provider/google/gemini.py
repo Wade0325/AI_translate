@@ -128,16 +128,21 @@ def transcribe_with_uploaded_file(
         return {
             "success": False,
             "text": error_text,
-            "total_tokens_used": total_tokens_used
+            "input_tokens": total_tokens_used,
+            "output_tokens": 0,
+            "total_tokens": total_tokens_used
         }
 
     # 從回傳中提取 token 用量
+    input_tokens = response.usage_metadata.prompt_token_count
+    output_tokens = response.usage_metadata.candidates_token_count
     total_tokens_used = response.usage_metadata.total_token_count
+
     logger.info(f"Token 使用統計:")
     logger.info(
-        f"  - Prompt tokens:     {response.usage_metadata.prompt_token_count:>8,}")
+        f"  - Input (Prompt) tokens: {input_tokens:>8,}")
     logger.info(
-        f"  - Candidates tokens: {response.usage_metadata.candidates_token_count:>8,}")
+        f"  - Output (Candidates) tokens: {output_tokens:>8,}")
     logger.info(
         f"  - Thoughts tokens:   {response.usage_metadata.thoughts_token_count or 'N/A':>8}")
     logger.info(f"  - Total tokens:      {total_tokens_used:>8,}")
@@ -145,7 +150,9 @@ def transcribe_with_uploaded_file(
     return {
         "success": True,
         "text": response.text,
-        "total_tokens_used": total_tokens_used
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": total_tokens_used
     }
 
 
