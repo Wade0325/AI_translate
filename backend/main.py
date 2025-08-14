@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from contextlib import asynccontextmanager
 from app.api import model_manager
-from app.api import transcription  # 更改此處
+from app.api import transcription
 
 from fastapi.middleware.cors import CORSMiddleware
 from app.database.session import init_db
