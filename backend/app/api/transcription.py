@@ -198,7 +198,6 @@ async def transcribe_youtube(
                     status_code=400, detail="VAD 未在音訊中偵測到任何人聲。")
         else:
             logger.info("VAD 未啟用或不可用，直接處理原始檔案")
-            # VAD 未啟用或不可用，直接處理原始檔案
             response = transcription_service.transcribe_file(
                 db=db,
                 file_path=str(original_audio_path),
@@ -219,7 +218,6 @@ async def transcribe_youtube(
                 "cost_breakdown": response.cost_breakdown
             }
     finally:
-        # 確保清理檔案
         if original_audio_path.exists():
             original_audio_path.unlink()
             logger.info("已清理原始音訊檔案")

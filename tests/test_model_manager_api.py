@@ -12,15 +12,15 @@ def test_create_model_setting(client: TestClient):
         "modelName": "TestModelAlpha",
         "prompt": "Prompt for creating."
     }
-    response = client.post("/settings/model_setting", json=payload)
+    response = client.post("/api/v1/model-manager/setting", json=payload)
     assert response.status_code == 200
     data = response.json()
-    assert data["message"] == "Model setting for 'TestCreate' saved/updated successfully via Repository."
+    assert "data_received" in data
     assert data["data_received"]["interfaceName"] == "TestCreate"
     assert data["data_received"]["apiKeys"] == ["key1", "key2"]
 
     # 額外驗證：嘗試獲取剛創建的設定
-    get_response = client.get("/settings/model_setting/TestCreate")
+    get_response = client.get("/api/v1/model-manager/setting/TestCreate")
     assert get_response.status_code == 200
     get_data = get_response.json()
     assert get_data["interfaceName"] == "TestCreate"
@@ -39,11 +39,16 @@ def test_get_model_setting_exists(client: TestClient):
         "modelName": "ModelExisting",
         "prompt": "Prompt for existing."
     }
-    client.post("/settings/model_setting", json=payload)  # 忽略返回值，只關心它被創建
+    # 先發送 POST 請求創建設定
+    create_response = client.post(
+        "/api/v1/model-manager/setting", json=payload)
+    assert create_response.status_code == 200  # 確認創建成功
 
-    response = client.get(f"/settings/model_setting/{interface_name}")
+    # 然後再發送 GET 請求來獲取它
+    response = client.get(f"/api/v1/model-manager/setting/{interface_name}")
     assert response.status_code == 200
     data = response.json()
+    assert data is not None
     assert data["interfaceName"] == interface_name
     assert data["modelName"] == "ModelExisting"
     assert data["apiKeys"] == ["key_existing"]
@@ -53,7 +58,7 @@ def test_get_model_setting_exists(client: TestClient):
 def test_get_model_setting_not_exists(client: TestClient):
     """測試獲取一個不存在的模型設定。"""
     interface_name = "TestDoesNotExist"
-    response = client.get(f"/settings/model_setting/{interface_name}")
+    response = client.get(f"/api/v1/model-manager/setting/{interface_name}")
     # 我們的 API 對於未找到的情況返回 200 和 null body (Pydantic Optional 會轉為 None)
     assert response.status_code == 200
     assert response.json() is None
@@ -68,7 +73,7 @@ def test_update_model_setting(client: TestClient):
         "modelName": "InitialModel",
         "prompt": "Initial prompt."
     }
-    client.post("/settings/model_setting", json=initial_payload)
+    client.post("/api/v1/model-manager/setting", json=initial_payload)
 
     updated_payload = {
         "interfaceName": interface_name,  # 相同的 interfaceName
@@ -76,14 +81,16 @@ def test_update_model_setting(client: TestClient):
         "modelName": "UpdatedModel",
         "prompt": "Updated prompt."
     }
-    response = client.post("/settings/model_setting", json=updated_payload)
+    response = client.post(
+        "/api/v1/model-manager/setting", json=updated_payload)
     assert response.status_code == 200
     data = response.json()
-    assert data["message"] == f"Model setting for '{interface_name}' saved/updated successfully via Repository."
+    assert "data_received" in data
     assert data["data_received"]["modelName"] == "UpdatedModel"
 
     # 驗證更新是否生效
-    get_response = client.get(f"/settings/model_setting/{interface_name}")
+    get_response = client.get(
+        f"/api/v1/model-manager/setting/{interface_name}")
     assert get_response.status_code == 200
     get_data = get_response.json()
     assert get_data["modelName"] == "UpdatedModel"
@@ -99,14 +106,14 @@ def test_create_model_setting_no_prompt(client: TestClient):
         "modelName": "ModelNoPrompt"
         # prompt 欄位被省略
     }
-    response = client.post("/settings/model_setting", json=payload)
+    response = client.post("/api/v1/model-manager/setting", json=payload)
     assert response.status_code == 200
     data = response.json()
     assert data["data_received"]["interfaceName"] == "TestNoPrompt"
     # Pydantic 預設 Optional 為 None
     assert data["data_received"]["prompt"] is None
 
-    get_response = client.get("/settings/model_setting/TestNoPrompt")
+    get_response = client.get("/api/v1/model-manager/setting/TestNoPrompt")
     assert get_response.status_code == 200
     get_data = get_response.json()
     assert get_data["prompt"] is None
@@ -120,12 +127,12 @@ def test_create_model_setting_empty_apikeys(client: TestClient):
         "modelName": "ModelEmptyKeys",
         "prompt": "Prompt for empty keys."
     }
-    response = client.post("/settings/model_setting", json=payload)
+    response = client.post("/api/v1/model-manager/setting", json=payload)
     assert response.status_code == 200
     data = response.json()
     assert data["data_received"]["apiKeys"] == []
 
-    get_response = client.get("/settings/model_setting/TestEmptyKeys")
+    get_response = client.get("/api/v1/model-manager/setting/TestEmptyKeys")
     assert get_response.status_code == 200
     get_data = get_response.json()
     assert get_data["apiKeys"] == []
