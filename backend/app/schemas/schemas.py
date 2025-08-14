@@ -1,5 +1,6 @@
-from pydantic import BaseModel
-from typing import Optional, List
+from pydantic import BaseModel, HttpUrl
+from typing import List, Optional, Any, Dict
+from pydantic import ConfigDict
 
 
 class InterfaceConfigRequest(BaseModel):
@@ -35,8 +36,7 @@ class ModelConfigurationSchema(BaseModel):
     model_name: str
     prompt: Optional[str] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class ServiceStatus(BaseModel):

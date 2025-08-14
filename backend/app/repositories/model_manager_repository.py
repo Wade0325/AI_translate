@@ -1,6 +1,5 @@
 from typing import Optional, List
 from sqlalchemy.orm import Session
-from app.database.session import SessionLocal
 from app.database.models import ModelConfiguration
 from app.schemas.schemas import ModelConfigurationSchema
 
@@ -14,7 +13,7 @@ class ModelSettingsRepository:
         config = db.query(ModelConfiguration).filter(
             ModelConfiguration.interface_name == interface_name).first()
         if config:
-            return ModelConfigurationSchema.from_orm(config)
+            return ModelConfigurationSchema.model_validate(config)
         return None
 
     def get_by_model_name(self, db: Session, model_name: str) -> Optional[ModelConfigurationSchema]:
@@ -25,7 +24,7 @@ class ModelSettingsRepository:
         config = db.query(ModelConfiguration).filter(
             ModelConfiguration.model_name == model_name).first()
         if config:
-            return ModelConfigurationSchema.from_orm(config)
+            return ModelConfigurationSchema.model_validate(config)
         return None
 
     def save(self, db: Session, config_schema: ModelConfigurationSchema) -> ModelConfigurationSchema:
@@ -45,12 +44,12 @@ class ModelSettingsRepository:
             db_config.prompt = config_schema.prompt
         else:
             # 建立新記錄
-            db_config = ModelConfiguration(**config_schema.dict())
+            db_config = ModelConfiguration(**config_schema.model_dump())
             db.add(db_config)
 
         db.commit()
         db.refresh(db_config)
-        return ModelConfigurationSchema.from_orm(db_config)
+        return ModelConfigurationSchema.model_validate(db_config)
 
     def get_all_configs(self, db: Session) -> List[ModelConfigurationSchema]:
         """
@@ -58,4 +57,4 @@ class ModelSettingsRepository:
         返回 ModelConfigurationSchema 對象的列表。
         """
         configs = db.query(ModelConfiguration).all()
-        return [ModelConfigurationSchema.from_orm(config) for config in configs]
+        return [ModelConfigurationSchema.model_validate(config) for config in configs]

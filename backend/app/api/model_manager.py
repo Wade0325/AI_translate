@@ -35,7 +35,7 @@ async def save_model_setting(
         )
         repo.save(db, config_to_save)
         return {
-            "data_received": config.dict()
+            "data_received": config.model_dump()
         }
     except Exception as e:
         message = f"保存模型設定時發生意外錯誤:'{config.interfaceName}'. Error: {e}"
