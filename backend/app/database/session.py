@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Optional, List
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session
-from .models import Base, ModelConfiguration
+from .models import Base, ModelConfiguration, TranscriptionLog
 from app.schemas.schemas import ModelConfigurationSchema
 from app.utils.logger import setup_logger
 

@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional
 import soundfile as sf
 from sqlalchemy.orm import Session
+import traceback
 
 from app.utils.logger import setup_logger
 from app.provider.google.gemini import (
@@ -13,6 +14,7 @@ from app.provider.google.gemini import (
     GeminiClient
 )
 from app.repositories.model_manager_repository import ModelSettingsRepository
+from app.repositories.transcription_log_repository import TranscriptionLogRepository
 from app.services.subtitle_converter import convert_to_all_formats, _parse_lrc
 from app.services.vad.service import get_vad_service
 from app.services.calculator.service import CalculatorService
@@ -88,12 +90,12 @@ def _adjust_lrc_timestamps(lrc_text: str, offset_seconds: float) -> str:
     return "\n".join(adjusted_lines)
 
 
-def _get_model_configuration(model: str) -> ModelConfiguration:
+def _get_model_configuration(db: Session, model: str) -> ModelConfiguration:
     """取得模型配置資訊"""
     logger.info(f"取得模型配置: {model}")
 
     repo = ModelSettingsRepository()
-    gemini_config = repo.get_by_model_name(model)
+    gemini_config = repo.get_by_model_name(db, model)
 
     if not gemini_config or not gemini_config.api_keys_json:
         raise ValueError(f"在資料庫中找不到 '{model}' 的設定或 API 金鑰")
@@ -353,38 +355,47 @@ class TranscriptionTask:
                     logger.warning(f"清理本地檔案失敗: {e}")
 
 
-def transcription_flow(request: TranscriptionRequest) -> TranscriptionResponse:
+def transcription_flow(db: Session, request: TranscriptionRequest) -> TranscriptionResponse:
     """
-    完整的轉錄流程：接收任務後呼叫 Gemini API 並取得結果
+    完整的轉錄流程：接收任務後呼叫 Gemini API 並取得結果，同時記錄日誌。
     """
     start_time = time.time()
     local_path = Path(request.file_path)
+    log_repo = TranscriptionLogRepository()
 
-    logger.info(f"開始轉錄流程: 檔案={local_path.name}, 模型={request.model}")
+    # 1. 建立初始日誌
+    initial_log_data = {
+        "status": "PROCESSING",
+        "original_filename": request.original_filename,
+        "model_used": request.model,
+        "source_language": request.source_lang,
+    }
+    new_log = log_repo.create_log(db, initial_log_data)
+    task_uuid = new_log.task_uuid
+    logger.info(f"建立轉錄日誌，ID: {task_uuid}")
 
     try:
-        # 1. 獲取音訊時長
+        # 2. 獲取音訊時長
         try:
             with sf.SoundFile(str(local_path)) as f:
                 audio_duration_seconds = f.frames / f.samplerate
             logger.info(f"音訊檔案資訊:")
             logger.info(f"  - 檔案名稱: {local_path.name}")
             logger.info(f"  - 音訊時長: {audio_duration_seconds:>10.2f} 秒")
-            logger.info(f"  - 音訊時長: {audio_duration_seconds/60:>10.2f} 分鐘")
         except Exception as e:
             logger.warning(f"無法讀取音訊檔案時長 {local_path.name}。錯誤：{e}")
             audio_duration_seconds = 0.0
 
-        # 2. 取得模型配置
-        config = _get_model_configuration(request.model)
+        # 3. 取得模型配置
+        config = _get_model_configuration(db, request.model)
 
-        # 3. 初始化 Gemini Client
+        # 4. 初始化 Gemini Client
         logger.info(f"正在初始化 Gemini Client，模型: {config.model_name}")
         client = GeminiClient(config.api_key).client
         if not client:
             raise ValueError("無法初始化 Gemini Client，請檢查 API 金鑰")
 
-        # 4. 建立轉錄任務管理器
+        # 5. 建立轉錄任務管理器
         task_manager = TranscriptionTask(
             client=client,
             model_name=config.model_name,
@@ -392,7 +403,7 @@ def transcription_flow(request: TranscriptionRequest) -> TranscriptionResponse:
             temp_dir=local_path.parent
         )
 
-        # 5. 執行轉錄
+        # 6. 執行轉錄
         logger.info("開始執行轉錄任務")
         transcription_result = task_manager.transcribe_audio(local_path)
 
@@ -403,7 +414,7 @@ def transcription_flow(request: TranscriptionRequest) -> TranscriptionResponse:
         logger.info(
             f"轉錄完成，輸入 tokens: {input_tokens:,}, 輸出 tokens: {output_tokens:,}, 總計: {total_tokens_used:,}")
 
-        # 6. 時間戳重對應（如果需要）
+        # 7. 時間戳重對應（如果需要）
         if request.segments_for_remapping and raw_lrc_text:
             logger.info("開始重新對應時間戳")
             final_lrc_text = _remap_lrc_timestamps(
@@ -411,10 +422,10 @@ def transcription_flow(request: TranscriptionRequest) -> TranscriptionResponse:
         else:
             final_lrc_text = raw_lrc_text
 
-        # 7. 轉換為各種格式
+        # 8. 轉換為各種格式
         final_transcripts = convert_to_all_formats(final_lrc_text)
 
-        # 8. 計算費用和指標
+        # 9. 計算費用和指標
         items = []
         if total_tokens_used > 0:
             items.append(CalculationItem(
@@ -426,12 +437,7 @@ def transcription_flow(request: TranscriptionRequest) -> TranscriptionResponse:
         processing_time_seconds = time.time() - start_time
         logger.info(f"轉錄任務統計:")
         logger.info(f"  - 總處理時間: {processing_time_seconds:>10.2f} 秒")
-        logger.info(f"  - 處理速度:   {processing_time_seconds/60:>10.2f} 分鐘")
-        if audio_duration_seconds > 0:
-            rtf = processing_time_seconds / audio_duration_seconds
-            logger.info(f"  - RTF 比率:   {rtf:>10.4f} (處理時間/音訊時長)")
 
-        # 使用 CalculatorService 計算所有指標
         calculator = CalculatorService()
         metrics_response = calculator.calculate_metrics(
             items=items,
@@ -439,15 +445,25 @@ def transcription_flow(request: TranscriptionRequest) -> TranscriptionResponse:
             processing_time_seconds=processing_time_seconds,
             audio_duration_seconds=audio_duration_seconds
         )
-
         logger.info(f"轉錄任務完成:")
         logger.info(f"  - 總費用:     ${metrics_response.cost:>10.6f}")
-        logger.info(f"  - 總 Tokens:  {metrics_response.total_tokens:>10,}")
+
+        # 10. 更新日誌為 COMPLETED
+        update_data = {
+            "status": "COMPLETED",
+            "audio_duration_seconds": metrics_response.audio_duration_seconds,
+            "processing_time_seconds": metrics_response.processing_time_seconds,
+            "total_tokens": metrics_response.total_tokens,
+            "cost": metrics_response.cost,
+        }
+        log_repo.update_log(db, task_uuid, update_data)
+        logger.info(f"更新日誌為 COMPLETED, ID: {task_uuid}")
 
         # 清理檔案
         task_manager.cleanup()
 
         return TranscriptionResponse(
+            task_uuid=task_uuid,
             transcripts=final_transcripts,
             tokens_used=metrics_response.total_tokens,
             cost=metrics_response.cost,
@@ -459,5 +475,16 @@ def transcription_flow(request: TranscriptionRequest) -> TranscriptionResponse:
         )
 
     except Exception as e:
-        logger.error(f"轉錄流程發生錯誤: {e}")
-        raise
+        processing_time_seconds = time.time() - start_time
+        error_message = traceback.format_exc()
+        logger.error(f"轉錄流程發生錯誤, ID: {task_uuid}\n{error_message}")
+
+        # 更新日誌為 FAILED
+        failure_update_data = {
+            "status": "FAILED",
+            "error_message": str(e),  # 儲存簡潔的錯誤訊息
+            "processing_time_seconds": processing_time_seconds
+        }
+        log_repo.update_log(db, task_uuid, failure_update_data)
+        logger.info(f"更新日誌為 FAILED, ID: {task_uuid}")
+        raise e

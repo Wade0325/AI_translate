@@ -5,8 +5,10 @@ import uuid
 from pathlib import Path
 import yt_dlp
 from pydantic import BaseModel, HttpUrl
+from sqlalchemy.orm import Session
+from app.database.session import get_db
 
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Body
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Body, Depends
 from google import genai
 
 # 使用統一的 logger 設定
@@ -54,10 +56,11 @@ async def transcribe_media(
     file: UploadFile = File(..., description="要轉錄的音訊或視訊檔案"),
     source_lang: str = Form(..., description="來源語言代碼 (例如：zh-TW)"),
     model: str = Form(..., description="使用的模型名稱"),
+    db: Session = Depends(get_db)
 ):
     """接收音訊或視訊檔案，進行轉錄。"""
     logger.info(
-        f"接收到轉錄請求: FileName='{file.filename}', Lang='{source_lang}', Model='{model}'")
+        f"API接收到轉錄請求: 檔案名稱='{file.filename}', 語言='{source_lang}', 模型='{model}'")
 
     if not file.filename:
         logger.error("轉錄請求失敗: 沒有提供檔案名稱")
@@ -81,16 +84,19 @@ async def transcribe_media(
     finally:
         await file.close()
 
-    # 使用新的 TranscriptionService 進行轉錄
+    # 轉錄服務類的轉錄函式
     try:
         response = transcription_service.transcribe_file(
+            db=db,
             file_path=str(save_path),
             model=model,
-            source_lang=source_lang
+            source_lang=source_lang,
+            original_filename=file.filename
         )
 
         # 轉換為 API 回應格式
         return {
+            "task_uuid": response.task_uuid,
             "transcripts": response.transcripts,
             "tokens_used": response.tokens_used,
             "cost": response.cost,
@@ -108,7 +114,10 @@ async def transcribe_media(
 
 
 @router.post("/youtube", tags=["Transcription"])
-async def transcribe_youtube(request: YouTubeTranscribeRequest = Body(...)):
+async def transcribe_youtube(
+    request: YouTubeTranscribeRequest = Body(...),
+    db: Session = Depends(get_db)
+):
     """接收 YouTube 連結，下載音訊並進行轉錄。"""
     logger.info(
         f"接收到 YouTube 轉錄請求: URL='{request.youtube_url}', VAD: {'Enabled' if request.enable_vad else 'Disabled'}")
@@ -125,10 +134,14 @@ async def transcribe_youtube(request: YouTubeTranscribeRequest = Body(...)):
     }
 
     logger.info(f"開始下載 YouTube 音訊: {request.youtube_url}")
+    video_title = "youtube_video"
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([str(request.youtube_url)])
-        logger.info("YouTube 音訊下載完成")
+            info_dict = ydl.extract_info(
+                str(request.youtube_url), download=True)
+            video_title = info_dict.get(
+                'title', 'youtube_video') if info_dict else 'youtube_video'
+        logger.info(f"YouTube 音訊下載完成: {video_title}")
     except Exception as e:
         logger.error(f"下載 YouTube 音訊時出錯: {e}")
         raise HTTPException(status_code=500, detail=f"下載 YouTube 音訊時出錯: {e}")
@@ -156,10 +169,12 @@ async def transcribe_youtube(request: YouTubeTranscribeRequest = Body(...)):
                 logger.info(f"準備轉錄純人聲檔案: {speech_only_path_str}")
                 # 轉錄純人聲檔案，並傳入分段資訊以供重對應
                 response = transcription_service.transcribe_file(
+                    db=db,
                     file_path=speech_only_path_str,
                     model=request.model,
                     source_lang=request.source_lang,
-                    segments_for_remapping=segments
+                    segments_for_remapping=segments,
+                    original_filename=video_title
                 )
 
                 # 清理純人聲檔案
@@ -167,6 +182,7 @@ async def transcribe_youtube(request: YouTubeTranscribeRequest = Body(...)):
                 logger.info("已清理純人聲檔案")
 
                 return {
+                    "task_uuid": response.task_uuid,
                     "transcripts": response.transcripts,
                     "tokens_used": response.tokens_used,
                     "cost": response.cost,
@@ -184,12 +200,15 @@ async def transcribe_youtube(request: YouTubeTranscribeRequest = Body(...)):
             logger.info("VAD 未啟用或不可用，直接處理原始檔案")
             # VAD 未啟用或不可用，直接處理原始檔案
             response = transcription_service.transcribe_file(
+                db=db,
                 file_path=str(original_audio_path),
                 model=request.model,
-                source_lang=request.source_lang
+                source_lang=request.source_lang,
+                original_filename=video_title
             )
 
             return {
+                "task_uuid": response.task_uuid,
                 "transcripts": response.transcripts,
                 "tokens_used": response.tokens_used,
                 "cost": response.cost,
