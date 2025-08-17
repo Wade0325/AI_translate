@@ -5,6 +5,7 @@ import {
   PlusOutlined
 } from '@ant-design/icons';
 import { useTranscription } from '../context/TranscriptionContext';
+import { modelNameOptions } from '../constants/modelConfig';
 
 // 1. 建立 Context 和自訂 Hook
 const ModelManagerContext = createContext(null);
@@ -29,20 +30,6 @@ const ModelManagerProvider = ({ children }) => {
   const [isParamsModalOpen, setIsParamsModalOpen] = useState(false);
   const [editingParamsInterfaceName, setEditingParamsInterfaceName] = useState('');
   const [promptText, setPromptText] = useState('');
-
-  // 定義模型名稱選項 (保留，因為儲存邏輯可能會用到)
-  const modelNameOptions = {
-    Google: [
-      { value: 'gemini-2.5-pro', label: 'gemini-2.5-pro' }
-    ]
-  };
-  
-  const getCurrentModelOptions = () => {
-    const provider = Object.keys(modelNameOptions).find(p => 
-      modelNameOptions[p].some(m => m.value === editingInterfaceName)
-    );
-    return provider ? modelNameOptions[provider] : [];
-  };
 
   // 資料獲取函式
   const getInterfaceConfig = async (interfaceName) => {
@@ -261,9 +248,9 @@ const ModelManagerProvider = ({ children }) => {
         destroyOnHidden
       >
         <div style={{ marginBottom: '24px' }}>
-          <div style={{ marginBottom: '8px', fontWeight: 500 }}>API密鑰</div>
+          <div style={{ marginBottom: '8px', fontWeight: 500 }}>API金鑰</div>
           {/* <div style={{ color: 'rgba(0,0,0,0.45)', fontSize: '12px', marginBottom: '12px' }}>
-            請逐行輸入API密鑰。系統將按從上到下的順序嘗試使用這些密鑰。
+            請逐行輸入API金鑰。系統將按從上到下的順序嘗試使用這些密鑰。
           </div> */}
           
           {apiKeys.map((key, index) => (

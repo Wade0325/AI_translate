@@ -7,10 +7,13 @@ services:
     ports:
       - "8088:8088"
     volumes:
-      - ./backend/model_settings.db:/app/model_settings.db
       - ./backend/temp_uploads:/app/temp_uploads
+    environment:
+      - DATABASE_URL=postgresql://user:password@postgres:5432/mydatabase
     command: uvicorn main:app --host 0.0.0.0 --port 8088 --timeout-keep-alive 600
     restart: unless-stopped
+    depends_on:
+      - postgres
 
   frontend:
     build:
@@ -22,3 +25,19 @@ services:
     depends_on:
       - backend
     restart: unless-stopped
+
+  postgres:
+    image: postgres:13
+    container_name: postgres-db
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: mydatabase
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+
+volumes:
+  postgres_data:

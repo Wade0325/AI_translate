@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from contextlib import asynccontextmanager
+from dotenv import load_dotenv
 from app.api import model_manager
 from app.api import transcription
 
@@ -7,17 +8,20 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.database.session import init_db
 from app.utils.logger import setup_logger
 
+# 載入 .env 檔案中的環境變數
+load_dotenv()
+
 # 建立 logger
 logger = setup_logger(__name__)
-
-# 初始化資料庫
-init_db()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """應用程式生命週期管理"""
     logger.info("正在啟動 AI Voice Transcription API...")
+
+    # 初始化資料庫
+    init_db()
 
     # 預先初始化 VAD 服務
     try:

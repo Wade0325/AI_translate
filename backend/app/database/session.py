@@ -1,7 +1,8 @@
 import json
+import os
 from pathlib import Path
 from typing import Optional, List
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker, Session
 from .models import Base, ModelConfiguration, TranscriptionLog
 from app.schemas.schemas import ModelConfigurationSchema
@@ -10,32 +11,36 @@ from app.utils.logger import setup_logger
 logger = setup_logger(__name__)
 
 # --- Database Setup ---
-DATABASE_URL = Path(__file__).resolve(
-).parent.parent.parent / "model_settings.db"
-SQLALCHEMY_DATABASE_URL = f"sqlite:///{DATABASE_URL}"
+SQLALCHEMY_DATABASE_URL = os.getenv(
+    "DATABASE_URL", "postgresql://user:password@localhost:5432/mydatabase"
+)
+logger.info(f"Connecting to database...")
 
 engine = create_engine(
-    SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False}
+    SQLALCHEMY_DATABASE_URL
 )
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
 def init_db():
     """初始化資料庫，建立資料表並插入預設資料"""
-    logger.info(f"Initializing database at {DATABASE_URL}...")
-    DATABASE_URL.parent.mkdir(parents=True, exist_ok=True)
+    logger.info(f"Initializing database...")
     Base.metadata.create_all(bind=engine)
 
     db = SessionLocal()
     try:
         # 檢查是否有任何記錄
-        if db.query(ModelConfiguration).count() == 0:
-            # 插入預設的 'Google' 記錄
-            default_google = ModelConfiguration(interface_name='Google')
-            db.add(default_google)
+        result = db.execute(select(ModelConfiguration).limit(1)).first()
+        if result is None:
+            # 插入預設的 'Google', 'Anthropic', 'OpenAI' 記錄
+            default_providers = ['Google', 'Anthropic', 'OpenAI']
+            for provider in default_providers:
+                default_config = ModelConfiguration(interface_name=provider)
+                db.add(default_config)
             db.commit()
             logger.info(
-                "Inserted default 'Google' record into 'model_configurations' table.")
+                f"Inserted default records {default_providers} into 'model_configurations' table."
+            )
         logger.info("Database initialization complete.")
     finally:
         db.close()

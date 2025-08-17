@@ -37,25 +37,3 @@ class TranscriptionLog(Base):
     cost = Column(Float, nullable=True)
     error_message = Column(Text, nullable=True)
     user_id = Column(String, nullable=True)
-
-
-# 資料表 Schema 定義
-MODEL_CONFIGURATIONS_SCHEMA = """
-    CREATE TABLE IF NOT EXISTS model_configurations (
-        interface_name TEXT PRIMARY KEY,
-        api_keys_json TEXT,
-        model_name TEXT,
-        prompt TEXT,
-        last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )
-"""
-
-# 預設資料
-DEFAULT_RECORDS = [
-    {
-        'interface_name': 'Google',
-        'api_keys_json': None,
-        'model_name': None,
-        'prompt': None
-    }
-]

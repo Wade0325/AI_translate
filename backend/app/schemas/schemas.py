@@ -28,12 +28,11 @@ class TestInterfaceRequest(BaseModel):
 
 class ModelConfigurationSchema(BaseModel):
     """
-    用於在應用程式內部（特別是 Repository 層）傳遞和操作的模型設定資料結構。
-    它的欄位名稱使用蛇形命名法 (snake_case) 以匹配資料庫欄位。
+    用於在應用程式內部傳遞和操作的模型設定資料結構。
     """
     interface_name: str
-    api_keys_json: str
-    model_name: str
+    api_keys_json: Optional[str] = None
+    model_name: Optional[str] = None
     prompt: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)

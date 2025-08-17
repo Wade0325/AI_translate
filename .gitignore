@@ -228,3 +228,7 @@ backend/setting.json
 # SQLite database files in backend
 backend/*.db
 .cursor/
+
+# Temporary upload folders
+/temp_uploads/
+/backend/temp_uploads/

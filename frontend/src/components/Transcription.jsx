@@ -40,6 +40,10 @@ import { useTranscription } from '../context/TranscriptionContext';
 import { useModelManager } from './ModelManager';
 // 引入統一的設定和輔助函數
 import { modelNameOptions, findProviderForModel, isModelValid } from '../constants/modelConfig';
+import QueueSummary from './Transcription/QueueSummary';
+import UploadArea from './Transcription/UploadArea';
+import FileQueueHeader from './Transcription/FileQueueHeader';
+import FileQueueTable from './Transcription/FileQueueTable';
 
 const { Title, Text } = Typography;
 const { Option } = Select;
@@ -140,6 +144,10 @@ const Transcription = () => {
     setPreviewTitle('');
   };
 
+  const handleRemoveFile = (uid) => {
+    setFileList(list => list.filter(f => f.uid !== uid));
+  };
+
   // --- 轉錄頁面元件 ---
   const uploadProps = {
     multiple: true,
@@ -150,181 +158,6 @@ const Transcription = () => {
     accept: 'audio/*',
   };
   
-  const fileListColumns = [
-    { 
-      title: '檔案名稱', 
-      dataIndex: 'name', 
-      key: 'name', 
-      width: '33%',
-      render: (name) => (
-        <Tooltip title={name} popupStyle={{ maxWidth: '600px' }}>
-          <span style={{
-            display: 'block',
-            whiteSpace: 'nowrap',
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-          }}>
-            {name}
-          </span>
-        </Tooltip>
-      ),
-    },
-    { 
-      title: '大小', 
-      dataIndex: 'size', 
-      key: 'size', 
-      width: '10%',
-      render: (size) => `${(size / 1024 / 1024).toFixed(2)} MB` 
-    },
-    {
-      title: 'Tokens',
-      dataIndex: 'tokens_used',
-      key: 'tokens_used',
-      width: '10%',
-      render: (tokens) => (tokens ? tokens.toLocaleString() : '-'),
-    },
-    {
-      title: (
-        <Space size="small">
-          <span>金額 (USD)</span>
-          <Tooltip title="此為預估值，點擊圖示查看 Gemini API 官方計價。">
-            <a href="https://ai.google.dev/pricing" target="_blank" rel="noopener noreferrer">
-              <InfoCircleOutlined style={{ color: 'rgba(0,0,0,.45)', cursor: 'pointer', fontSize: '12px' }} />
-            </a>
-          </Tooltip>
-        </Space>
-      ),
-      dataIndex: 'cost',
-      key: 'cost',
-      width: '10%',
-      render: (cost, record) => (record.status === 'completed' && cost ? `$${cost.toFixed(4)}` : '-'),
-    },
-    {
-      title: '進度',
-      dataIndex: 'status',
-      key: 'status',
-      width: '10%',
-      render: (status, record) => {
-        let progressStatus;
-        if (status === 'completed') progressStatus = 'success';
-        else if (status === 'error') progressStatus = 'exception';
-        else if (status === 'processing') progressStatus = 'active';
-        else progressStatus = 'normal';
-        
-        return <Progress percent={record.percent} status={progressStatus} size="small" />;
-      },
-    },
-    {
-      title: '操作',
-      key: 'action',
-      width: '25%',
-      render: (_, record) => {
-        const availableFormats = ['lrc', 'srt', 'vtt', 'txt'];
-        return (
-          <Space>
-            {record.status === 'completed' && record.result?.txt && (
-              <Tooltip title="預覽內容">
-                <Button
-                  size="small"
-                  icon={<EyeOutlined />}
-                  onClick={() => handleOpenPreview(record)}
-                />
-              </Tooltip>
-            )}
-            {record.status === 'completed' && record.result && availableFormats.map(format => (
-              <Tooltip title={`下載 ${format.toUpperCase()}`} key={format}>
-                <Button
-                  size="small"
-                  onClick={() => downloadFile(record.result[format], record.name, format)}
-                  disabled={!record.result[format]}
-                >
-                  {format.toUpperCase()}
-                </Button>
-              </Tooltip>
-            ))}
-            {(record.status === 'completed' || record.status === 'error') && (
-              <Tooltip title="重新處理">
-                <Popconfirm
-                  title="確定要重新處理此任務嗎?"
-                  onConfirm={() => handleReprocess(record.uid)}
-                  okText="確定"
-                  cancelText="取消"
-                >
-                  <Button size="small" icon={<ReloadOutlined />} />
-                </Popconfirm>
-              </Tooltip>
-            )}
-             <Tooltip title="移除">
-               <Button
-                  size="small"
-                  danger
-                  icon={<CloseCircleOutlined />}
-                  onClick={() => setFileList(list => list.filter(f => f.uid !== record.uid))}
-              />
-             </Tooltip>
-          </Space>
-        );
-      }
-    },
-  ];
-
-  const UploadArea = () => (
-    <Upload.Dragger {...uploadProps} height={200}>
-      <p className="ant-upload-drag-icon">
-        <UploadOutlined />
-      </p>
-      <p className="ant-upload-text">點擊或拖曳多個音訊/視訊檔案到此區域</p>
-      <p className="ant-upload-hint">支援單次或批次上傳，上傳後列表將會取代此處。</p>
-    </Upload.Dragger>
-  );
-
-  const FileListArea = () => (
-    <div>
-      <Row justify="space-between" align="middle" style={{ marginBottom: 16 }}>
-          <Col>
-              <Title level={5} style={{ margin: 0 }}>本次任務佇列</Title>
-          </Col>
-          <Col>
-            <Space>
-              <Upload {...uploadProps}>
-                  <Button icon={<PlusOutlined />}>新增檔案</Button>
-              </Upload>
-              {fileList.length > 0 && (
-                <Popconfirm
-                  title="確定要清除所有任務嗎？"
-                  onConfirm={clearAllFiles}
-                  okText="確定"
-                  cancelText="取消"
-                  placement="bottomRight"
-                >
-                  <Button danger icon={<DeleteOutlined />}>全部清除</Button>
-                </Popconfirm>
-              )}
-            </Space>
-          </Col>
-      </Row>
-      <Table
-        size="small"
-        columns={fileListColumns}
-        dataSource={fileList}
-        rowKey="uid"
-        pagination={{ pageSize: 5 }}
-        tableLayout="fixed"
-      />
-      <Row gutter={32} justify="end" style={{ marginTop: '16px', paddingRight: '8px' }}>
-        <Col>
-          <Statistic title={<span style={{fontSize: '14px', color: 'rgba(0, 0, 0, 0.45)'}}>完成檔案</span>} value={completedFilesCount} valueStyle={{fontSize: '20px'}} prefix={<CheckCircleOutlined />} />
-        </Col>
-        <Col>
-          <Statistic title={<span style={{fontSize: '14px', color: 'rgba(0, 0, 0, 0.45)'}}>總消耗 Tokens</span>} value={totalTokens} valueStyle={{fontSize: '20px'}} prefix={<DashboardOutlined />} />
-        </Col>
-        <Col>
-          <Statistic title={<span style={{fontSize: '14px', color: 'rgba(0, 0, 0, 0.45)'}}>預估總花費 (USD)</span>} value={totalCost} precision={4} valueStyle={{fontSize: '20px'}} prefix={<DollarCircleOutlined />} />
-        </Col>
-      </Row>
-    </div>
-  );
-
   const completedFilesCount = fileList.filter(f => f.status === 'completed').length;
   const totalTokens = fileList
     .filter(f => f.status === 'completed')
@@ -336,7 +169,29 @@ const Transcription = () => {
   return (
     <Space direction="vertical" size="large" style={{ width: '100%' }}>
       <Card title="1. 上傳與管理檔案">
-          {fileList.length === 0 ? <UploadArea /> : <FileListArea />}
+          {fileList.length === 0 ? (
+            <UploadArea uploadProps={uploadProps} />
+          ) : (
+            <div>
+              <FileQueueHeader
+                uploadProps={uploadProps}
+                onClearAllFiles={clearAllFiles}
+                hasFiles={fileList.length > 0}
+              />
+              <FileQueueTable
+                dataSource={fileList}
+                onDownloadFile={downloadFile}
+                onReprocessFile={handleReprocess}
+                onRemoveFile={handleRemoveFile}
+                onPreviewFile={handleOpenPreview}
+              />
+              <QueueSummary
+                completedFilesCount={completedFilesCount}
+                totalTokens={totalTokens}
+                totalCost={totalCost}
+              />
+            </div>
+          )}
           <Divider></Divider>
           <Row gutter={8}>
             <Col flex="auto">
