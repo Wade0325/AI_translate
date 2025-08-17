@@ -1,7 +1,8 @@
 import React, { createContext, useState, useContext } from 'react';
 import axios from 'axios';
 import { message } from 'antd';
-import { modelNameOptions } from '../constants/modelConfig';
+import { modelNameOptions, findProviderForModel } from '../constants/modelConfig'; // 引入 findProviderForModel
+import { useModelManager } from '../components/ModelManager'; // 引入 ModelManager Hook
 
 const API_BASE_URL = 'http://localhost:8000/api/v1';
 
@@ -17,15 +18,21 @@ export const TranscriptionProvider = ({ children }) => {
   const [sourceLang, setSourceLang] = useState('zh-TW');
   const [model, setModel] = useState(modelNameOptions.Google[0].value);
   const [isProcessing, setIsProcessing] = useState(false);
+  const { getProviderConfig } = useModelManager(); // 使用 ModelManager 的函式
 
-  const transcribeFile = async (file, sourceLang, model) => {
+  const transcribeFile = async (file, sourceLang, model, provider, apiKey, prompt) => {
     const formData = new FormData();
     formData.append('file', file);
     formData.append('source_lang', sourceLang);
     formData.append('model', model);
+    formData.append('provider', provider);
+    formData.append('api_key', apiKey);
+    if (prompt) {
+      formData.append('prompt', prompt);
+    }
 
     try {
-      const response = await axios.post('/api/v1/transcribe', formData, {
+      const response = await axios.post(`${API_BASE_URL}/transcribe`, formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
       });
       return response.data;
@@ -35,16 +42,18 @@ export const TranscriptionProvider = ({ children }) => {
     }
   };
 
-  const transcribeYoutubeUrl = async (url, sourceLang, model) => {
+  const transcribeYoutubeUrl = async (url, sourceLang, model, provider, apiKey, prompt) => {
     const payload = {
       youtube_url: url,
       source_lang: sourceLang,
       model: model,
+      provider: provider,
+      api_key: apiKey,
+      prompt: prompt,
     };
 
     try {
-      // 指向後端新的 /youtube 端點
-      const response = await axios.post('/api/v1/youtube', payload, {
+      const response = await axios.post(`${API_BASE_URL}/youtube`, payload, {
         headers: { 'Content-Type': 'application/json' },
       });
       return response.data;
@@ -85,6 +94,26 @@ export const TranscriptionProvider = ({ children }) => {
     setIsProcessing(true);
     message.info(`開始處理 ${filesToProcess.length} 個新檔案...`);
 
+    // 獲取當前選擇的模型對應的 provider
+    const provider = findProviderForModel(model);
+    if (!provider) {
+        message.error(`找不到模型 ${model} 對應的服務商設定。`);
+        setIsProcessing(false);
+        return;
+    }
+
+    // 在開始所有上傳前，先獲取一次設定
+    const config = await getProviderConfig(provider);
+    const apiKey = config?.apiKeys?.[0]; // 使用第一個 API Key
+    const prompt = config?.prompt;
+
+    if (!apiKey) {
+        message.error(`請先在模型管理中為 ${provider} 設定 API 金鑰。`);
+        setIsProcessing(false);
+        return;
+    }
+
+
     setFileList(currentList =>
       currentList.map(file =>
         filesToProcess.find(p => p.uid === file.uid)
@@ -95,12 +124,11 @@ export const TranscriptionProvider = ({ children }) => {
 
     const uploadPromises = filesToProcess.map(async (file) => {
       try {
-        // 根據任務類型選擇不同的 API
         let response;
         if (file.uid.startsWith('yt-')) {
-          response = await transcribeYoutubeUrl(file.name, sourceLang, model);
+          response = await transcribeYoutubeUrl(file.name, sourceLang, model, provider, apiKey, prompt);
         } else {
-          response = await transcribeFile(file.originFileObj, sourceLang, model);
+          response = await transcribeFile(file.originFileObj, sourceLang, model, provider, apiKey, prompt);
         }
         
         const resultObject = response.transcripts;

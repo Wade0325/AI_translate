@@ -18,9 +18,12 @@ class TranscriptionService:
         self,
         db: Session,
         file_path: str,
+        provider: str,
         model: str,
+        api_key: str,
         source_lang: str,
         original_filename: str,
+        prompt: Optional[str] = None,  # 新增 prompt 參數
         segments_for_remapping: Optional[List[Dict[str, float]]] = None
     ) -> TranscriptionResponse:
         """
@@ -29,7 +32,9 @@ class TranscriptionService:
         Args:
             db: SQLAlchemy Session.
             file_path: 以上傳至server的音訊檔案路徑
+            provider: 模型提供商
             model: 該次轉錄使用的模型名稱
+            api_key: API 金鑰
             source_lang: 來源語言代碼
             original_filename: 原始檔案名稱，用於日誌記錄
             segments_for_remapping: VAD 分段資訊（可選）
@@ -38,12 +43,15 @@ class TranscriptionService:
             包含轉錄結果、費用、時間等資訊的完整回應
         """
         logger.info(
-            f"TranscriptionService 接收到轉錄請求: 檔案={Path(file_path).name}, 模型={model}")
+            f"TranscriptionService 接收到轉錄請求: 檔案={Path(file_path).name}, Provider={provider}, 模型={model}")
 
         request = TranscriptionRequest(
             file_path=file_path,
+            provider=provider,
             model=model,
+            api_key=api_key,
             source_lang=source_lang,
+            prompt=prompt,  # 傳遞 prompt
             original_filename=original_filename,
             segments_for_remapping=segments_for_remapping
         )

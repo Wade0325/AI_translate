@@ -7,9 +7,8 @@ import yt_dlp
 from pydantic import BaseModel, HttpUrl
 from sqlalchemy.orm import Session
 from app.database.session import get_db
-
+from typing import Optional
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Body, Depends
-from google import genai
 
 # 使用統一的 logger 設定
 from app.utils.logger import setup_logger
@@ -45,8 +44,11 @@ SUPPORTED_MIME_TYPES = {
 class YouTubeTranscribeRequest(BaseModel):
     youtube_url: HttpUrl
     source_lang: str
+    provider: str
     model: str
-    enable_vad: bool = True  # 新增 VAD 開關
+    api_key: str
+    prompt: Optional[str] = None
+    enable_vad: bool = True
 
 # --- API 端點 ---
 
@@ -55,7 +57,11 @@ class YouTubeTranscribeRequest(BaseModel):
 async def transcribe_media(
     file: UploadFile = File(..., description="要轉錄的音訊或視訊檔案"),
     source_lang: str = Form(..., description="來源語言代碼 (例如：zh-TW)"),
+    provider: str = Form(..., description="模型提供商 (例如：google)"),
     model: str = Form(..., description="使用的模型名稱"),
+    api_key: str = Form(..., description="API 金鑰"),
+    prompt: Optional[str] = Form(
+        None, description="用於指導模型的提示詞"),
     db: Session = Depends(get_db)
 ):
     """接收音訊或視訊檔案，進行轉錄。"""
@@ -89,8 +95,11 @@ async def transcribe_media(
         response = transcription_service.transcribe_file(
             db=db,
             file_path=str(save_path),
+            provider=provider,
             model=model,
+            api_key=api_key,
             source_lang=source_lang,
+            prompt=prompt,
             original_filename=file.filename
         )
 
@@ -171,8 +180,11 @@ async def transcribe_youtube(
                 response = transcription_service.transcribe_file(
                     db=db,
                     file_path=speech_only_path_str,
+                    provider=request.provider,
                     model=request.model,
+                    api_key=request.api_key,
                     source_lang=request.source_lang,
+                    prompt=request.prompt,
                     segments_for_remapping=segments,
                     original_filename=video_title
                 )
@@ -201,8 +213,11 @@ async def transcribe_youtube(
             response = transcription_service.transcribe_file(
                 db=db,
                 file_path=str(original_audio_path),
+                provider=request.provider,
                 model=request.model,
+                api_key=request.api_key,
                 source_lang=request.source_lang,
+                prompt=request.prompt,
                 original_filename=video_title
             )
 

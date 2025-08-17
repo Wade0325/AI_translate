@@ -73,7 +73,7 @@ const Transcription = () => {
   } = useTranscription();
   
   // 從 ModelManager Context 獲取函式
-  const { handleEditInterface, handleEditParams, handleTestInterface } = useModelManager();
+  const { handleEditProvider, handleEditProviderParams, handleTestProvider } = useModelManager();
 
   // YT 連結輸入框狀態
   const [youtubeUrl, setYoutubeUrl] = useState('');
@@ -249,27 +249,27 @@ const Transcription = () => {
                 <Button
                   icon={<EditOutlined />}
                   style={{ width: '33.33%' }}
-                  onClick={() => handleEditInterface(selectedProvider)}
+                  onClick={() => handleEditProvider(selectedProvider)}
                   disabled={!selectedProvider}
                 >
                   編輯API
                 </Button>
               </Tooltip>
-              {/* <Tooltip title="編輯 Prompt 參數" placement="bottom">
+              <Tooltip title="編輯 Prompt 參數" placement="bottom">
                 <Button
                   icon={<SlidersOutlined />}
                   style={{ width: '33.33%' }}
-                  onClick={() => handleEditParams(selectedProvider)}
+                  onClick={() => handleEditProviderParams(selectedProvider)}
                   disabled={!selectedProvider}
                 >
                   編輯參數
                 </Button>
-              </Tooltip> */}
+              </Tooltip>
               <Tooltip title="測試此API是否可用" placement="bottom">
                 <Button
                   icon={<PlayCircleOutlined />}
                   style={{ width: '33.33%' }}
-                  onClick={() => handleTestInterface(selectedProvider)}
+                  onClick={() => handleTestProvider(selectedProvider)}
                   disabled={!selectedProvider}
                 >
                   測試API

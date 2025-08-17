@@ -163,6 +163,8 @@ def initialize_vad_service() -> Optional[VADService]:
     """
     try:
         service = get_vad_service()
+        # 主動觸發模型載入
+        service._load_model_if_needed()
         return service
     except Exception as e:
         logger.error(f"無法初始化 VAD 服務: {e}")

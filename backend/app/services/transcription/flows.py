@@ -13,9 +13,9 @@ from app.provider.google.gemini import (
     cleanup_gemini_file,
     GeminiClient
 )
-from app.repositories.model_manager_repository import ModelSettingsRepository
 from app.repositories.transcription_log_repository import TranscriptionLogRepository
-from app.services.subtitle_converter import convert_to_all_formats, _parse_lrc
+from app.services.converter.service import convert_from_lrc
+from app.services.converter.service import _parse_lrc
 from app.services.vad.service import get_vad_service
 from app.services.calculator.service import CalculatorService
 from app.services.calculator.models import CalculationItem
@@ -24,7 +24,7 @@ from .models import (
     TranscriptionRequest,
     TranscriptionTaskResult,
     TranscriptionResponse,
-    ModelConfiguration
+    # ModelConfiguration
 )
 
 logger = setup_logger(__name__)
@@ -90,45 +90,9 @@ def _adjust_lrc_timestamps(lrc_text: str, offset_seconds: float) -> str:
     return "\n".join(adjusted_lines)
 
 
-def _get_model_configuration(db: Session, model: str) -> ModelConfiguration:
-    """取得模型配置資訊"""
-    logger.info(f"取得模型配置: {model}")
-
-    repo = ModelSettingsRepository()
-    gemini_config = repo.get_by_model_name(db, model)
-
-    if not gemini_config or not gemini_config.api_keys_json:
-        raise ValueError(f"在資料庫中找不到 '{model}' 的設定或 API 金鑰")
-
-    api_keys = json.loads(gemini_config.api_keys_json)
-    api_key = api_keys[0] if api_keys else None
-    model_name = gemini_config.model_name
-
-    default_prompt = """# Role
-You are an expert audio transcription AI specializing in speaker diarization (identifying different speakers).
-# Task
-Transcribe the audio I provide into timestamped text, line by line. You must also identify which speaker uttered each line.
-# Output Format
-You must strictly adhere to the LRC format with speaker labels. Prepend each line with a label like "Speaker A:", "Speaker B:", etc., to differentiate the speakers.
-Example Format:
-[00:01.23] Speaker A: This is the first transcribed sentence.
-[00:04.56] Speaker B: This is the second sentence, spoken by another person.
-[00:08.79] Speaker A: Now the first speaker is talking again.
-# Constraints
-- **Do not** include any form of introduction, greeting, notes, explanations, or summaries.
-- Your response must **only** be the complete LRC content with speaker labels.
-- Start directly with the first line of the output."""
-
-    prompt = gemini_config.prompt or default_prompt
-
-    if not all([api_key, model_name]):
-        raise ValueError(f"'{model}' 的設定不完整，缺少 API 金鑰或模型名稱")
-
-    return ModelConfiguration(
-        api_key=api_key,
-        model_name=model_name,
-        prompt=prompt
-    )
+# 刪除整個 _get_model_configuration 函數
+# def _get_model_configuration(db: Session, model: str, prompt_override: Optional[str] = None) -> ModelConfiguration:
+#    ...
 
 
 class AudioSegment:
@@ -386,20 +350,24 @@ def transcription_flow(db: Session, request: TranscriptionRequest) -> Transcript
             logger.warning(f"無法讀取音訊檔案時長 {local_path.name}。錯誤：{e}")
             audio_duration_seconds = 0.0
 
-        # 3. 取得模型配置
-        config = _get_model_configuration(db, request.model)
+        # 3. 直接使用前端傳來的參數初始化 Client
+        if request.provider.lower() != 'google':
+            raise ValueError(
+                f"目前僅支援 'google' provider，但收到 '{request.provider}'")
 
-        # 4. 初始化 Gemini Client
-        logger.info(f"正在初始化 Gemini Client，模型: {config.model_name}")
-        client = GeminiClient(config.api_key).client
+        logger.info(f"正在初始化 Gemini Client，模型: {request.model}")
+        client = GeminiClient(request.api_key).client
         if not client:
             raise ValueError("無法初始化 Gemini Client，請檢查 API 金鑰")
+
+        # 4. 準備 prompt，如果前端沒給，就用一個通用的預設值
+        final_prompt = request.prompt or "You are an expert audio transcriptionist. Please transcribe the audio file into a detailed, accurate, and well-formatted LRC file."
 
         # 5. 建立轉錄任務管理器
         task_manager = TranscriptionTask(
             client=client,
-            model_name=config.model_name,
-            prompt=config.prompt,
+            model_name=request.model,
+            prompt=final_prompt,
             temp_dir=local_path.parent
         )
 
@@ -423,7 +391,8 @@ def transcription_flow(db: Session, request: TranscriptionRequest) -> Transcript
             final_lrc_text = raw_lrc_text
 
         # 8. 轉換為各種格式
-        final_transcripts = convert_to_all_formats(final_lrc_text)
+        transcripts_model = convert_from_lrc(final_lrc_text)
+        final_transcripts = transcripts_model.model_dump() if transcripts_model else {}
 
         # 9. 計算費用和指標
         items = []
