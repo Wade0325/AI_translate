@@ -20,4 +20,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # 容器將會監聽的 port
-EXPOSE 8088 
+EXPOSE 8000 

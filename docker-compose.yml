@@ -5,15 +5,43 @@ services:
       dockerfile: Dockerfile
     container_name: backend-service
     ports:
-      - "8088:8088"
+      - "8000:8000"
     volumes:
-      - ./backend/temp_uploads:/app/temp_uploads
+      # 更新 volume，指向新的 persistent_uploads 目錄
+      - ./backend/persistent_uploads:/app/persistent_uploads
     environment:
       - DATABASE_URL=postgresql://user:password@postgres:5432/mydatabase
-    command: uvicorn main:app --host 0.0.0.0 --port 8088 --timeout-keep-alive 600
+      # 新增 Redis 環境變數，讓 Celery app 知道 Broker 在哪裡
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --timeout-keep-alive 600
     restart: unless-stopped
     depends_on:
       - postgres
+      - redis # 後端服務也依賴於 Redis
+    networks: # 新增 network 設定
+      - app-network
+
+  celery-worker:
+    build:
+      context: ./backend # worker 使用與後端相同的 Docker image
+      dockerfile: Dockerfile
+    container_name: celery-worker-service
+    # 修正：將 app.celery.celery_app 改為 app.celery.celery:celery_app，並加上 -P gevent
+    command: celery -A app.celery.celery:celery_app worker -l info -P gevent
+    volumes:
+      # worker 也需要掛載同一個目錄來讀取檔案
+      - ./backend/persistent_uploads:/app/persistent_uploads
+    environment:
+      - DATABASE_URL=postgresql://user:password@postgres:5432/mydatabase
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    restart: unless-stopped
+    depends_on:
+      - postgres
+      - redis
+    networks: # 新增 network 設定
+      - app-network
 
   frontend:
     build:
@@ -25,6 +53,8 @@ services:
     depends_on:
       - backend
     restart: unless-stopped
+    networks: # 新增 network 設定
+      - app-network
 
   postgres:
     image: postgres:13
@@ -38,6 +68,23 @@ services:
     ports:
       - "5432:5432"
     restart: unless-stopped
+    networks: # 新增 network 設定
+      - app-network
+
+  redis:
+    image: redis:latest
+    container_name: redis-broker
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+    networks: # 新增 network 設定
+      - app-network
+
 
 volumes:
   postgres_data:
+
+# 定義一個共用的 network
+networks:
+  app-network:
+    driver: bridge

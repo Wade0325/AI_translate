@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 from app.api import model_manager
 from app.api import transcription
+from app.celery.celery import celery_app  # 匯入 Celery App
 
 from fastapi.middleware.cors import CORSMiddleware
 from app.database.session import init_db

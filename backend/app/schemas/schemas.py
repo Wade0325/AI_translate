@@ -21,7 +21,7 @@ class InterfaceConfigResponse(BaseModel):
 
 class TestInterfaceRequest(BaseModel):
     """用於測試模型介面連接的請求體。"""
-    interfaceName: str
+    provider: str
     apiKeys: List[str]
     modelName: Optional[str] = None
 

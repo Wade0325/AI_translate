@@ -6,8 +6,10 @@ REM 定義相對於腳本位置的路徑
 SET "SCRIPT_DIR=%~dp0"
 SET "VENV_ACTIVATE_SCRIPT=%SCRIPT_DIR%backend\.venv\Scripts\activate.bat"
 SET "VENV_DEACTIVATE_SCRIPT=%SCRIPT_DIR%backend\.venv\Scripts\deactivate.bat"
-SET "CELERY_APP_DIR=%SCRIPT_DIR%backend\app\celery"
-SET "FASTAPI_APP_DIR=%SCRIPT_DIR%backend"
+REM **** 修正 START ****
+REM Celery 和 FastAPI 的工作目錄都應該是 backend
+SET "BACKEND_DIR=%SCRIPT_DIR%backend"
+REM **** 修正 END ****
 SET "FRONTEND_APP_DIR=%SCRIPT_DIR%frontend"
 REM --- 路徑變數定義結束 ---
 
@@ -27,20 +29,23 @@ IF /I "%1"=="celery" (
         GOTO EndScript
     )
 
-    REM 檢查 Celery 應用程式目錄是否存在
-    IF NOT EXIST "%CELERY_APP_DIR%" (
-        echo Error: Celery app directory not found at "%CELERY_APP_DIR%"
+    REM **** 修正 START ****
+    REM 檢查 backend 目錄是否存在
+    IF NOT EXIST "%BACKEND_DIR%" (
+        echo Error: Backend directory not found at "%BACKEND_DIR%"
         GOTO DeactivateAndEnd
     )
-    echo Changing directory to "%CELERY_APP_DIR%"
-    pushd "%CELERY_APP_DIR%"
+    echo Changing directory to "%BACKEND_DIR%"
+    pushd "%BACKEND_DIR%"
     IF ERRORLEVEL 1 (
-        echo Failed to change directory to "%CELERY_APP_DIR%"
+        echo Failed to change directory to "%BACKEND_DIR%"
         GOTO DeactivateAndEnd
     )
 
-    echo Starting Celery worker: celery -A celery_app worker -l INFO -P gevent
-    celery -A celery_app worker -l INFO -P gevent
+    echo Starting Celery worker: celery -A app.celery.celery:celery_app worker -l INFO -P gevent
+    REM 使用正確的應用程式路徑，並加上 -P gevent 參數
+    celery -A app.celery.celery:celery_app worker -l INFO -P gevent
+    REM **** 修正 END ****
 
     echo Celery process finished or was interrupted.
     echo Returning to original directory...
@@ -63,20 +68,22 @@ IF /I "%1"=="celery" (
         GOTO EndScript
     )
 
-    REM 檢查 FastAPI 應用程式目錄是否存在
-    IF NOT EXIST "%FASTAPI_APP_DIR%" (
-        echo Error: FastAPI app directory not found at "%FASTAPI_APP_DIR%"
+    REM **** 修正 START ****
+    REM 檢查 backend 目錄是否存在
+    IF NOT EXIST "%BACKEND_DIR%" (
+        echo Error: Backend directory not found at "%BACKEND_DIR%"
         GOTO DeactivateAndEnd
     )
-    echo Changing directory to "%FASTAPI_APP_DIR%"
-    pushd "%FASTAPI_APP_DIR%"
+    echo Changing directory to "%BACKEND_DIR%"
+    pushd "%BACKEND_DIR%"
     IF ERRORLEVEL 1 (
-        echo Failed to change directory to "%FASTAPI_APP_DIR%"
+        echo Failed to change directory to "%BACKEND_DIR%"
         GOTO DeactivateAndEnd
     )
+    REM **** 修正 END ****
 
     echo Starting FastAPI app: uvicorn main:app --reload
-    uvicorn main:app --reload
+    uvicorn main:app --reload --host 0.0.0.0 --port 8000
 
     echo FastAPI app process finished or was interrupted.
     echo Returning to original directory...

@@ -80,7 +80,7 @@ async def test_model_interface(
     request_data: TestInterfaceRequest = Body(...)
 ):
     logger.info(
-        f"收到測試API請求: Interface Name - '{request_data.interfaceName}', API Keys count: {len(request_data.apiKeys)}")
+        f"收到測試API請求: Interface Name - '{request_data.provider}', API Keys count: {len(request_data.apiKeys)}")
     if not request_data.apiKeys:
         raise HTTPException(status_code=400, detail="未提供 API 金鑰進行測試。")
 
@@ -88,7 +88,7 @@ async def test_model_interface(
     api_key_to_test = request_data.apiKeys[0]
 
     # 判斷是否測試 Gemini
-    if "google" in request_data.interfaceName.lower():
+    if "google" in request_data.provider.lower():
         try:
             gemini_client = GeminiClient(api_key=api_key_to_test)
             test_result: ServiceStatus = gemini_client.test_connection()
@@ -99,14 +99,14 @@ async def test_model_interface(
                     success=True,
                     message="Gemini API (Google) 測試成功。",
                     details=test_result.message,
-                    testedInterface=request_data.interfaceName
+                    testedInterface=request_data.provider
                 )
             else:
                 return TestInterfaceResponse(
                     success=False,
                     message=test_result.message or "測試失敗，但未提供具體原因。",
                     details="",  # 保持為空，前端只顯示 message
-                    testedInterface=request_data.interfaceName
+                    testedInterface=request_data.provider
                 )
 
         except Exception as e:
@@ -118,7 +118,7 @@ async def test_model_interface(
                     "status": "Error",
                     "message": "測試 Gemini 時發生伺服器內部錯誤。",
                     "details": str(e),
-                    "testedInterface": request_data.interfaceName
+                    "testedInterface": request_data.provider
                 }
             )
 
@@ -129,7 +129,7 @@ async def test_model_interface(
 
     else:
         return {
-            "message": f"API類型 '{request_data.interfaceName}' 的測試邏輯尚未實現。",
-            "testedInterface": request_data.interfaceName,
+            "message": f"API類型 '{request_data.provider}' 的測試邏輯尚未實現。",
+            "testedInterface": request_data.provider,
             "status": "NotImplemented"
         }
