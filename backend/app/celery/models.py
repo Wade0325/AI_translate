@@ -13,5 +13,7 @@ class TranscriptionTaskParams(BaseModel):
     api_keys: str
     source_lang: str
     original_filename: str
+    client_id: str  # 新增: 用於 WebSocket 通訊
+    file_uid: str   # 新增: 前端的檔案唯一ID
     prompt: Optional[str] = None
     segments_for_remapping: Optional[List[Dict[str, float]]] = None

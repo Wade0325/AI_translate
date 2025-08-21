@@ -37,10 +37,9 @@ class YouTubeTranscribeRequest(BaseModel):
     provider: str
     model: str
     api_keys: str
+    client_id: str
+    file_uid: str
     prompt: Optional[str] = None
-    # enable_vad 已被整合到後端邏輯，不再需要由前端直接控制分割
-    # VAD 現在是作為轉錄失敗後的重試策略
-    # enable_vad: bool = True
 
 
 class TaskCreationResponse(BaseModel):
@@ -57,6 +56,8 @@ async def transcribe_media(
     provider: str = Form(..., description="模型提供商 (例如：google)"),
     model: str = Form(..., description="使用的模型名稱"),
     api_keys: str = Form(..., description="API 金鑰"),
+    client_id: str = Form(..., description="WebSocket 客戶端 ID"),
+    file_uid: str = Form(..., description="前端檔案唯一 ID"),
     prompt: Optional[str] = Form(None, description="用於指導模型的提示詞"),
 ):
     """
@@ -95,7 +96,9 @@ async def transcribe_media(
         api_keys=api_keys,
         source_lang=source_lang,
         prompt=prompt,
-        original_filename=file.filename
+        original_filename=file.filename,
+        client_id=client_id,
+        file_uid=file_uid
     )
 
     task = transcribe_media_task.delay(task_params.model_dump())
@@ -154,6 +157,8 @@ async def transcribe_youtube(
         source_lang=request.source_lang,
         prompt=request.prompt,
         original_filename=video_title,
+        client_id=request.client_id,
+        file_uid=request.file_uid,
         # segments_for_remapping 可以在 Celery 任務內部，
         # 透過 VAD 處理後生成，這裡不再由 API 傳遞
     )

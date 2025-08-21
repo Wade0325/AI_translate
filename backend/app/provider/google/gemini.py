@@ -54,7 +54,7 @@ class GeminiClient:
             return ServiceStatus(success=False, message=message)
 
 
-def upload_file_to_gemini(file_path: Path, client: genai.Client):
+def upload_file_to_gemini(file_path: Path, client: genai.Client, status_callback=None):
     """
     上傳檔案到 Gemini API，返回 gemini_file 物件
     """
@@ -62,6 +62,9 @@ def upload_file_to_gemini(file_path: Path, client: genai.Client):
         raise ValueError("檔案不存在。")
 
     logger.info(f"正在上傳檔案至 Gemini API: {file_path.name}")
+    if status_callback:
+        status_callback(f"上傳檔案至AI模型...")
+
     gemini_file = client.files.upload(file=file_path)
 
     # 等待檔案處理完成

@@ -1,8 +1,9 @@
 import time
 import traceback
 from pathlib import Path
-from typing import Generator
+from typing import Generator, Optional, List, Dict
 import json
+import redis
 
 import soundfile as sf
 from sqlalchemy.orm import Session
@@ -29,6 +30,29 @@ logger = setup_logger(__name__)
 RESULTS_DIR = Path(__file__).parent / "results"
 RESULTS_DIR.mkdir(exist_ok=True)
 
+# 這確保了 Worker 使用與 FastAPI 主應用完全相同的 Redis 設定。
+redis_client = redis.from_url(celery_app.conf.broker_url)
+logger.info("Celery task: Redis client initialized from Celery broker URL.")
+
+
+def publish_status(client_id: str, file_uid: str, task_uuid: str, status_text: str, result_data: dict = None, status_code: str = "PROCESSING"):
+    """向 Redis 發布狀態更新"""
+    message = {
+        "client_id": client_id,
+        "file_uid": file_uid,
+        "task_uuid": task_uuid,
+        "status_code": status_code,
+        "status_text": status_text,
+    }
+    if result_data:
+        message["result"] = result_data
+
+    try:
+        redis_client.publish("transcription_updates",
+                             json.dumps(message, default=str))
+    except Exception as e:
+        logger.error(f"發布狀態更新至 Redis 時失敗: {e}")
+
 
 def get_db_session() -> Generator[Session, None, None]:
     """Provide a database session for the Celery task."""
@@ -46,6 +70,14 @@ def transcribe_media_task(self, task_params_dict: dict):
     This function contains the core logic migrated from the original transcription_flow.
     """
     task_params = TranscriptionTaskParams.model_validate(task_params_dict)
+    task_uuid = self.request.id
+    client_id = task_params.client_id
+    file_uid = task_params.file_uid
+
+    # 建立一個輔助函式，自動傳入必要的 ID
+    def update_status(status_text: str, status_code: str = "PROCESSING", result_data: dict = None):
+        publish_status(client_id, file_uid, task_uuid, status_text,
+                       result_data=result_data, status_code=status_code)
 
     db_generator = get_db_session()
     db = next(db_generator)
@@ -66,6 +98,8 @@ def transcribe_media_task(self, task_params_dict: dict):
     task_uuid = new_log.task_uuid
     logger.info(
         f"Celery task started. Log ID: {task_uuid}, Celery ID: {self.request.id}")
+
+    update_status("檔案處理與分析...")
 
     try:
         # 2. 獲取音訊時長
@@ -93,6 +127,8 @@ def transcribe_media_task(self, task_params_dict: dict):
             raise ValueError(
                 "Failed to initialize Gemini Client. Check API key.")
 
+        update_status("正在初始化模型...")
+
         # 4. 準備 Prompt
         final_prompt = task_params.prompt or "You are an expert audio transcriptionist. Please transcribe the audio file into a detailed, accurate, and well-formatted LRC file."
 
@@ -101,7 +137,8 @@ def transcribe_media_task(self, task_params_dict: dict):
             client=client,
             model=task_params.model,
             prompt=final_prompt,
-            temp_dir=local_path.parent
+            temp_dir=local_path.parent,
+            status_callback=update_status  # 傳入回呼函式
         )
 
         # 6. 執行轉錄 (包含VAD失敗重試邏輯)
@@ -118,18 +155,19 @@ def transcribe_media_task(self, task_params_dict: dict):
         # 7. 時間戳重對應
         if task_params.segments_for_remapping and raw_lrc_text:
             logger.info(f"Remapping timestamps for log ID: {task_uuid}")
+            update_status("校正時間軸...")
             final_lrc_text = _remap_lrc_timestamps(
                 raw_lrc_text, task_params.segments_for_remapping)
         else:
             final_lrc_text = raw_lrc_text
 
         # 8. 轉換格式
+        update_status("正在轉換字幕格式...")
         transcripts_model = convert_from_lrc(final_lrc_text)
-        # final_transcripts = transcripts_model.model_dump() if transcripts_model else {}
-        final_transcripts = {
-            "lrc": transcripts_model.lrc} if transcripts_model else {}
+        final_transcripts = transcripts_model.model_dump() if transcripts_model else {}
 
         # 9. 計算費用
+        update_status("正在計算費用...")
         items = []
         if total_tokens_used > 0:
             items.append(CalculationItem(
@@ -183,6 +221,9 @@ def transcribe_media_task(self, task_params_dict: dict):
         if 'task_uuid' in final_response_dict and hasattr(final_response_dict['task_uuid'], 'hex'):
             final_response_dict['task_uuid'] = final_response_dict['task_uuid'].hex
 
+        update_status("任務完成", status_code="COMPLETED",
+                      result_data=final_response_dict)
+
         # 將結果寫入檔案
         result_file_path = RESULTS_DIR / f"{self.request.id}.txt"
         try:
@@ -211,6 +252,8 @@ def transcribe_media_task(self, task_params_dict: dict):
             "processing_time_seconds": processing_time_seconds
         }
         log_repo.update_log(db, task_uuid, failure_update_data)
+
+        update_status(f"任務失敗: {e}", status_code="FAILED")
 
         # 這裡可以選擇性地 re-raise 異常，讓 Celery 知道任務失敗了
         raise e

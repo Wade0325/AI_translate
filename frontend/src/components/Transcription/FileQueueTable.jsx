@@ -1,5 +1,5 @@
 import React from 'react';
-import { Table, Tooltip, Space, Progress, Button, Popconfirm } from 'antd';
+import { Table, Tooltip, Space, Progress, Button, Popconfirm, Tag, Spin } from 'antd';
 import {
   EyeOutlined,
   ReloadOutlined,
@@ -67,15 +67,39 @@ const FileQueueTable = ({
       title: '進度',
       dataIndex: 'status',
       key: 'status',
-      width: '10%',
+      width: '15%',
       render: (status, record) => {
-        let progressStatus;
-        if (status === 'completed') progressStatus = 'success';
-        else if (status === 'error') progressStatus = 'exception';
-        else if (status === 'processing') progressStatus = 'active';
-        else progressStatus = 'normal';
-        
-        return <Progress percent={record.percent} status={progressStatus} size="small" />;
+        switch (status) {
+          case 'processing':
+            return (
+              <Space>
+                <Spin size="small" />
+                <Tooltip title={record.statusText}>
+                  <span style={{
+                      display: 'inline-block',
+                      maxWidth: '120px',
+                      whiteSpace: 'nowrap',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      verticalAlign: 'middle'
+                  }}>
+                    {record.statusText || '處理中...'}
+                  </span>
+                </Tooltip>
+              </Space>
+            );
+          case 'completed':
+            return <Tag color="success">完成</Tag>;
+          case 'error':
+            return (
+              <Tooltip title={record.error || '未知錯誤'}>
+                <Tag color="error">失敗</Tag>
+              </Tooltip>
+            );
+          case 'waiting':
+          default:
+            return <Tag>等待中</Tag>;
+        }
       },
     },
     {

@@ -110,11 +110,12 @@ class AudioSegment:
 class TranscriptionTask:
     """轉錄任務管理器，處理音訊分割和轉錄流程"""
 
-    def __init__(self, client, model: str, prompt: str, temp_dir: Path):
+    def __init__(self, client, model: str, prompt: str, temp_dir: Path, status_callback=None):
         self.client = client
         self.model = model
         self.prompt = prompt
         self.temp_dir = temp_dir
+        self.status_callback = status_callback
         self.local_cleanup_list = []
         self.gemini_cleanup_list = []
         self.max_duration_seconds = 180  # 3 分鐘
@@ -182,10 +183,14 @@ class TranscriptionTask:
         """嘗試轉錄單一音訊檔案"""
         try:
             # 上傳檔案到 Gemini
-            gemini_file = upload_file_to_gemini(audio_path, self.client)
+            gemini_file = upload_file_to_gemini(
+                audio_path, self.client, self.status_callback)
             self.gemini_cleanup_list.append(gemini_file)
 
             # 執行轉錄
+            if self.status_callback:
+                self.status_callback("AI模型處理中...")
+
             result = transcribe_with_uploaded_file(
                 self.client, gemini_file, self.model, self.prompt
             )

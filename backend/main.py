@@ -1,9 +1,12 @@
+import asyncio
+import json
 from fastapi import FastAPI
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 from app.api import model_manager
 from app.api import transcription
-from app.celery.celery import celery_app  # 匯入 Celery App
+from app.websocket.router import router as websocket_router
+from app.websocket.manager import manager as websocket_manager
 
 from fastapi.middleware.cors import CORSMiddleware
 from app.database.session import init_db
@@ -24,6 +27,10 @@ async def lifespan(app: FastAPI):
     # 初始化資料庫
     init_db()
 
+    # 啟動 WebSocket 的 Redis 監聽器
+    asyncio.create_task(websocket_manager.redis_listener())
+    logger.info("WebSocket Redis 監聽器已在背景啟動。")
+
     # 預先初始化 VAD 服務
     try:
         from app.services.vad.service import initialize_vad_service
@@ -43,6 +50,9 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="AI Voice Transcription API",
               version="1.0.0", lifespan=lifespan)
 
+
+# 新增 WebSocket 路由
+app.include_router(websocket_router, prefix="/ws", tags=["WebSocket"])
 
 # 更新路由設定
 app.include_router(transcription.router, prefix="/api/v1",
