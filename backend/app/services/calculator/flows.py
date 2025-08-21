@@ -26,7 +26,7 @@ def calculate_price_flow(request: PriceCalculationRequest) -> PriceCalculationRe
     執行計算價格和性能指標的工作流程。
     此流程會根據每個計費項目的內容類型和 token 數計算成本。
     """
-    model_price = MODEL_PRICES.get(request.model_name, MODEL_PRICES["default"])
+    model_price = MODEL_PRICES.get(request.model, MODEL_PRICES["default"])
 
     total_cost = 0.0
     total_tokens = 0
@@ -61,7 +61,7 @@ def calculate_price_flow(request: PriceCalculationRequest) -> PriceCalculationRe
     return PriceCalculationResponse(
         total_tokens=total_tokens,
         cost=total_cost,
-        model_name=request.model_name,
+        model=request.model,
         breakdown=breakdown,
         processing_time_seconds=request.processing_time_seconds,
         audio_duration_seconds=request.audio_duration_seconds

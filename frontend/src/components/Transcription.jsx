@@ -39,7 +39,7 @@ import {
 import { useTranscription } from '../context/TranscriptionContext';
 import { useModelManager } from './ModelManager';
 // 引入統一的設定和輔助函數
-import { modelNameOptions, findProviderForModel, isModelValid } from '../constants/modelConfig';
+import { modelOptions, findProviderForModel, isModelValid } from '../constants/modelConfig';
 import QueueSummary from './Transcription/QueueSummary';
 import UploadArea from './Transcription/UploadArea';
 import FileQueueHeader from './Transcription/FileQueueHeader';
@@ -96,7 +96,7 @@ const Transcription = () => {
   const handleProviderChange = (newProvider) => {
     setSelectedProvider(newProvider);
     // 當服務商變更時，自動選擇該服務商的第一個模型
-    const defaultModel = modelNameOptions[newProvider]?.[0]?.value;
+    const defaultModel = modelOptions[newProvider]?.[0]?.value;
     if (defaultModel) {
       setModel(defaultModel);
     } else {
@@ -217,7 +217,7 @@ const Transcription = () => {
               style={{ width: '100%' }}
               onChange={handleProviderChange}
             >
-              {Object.keys(modelNameOptions).map(provider => (
+              {Object.keys(modelOptions).map(provider => (
                 <Option key={provider} value={provider}>{provider}</Option>
               ))}
             </Select>
@@ -230,7 +230,7 @@ const Transcription = () => {
               onChange={setModel}
               disabled={!selectedProvider}
             >
-              {modelNameOptions[selectedProvider]?.map(option => (
+              {modelOptions[selectedProvider]?.map(option => (
                   <Option key={option.value} value={option.value}>{option.label}</Option>
               ))}
             </Select>

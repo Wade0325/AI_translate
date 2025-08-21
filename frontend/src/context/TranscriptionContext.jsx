@@ -1,7 +1,7 @@
 import React, { createContext, useState, useContext } from 'react';
 import axios from 'axios';
 import { message } from 'antd';
-import { modelNameOptions, findProviderForModel } from '../constants/modelConfig'; // 引入 findProviderForModel
+import { modelOptions, findProviderForModel } from '../constants/modelConfig'; // 引入 findProviderForModel
 import { useModelManager } from '../components/ModelManager'; // 引入 ModelManager Hook
 
 const API_BASE_URL = 'http://localhost:8000/api/v1';
@@ -16,7 +16,7 @@ export const useTranscription = () => useContext(TranscriptionContext);
 export const TranscriptionProvider = ({ children }) => {
   const [fileList, setFileList] = useState([]);
   const [sourceLang, setSourceLang] = useState('zh-TW');
-  const [model, setModel] = useState(modelNameOptions.Google[0].value);
+  const [model, setModel] = useState(modelOptions.Google[0].value);
   const [isProcessing, setIsProcessing] = useState(false);
   const { getProviderConfig } = useModelManager(); // 使用 ModelManager 的函式
 
@@ -26,7 +26,7 @@ export const TranscriptionProvider = ({ children }) => {
     formData.append('source_lang', sourceLang);
     formData.append('model', model);
     formData.append('provider', provider);
-    formData.append('api_key', apiKey);
+    formData.append('api_keys', apiKey);
     if (prompt) {
       formData.append('prompt', prompt);
     }

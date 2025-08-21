@@ -1,38 +1,38 @@
-from pydantic import BaseModel, HttpUrl
-from typing import List, Optional, Any, Dict
+from pydantic import BaseModel, Field
+from typing import List, Optional
 from pydantic import ConfigDict
 
 
-class InterfaceConfigRequest(BaseModel):
+class ProviderConfigRequest(BaseModel):
     """用於接收前端發送的模型介面設定的請求體。"""
-    interfaceName: str
-    apiKeys: List[str]
-    modelName: str
+    provider: str
+    api_keys: List[str] = Field(..., alias="apiKeys")
+    model: str = Field(..., alias="model")
     prompt: Optional[str] = None
 
 
-class InterfaceConfigResponse(BaseModel):
+class ProviderConfigResponse(BaseModel):
     """用於向前端返回模型介面設定的回應體。"""
-    interfaceName: str
-    apiKeys: List[str]
-    modelName: str
+    provider: str
+    api_keys: List[str] = Field(..., serialization_alias="apiKeys")
+    model: str = Field(..., serialization_alias="model")
     prompt: Optional[str] = None
 
 
-class TestInterfaceRequest(BaseModel):
+class TestProviderRequest(BaseModel):
     """用於測試模型介面連接的請求體。"""
     provider: str
-    apiKeys: List[str]
-    modelName: Optional[str] = None
+    api_keys: List[str] = Field(..., alias="apiKeys")
+    model: str = Field(..., alias="model")
 
 
 class ModelConfigurationSchema(BaseModel):
     """
     用於在應用程式內部傳遞和操作的模型設定資料結構。
     """
-    interface_name: str
-    api_keys_json: Optional[str] = None
-    model_name: Optional[str] = None
+    provider: str
+    api_keys: Optional[str] = None
+    model: Optional[str] = Field(None, alias="model")
     prompt: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
@@ -46,7 +46,7 @@ class ServiceStatus(BaseModel):
     message: Optional[str] = None
 
 
-class TestInterfaceResponse(BaseModel):
+class TestProviderResponse(BaseModel):
     """用於測試模型介面連接的回應體。"""
     success: bool
     message: str

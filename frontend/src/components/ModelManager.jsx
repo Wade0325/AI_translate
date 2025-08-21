@@ -5,7 +5,7 @@ import {
   PlusOutlined
 } from '@ant-design/icons';
 import { useTranscription } from '../context/TranscriptionContext';
-import { modelNameOptions } from '../constants/modelConfig';
+import { modelOptions } from '../constants/modelConfig';
 import defaultPrompt from '../constants/promptConfig';
 
 // 1. 建立 Context 和自訂 Hook
@@ -24,7 +24,7 @@ const ModelManagerProvider = ({ children }) => {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingProvider, setEditingProvider] = useState('');
   const [apiKeys, setApiKeys] = useState(['']);
-  const [selectedModelName, setSelectedModelName] = useState(undefined);
+  const [selectedmodel, setSelectedmodel] = useState(undefined);
   const [providerConfigs, setProviderConfigs] = useState({});
 
   // 編輯參數 Modal 相關狀態
@@ -54,7 +54,7 @@ const ModelManagerProvider = ({ children }) => {
   
     // 最後從後端 API 獲取
     try {
-      const response = await fetch('/api/v1/model-manager/setting/' + provider);
+      const response = await fetch('/api/v1/setting/models/' + provider);
       if (response.ok) {
         const data = await response.json();
         if (data) {
@@ -87,12 +87,12 @@ const ModelManagerProvider = ({ children }) => {
       ...partialConfig,
       provider: provider,
       apiKeys: partialConfig.apiKeys || latestConfig.apiKeys || [''],
-      modelName: partialConfig.modelName || latestConfig.modelName || modelNameOptions[provider]?.[0]?.value,
+      model: partialConfig.model || latestConfig.model || modelOptions[provider]?.[0]?.value,
     };
     
     // 1. 發送請求到後端
     try {
-      const response = await fetch('/api/v1/model-manager/setting', {
+      const response = await fetch('/api/v1/setting/models', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -134,11 +134,11 @@ const ModelManagerProvider = ({ children }) => {
     
     if (config) {
       setApiKeys(config.apiKeys && config.apiKeys.length > 0 ? config.apiKeys : ['']);
-      setSelectedModelName(config.modelName);
+      setSelectedmodel(config.model);
     } else {
       // 如果後端沒有這個設定，則重設為空狀態
       setApiKeys(['']);
-      setSelectedModelName(modelNameOptions[provider]?.[0]?.value || undefined);
+      setSelectedmodel(modelOptions[provider]?.[0]?.value || undefined);
     }
 
     setIsModalOpen(true);
@@ -149,7 +149,7 @@ const ModelManagerProvider = ({ children }) => {
     const validApiKeys = apiKeys.filter(key => key.trim() !== '');
     const success = await saveProviderConfig(editingProvider, {
       apiKeys: validApiKeys,
-      modelName: selectedModelName,
+      model: selectedmodel,
     });
     if (success) {
       setIsModalOpen(false);
@@ -216,13 +216,13 @@ const ModelManagerProvider = ({ children }) => {
     }
 
     try {
-      const response = await fetch('/api/v1/model-manager/test', {
+      const response = await fetch('/api/v1/setting/test', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           provider: provider,
           apiKeys: apiKeysToTest,
-          modelName: config.modelName,
+          model: config.model,
         }),
       });
 
@@ -281,7 +281,7 @@ const ModelManagerProvider = ({ children }) => {
           {apiKeys.map((key, index) => (
             <div key={index} style={{ display: 'flex', alignItems: 'center', marginBottom: '8px' }}>
               <Input
-                placeholder={`密鑰 ${index + 1} (例如 sk-...)`}
+                placeholder={`API Key ${index + 1}`}
                 value={key}
                 onChange={(e) => handleApiKeyChange(index, e)}
                 style={{ flexGrow: 1 }}

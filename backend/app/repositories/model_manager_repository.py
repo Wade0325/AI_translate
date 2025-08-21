@@ -5,24 +5,24 @@ from app.schemas.schemas import ModelConfigurationSchema
 
 
 class ModelSettingsRepository:
-    def get_by_name(self, db: Session, interface_name: str) -> Optional[ModelConfigurationSchema]:
+    def get_by_name(self, db: Session, provider: str) -> Optional[ModelConfigurationSchema]:
         """
         根據 interface_name 從資料庫獲取模型配置。
         返回 ModelConfigurationSchema 對象或 None。
         """
         config = db.query(ModelConfiguration).filter(
-            ModelConfiguration.interface_name == interface_name).first()
+            ModelConfiguration.provider == provider).first()
         if config:
             return ModelConfigurationSchema.model_validate(config)
         return None
 
-    def get_by_model_name(self, db: Session, model_name: str) -> Optional[ModelConfigurationSchema]:
+    def get_by_model(self, db: Session, model: str) -> Optional[ModelConfigurationSchema]:
         """
-        根據 model_name 從資料庫獲取模型配置。
+        根據 model 從資料庫獲取模型配置。
         返回 ModelConfigurationSchema 對象或 None。
         """
         config = db.query(ModelConfiguration).filter(
-            ModelConfiguration.model_name == model_name).first()
+            ModelConfiguration.model == model).first()
         if config:
             return ModelConfigurationSchema.model_validate(config)
         return None
@@ -35,12 +35,12 @@ class ModelSettingsRepository:
         失敗時拋出異常。
         """
         db_config = db.query(ModelConfiguration).filter(
-            ModelConfiguration.interface_name == config_schema.interface_name).first()
+            ModelConfiguration.provider == config_schema.provider).first()
 
         if db_config:
             # 更新現有記錄
-            db_config.api_keys_json = config_schema.api_keys_json
-            db_config.model_name = config_schema.model_name
+            db_config.api_keys = config_schema.api_keys
+            db_config.model = config_schema.model
             db_config.prompt = config_schema.prompt
         else:
             # 建立新記錄

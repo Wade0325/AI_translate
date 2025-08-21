@@ -1,6 +1,6 @@
 // 建立一個包含所有服務商及其模型的完整物件
 // 作為整個應用程式的 "Single Source of Truth"
-export const modelNameOptions = {
+export const modelOptions = {
   Google: [
     { value: 'gemini-2.5-pro', label: 'gemini-2.5-pro' },
     { value: 'gemini-2.5-flash', label: 'gemini-2.5-flash' },
@@ -15,10 +15,10 @@ export const modelNameOptions = {
 };
 
 // 輔助函式：根據模型名稱尋找其服務商
-export const findProviderForModel = (modelName) => {
-  if (!modelName) return null;
-  for (const provider in modelNameOptions) {
-    if (modelNameOptions[provider].some(option => option.value === modelName)) {
+export const findProviderForModel = (model) => {
+  if (!model) return null;
+  for (const provider in modelOptions) {
+    if (modelOptions[provider].some(option => option.value === model)) {
       return provider;
     }
   }
@@ -26,10 +26,10 @@ export const findProviderForModel = (modelName) => {
 };
 
 // 輔助函式：检查模型名称是否有效
-export const isModelValid = (modelName) => {
-  if (!modelName) return false;
-  for (const provider in modelNameOptions) {
-    if (modelNameOptions[provider].some(option => option.value === modelName)) {
+export const isModelValid = (model) => {
+  if (!model) return false;
+  for (const provider in modelOptions) {
+    if (modelOptions[provider].some(option => option.value === model)) {
       return true;
     }
   }

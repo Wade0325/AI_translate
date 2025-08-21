@@ -42,7 +42,7 @@ def get_db_session() -> Generator[Session, None, None]:
 @celery_app.task(bind=True)
 def transcribe_media_task(self, task_params_dict: dict):
     """
-    Celery background task for media transcription.
+    Celery background task for transcription.
     This function contains the core logic migrated from the original transcription_flow.
     """
     task_params = TranscriptionTaskParams.model_validate(task_params_dict)
@@ -88,7 +88,7 @@ def transcribe_media_task(self, task_params_dict: dict):
 
         logger.info(
             f"Initializing Gemini Client for model: {task_params.model}")
-        client = GeminiClient(task_params.api_key).client
+        client = GeminiClient(task_params.api_keys).client
         if not client:
             raise ValueError(
                 "Failed to initialize Gemini Client. Check API key.")
@@ -99,7 +99,7 @@ def transcribe_media_task(self, task_params_dict: dict):
         # 5. 建立轉錄任務管理器
         task_manager = TranscriptionTask(
             client=client,
-            model_name=task_params.model,
+            model=task_params.model,
             prompt=final_prompt,
             temp_dir=local_path.parent
         )
@@ -142,7 +142,7 @@ def transcribe_media_task(self, task_params_dict: dict):
         calculator = CalculatorService()
         metrics_response = calculator.calculate_metrics(
             items=items,
-            model_name=task_params.model,
+            model=task_params.model,
             processing_time_seconds=processing_time_seconds,
             audio_duration_seconds=audio_duration_seconds
         )

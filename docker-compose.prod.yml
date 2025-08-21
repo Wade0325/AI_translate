@@ -1,0 +1,72 @@
+services:
+  postgres:
+    image: postgres:13-alpine
+    container_name: prod_postgres
+    ports:
+      - "5432:5432"
+    env_file:
+      - ./.env.prod
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  redis:
+    image: redis:6-alpine
+    container_name: prod_redis
+    restart: unless-stopped
+
+  backend-service:
+    build:
+      context: ./backend
+    container_name: prod_backend
+    command: uvicorn main:app --host 0.0.0.0 --port 8000
+    volumes:
+      - ./backend/persistent_uploads:/app/persistent_uploads
+    env_file:
+      - ./.env.prod
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      - REDIS_HOST=redis
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    restart: unless-stopped
+
+  celery-worker:
+    build:
+      context: ./backend
+    container_name: prod_celery_worker
+    command: celery -A app.celery.celery:celery_app worker --loglevel=info
+    volumes:
+      - ./backend/persistent_uploads:/app/persistent_uploads
+    env_file:
+      - ./.env.prod
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      - REDIS_HOST=redis
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: prod_frontend
+    ports:
+      - "80:80"
+    depends_on:
+      - backend-service
+    restart: unless-stopped
+
+volumes:
+  postgres_data:

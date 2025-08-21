@@ -10,7 +10,7 @@ class TranscriptionTaskParams(BaseModel):
     file_path: str
     provider: str
     model: str
-    api_key: str
+    api_keys: str
     source_lang: str
     original_filename: str
     prompt: Optional[str] = None

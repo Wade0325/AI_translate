@@ -110,9 +110,9 @@ class AudioSegment:
 class TranscriptionTask:
     """轉錄任務管理器，處理音訊分割和轉錄流程"""
 
-    def __init__(self, client, model_name: str, prompt: str, temp_dir: Path):
+    def __init__(self, client, model: str, prompt: str, temp_dir: Path):
         self.client = client
-        self.model_name = model_name
+        self.model = model
         self.prompt = prompt
         self.temp_dir = temp_dir
         self.local_cleanup_list = []
@@ -187,7 +187,7 @@ class TranscriptionTask:
 
             # 執行轉錄
             result = transcribe_with_uploaded_file(
-                self.client, gemini_file, self.model_name, self.prompt
+                self.client, gemini_file, self.model, self.prompt
             )
 
             return TranscriptionTaskResult(
@@ -366,7 +366,7 @@ def transcription_flow(db: Session, request: TranscriptionRequest) -> Transcript
         # 5. 建立轉錄任務管理器
         task_manager = TranscriptionTask(
             client=client,
-            model_name=request.model,
+            model=request.model,
             prompt=final_prompt,
             temp_dir=local_path.parent
         )
@@ -410,7 +410,7 @@ def transcription_flow(db: Session, request: TranscriptionRequest) -> Transcript
         calculator = CalculatorService()
         metrics_response = calculator.calculate_metrics(
             items=items,
-            model_name=request.model,
+            model=request.model,
             processing_time_seconds=processing_time_seconds,
             audio_duration_seconds=audio_duration_seconds
         )

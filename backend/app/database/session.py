@@ -1,11 +1,7 @@
-import json
 import os
-from pathlib import Path
-from typing import Optional, List
 from sqlalchemy import create_engine, select
-from sqlalchemy.orm import sessionmaker, Session
-from .models import Base, ModelConfiguration, TranscriptionLog
-from app.schemas.schemas import ModelConfigurationSchema
+from sqlalchemy.orm import sessionmaker
+from .models import Base, ModelConfiguration
 from app.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -14,7 +10,7 @@ logger = setup_logger(__name__)
 SQLALCHEMY_DATABASE_URL = os.getenv(
     "DATABASE_URL", "postgresql://user:password@localhost:5432/mydatabase"
 )
-logger.info(f"Connecting to database...")
+logger.info(f"Creating database engine...")
 
 engine = create_engine(
     SQLALCHEMY_DATABASE_URL
@@ -35,7 +31,7 @@ def init_db():
             # 插入預設的 'Google', 'Anthropic', 'OpenAI' 記錄
             default_providers = ['Google', 'Anthropic', 'OpenAI']
             for provider in default_providers:
-                default_config = ModelConfiguration(interface_name=provider)
+                default_config = ModelConfiguration(provider=provider)
                 db.add(default_config)
             db.commit()
             logger.info(

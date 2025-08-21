@@ -27,7 +27,7 @@ class PriceCalculationRequest(BaseModel):
     用於計算價格和性能指標的請求模型。
     """
     items: list[CalculationItem] = Field(..., description="計費項目的列表")
-    model_name: str = Field(..., description="使用的模型名稱")
+    model: str = Field(..., description="使用的模型名稱")
     processing_time_seconds: float | None = Field(
         None, description="任務總處理時間（秒）")
     audio_duration_seconds: float | None = Field(
@@ -40,7 +40,7 @@ class PriceCalculationResponse(BaseModel):
     """
     total_tokens: int = Field(..., description="所有項目加總的總 token 數量")
     cost: float = Field(..., description="計算出的總費用")
-    model_name: str = Field(..., description="用於計價的模型名稱")
+    model: str = Field(..., description="用於計價的模型名稱")
     # 可選：提供成本細目
     breakdown: list[dict] | None = Field(None, description="每個計費項目的成本細目")
     processing_time_seconds: float | None = Field(

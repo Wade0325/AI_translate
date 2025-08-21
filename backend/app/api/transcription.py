@@ -36,7 +36,7 @@ class YouTubeTranscribeRequest(BaseModel):
     source_lang: str
     provider: str
     model: str
-    api_key: str
+    api_keys: str
     prompt: Optional[str] = None
     # enable_vad 已被整合到後端邏輯，不再需要由前端直接控制分割
     # VAD 現在是作為轉錄失敗後的重試策略
@@ -56,7 +56,7 @@ async def transcribe_media(
     source_lang: str = Form(..., description="來源語言代碼 (例如：zh-TW)"),
     provider: str = Form(..., description="模型提供商 (例如：google)"),
     model: str = Form(..., description="使用的模型名稱"),
-    api_key: str = Form(..., description="API 金鑰"),
+    api_keys: str = Form(..., description="API 金鑰"),
     prompt: Optional[str] = Form(None, description="用於指導模型的提示詞"),
 ):
     """
@@ -72,14 +72,15 @@ async def transcribe_media(
         raise HTTPException(
             status_code=400, detail=f"Unsupported file format: {file.content_type}.")
 
-    save_path = PERSISTENT_STORAGE_DIR / \
+    # 待轉錄的暫存音檔改名為uuid方便追蹤
+    file_path = PERSISTENT_STORAGE_DIR / \
         f"{uuid.uuid4()}{Path(file.filename).suffix}"
-    logger.info(f"Saving uploaded file to: {save_path}")
+    logger.info(f"Saving uploaded file to: {file_path}")
 
     try:
-        with save_path.open("wb") as buffer:
+        with file_path.open("wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
-        logger.info(f"File saved successfully: {save_path}")
+        logger.info(f"File saved successfully: {file_path}")
     except Exception as e:
         logger.error(f"Could not save file: {e}")
         raise HTTPException(
@@ -88,10 +89,10 @@ async def transcribe_media(
         await file.close()
 
     task_params = TranscriptionTaskParams(
-        file_path=str(save_path),
+        file_path=str(file_path),
         provider=provider,
         model=model,
-        api_key=api_key,
+        api_keys=api_keys,
         source_lang=source_lang,
         prompt=prompt,
         original_filename=file.filename
@@ -149,7 +150,7 @@ async def transcribe_youtube(
         file_path=str(final_audio_path),
         provider=request.provider,
         model=request.model,
-        api_key=request.api_key,
+        api_keys=request.api_keys,
         source_lang=request.source_lang,
         prompt=request.prompt,
         original_filename=video_title,

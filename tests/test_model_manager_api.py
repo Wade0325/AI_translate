@@ -7,24 +7,24 @@ from typing import Dict, Any
 def test_create_model_setting(client: TestClient):
     """測試成功創建一個新的模型設定。"""
     payload = {
-        "interfaceName": "TestCreate",
+        "provider": "TestCreate",
         "apiKeys": ["key1", "key2"],
-        "modelName": "TestModelAlpha",
+        "model": "TestModelAlpha",
         "prompt": "Prompt for creating."
     }
     response = client.post("/api/v1/model-manager/setting", json=payload)
     assert response.status_code == 200
     data = response.json()
     assert "data_received" in data
-    assert data["data_received"]["interfaceName"] == "TestCreate"
+    assert data["data_received"]["provider"] == "TestCreate"
     assert data["data_received"]["apiKeys"] == ["key1", "key2"]
 
     # 額外驗證：嘗試獲取剛創建的設定
     get_response = client.get("/api/v1/model-manager/setting/TestCreate")
     assert get_response.status_code == 200
     get_data = get_response.json()
-    assert get_data["interfaceName"] == "TestCreate"
-    assert get_data["modelName"] == "TestModelAlpha"
+    assert get_data["provider"] == "TestCreate"
+    assert get_data["model"] == "TestModelAlpha"
     assert get_data["prompt"] == "Prompt for creating."
     assert get_data["apiKeys"] == ["key1", "key2"]
 
@@ -34,9 +34,9 @@ def test_get_model_setting_exists(client: TestClient):
     # 先創建一個設定
     interface_name = "TestGetExisting"
     payload = {
-        "interfaceName": interface_name,
+        "provider": interface_name,
         "apiKeys": ["key_existing"],
-        "modelName": "ModelExisting",
+        "model": "ModelExisting",
         "prompt": "Prompt for existing."
     }
     # 先發送 POST 請求創建設定
@@ -49,8 +49,8 @@ def test_get_model_setting_exists(client: TestClient):
     assert response.status_code == 200
     data = response.json()
     assert data is not None
-    assert data["interfaceName"] == interface_name
-    assert data["modelName"] == "ModelExisting"
+    assert data["provider"] == interface_name
+    assert data["model"] == "ModelExisting"
     assert data["apiKeys"] == ["key_existing"]
     assert data["prompt"] == "Prompt for existing."
 
@@ -68,17 +68,17 @@ def test_update_model_setting(client: TestClient):
     """測試更新一個已存在的模型設定。"""
     interface_name = "TestUpdate"
     initial_payload = {
-        "interfaceName": interface_name,
+        "provider": interface_name,
         "apiKeys": ["initial_key"],
-        "modelName": "InitialModel",
+        "model": "InitialModel",
         "prompt": "Initial prompt."
     }
     client.post("/api/v1/model-manager/setting", json=initial_payload)
 
     updated_payload = {
-        "interfaceName": interface_name,  # 相同的 interfaceName
+        "provider": interface_name,  # 相同的 provider
         "apiKeys": ["updated_key1", "updated_key2"],
-        "modelName": "UpdatedModel",
+        "model": "UpdatedModel",
         "prompt": "Updated prompt."
     }
     response = client.post(
@@ -86,14 +86,14 @@ def test_update_model_setting(client: TestClient):
     assert response.status_code == 200
     data = response.json()
     assert "data_received" in data
-    assert data["data_received"]["modelName"] == "UpdatedModel"
+    assert data["data_received"]["model"] == "UpdatedModel"
 
     # 驗證更新是否生效
     get_response = client.get(
         f"/api/v1/model-manager/setting/{interface_name}")
     assert get_response.status_code == 200
     get_data = get_response.json()
-    assert get_data["modelName"] == "UpdatedModel"
+    assert get_data["model"] == "UpdatedModel"
     assert get_data["apiKeys"] == ["updated_key1", "updated_key2"]
     assert get_data["prompt"] == "Updated prompt."
 
@@ -101,15 +101,15 @@ def test_update_model_setting(client: TestClient):
 def test_create_model_setting_no_prompt(client: TestClient):
     """測試創建模型設定時不提供 prompt (因為它是可選的)。"""
     payload = {
-        "interfaceName": "TestNoPrompt",
+        "provider": "TestNoPrompt",
         "apiKeys": ["key_no_prompt"],
-        "modelName": "ModelNoPrompt"
+        "model": "ModelNoPrompt"
         # prompt 欄位被省略
     }
     response = client.post("/api/v1/model-manager/setting", json=payload)
     assert response.status_code == 200
     data = response.json()
-    assert data["data_received"]["interfaceName"] == "TestNoPrompt"
+    assert data["data_received"]["provider"] == "TestNoPrompt"
     # Pydantic 預設 Optional 為 None
     assert data["data_received"]["prompt"] is None
 
@@ -122,9 +122,9 @@ def test_create_model_setting_no_prompt(client: TestClient):
 def test_create_model_setting_empty_apikeys(client: TestClient):
     """測試創建模型設定時提供空的 apiKeys 列表。"""
     payload: Dict[str, Any] = {
-        "interfaceName": "TestEmptyKeys",
+        "provider": "TestEmptyKeys",
         "apiKeys": [],  # 空列表
-        "modelName": "ModelEmptyKeys",
+        "model": "ModelEmptyKeys",
         "prompt": "Prompt for empty keys."
     }
     response = client.post("/api/v1/model-manager/setting", json=payload)
@@ -137,14 +137,14 @@ def test_create_model_setting_empty_apikeys(client: TestClient):
     get_data = get_response.json()
     assert get_data["apiKeys"] == []
 
-# 注意：對於無效輸入（例如，缺少 interfaceName），FastAPI 會自動返回 422 Unprocessable Entity。
+# 注意：對於無效輸入（例如，缺少 provider），FastAPI 會自動返回 422 Unprocessable Entity。
 # 您也可以為這些情況編寫測試，但它們更多是測試 FastAPI 和 Pydantic 的行為。
 # 例如：
 # def test_create_model_setting_missing_interface_name(client: TestClient):
 #     payload = {
-#         # "interfaceName": "TestMissing", # 故意遺漏
+#         # "provider": "TestMissing", # 故意遺漏
 #         "apiKeys": ["key1"],
-#         "modelName": "TestModelMissing"
+#         "model": "TestModelMissing"
 #     }
 #     response = client.post("/settings/model_setting", json=payload)
 #     assert response.status_code == 422 # Unprocessable Entity

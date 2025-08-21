@@ -46,5 +46,5 @@ class ModelConfiguration(BaseModel):
     模型配置資訊
     """
     api_key: str = Field(..., description="API 金鑰")
-    model_name: str = Field(..., description="Gemini 模型名稱")
+    model: str = Field(..., description="Gemini 模型名稱")
     prompt: str = Field(..., description="轉錄提示詞")

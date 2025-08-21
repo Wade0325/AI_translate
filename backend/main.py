@@ -48,7 +48,7 @@ app = FastAPI(title="AI Voice Transcription API",
 app.include_router(transcription.router, prefix="/api/v1",
                    tags=["Transcription"])
 app.include_router(model_manager.router,
-                   prefix="/api/v1/model-manager",
+                   prefix="/api/v1/setting",
                    tags=["Model Settings"])
 
 origins = [

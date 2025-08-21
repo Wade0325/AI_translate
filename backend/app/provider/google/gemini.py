@@ -80,28 +80,28 @@ def upload_file_to_gemini(file_path: Path, client: genai.Client):
     return gemini_file
 
 
-def count_tokens_with_uploaded_file(client, gemini_file, model_name: str) -> int:
+def count_tokens_with_uploaded_file(client, gemini_file, model: str) -> int:
     """
     使用已上傳的檔案計算 token 數量
     """
     logger.info("正在計算檔案的輸入 tokens...")
     response = client.models.count_tokens(
-        model=model_name, contents=[gemini_file])
+        model=model, contents=[gemini_file])
     return response.total_tokens
 
 
 def transcribe_with_uploaded_file(
     client,
     gemini_file,
-    model_name: str,
+    model: str,
     prompt: str
 ) -> Dict[str, Any]:
     """
     使用已上傳的檔案進行轉錄
     """
-    logger.info(f"正在使用 {model_name} 進行轉錄...")
+    logger.info(f"正在使用 {model} 進行轉錄...")
     response = client.models.generate_content(
-        model=model_name,
+        model=model,
         contents=[prompt, gemini_file],
         config=types.GenerateContentConfig(
             thinking_config=types.ThinkingConfig(thinking_budget=0)

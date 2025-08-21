@@ -10,18 +10,18 @@ Base = declarative_base()
 
 
 class ModelConfiguration(Base):
-    """資料模型：表示 model_configurations 資料表的 ORM 模型"""
+    """ AI模型資訊 """
     __tablename__ = 'model_configurations'
 
-    interface_name = Column(String, primary_key=True)
-    api_keys_json = Column(Text)
-    model_name = Column(String)
+    provider = Column(String, primary_key=True)
+    api_keys = Column(Text)
+    model = Column(String)
     prompt = Column(Text)
     last_updated = Column(DateTime, default=func.now(), onupdate=func.now())
 
 
 class TranscriptionLog(Base):
-    """資料模型：表示 transcription_logs 資料表的 ORM 模型"""
+    """ transcription_logs 資料表"""
     __tablename__ = 'transcription_logs'
 
     task_uuid = Column(UUID(as_uuid=True),

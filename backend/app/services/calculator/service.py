@@ -17,7 +17,7 @@ class CalculatorService:
     def calculate_metrics(
         self,
         items: List[CalculationItem],
-        model_name: str,
+        model: str,
         processing_time_seconds: Optional[float] = None,
         audio_duration_seconds: Optional[float] = None
     ) -> PriceCalculationResponse:
@@ -26,7 +26,7 @@ class CalculatorService:
 
         Args:
             items: 計費項目的列表。
-            model_name: 使用的模型名稱。
+            model: 使用的模型名稱。
             processing_time_seconds: 任務總處理時間（秒）。
             audio_duration_seconds: 原始音訊總時長（秒）。
 
@@ -35,7 +35,7 @@ class CalculatorService:
         """
         total_input_tokens = sum(item.input_tokens for item in items)
         total_output_tokens = sum(item.output_tokens for item in items)
-        logger.info(f"執行計算指標，模型: {model_name}")
+        logger.info(f"執行計算指標，模型: {model}")
         logger.info(
             f"輸入 Tokens: {total_input_tokens}, 輸出 Tokens: {total_output_tokens} (來自 {len(items)} 個項目)")
         logger.info(
@@ -43,7 +43,7 @@ class CalculatorService:
 
         request = PriceCalculationRequest(
             items=items,
-            model_name=model_name,
+            model=model,
             processing_time_seconds=processing_time_seconds,
             audio_duration_seconds=audio_duration_seconds
         )
