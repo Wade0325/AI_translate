@@ -21,56 +21,17 @@ export const TranscriptionProvider = ({ children }) => {
   const [isProcessing, setIsProcessing] = useState(false);
   const { getProviderConfig } = useModelManager();
 
-  // WebSocket 相關
-  const [clientId] = useState(() => crypto.randomUUID());
-  const socketRef = useRef(null);
+  // 【修改 1】移除舊的 WebSocket 相關 state 和 ref
+  // const [clientId] = useState(() => crypto.randomUUID());
+  // const socketRef = useRef(null);
+  const activeSockets = useRef({}); // 用於管理所有活躍的 socket
 
+  // 【修改 2】移除舊的、建立單一 WebSocket 的 useEffect
+  /* 
   useEffect(() => {
-    const ws_url = `${WS_BASE_URL}/${clientId}`;
-    const socket = new WebSocket(ws_url);
-    socketRef.current = socket;
-
-    socket.onopen = () => console.log('WebSocket 連線成功');
-    socket.onclose = () => console.log('WebSocket 連線關閉');
-    socket.onerror = (error) => {
-      console.error('WebSocket 發生錯誤:', error);
-      message.error('無法連接到即時更新服務。');
-    };
-
-    socket.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-      console.log('收到 WebSocket 訊息:', data);
-
-      setFileList(currentList =>
-        currentList.map(file => {
-          if (file.uid === data.file_uid) {
-            const updatedFile = {
-              ...file,
-              statusText: data.status_text
-            };
-
-            if (data.status_code === 'COMPLETED' && data.result) {
-              updatedFile.status = 'completed';
-              updatedFile.result = data.result.transcripts;
-              updatedFile.tokens_used = data.result.tokens_used;
-              updatedFile.cost = data.result.cost;
-              updatedFile.percent = 100;
-            } else if (data.status_code === 'FAILED') {
-              updatedFile.status = 'error';
-              updatedFile.error = data.status_text;
-              updatedFile.percent = 100;
-            }
-            return updatedFile;
-          }
-          return file;
-        })
-      );
-    };
-
-    return () => {
-      socket.close();
-    };
+    // ... 舊的 WebSocket 邏輯已移除 ...
   }, [clientId]);
+  */
   
   // 監控 fileList 來決定 isProcessing 狀態
   useEffect(() => {
@@ -100,65 +61,11 @@ export const TranscriptionProvider = ({ children }) => {
   };
   // --------------------------------
 
-  const transcribeFile = async (file, sourceLang, model, provider, apiKey, prompt, file_uid, client_id) => {
-    const formData = new FormData();
-    formData.append('file', file);
-    formData.append('source_lang', sourceLang);
-    formData.append('model', model);
-    formData.append('provider', provider);
-    formData.append('api_keys', apiKey);
-    formData.append('file_uid', file_uid);
-    formData.append('client_id', client_id);
-    if (prompt) {
-      formData.append('prompt', prompt);
-    }
-
-    try {
-      const response = await fetch(`${API_BASE_URL}/transcribe`, {
-        method: 'POST',
-        body: formData,
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({})); // Try to parse error response
-        throw errorData;
-      }
-      return await response.json();
-    } catch (error) {
-      console.error('Error uploading file:', error);
-      throw error || new Error('Network error or server is down');
-    }
-  };
-
-  const transcribeYoutubeUrl = async (url, sourceLang, model, provider, apiKey, prompt, file_uid, client_id) => {
-    const payload = {
-      youtube_url: url,
-      source_lang: sourceLang,
-      model: model,
-      provider: provider,
-      api_keys: apiKey, // 後端模型需要 api_keys
-      prompt: prompt,
-      file_uid: file_uid,
-      client_id: client_id,
-    };
-
-    try {
-      const response = await fetch(`${API_BASE_URL}/youtube`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({})); // Try to parse error response
-        throw errorData;
-      }
-      return await response.json();
-    } catch (error) {
-      console.error('Error transcribing YouTube URL:', error);
-      throw error || new Error('Network error or server is down');
-    }
-  };
+  // 【修改 3】移除舊的、基於 HTTP 的 transcribeFile 和 transcribeYoutubeUrl 函式
+  /*
+  const transcribeFile = async (...) => { ... };
+  const transcribeYoutubeUrl = async (...) => { ... };
+  */
 
   const downloadFile = (content, fileName, format) => {
     const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
@@ -183,20 +90,25 @@ export const TranscriptionProvider = ({ children }) => {
   };
   
   const handleStartTranscription = async () => {
-    const filesToProcess = fileList.filter(f => f.status === 'waiting');
-    if (filesToProcess.length === 0) {
+    const filesToProcess = fileList.filter(f => 
+      (f.status === 'waiting' || f.status === 'error') && f.originFileObj
+    );
+    const youtubeUrlsToProcess = fileList.filter(f => 
+      (f.status === 'waiting' || f.status === 'error') && !f.originFileObj && f.name.includes('youtube')
+    );
+    
+    if (filesToProcess.length === 0 && youtubeUrlsToProcess.length === 0) {
       message.warning('沒有等待處理的新檔案！');
       return;
     }
 
     setIsProcessing(true);
-    message.info(`開始處理 ${filesToProcess.length} 個新檔案...`);
-
+    
     const provider = findProviderForModel(model);
     if (!provider) {
-        message.error(`找不到模型 ${model} 對應的服務商設定。`);
-        setIsProcessing(false);
-        return;
+      message.error(`找不到模型 ${model} 對應的服務商設定。`);
+      setIsProcessing(false);
+      return;
     }
 
     const config = await getProviderConfig(provider);
@@ -204,47 +116,180 @@ export const TranscriptionProvider = ({ children }) => {
     const prompt = config?.prompt;
 
     if (!apiKey) {
-        message.error(`請先在模型管理中為 ${provider} 設定 API 金鑰。`);
-        setIsProcessing(false);
-        return;
+      message.error(`請先在模型管理中為 ${provider} 設定 API 金鑰。`);
+      setIsProcessing(false);
+      return;
     }
 
-    // 將所有待處理檔案的狀態改為 "processing"
+    // 更新狀態為上傳中
     setFileList(currentList =>
       currentList.map(file =>
-        filesToProcess.find(p => p.uid === file.uid)
-          ? { ...file, status: 'processing', statusText: '提交任務中...' }
+        [...filesToProcess, ...youtubeUrlsToProcess].find(p => p.uid === file.uid)
+          ? { ...file, status: 'processing', statusText: '正在上傳檔案...' }
           : file
       )
     );
 
-    // 分別提交所有任務
-    filesToProcess.forEach(async (file) => {
+    // 處理一般檔案上傳
+    for (const file of filesToProcess) {
       try {
-        const response = file.uid.startsWith('yt-')
-          ? await transcribeYoutubeUrl(file.name, sourceLang, model, provider, apiKey, prompt, file.uid, clientId)
-          : await transcribeFile(file.originFileObj, sourceLang, model, provider, apiKey, prompt, file.uid, clientId);
+        // 上傳檔案到服務器
+        const formData = new FormData();
+        formData.append('file', file.originFileObj);
         
-        const { task_uuid } = response;
-        // 儲存 task_uuid 並更新狀態
-        setFileList(currentList =>
-          currentList.map(f =>
-            f.uid === file.uid
-              ? { ...f, task_uuid: task_uuid, statusText: '任務已提交，排隊等待中...' }
-              : f
-          )
-        );
+        const response = await fetch(`${API_BASE_URL}/upload-temp`, {
+          method: 'POST',
+          body: formData,
+        });
+
+        if (!response.ok) {
+          throw new Error('檔案上傳失敗');
+        }
+
+        const { filename: serverFilename } = await response.json();
+        
+        // 更新檔案狀態並建立 WebSocket
+        setFileList(currentList => currentList.map(f =>
+          f.uid === file.uid ? { ...f, statusText: '正在建立連線...', serverFilename } : f
+        ));
+
+        // 建立 WebSocket 連接
+        const socket = new WebSocket(`${WS_BASE_URL}/${file.uid}`);
+        activeSockets.current[file.uid] = socket;
+
+        socket.onopen = () => {
+          console.log(`WebSocket for ${file.name} (${file.uid}) connected.`);
+          setFileList(currentList => currentList.map(f =>
+            f.uid === file.uid ? { ...f, statusText: '連線成功，正在提交任務...' } : f
+          ));
+          
+          const payload = {
+            filename: serverFilename, // 使用服務器返回的檔案名
+            original_filename: file.name,
+            provider: provider,
+            model: model,
+            api_keys: apiKey,
+            source_lang: sourceLang,
+            prompt: prompt,
+          };
+          socket.send(JSON.stringify(payload));
+        };
+
+        socket.onmessage = (event) => {
+          const data = JSON.parse(event.data);
+          console.log(`Message for ${file.name}:`, data);
+          setFileList(currentList =>
+            currentList.map(f => {
+              if (f.uid === data.file_uid) {
+                const updatedFile = {
+                  ...f,
+                  statusText: data.status_text,
+                  task_uuid: data.task_uuid,
+                };
+                if (data.status_code === 'COMPLETED') {
+                  updatedFile.status = 'completed';
+                  updatedFile.percent = 100;
+                  updatedFile.result = data.result?.transcripts;
+                  updatedFile.tokens_used = data.result?.tokens_used;
+                  updatedFile.cost = data.result?.cost;
+                } else if (data.status_code === 'FAILED') {
+                  updatedFile.status = 'error';
+                  updatedFile.percent = 100;
+                  updatedFile.error = data.status_text;
+                }
+                return updatedFile;
+              }
+              return f;
+            })
+          );
+        };
+
+        socket.onerror = (error) => {
+          console.error(`WebSocket error for ${file.name}:`, error);
+          message.error(`檔案 ${file.name} 的連線發生錯誤。`);
+          setFileList(currentList => currentList.map(f =>
+              f.uid === file.uid ? { ...f, status: 'error', percent: 100, error: '連線錯誤', statusText: '連線失敗' } : f
+          ));
+        };
+
+        socket.onclose = () => {
+          console.log(`WebSocket for ${file.name} (${file.uid}) closed.`);
+          delete activeSockets.current[file.uid];
+        };
+        
       } catch (error) {
-        const errorMessage = error.detail || (typeof error === 'string' ? error : '提交失敗');
-        console.error(`檔案 ${file.name} 提交失敗:`, error);
-        setFileList(currentList =>
-          currentList.map(f =>
-            f.uid === file.uid
-              ? { ...f, status: 'error', percent: 100, error: errorMessage, statusText: '提交失敗' }
-              : f
-          )
-        );
+        console.error(`上傳檔案 ${file.name} 失敗:`, error);
+        setFileList(currentList => currentList.map(f =>
+          f.uid === file.uid ? { ...f, status: 'error', statusText: '上傳失敗', percent: 100 } : f
+        ));
       }
+    }
+
+    // 處理 YouTube URL（如果有的話）
+    youtubeUrlsToProcess.forEach((file) => {
+      // YouTube URL 直接使用 WebSocket，不需要上傳
+      const socket = new WebSocket(`${WS_BASE_URL}/${file.uid}`);
+      activeSockets.current[file.uid] = socket;
+
+      socket.onopen = () => {
+        console.log(`WebSocket for ${file.name} (${file.uid}) connected.`);
+        setFileList(currentList => currentList.map(f =>
+          f.uid === file.uid ? { ...f, statusText: '連線成功，正在提交任務...' } : f
+        ));
+        
+        const payload = {
+          filename: file.name, // 使用檔案名稱
+          original_filename: file.name,
+          provider: provider,
+          model: model,
+          api_keys: apiKey,
+          source_lang: sourceLang,
+          prompt: prompt,
+        };
+        socket.send(JSON.stringify(payload));
+      };
+
+      socket.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        console.log(`Message for ${file.name}:`, data);
+        setFileList(currentList =>
+          currentList.map(f => {
+            if (f.uid === data.file_uid) {
+              const updatedFile = {
+                ...f,
+                statusText: data.status_text,
+                task_uuid: data.task_uuid,
+              };
+              if (data.status_code === 'COMPLETED') {
+                updatedFile.status = 'completed';
+                updatedFile.percent = 100;
+                updatedFile.result = data.result?.transcripts;
+                updatedFile.tokens_used = data.result?.tokens_used;
+                updatedFile.cost = data.result?.cost;
+              } else if (data.status_code === 'FAILED') {
+                updatedFile.status = 'error';
+                updatedFile.percent = 100;
+                updatedFile.error = data.status_text;
+              }
+              return updatedFile;
+            }
+            return f;
+          })
+        );
+      };
+
+      socket.onerror = (error) => {
+        console.error(`WebSocket error for ${file.name}:`, error);
+        message.error(`檔案 ${file.name} 的連線發生錯誤。`);
+        setFileList(currentList => currentList.map(f =>
+            f.uid === file.uid ? { ...f, status: 'error', percent: 100, error: '連線錯誤', statusText: '連線失敗' } : f
+        ));
+      };
+
+      socket.onclose = () => {
+        console.log(`WebSocket for ${file.name} (${file.uid}) closed.`);
+        delete activeSockets.current[file.uid];
+      };
     });
   };
 
@@ -274,6 +319,10 @@ export const TranscriptionProvider = ({ children }) => {
   };
 
   const clearAllFiles = () => {
+    // 關閉所有還在活躍的 WebSocket 連線
+    Object.values(activeSockets.current).forEach(socket => socket.close());
+    activeSockets.current = {};
+    
     setFileList([]);
     message.success("已清除所有任務");
   };

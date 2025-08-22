@@ -199,8 +199,8 @@ def transcribe_media_task(self, task_params_dict: dict):
         logger.info(f"Log status updated to COMPLETED for ID: {task_uuid}")
 
         # 清理暫存檔案
-        # task_manager.cleanup()
-        logger.warning("Skipping cleanup for debugging purposes.")
+        task_manager.cleanup()
+        logger.info(f"Temporary files cleaned up for task {task_uuid}.")
 
         # 準備回傳結果
         final_response = TranscriptionResponse(
@@ -244,6 +244,11 @@ def transcribe_media_task(self, task_params_dict: dict):
         error_message = traceback.format_exc()
         logger.error(
             f"Transcription task failed for log ID: {task_uuid}\n{error_message}")
+
+        # 清理暫存檔案
+        task_manager.cleanup()
+        logger.info(
+            f"Temporary files cleaned up after failure for task {task_uuid}.")
 
         # 更新日誌為 FAILED
         failure_update_data = {

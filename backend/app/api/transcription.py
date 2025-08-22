@@ -107,6 +107,40 @@ async def transcribe_media(
     return {"task_uuid": task.id, "message": "Transcription task has been submitted."}
 
 
+@router.post("/upload-temp", tags=["Transcription"])
+async def upload_temp_file(
+    file: UploadFile = File(..., description="要上傳的檔案")
+):
+    """
+    上傳檔案到臨時目錄，供 WebSocket 處理使用
+    """
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No filename provided.")
+
+    # 確保 temp_uploads 目錄存在
+    temp_dir = Path("temp_uploads")
+    temp_dir.mkdir(exist_ok=True)
+
+    # 保持原始檔名
+    temp_file_path = temp_dir / file.filename
+
+    try:
+        # 保存檔案
+        with temp_file_path.open("wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+
+        logger.info(f"臨時檔案已保存: {temp_file_path}")
+
+        return {"filename": file.filename, "message": "檔案上傳成功"}
+
+    except Exception as e:
+        logger.error(f"保存檔案失敗: {e}")
+        raise HTTPException(
+            status_code=500, detail=f"Could not save file: {e}")
+    finally:
+        await file.close()
+
+
 @router.post("/youtube",
              response_model=TaskCreationResponse,
              tags=["Transcription"])

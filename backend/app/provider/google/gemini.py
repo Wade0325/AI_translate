@@ -107,7 +107,7 @@ def transcribe_with_uploaded_file(
         model=model,
         contents=[prompt, gemini_file],
         config=types.GenerateContentConfig(
-            thinking_config=types.ThinkingConfig(thinking_budget=0)
+            thinking_config=types.ThinkingConfig(thinking_budget=128)
         )
     )
 

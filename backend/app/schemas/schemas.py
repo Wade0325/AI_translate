@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing import List, Optional, Dict
 from pydantic import ConfigDict
 
 
@@ -52,3 +52,15 @@ class TestProviderResponse(BaseModel):
     message: str
     details: Optional[str] = None
     testedInterface: str
+
+
+class WebSocketTranscriptionRequest(BaseModel):
+    """用於接收 WebSocket 轉錄請求的資料模型"""
+    filename: str
+    original_filename: str
+    provider: str
+    model: str
+    api_keys: str  # 注意：這是單個字符串，不是列表
+    source_lang: str
+    prompt: Optional[str] = None
+    segments_for_remapping: Optional[List[Dict[str, float]]] = None

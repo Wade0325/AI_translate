@@ -234,3 +234,4 @@ backend/*.db
 /backend/temp_uploads/
 /backend/persistent_uploads/
 /backend/app/celery/results/
+/backend/app/provider/persistent_uploads
