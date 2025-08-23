@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 from app.api import model_manager
 from app.api import transcription
+from app.api import upload
 from app.websocket.router import router as websocket_router
 from app.websocket.manager import manager as websocket_manager
 
@@ -60,6 +61,7 @@ app.include_router(transcription.router, prefix="/api/v1",
 app.include_router(model_manager.router,
                    prefix="/api/v1/setting",
                    tags=["Model Settings"])
+app.include_router(upload.router, prefix="/api/v1", tags=["Upload"])
 
 origins = [
     "http://localhost:8000",

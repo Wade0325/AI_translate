@@ -1,34 +1,31 @@
-import shutil
 import uuid
 from pathlib import Path
 import yt_dlp
 from pydantic import BaseModel, HttpUrl
-from typing import Optional
+from typing import Optional, Tuple
 
 from celery.result import AsyncResult
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Body
+from fastapi import (
+    APIRouter, HTTPException, Body,
+    WebSocket, WebSocketDisconnect
+)
+from fastapi.concurrency import run_in_threadpool
 
 from app.celery.task import transcribe_media_task
 from app.celery.models import TranscriptionTaskParams
 from app.celery.celery import celery_app
 from app.utils.logger import setup_logger
+from app.websocket.manager import manager
+from app.schemas.schemas import WebSocketTranscriptionRequest
+
 
 logger = setup_logger(__name__)
 
 router = APIRouter()
 
-# 將檔案儲存目錄移至更永久的位置，因為 Celery worker 需要訪問它
-# 我們可以考慮未來將其移至雲端儲存，如 S3
-PERSISTENT_STORAGE_DIR = Path(
-    __file__).resolve().parents[2] / "persistent_uploads"
-PERSISTENT_STORAGE_DIR.mkdir(exist_ok=True)
-
-SUPPORTED_MIME_TYPES = {
-    "audio/wav", "audio/x-wav", "audio/wave", "audio/mpeg", "audio/mp3",
-    "audio/flac", "audio/opus", "audio/m4a", "audio/x-m4a", "audio/mp4",
-    "audio/aac", "audio/webm", "video/mp4", "video/mpeg", "video/webm",
-    "video/quicktime", "video/x-flv", "video/x-ms-wmv", "video/3gpp",
-}
+# 將檔案儲存目錄統一至 temp_uploads，方便管理
+TEMP_UPLOADS_DIR = Path("temp_uploads")
+TEMP_UPLOADS_DIR.mkdir(exist_ok=True)
 
 
 class YouTubeTranscribeRequest(BaseModel):
@@ -47,98 +44,33 @@ class TaskCreationResponse(BaseModel):
     message: str
 
 
-@router.post("/transcribe",
-             response_model=TaskCreationResponse,
-             tags=["Transcription"])
-async def transcribe_media(
-    file: UploadFile = File(..., description="要轉錄的音訊或視訊檔案"),
-    source_lang: str = Form(..., description="來源語言代碼 (例如：zh-TW)"),
-    provider: str = Form(..., description="模型提供商 (例如：google)"),
-    model: str = Form(..., description="使用的模型名稱"),
-    api_keys: str = Form(..., description="API 金鑰"),
-    client_id: str = Form(..., description="WebSocket 客戶端 ID"),
-    file_uid: str = Form(..., description="前端檔案唯一 ID"),
-    prompt: Optional[str] = Form(None, description="用於指導模型的提示詞"),
-):
+def download_youtube_audio_sync(youtube_url: str, download_path_base: Path) -> Tuple[Path, str]:
     """
-    接收音訊或視訊檔案，提交至背景進行非同步轉錄。
+    一個同步函式，封裝了 yt-dlp 的下載邏輯。
+    這個函式將在獨立的執行緒中執行，以避免阻塞事件迴圈。
     """
-    logger.info(
-        f"API received transcription request: filename='{file.filename}', lang='{source_lang}', model='{model}'")
+    ydl_opts = {
+        'format': 'bestaudio/best',
+        'postprocessors': [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3'}],
+        'outtmpl': str(download_path_base),
+        'quiet': True,
+    }
 
-    if not file.filename:
-        raise HTTPException(status_code=400, detail="No filename provided.")
+    logger.info(f"在背景執行緒中開始下載 YouTube 音訊: {youtube_url}")
+    video_title = "youtube_video"
 
-    if file.content_type not in SUPPORTED_MIME_TYPES:
-        raise HTTPException(
-            status_code=400, detail=f"Unsupported file format: {file.content_type}.")
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info_dict = ydl.extract_info(str(youtube_url), download=True)
+        video_title = info_dict.get(
+            'title', 'youtube_video') if info_dict else 'youtube_video'
 
-    # 待轉錄的暫存音檔改名為uuid方便追蹤
-    file_path = PERSISTENT_STORAGE_DIR / \
-        f"{uuid.uuid4()}{Path(file.filename).suffix}"
-    logger.info(f"Saving uploaded file to: {file_path}")
+    final_audio_path = download_path_base.with_suffix('.mp3')
+    if not final_audio_path.exists():
+        # 如果檔案不存在，拋出一個明確的錯誤
+        raise FileNotFoundError("已下載的 YouTube 音訊檔案未找到。")
 
-    try:
-        with file_path.open("wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-        logger.info(f"File saved successfully: {file_path}")
-    except Exception as e:
-        logger.error(f"Could not save file: {e}")
-        raise HTTPException(
-            status_code=500, detail=f"Could not save file: {e}")
-    finally:
-        await file.close()
-
-    task_params = TranscriptionTaskParams(
-        file_path=str(file_path),
-        provider=provider,
-        model=model,
-        api_keys=api_keys,
-        source_lang=source_lang,
-        prompt=prompt,
-        original_filename=file.filename,
-        client_id=client_id,
-        file_uid=file_uid
-    )
-
-    task = transcribe_media_task.delay(task_params.model_dump())
-    logger.info(f"Transcription task submitted to Celery with ID: {task.id}")
-
-    return {"task_uuid": task.id, "message": "Transcription task has been submitted."}
-
-
-@router.post("/upload-temp", tags=["Transcription"])
-async def upload_temp_file(
-    file: UploadFile = File(..., description="要上傳的檔案")
-):
-    """
-    上傳檔案到臨時目錄，供 WebSocket 處理使用
-    """
-    if not file.filename:
-        raise HTTPException(status_code=400, detail="No filename provided.")
-
-    # 確保 temp_uploads 目錄存在
-    temp_dir = Path("temp_uploads")
-    temp_dir.mkdir(exist_ok=True)
-
-    # 保持原始檔名
-    temp_file_path = temp_dir / file.filename
-
-    try:
-        # 保存檔案
-        with temp_file_path.open("wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-
-        logger.info(f"臨時檔案已保存: {temp_file_path}")
-
-        return {"filename": file.filename, "message": "檔案上傳成功"}
-
-    except Exception as e:
-        logger.error(f"保存檔案失敗: {e}")
-        raise HTTPException(
-            status_code=500, detail=f"Could not save file: {e}")
-    finally:
-        await file.close()
+    logger.info(f"YouTube 音訊下載成功: {video_title}")
+    return final_audio_path, video_title
 
 
 @router.post("/youtube",
@@ -151,37 +83,21 @@ async def transcribe_youtube(
     接收 YouTube 連結，下載音訊並提交至背景進行非同步轉錄。
     """
     logger.info(
-        f"Received YouTube transcription request: URL='{request.youtube_url}'")
+        f"接收到 YouTube 轉錄請求: URL='{request.youtube_url}'")
 
-    # 注意：yt-dlp 的下載是同步阻塞的。在生產環境中，
-    # 也可以考慮將下載本身也做成一個前置的 Celery 任務。
-    # 但為了簡化目前流程，我們先在 API 端同步下載。
-    download_path_base = PERSISTENT_STORAGE_DIR / f"{uuid.uuid4()}"
-    ydl_opts = {
-        'format': 'bestaudio/best',
-        'postprocessors': [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3'}],
-        'outtmpl': str(download_path_base),
-        'quiet': True,
-    }
+    download_path_base = TEMP_UPLOADS_DIR / f"{uuid.uuid4()}"
 
-    logger.info(f"Starting YouTube audio download: {request.youtube_url}")
-    video_title = "youtube_video"
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info_dict = ydl.extract_info(
-                str(request.youtube_url), download=True)
-            video_title = info_dict.get(
-                'title', 'youtube_video') if info_dict else 'youtube_video'
-        logger.info(f"YouTube audio downloaded successfully: {video_title}")
+        # 將阻塞的下載操作移至背景執行緒
+        final_audio_path, video_title = await run_in_threadpool(
+            download_youtube_audio_sync,
+            youtube_url=str(request.youtube_url),
+            download_path_base=download_path_base
+        )
     except Exception as e:
-        logger.error(f"Error downloading YouTube audio: {e}")
+        logger.error(f"下載 YouTube 音訊時發生錯誤: {e}")
         raise HTTPException(
-            status_code=500, detail=f"Error downloading YouTube audio: {e}")
-
-    final_audio_path = download_path_base.with_suffix('.mp3')
-    if not final_audio_path.exists():
-        raise HTTPException(
-            status_code=500, detail="Downloaded file not found.")
+            status_code=500, detail=f"下載 YouTube 音訊時發生錯誤: {e}")
 
     task_params = TranscriptionTaskParams(
         file_path=str(final_audio_path),
@@ -202,6 +118,69 @@ async def transcribe_youtube(
         f"YouTube transcription task submitted to Celery with ID: {task.id}")
 
     return {"task_uuid": task.id, "message": "YouTube transcription task has been submitted."}
+
+
+def start_celery_task_sync(payload_str: str, file_uid: str) -> None:
+    """
+    一個同步函式，封裝了所有準備和啟動 Celery 任務的邏輯。
+    這個函式將在獨立的執行緒中執行，以避免阻塞事件迴圈。
+    """
+    request_data = WebSocketTranscriptionRequest.model_validate_json(
+        payload_str)
+
+    file_path = TEMP_UPLOADS_DIR / request_data.filename
+
+    if not file_path.is_file():
+        logger.error(f"檔案不存在於 temp_uploads: {request_data.filename}")
+        # 未來可考慮在此處透過 websocket 向客戶端發送錯誤訊息
+        return
+
+    server_file_path = str(file_path)
+
+    task_params = TranscriptionTaskParams(
+        file_path=server_file_path,
+        provider=request_data.provider,
+        model=request_data.model,
+        api_keys=request_data.api_keys,
+        source_lang=request_data.source_lang,
+        original_filename=request_data.original_filename,
+        client_id=file_uid,
+        file_uid=file_uid,
+        prompt=request_data.prompt,
+        segments_for_remapping=request_data.segments_for_remapping
+    )
+
+    transcribe_media_task.delay(task_params.model_dump())
+    logger.info(f"已為 file_uid: {file_uid} 啟動 Celery 轉錄任務。")
+
+
+@router.websocket("/ws/{file_uid}", name="WebSocket Transcription")
+async def websocket_endpoint(
+    websocket: WebSocket,
+    file_uid: str
+):
+    """
+    為每個轉錄任務建立一個獨立的 WebSocket 連線，提供即時進度更新。
+    """
+    await manager.connect(websocket, file_uid)
+    try:
+        payload_str = await websocket.receive_text()
+
+        await run_in_threadpool(start_celery_task_sync, payload_str=payload_str, file_uid=file_uid)
+
+        # 保持連線開啟以接收來自客戶端的潛在訊息或 ping
+        while True:
+            await websocket.receive_text()
+
+    except WebSocketDisconnect:
+        logger.info(f"WebSocket 連線由客戶端或伺服器關閉: {file_uid}")
+        manager.disconnect(file_uid)
+    except Exception as e:
+        logger.error(
+            f"WebSocket 端點發生錯誤 (file_uid: {file_uid}): {e}", exc_info=True)
+        if file_uid in manager.active_connections:
+            await manager.active_connections[file_uid].close()
+            manager.disconnect(file_uid)
 
 
 @router.get("/status/{task_uuid}", tags=["Transcription"])

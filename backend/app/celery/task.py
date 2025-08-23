@@ -26,10 +26,6 @@ from app.utils.logger import setup_logger
 logger = setup_logger(__name__)
 
 
-# 建立用於存放結果的目錄
-RESULTS_DIR = Path(__file__).parent / "results"
-RESULTS_DIR.mkdir(exist_ok=True)
-
 # 這確保了 Worker 使用與 FastAPI 主應用完全相同的 Redis 設定。
 redis_client = redis.from_url(celery_app.conf.broker_url)
 logger.info("Celery task: Redis client initialized from Celery broker URL.")
@@ -223,19 +219,6 @@ def transcribe_media_task(self, task_params_dict: dict):
 
         update_status("任務完成", status_code="COMPLETED",
                       result_data=final_response_dict)
-
-        # 將結果寫入檔案
-        result_file_path = RESULTS_DIR / f"{self.request.id}.txt"
-        try:
-            with result_file_path.open("w", encoding="utf-8") as f:
-                # 使用 default=str 來處理無法序列化的物件
-                json.dump(final_response_dict, f,
-                          ensure_ascii=False, indent=4, default=str)
-            logger.info(
-                f"Task result successfully saved to: {result_file_path.resolve()}")
-        except Exception as e:
-            logger.error(f"Failed to save result to file: {e}", exc_info=True)
-        # --- 偵錯結束 ---
 
         return final_response_dict
 
