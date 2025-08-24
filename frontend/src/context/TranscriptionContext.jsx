@@ -137,7 +137,7 @@ export const TranscriptionProvider = ({ children }) => {
         const formData = new FormData();
         formData.append('file', file.originFileObj);
         
-        const response = await fetch(`${API_BASE_URL}/upload-temp`, {
+        const response = await fetch(`${API_BASE_URL}/upload`, {
           method: 'POST',
           body: formData,
         });
