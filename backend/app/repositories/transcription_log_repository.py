@@ -9,7 +9,7 @@ class TranscriptionLogRepository:
     用於處理 transcription_logs 資料表資料庫操作的 Repository。
     """
 
-    def create_log(self, db: Session, initial_data: Dict[str, Any]) -> TranscriptionLog:
+    def insert_log(self, db: Session, initial_data: Dict[str, Any]) -> TranscriptionLog:
         """
         在資料庫中建立一筆新的轉錄日誌。
 

@@ -1,10 +1,11 @@
 import React, { createContext, useState, useContext, useEffect, useRef } from 'react';
 import { message } from 'antd';
+import JSZip from 'jszip';
 import { modelOptions, findProviderForModel } from '../constants/modelConfig'; // 引入 findProviderForModel
 import { useModelManager } from '../components/ModelManager'; // 引入 ModelManager Hook
 
 const API_BASE_URL = 'http://localhost:8000/api/v1';
-const WS_BASE_URL = 'ws://localhost:8000/ws';
+const WS_BASE_URL = 'ws://localhost:8000/api/v1/ws';
 
 
 // 1. 建立 Context
@@ -16,7 +17,7 @@ export const useTranscription = () => useContext(TranscriptionContext);
 // 2. 建立 Provider 元件
 export const TranscriptionProvider = ({ children }) => {
   const [fileList, setFileList] = useState([]);
-  const [sourceLang, setSourceLang] = useState('zh-TW');
+  const [targetLang, setTargetLang] = useState('zh-TW');
   const [model, setModel] = useState(modelOptions.Google[0].value);
   const [isProcessing, setIsProcessing] = useState(false);
   const { getProviderConfig } = useModelManager();
@@ -77,6 +78,57 @@ export const TranscriptionProvider = ({ children }) => {
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
+  };
+
+  // 修改：下載全部完成檔案並打包成ZIP的函式
+  const downloadAllFiles = async (format) => {
+    const completedFiles = fileList.filter(f => f.status === 'completed' && f.result);
+    
+    if (completedFiles.length === 0) {
+      message.warning('沒有已完成的檔案可以下載！');
+      return;
+    }
+
+    try {
+      message.loading({ content: '正在打包檔案...', key: 'zipDownload' });
+      
+      const zip = new JSZip();
+      const formatUpper = format.toUpperCase();
+      
+      // 將所有檔案加入 ZIP
+      completedFiles.forEach(file => {
+        const content = file.result[format] || '';
+        if (content) {
+          const fileName = `${file.name.split('.').slice(0, -1).join('.')}.${format}`;
+          zip.file(fileName, content);
+        }
+      });
+
+      // 生成 ZIP 檔案
+      const zipBlob = await zip.generateAsync({ type: 'blob' });
+      
+      // 下載 ZIP 檔案
+      const url = URL.createObjectURL(zipBlob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `transcripts_${formatUpper}_${new Date().toISOString().slice(0, 10)}.zip`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+
+      message.success({ 
+        content: `已成功下載 ${completedFiles.length} 個 ${formatUpper} 檔案的壓縮包！`, 
+        key: 'zipDownload' 
+      });
+      
+    } catch (error) {
+      console.error('打包下載失敗:', error);
+      message.error({ 
+        content: '打包下載失敗，請稍後再試', 
+        key: 'zipDownload' 
+      });
+    }
   };
 
   const handleUploadChange = ({ fileList: newFileList }) => {
@@ -169,7 +221,7 @@ export const TranscriptionProvider = ({ children }) => {
             provider: provider,
             model: model,
             api_keys: apiKey,
-            source_lang: sourceLang,
+            source_lang: targetLang,
             prompt: prompt,
           };
           socket.send(JSON.stringify(payload));
@@ -243,7 +295,7 @@ export const TranscriptionProvider = ({ children }) => {
           provider: provider,
           model: model,
           api_keys: apiKey,
-          source_lang: sourceLang,
+          source_lang: targetLang,
           prompt: prompt,
         };
         socket.send(JSON.stringify(payload));
@@ -330,14 +382,15 @@ export const TranscriptionProvider = ({ children }) => {
   const value = {
     fileList,
     setFileList,
-    sourceLang,
-    setSourceLang,
+    targetLang,
+    setTargetLang,
     model,
     setModel,
     isProcessing,
     handleUploadChange,
     handleStartTranscription,
     downloadFile,
+    downloadAllFiles, // 新增
     clearAllFiles,
     handleReprocess,
     isPreviewModalVisible,

@@ -232,6 +232,4 @@ backend/*.db
 # Temporary upload folders
 /temp_uploads/
 /backend/temp_uploads/
-/backend/persistent_uploads/
 /backend/app/celery/results/
-/backend/app/provider/persistent_uploads

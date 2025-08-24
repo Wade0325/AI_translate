@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Generator, Optional, List, Dict
 import json
 import redis
+import os
 
 import soundfile as sf
 from sqlalchemy.orm import Session
@@ -59,6 +60,17 @@ def get_db_session() -> Generator[Session, None, None]:
         db.close()
 
 
+def cleanup_original_file(file_path: str):
+    """清理原始上傳檔案"""
+    try:
+        original_file = Path(file_path)
+        if original_file.exists() and "temp_uploads" in str(original_file):
+            original_file.unlink()
+            logger.info(f"已刪除原始上傳檔案: {original_file.name}")
+    except Exception as e:
+        logger.warning(f"刪除原始檔案失敗: {e}")
+
+
 @celery_app.task(bind=True)
 def transcribe_media_task(self, task_params_dict: dict):
     """
@@ -90,7 +102,7 @@ def transcribe_media_task(self, task_params_dict: dict):
         "source_language": task_params.source_lang,
         "task_uuid": self.request.id,
     }
-    new_log = log_repo.create_log(db, initial_log_data)
+    new_log = log_repo.insert_log(db, initial_log_data)
     task_uuid = new_log.task_uuid
     logger.info(
         f"Celery task started. Log ID: {task_uuid}, Celery ID: {self.request.id}")
@@ -126,7 +138,7 @@ def transcribe_media_task(self, task_params_dict: dict):
         update_status("正在初始化模型...")
 
         # 4. 準備 Prompt
-        final_prompt = task_params.prompt or "You are an expert audio transcriptionist. Please transcribe the audio file into a detailed, accurate, and well-formatted LRC file."
+        final_prompt = task_params.prompt
 
         # 5. 建立轉錄任務管理器
         task_manager = TranscriptionTask(
@@ -134,7 +146,7 @@ def transcribe_media_task(self, task_params_dict: dict):
             model=task_params.model,
             prompt=final_prompt,
             temp_dir=local_path.parent,
-            status_callback=update_status  # 傳入回呼函式
+            status_callback=update_status
         )
 
         # 6. 執行轉錄 (包含VAD失敗重試邏輯)
@@ -198,6 +210,9 @@ def transcribe_media_task(self, task_params_dict: dict):
         task_manager.cleanup()
         logger.info(f"Temporary files cleaned up for task {task_uuid}.")
 
+        # 清理原始上傳檔案
+        cleanup_original_file(task_params.file_path)
+
         # 準備回傳結果
         final_response = TranscriptionResponse(
             task_uuid=task_uuid,
@@ -213,7 +228,6 @@ def transcribe_media_task(self, task_params_dict: dict):
 
         final_response_dict = final_response.model_dump()
 
-        # Pydantic v2 a little bit different
         if 'task_uuid' in final_response_dict and hasattr(final_response_dict['task_uuid'], 'hex'):
             final_response_dict['task_uuid'] = final_response_dict['task_uuid'].hex
 
@@ -232,6 +246,9 @@ def transcribe_media_task(self, task_params_dict: dict):
         task_manager.cleanup()
         logger.info(
             f"Temporary files cleaned up after failure for task {task_uuid}.")
+
+        # 清理原始上傳檔案
+        cleanup_original_file(task_params.file_path)
 
         # 更新日誌為 FAILED
         failure_update_data = {

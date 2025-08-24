@@ -28,7 +28,6 @@ class GeminiClient:
             return
 
         try:
-            # 使用 google-genai SDK 初始化客戶端
             self.client = genai.Client(api_key=api_key)
             logger.info("GeminiClient 初始化成功")
         except Exception as e:

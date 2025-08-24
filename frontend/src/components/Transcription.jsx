@@ -36,6 +36,8 @@ const Transcription = () => {
     fileList,
     model,
     setModel,
+    targetLang,
+    setTargetLang,
     isProcessing,
     handleStartTranscription,
     isPreviewModalVisible,
@@ -53,7 +55,7 @@ const Transcription = () => {
     setSelectedProvider(provider);
   }, [model]);
 
-  // 處理服務商變更的事件 (保持不變)
+  // 處理服務商變更的事件
   const handleProviderChange = (newProvider) => {
     setSelectedProvider(newProvider);
     // 當服務商變更時，自動選擇該服務商的第一個模型
@@ -68,7 +70,7 @@ const Transcription = () => {
   return (
     <Space direction="vertical" size="large" style={{ width: '100%' }}>
       
-      {/* --- 使用新的 FileManager 元件 --- */}
+      {/* --- FileManager --- */}
       <FileManager />
 
       <Card title="2. 轉錄設定">
@@ -98,12 +100,12 @@ const Transcription = () => {
               ))}
             </Select>
           </Col>
-          {/* <Col xs={24} sm={8}>
-            <Text>來源語言</Text>
-            <Select value={sourceLang} style={{ width: '100%' }} onChange={setSourceLang}>
+          <Col xs={24} sm={8}>
+            <Text>輸出語言</Text>
+            <Select value={targetLang} style={{ width: '100%' }} onChange={setTargetLang}>
               {languageOptions.map(lang => <Option key={lang.value} value={lang.value}>{lang.label}</Option>)}
             </Select>
-          </Col> */}
+          </Col>
         </Row>
         <Row gutter={[16, 16]} style={{ marginTop: '8px' }}>
           <Col xs={24} sm={8}>

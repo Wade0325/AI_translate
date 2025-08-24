@@ -6,7 +6,6 @@ from dotenv import load_dotenv
 from app.api import model_manager
 from app.api import transcription
 from app.api import upload
-from app.websocket.router import router as websocket_router
 from app.websocket.manager import manager as websocket_manager
 
 from fastapi.middleware.cors import CORSMiddleware
@@ -51,9 +50,6 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="AI Voice Transcription API",
               version="1.0.0", lifespan=lifespan)
 
-
-# 新增 WebSocket 路由
-app.include_router(websocket_router, prefix="/ws", tags=["WebSocket"])
 
 # 更新路由設定
 app.include_router(transcription.router, prefix="/api/v1",

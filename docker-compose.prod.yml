@@ -26,7 +26,7 @@ services:
     container_name: prod_backend
     command: uvicorn main:app --host 0.0.0.0 --port 8000
     volumes:
-      - ./backend/persistent_uploads:/app/persistent_uploads
+      - ./backend/temp_uploads:/app/temp_uploads
     env_file:
       - ./.env.prod
     environment:
@@ -45,7 +45,7 @@ services:
     container_name: prod_celery_worker
     command: celery -A app.celery.celery:celery_app worker --loglevel=info
     volumes:
-      - ./backend/persistent_uploads:/app/persistent_uploads
+      - ./backend/temp_uploads:/app/temp_uploads
     env_file:
       - ./.env.prod
     environment:
