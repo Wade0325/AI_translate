@@ -62,5 +62,6 @@ class WebSocketTranscriptionRequest(BaseModel):
     model: str
     api_keys: str  # 注意：這是單個字符串，不是列表
     source_lang: str
+    target_lang: Optional[str] = None  # 新增: 目標語言
     prompt: Optional[str] = None
     segments_for_remapping: Optional[List[Dict[str, float]]] = None

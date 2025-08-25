@@ -17,3 +17,4 @@ class TranscriptionTaskParams(BaseModel):
     file_uid: str   # 新增: 前端的檔案唯一ID
     prompt: Optional[str] = None
     segments_for_remapping: Optional[List[Dict[str, float]]] = None
+    target_lang: Optional[str] = None  # 新增: 前端指定的輸出語言

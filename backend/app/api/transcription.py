@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from typing import Optional, List, Dict
 
 from fastapi import (
     APIRouter,
@@ -36,10 +37,8 @@ def start_celery_task_sync(payload_str: str, file_uid: str) -> None:
 
     if temp_file_path.is_file():
         server_file_path = str(temp_file_path)
-    elif persistent_file_path.is_file():
-        server_file_path = str(persistent_file_path)
     else:
-        logger.error(f"檔案不存在於任何位置: {request_data.filename}")
+        logger.error(f"檔案不存在: {request_data.filename}")
         return
 
     task_params = TranscriptionTaskParams(
@@ -48,6 +47,7 @@ def start_celery_task_sync(payload_str: str, file_uid: str) -> None:
         model=request_data.model,
         api_keys=request_data.api_keys,
         source_lang=request_data.source_lang,
+        target_lang=request_data.target_lang,  # 新增: 傳遞目標語言
         original_filename=request_data.original_filename,
         client_id=file_uid,
         file_uid=file_uid,

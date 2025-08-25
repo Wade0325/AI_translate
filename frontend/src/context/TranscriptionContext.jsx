@@ -18,6 +18,7 @@ export const useTranscription = () => useContext(TranscriptionContext);
 export const TranscriptionProvider = ({ children }) => {
   const [fileList, setFileList] = useState([]);
   const [targetLang, setTargetLang] = useState('zh-TW');
+  const [targetTranslateLang, setTargetTranslateLang] = useState(null); // 新增: 翻譯目標語言
   const [model, setModel] = useState(modelOptions.Google[0].value);
   const [isProcessing, setIsProcessing] = useState(false);
   const { getProviderConfig } = useModelManager();
@@ -222,6 +223,7 @@ export const TranscriptionProvider = ({ children }) => {
             model: model,
             api_keys: apiKey,
             source_lang: targetLang,
+            target_lang: targetTranslateLang || null, // 新增: 目標語言
             prompt: prompt,
           };
           socket.send(JSON.stringify(payload));
@@ -296,6 +298,7 @@ export const TranscriptionProvider = ({ children }) => {
           model: model,
           api_keys: apiKey,
           source_lang: targetLang,
+          target_lang: targetTranslateLang || null, // 新增: 目標語言
           prompt: prompt,
         };
         socket.send(JSON.stringify(payload));
@@ -384,13 +387,15 @@ export const TranscriptionProvider = ({ children }) => {
     setFileList,
     targetLang,
     setTargetLang,
+    targetTranslateLang,        // 新增
+    setTargetTranslateLang,     // 新增
     model,
     setModel,
     isProcessing,
     handleUploadChange,
     handleStartTranscription,
     downloadFile,
-    downloadAllFiles, // 新增
+    downloadAllFiles,
     clearAllFiles,
     handleReprocess,
     isPreviewModalVisible,

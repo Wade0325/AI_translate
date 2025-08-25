@@ -8,6 +8,7 @@ import os
 
 import soundfile as sf
 from sqlalchemy.orm import Session
+from langdetect import detect, LangDetectException
 
 from app.celery.celery import celery_app
 from app.celery.models import TranscriptionTaskParams
@@ -16,12 +17,14 @@ from app.provider.google.gemini import GeminiClient
 from app.repositories.transcription_log_repository import TranscriptionLogRepository
 from app.services.calculator.service import CalculatorService
 from app.services.calculator.models import CalculationItem
-from app.services.converter.service import convert_from_lrc
+from app.services.converter.service import convert_from_lrc, _parse_lrc
 from app.services.transcription.flows import (
     TranscriptionTask,
     _remap_lrc_timestamps
 )
 from app.services.transcription.models import TranscriptionResponse
+# 新增: 匯入翻譯相關模組
+from app.services.translator.flows import _perform_translation
 from app.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -169,6 +172,59 @@ def transcribe_media_task(self, task_params_dict: dict):
         else:
             final_lrc_text = raw_lrc_text
 
+        # 新增: 語言偵測與翻譯流程
+        translation_input_tokens = 0
+        translation_output_tokens = 0
+        if task_params.target_lang and final_lrc_text:
+            update_status("偵測字幕語言...")
+            parsed_lines = _parse_lrc(final_lrc_text)
+            if parsed_lines:
+                full_text = "\n".join(line.text for line in parsed_lines)
+
+                # 優先使用前端指定的 source_lang，如果沒有再偵測
+                source_lang_to_check = task_params.source_lang
+                if not source_lang_to_check:
+                    try:
+                        source_lang_to_check = detect(full_text)
+                        logger.info(
+                            f"前端未指定來源語言，自動偵測結果: {source_lang_to_check}")
+                    except LangDetectException:
+                        logger.warning("無法偵測語言，跳過翻譯步驟。")
+                        source_lang_to_check = None
+
+                if source_lang_to_check:
+                    logger.info(
+                        f"來源語言: {source_lang_to_check}, 目標語言: {task_params.target_lang}")
+
+                    # 比較基本語言碼，例如 'en' 和 'zh'
+                    if source_lang_to_check.split('-')[0] != task_params.target_lang.split('-')[0]:
+                        update_status("語言不符，開始整體翻譯字幕...")
+
+                        # 建立一個新的 Prompt，要求模型翻譯文字內容同時保持 LRC 格式
+                        translation_prompt = (
+                            f"Translate the text portions of the following LRC format content from {source_lang_to_check} to {task_params.target_lang}. "
+                            "It is crucial that you DO NOT alter the timestamps (e.g., [00:01.23]). "
+                            "Your response should be only the translated LRC content in the exact same format."
+                        )
+
+                        # 將完整的 LRC 文本進行單次翻譯
+                        trans_result = _perform_translation(
+                            client=client,
+                            model=task_params.model,
+                            prompt=translation_prompt,
+                            text_to_translate=final_lrc_text
+                        )
+
+                        if trans_result.success:
+                            final_lrc_text = trans_result.translated_text
+                            translation_input_tokens = trans_result.input_tokens
+                            translation_output_tokens = trans_result.output_tokens
+                            logger.info(
+                                f"字幕整體翻譯成功。翻譯 token 用量: input={translation_input_tokens}, output={translation_output_tokens}")
+                        else:
+                            logger.warning(
+                                f"字幕整體翻譯失敗: {trans_result.translated_text}，將使用原始轉錄結果。")
+
         # 8. 轉換格式
         update_status("正在轉換字幕格式...")
         transcripts_model = convert_from_lrc(final_lrc_text)
@@ -179,9 +235,19 @@ def transcribe_media_task(self, task_params_dict: dict):
         items = []
         if total_tokens_used > 0:
             items.append(CalculationItem(
+                model=task_params.model,
                 task_name="total_transcription",
                 input_tokens=input_tokens,
                 output_tokens=output_tokens
+            ))
+
+        # 新增: 將翻譯費用加入計算
+        if translation_input_tokens > 0 or translation_output_tokens > 0:
+            items.append(CalculationItem(
+                model=task_params.model,
+                task_name="total_translation",
+                input_tokens=translation_input_tokens,
+                output_tokens=translation_output_tokens
             ))
 
         processing_time_seconds = time.time() - start_time

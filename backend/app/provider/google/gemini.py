@@ -142,12 +142,12 @@ def transcribe_with_uploaded_file(
 
     logger.info(f"Token 使用統計:")
     logger.info(
-        f"  - Input (Prompt) tokens: {input_tokens:>8,}")
+        f"  Input (Prompt) tokens: {input_tokens:>8,}")
     logger.info(
-        f"  - Output (Candidates) tokens: {output_tokens:>8,}")
+        f"  Output (Candidates) tokens: {output_tokens:>8,}")
     logger.info(
-        f"  - Thoughts tokens:   {response.usage_metadata.thoughts_token_count or 'N/A':>8}")
-    logger.info(f"  - Total tokens:      {total_tokens_used:>8,}")
+        f"  Thoughts tokens: {response.usage_metadata.thoughts_token_count or 'N/A':>8}")
+    logger.info(f"  Total tokens: {total_tokens_used:>8,}")
 
     return {
         "success": True,
@@ -156,6 +156,65 @@ def transcribe_with_uploaded_file(
         "output_tokens": output_tokens,
         "total_tokens": total_tokens_used
     }
+
+
+def translate_text(
+    client: genai.Client,
+    model: str,
+    prompt: str,
+    text_to_translate: str
+) -> Dict[str, Any]:
+    """
+    使用 Gemini API 進行文字翻譯。
+    """
+    logger.info(f"正在使用 {model} 進行翻譯...")
+    try:
+        contents = [prompt, text_to_translate]
+        response = client.models.generate_content(
+            model=model,
+            contents=contents
+        )
+
+        if not response.candidates:
+            logger.warning("警告: Gemini 沒有回傳任何內容。回應可能已被其安全機制阻擋。")
+            error_text = "[[翻譯失敗：Gemini 回應被阻擋]]"
+            try:
+                error_text = f"[[翻譯失敗：請求被 Gemini 以 '{response.prompt_feedback.block_reason}' 原因阻擋。]]"
+            except Exception:
+                pass
+
+            total_tokens_used = 0
+            if hasattr(response.usage_metadata, 'prompt_token_count'):
+                total_tokens_used = response.usage_metadata.prompt_token_count
+
+            return {
+                "success": False,
+                "translated_text": error_text,
+                "input_tokens": total_tokens_used,
+                "output_tokens": 0,
+                "total_tokens": total_tokens_used
+            }
+
+        input_tokens = response.usage_metadata.prompt_token_count
+        output_tokens = response.usage_metadata.candidates_token_count
+        total_tokens = response.usage_metadata.total_token_count
+
+        return {
+            "success": True,
+            "translated_text": response.text,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": total_tokens
+        }
+    except Exception as e:
+        logger.error(f"Gemini 翻譯 API 呼叫時發生錯誤: {e}", exc_info=True)
+        return {
+            "success": False,
+            "translated_text": f"[[翻譯錯誤: {str(e)}]]",
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0
+        }
 
 
 def cleanup_gemini_file(client, gemini_file):

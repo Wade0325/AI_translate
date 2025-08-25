@@ -28,6 +28,7 @@ const { Option } = Select;
 const languageOptions = [
   { value: 'zh-TW', label: '繁體中文 (台灣)' },
   { value: 'en-US', label: '英文 (美國)' },
+  { value: 'ja-JP', label: '日文 (日本)' }
 ];
 
 // --- 主要應用程式元件 ---
@@ -38,6 +39,8 @@ const Transcription = () => {
     setModel,
     targetLang,
     setTargetLang,
+    targetTranslateLang,
+    setTargetTranslateLang,
     isProcessing,
     handleStartTranscription,
     isPreviewModalVisible,
@@ -75,7 +78,7 @@ const Transcription = () => {
 
       <Card title="2. 轉錄設定">
         <Row gutter={[16, 16]} align="bottom">
-          <Col xs={24} sm={8}>
+          <Col xs={24} sm={6}>
             <Text>選擇服務商</Text>
             <Select
               value={selectedProvider}
@@ -87,7 +90,7 @@ const Transcription = () => {
               ))}
             </Select>
           </Col>
-          <Col xs={24} sm={8}>
+          <Col xs={24} sm={6}>
             <Text>選擇模型</Text>
             <Select
               value={model}
@@ -100,9 +103,21 @@ const Transcription = () => {
               ))}
             </Select>
           </Col>
-          <Col xs={24} sm={8}>
-            <Text>輸出語言</Text>
+          <Col xs={24} sm={6}>
+            <Text>音訊語言</Text>
             <Select value={targetLang} style={{ width: '100%' }} onChange={setTargetLang}>
+              {languageOptions.map(lang => <Option key={lang.value} value={lang.value}>{lang.label}</Option>)}
+            </Select>
+          </Col>
+          <Col xs={24} sm={6}>
+            <Text>翻譯目標</Text>
+            <Select
+              value={targetTranslateLang}
+              style={{ width: '100%' }}
+              onChange={setTargetTranslateLang}
+              allowClear
+              placeholder="不翻譯"
+            >
               {languageOptions.map(lang => <Option key={lang.value} value={lang.value}>{lang.label}</Option>)}
             </Select>
           </Col>
