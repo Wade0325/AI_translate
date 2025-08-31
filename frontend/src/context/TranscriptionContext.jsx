@@ -1,8 +1,8 @@
 import React, { createContext, useState, useContext, useEffect, useRef } from 'react';
 import { message } from 'antd';
 import JSZip from 'jszip';
-import { modelOptions, findProviderForModel } from '../constants/modelConfig'; // 引入 findProviderForModel
-import { useModelManager } from '../components/ModelManager'; // 引入 ModelManager Hook
+import { modelOptions, findProviderForModel } from '../constants/modelConfig';
+import { useModelManager } from '../components/ModelManager';
 
 const API_BASE_URL = 'http://localhost:8000/api/v1';
 const WS_BASE_URL = 'ws://localhost:8000/api/v1/ws';
@@ -23,17 +23,8 @@ export const TranscriptionProvider = ({ children }) => {
   const [isProcessing, setIsProcessing] = useState(false);
   const { getProviderConfig } = useModelManager();
 
-  // 【修改 1】移除舊的 WebSocket 相關 state 和 ref
-  // const [clientId] = useState(() => crypto.randomUUID());
-  // const socketRef = useRef(null);
   const activeSockets = useRef({}); // 用於管理所有活躍的 socket
 
-  // 【修改 2】移除舊的、建立單一 WebSocket 的 useEffect
-  /* 
-  useEffect(() => {
-    // ... 舊的 WebSocket 邏輯已移除 ...
-  }, [clientId]);
-  */
   
   // 監控 fileList 來決定 isProcessing 狀態
   useEffect(() => {
@@ -45,7 +36,7 @@ export const TranscriptionProvider = ({ children }) => {
   }, [fileList, isProcessing]);
 
 
-  // --- 新增: Modal 狀態管理 ---
+  // --- Modal 狀態管理 ---
   const [isPreviewModalVisible, setIsPreviewModalVisible] = useState(false);
   const [previewContent, setPreviewContent] = useState('');
   const [previewTitle, setPreviewTitle] = useState('');
@@ -61,13 +52,7 @@ export const TranscriptionProvider = ({ children }) => {
     setPreviewContent('');
     setPreviewTitle('');
   };
-  // --------------------------------
 
-  // 【修改 3】移除舊的、基於 HTTP 的 transcribeFile 和 transcribeYoutubeUrl 函式
-  /*
-  const transcribeFile = async (...) => { ... };
-  const transcribeYoutubeUrl = async (...) => { ... };
-  */
 
   const downloadFile = (content, fileName, format) => {
     const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
@@ -137,7 +122,7 @@ export const TranscriptionProvider = ({ children }) => {
       ...f,
       status: f.status || 'waiting',
       percent: f.percent === undefined ? 0 : f.percent,
-      statusText: '等待處理', // 新增初始狀態文字
+      statusText: '等待處理', // 使用者選擇檔案後在畫面上顯示的初始狀態文字
     }));
     setFileList(updatedList);
   };
@@ -223,7 +208,7 @@ export const TranscriptionProvider = ({ children }) => {
             model: model,
             api_keys: apiKey,
             source_lang: targetLang,
-            target_lang: targetTranslateLang || null, // 新增: 目標語言
+            target_lang: targetTranslateLang || null, // 輸出語言
             prompt: prompt,
           };
           socket.send(JSON.stringify(payload));
@@ -298,7 +283,7 @@ export const TranscriptionProvider = ({ children }) => {
           model: model,
           api_keys: apiKey,
           source_lang: targetLang,
-          target_lang: targetTranslateLang || null, // 新增: 目標語言
+          target_lang: targetTranslateLang || null, // 輸出語言
           prompt: prompt,
         };
         socket.send(JSON.stringify(payload));
@@ -387,8 +372,8 @@ export const TranscriptionProvider = ({ children }) => {
     setFileList,
     targetLang,
     setTargetLang,
-    targetTranslateLang,        // 新增
-    setTargetTranslateLang,     // 新增
+    targetTranslateLang,
+    setTargetTranslateLang,
     model,
     setModel,
     isProcessing,

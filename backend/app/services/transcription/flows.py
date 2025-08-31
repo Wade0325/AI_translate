@@ -1,30 +1,18 @@
-import json
-import time
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Optional
 import soundfile as sf
-from sqlalchemy.orm import Session
-import traceback
 
 from app.utils.logger import setup_logger
 from app.provider.google.gemini import (
     upload_file_to_gemini,
     transcribe_with_uploaded_file,
-    cleanup_gemini_file,
-    GeminiClient
+    cleanup_gemini_file
 )
-from app.repositories.transcription_log_repository import TranscriptionLogRepository
-from app.services.converter.service import convert_from_lrc
 from app.services.converter.service import _parse_lrc
 from app.services.vad.service import get_vad_service
-from app.services.calculator.service import CalculatorService
-from app.services.calculator.models import CalculationItem
 
 from .models import (
-    TranscriptionRequest,
-    TranscriptionTaskResult,
-    TranscriptionResponse,
-    # ModelConfiguration
+    TranscriptionTaskResult
 )
 
 logger = setup_logger(__name__)
@@ -150,7 +138,7 @@ class TranscriptionTask:
             return TranscriptionTaskResult(
                 success=False,
                 text=f"[[無法讀取檔案 {audio_path.name}]]",
-                total_tokens_used=0
+                total_tokens=0
             )
 
         # 嘗試直接轉錄
@@ -200,14 +188,14 @@ class TranscriptionTask:
                 text=result.get("text", ""),
                 input_tokens=result.get("input_tokens", 0),
                 output_tokens=result.get("output_tokens", 0),
-                total_tokens_used=result.get("total_tokens", 0)
+                total_tokens=result.get("total_tokens", 0)
             )
         except Exception as e:
             logger.error(f"轉錄過程發生錯誤: {e}")
             return TranscriptionTaskResult(
                 success=False,
                 text=f"[[轉錄錯誤: {str(e)}]]",
-                total_tokens_used=0
+                total_tokens=0
             )
 
     def _transcribe_with_splitting(self, audio_path: Path) -> TranscriptionTaskResult:
@@ -220,7 +208,7 @@ class TranscriptionTask:
             return TranscriptionTaskResult(
                 success=False,
                 text="[[無法分割音訊檔案]]",
-                total_tokens_used=0
+                total_tokens=0
             )
 
         # 轉錄所有片段
@@ -240,7 +228,7 @@ class TranscriptionTask:
                 return TranscriptionTaskResult(
                     success=False,
                     text=f"[[片段 {i+1} 轉錄失敗]]",
-                    total_tokens_used=total_tokens
+                    total_tokens=total_tokens
                 )
 
             # 調整時間戳並收集結果
@@ -251,7 +239,7 @@ class TranscriptionTask:
             results.append(adjusted_text)
             total_input_tokens += segment_result.input_tokens
             total_output_tokens += segment_result.output_tokens
-            total_tokens += segment_result.total_tokens_used
+            total_tokens += segment_result.total_tokens
 
         # 合併所有結果
         combined_text = "\n".join(results)
@@ -261,7 +249,7 @@ class TranscriptionTask:
             text=combined_text,
             input_tokens=total_input_tokens,
             output_tokens=total_output_tokens,
-            total_tokens_used=total_tokens
+            total_tokens=total_tokens
         )
 
     def _split_audio_file(self, audio_path: Path) -> List[AudioSegment]:
@@ -306,7 +294,7 @@ class TranscriptionTask:
         return _adjust_lrc_timestamps(lrc_text, offset_seconds)
 
     def cleanup(self):
-        """清理所有暫存檔案，但保留原始檔案"""
+        """清理所有相關的暫存檔案，包括 Gemini 檔案、本地暫存檔和原始上傳檔案。"""
         # 清理 Gemini 檔案
         for gemini_file in self.gemini_cleanup_list:
             try:
@@ -314,11 +302,22 @@ class TranscriptionTask:
             except Exception as e:
                 logger.warning(f"清理 Gemini 檔案失敗: {e}")
 
-        # 清理本地檔案（跳過原始檔案）
-        for local_file in self.local_cleanup_list:
-            if local_file != self.original_file and local_file.exists():
-                try:
-                    local_file.unlink()
-                    logger.info(f"已清理暫存檔案: {local_file.name}")
-                except Exception as e:
-                    logger.warning(f"清理本地檔案失敗: {e}")
+        # 清理本地檔案 (包含原始檔案)
+        # 將原始檔案加入清理列表，確保它也被處理
+        all_local_files_to_clean = self.local_cleanup_list
+        if self.original_file:
+            all_local_files_to_clean.append(self.original_file)
+
+        # 使用 set 去除重複路徑
+        for local_file in set(all_local_files_to_clean):
+            try:
+                if local_file and local_file.exists():
+                    # 增加檢查，確保只刪除 temp_uploads 目錄下的檔案，防止意外刪除
+                    if "temp_uploads" in str(local_file.parent):
+                        local_file.unlink()
+                        logger.info(f"已清理暫存檔案: {local_file.name}")
+                    else:
+                        logger.warning(
+                            f"已跳過清理不在 temp_uploads 目錄中的檔案: {local_file}")
+            except Exception as e:
+                logger.warning(f"清理本地檔案 {local_file} 失敗: {e}")

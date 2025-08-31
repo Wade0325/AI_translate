@@ -1,6 +1,5 @@
 import os
 from pathlib import Path
-from typing import Optional, List, Dict
 
 from fastapi import (
     APIRouter,
@@ -47,7 +46,7 @@ def start_celery_task_sync(payload_str: str, file_uid: str) -> None:
         model=request_data.model,
         api_keys=request_data.api_keys,
         source_lang=request_data.source_lang,
-        target_lang=request_data.target_lang,  # 新增: 傳遞目標語言
+        target_lang=request_data.target_lang,  # 輸出語言
         original_filename=request_data.original_filename,
         client_id=file_uid,
         file_uid=file_uid,
@@ -73,7 +72,7 @@ async def websocket_endpoint(
 
         await run_in_threadpool(start_celery_task_sync, payload_str=payload_str, file_uid=file_uid)
 
-        # 保持連線開啟以接收來自客戶端的潛在訊息或 ping
+        # 保持連線開啟以接收來自客戶端的訊息
         while True:
             await websocket.receive_text()
 

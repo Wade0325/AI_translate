@@ -1,10 +1,8 @@
 from typing import Any, Dict
-import ast
 from google import genai
 from google.genai import types
 from pathlib import Path
 import time
-import json
 
 from app.schemas.schemas import ServiceStatus
 from app.utils.logger import setup_logger
@@ -44,7 +42,7 @@ class GeminiClient:
             return ServiceStatus(success=False, message=error_message)
 
         try:
-            list(self.client.models.list())  # 如果此調用失敗，將引發異常
+            list(self.client.models.list())
             return ServiceStatus(success=True, message="Gemini API 測試成功。")
 
         except Exception as e:
@@ -122,23 +120,10 @@ def transcribe_with_uploaded_file(
             logger.warning("無法取得明確的阻擋原因。")
         logger.warning("-----------------------")
 
-        # 即使被阻擋，也嘗試讀取 prompt token
-        total_tokens_used = 0
-        if hasattr(response.usage_metadata, 'prompt_token_count'):
-            total_tokens_used = response.usage_metadata.prompt_token_count
-
-        return {
-            "success": False,
-            "text": error_text,
-            "input_tokens": total_tokens_used,
-            "output_tokens": 0,
-            "total_tokens": total_tokens_used
-        }
-
     # 從回傳中提取 token 用量
     input_tokens = response.usage_metadata.prompt_token_count
     output_tokens = response.usage_metadata.candidates_token_count
-    total_tokens_used = response.usage_metadata.total_token_count
+    total_tokens = response.usage_metadata.total_token_count
 
     logger.info(f"Token 使用統計:")
     logger.info(
@@ -147,14 +132,14 @@ def transcribe_with_uploaded_file(
         f"  Output (Candidates) tokens: {output_tokens:>8,}")
     logger.info(
         f"  Thoughts tokens: {response.usage_metadata.thoughts_token_count or 'N/A':>8}")
-    logger.info(f"  Total tokens: {total_tokens_used:>8,}")
+    logger.info(f"  Total tokens: {total_tokens:>8,}")
 
     return {
         "success": True,
         "text": response.text,
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
-        "total_tokens": total_tokens_used
+        "total_tokens": total_tokens
     }
 
 
@@ -183,16 +168,16 @@ def translate_text(
             except Exception:
                 pass
 
-            total_tokens_used = 0
+            total_tokens = 0
             if hasattr(response.usage_metadata, 'prompt_token_count'):
-                total_tokens_used = response.usage_metadata.prompt_token_count
+                total_tokens = response.usage_metadata.prompt_token_count
 
             return {
                 "success": False,
                 "translated_text": error_text,
-                "input_tokens": total_tokens_used,
+                "input_tokens": total_tokens,
                 "output_tokens": 0,
-                "total_tokens": total_tokens_used
+                "total_tokens": total_tokens
             }
 
         input_tokens = response.usage_metadata.prompt_token_count

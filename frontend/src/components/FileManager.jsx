@@ -96,7 +96,7 @@ const FileManager = () => {
             onDownloadFile={downloadFile}
             onReprocessFile={handleReprocess}
             onRemoveFile={handleRemoveFile}
-            onPreviewFile={handleOpenPreview} // 直接使用 context 提供的函式
+            onPreviewFile={handleOpenPreview}
           />
           <QueueSummary
             completedFilesCount={completedFilesCount}

@@ -32,7 +32,7 @@ const ModelManagerProvider = ({ children }) => {
   const [editingParamsProvider, setEditingParamsProvider] = useState('');
   const [promptText, setPromptText] = useState('');
 
-  // 資料獲取函式
+  // 先查看使用端是否儲存過轉錄設定，如果沒有則從後端獲取
   const getProviderConfig = async (provider) => {
     // 優先從記憶體快取獲取
     if (providerConfigs[provider]) {
@@ -90,7 +90,7 @@ const ModelManagerProvider = ({ children }) => {
       model: partialConfig.model || latestConfig.model || modelOptions[provider]?.[0]?.value,
     };
     
-    // 1. 發送請求到後端
+    // 1. 模型設定請求
     try {
       const response = await fetch('/api/v1/setting/models', {
         method: 'POST',
@@ -101,7 +101,7 @@ const ModelManagerProvider = ({ children }) => {
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
         message.error({ content: `後端保存失敗: ${errorData.detail || '未知錯誤'}`, key: 'saveConfig' });
-        return false; // 後端儲存失敗，則中止
+        return false;
       }
 
       const result = await response.json();
@@ -156,7 +156,7 @@ const ModelManagerProvider = ({ children }) => {
     }
   };
 
-  // handleCancel (保持不變)
+  // handleCancel
   const handleCancel = () => {
     setIsModalOpen(false);
   };
