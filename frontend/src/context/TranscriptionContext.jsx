@@ -4,8 +4,10 @@ import JSZip from 'jszip';
 import { modelOptions, findProviderForModel } from '../constants/modelConfig';
 import { useModelManager } from '../components/ModelManager';
 
-const API_BASE_URL = 'http://localhost:8000/api/v1';
-const WS_BASE_URL = 'ws://localhost:8000/api/v1/ws';
+const API_BASE_URL = '/api/v1';
+const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+const WS_BASE_URL = `${wsProtocol}//${window.location.host}/api/v1/ws`;
+
 
 
 // 1. 建立 Context
