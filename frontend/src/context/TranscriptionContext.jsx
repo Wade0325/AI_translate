@@ -4,9 +4,9 @@ import JSZip from 'jszip';
 import { modelOptions, findProviderForModel } from '../constants/modelConfig';
 import { useModelManager } from '../components/ModelManager';
 
-const API_BASE_URL = '/api/v1';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api/v1';
 const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-const WS_BASE_URL = `${wsProtocol}//${window.location.host}/api/v1/ws`;
+const WS_BASE_URL = import.meta.env.VITE_WS_BASE_URL || `${wsProtocol}//${window.location.host}/api/v1/ws`;
 
 
 

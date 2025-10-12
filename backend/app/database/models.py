@@ -1,7 +1,4 @@
 import uuid
-from dataclasses import dataclass
-from typing import Optional, List
-from datetime import datetime
 
 from sqlalchemy import Column, String, Text, DateTime, func, Float, Integer, UUID
 from sqlalchemy.orm import declarative_base
