@@ -14,6 +14,11 @@ const QueueSummary = ({ completedFilesCount, totalTokens, totalCost }) => {
 
   const downloadMenuItems = [
     {
+      key: 'lrc',
+      label: 'LRC 字幕檔',
+      onClick: () => downloadAllFiles('lrc'),
+    },
+    {
       key: 'srt',
       label: 'SRT 字幕檔',
       onClick: () => downloadAllFiles('srt'),

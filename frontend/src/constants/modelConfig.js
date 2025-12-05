@@ -1,6 +1,6 @@
 export const modelOptions = {
   Google: [
-    { value: 'gemini-2.5-flash-preview-05-20', label: 'gemini-2.5-flash-preview-05-20' },
+    { value: 'gemini-3-pro-preview', label: 'gemini-3-pro-preview' },
     { value: 'gemini-2.5-flash', label: 'gemini-2.5-flash' },
     { value: 'gemini-2.5-pro', label: 'gemini-2.5-pro' }
   ]

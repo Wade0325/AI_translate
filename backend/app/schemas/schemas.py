@@ -64,4 +64,5 @@ class WebSocketTranscriptionRequest(BaseModel):
     source_lang: str
     target_lang: Optional[str] = None  # 新增: 目標語言
     prompt: Optional[str] = None
+    original_text: Optional[str] = None  # <--- 新增此行
     segments_for_remapping: Optional[List[Dict[str, float]]] = None

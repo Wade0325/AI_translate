@@ -47,7 +47,7 @@ def publish_status(client_id: str, file_uid: str, task_uuid: str, status_text: s
 
     try:
         redis_client.publish("transcription_updates",
-                             json.dumps(message, default=str))
+                             json.dumps(message, default=str, ensure_ascii=False))
     except Exception as e:
         logger.error(f"發布狀態更新至 Redis 時失敗: {e}")
 
@@ -138,11 +138,28 @@ def transcribe_media_task(self, task_params_dict: dict):
 
         update_status("正在初始化模型...")
 
-        # 4. 建立轉錄任務管理器
+        # 4. 初始化轉錄任務管理器
+        # 根據是否提供 original_text 來決定 prompt
+        if task_params.original_text:
+            # 如果有提供文本，我們就建立一個對齊用的 prompt
+            user_prompt = f"""
+請你扮演一位專業的逐字稿專家。你的任務是將提供的音檔與以下的完整逐字稿內容進行對齊，並生成一個帶有時間戳的LRC格式檔案。
+
+這是完整的逐字稿：
+---
+{task_params.original_text}
+---
+
+請仔細聆聽音檔，為這份逐字稿加上精確的時間戳，並以LRC格式輸出。
+"""
+        else:
+            # 否則，使用使用者自訂的 prompt 或預設值
+            user_prompt = task_params.prompt or "請將以下音檔轉錄成LRC格式的逐字稿。"
+
         task_manager = TranscriptionTask(
             client=client,
             model=task_params.model,
-            prompt=task_params.prompt,
+            prompt=user_prompt,  # 使用上面決定的 prompt
             temp_dir=local_path.parent,
             status_callback=update_status
         )

@@ -16,5 +16,6 @@ class TranscriptionTaskParams(BaseModel):
     client_id: str  # 新增: 用於 WebSocket 通訊
     file_uid: str   # 新增: 前端的檔案唯一ID
     prompt: Optional[str] = None
+    original_text: Optional[str] = None  # 新增: 前端傳來的文字稿
     segments_for_remapping: Optional[List[Dict[str, float]]] = None
     target_lang: Optional[str] = None  # 新增: 前端指定的輸出語言

@@ -1,0 +1,28 @@
+# 忽略本地環境變數文件
+.env
+.env.*
+
+# Python 快取
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# 虛擬環境
+.venv/
+venv/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+
+# 測試
+.pytest_cache/
+.coverage
+htmlcov/
+
+# 其他
+*.log
+temp_uploads/
+

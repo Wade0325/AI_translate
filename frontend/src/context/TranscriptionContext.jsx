@@ -29,10 +29,21 @@ export const TranscriptionProvider = ({ children }) => {
 
   
   // 監控 fileList 來決定 isProcessing 狀態
+  // 使用 ref 來追蹤是否曾經有任務開始處理
+  const hasStartedProcessing = useRef(false);
+
   useEffect(() => {
     const stillProcessing = fileList.some(f => f.status === 'processing');
-    if (isProcessing && !stillProcessing) {
+    
+    // 如果有文件正在處理，標記已經開始處理
+    if (stillProcessing) {
+      hasStartedProcessing.current = true;
+    }
+    
+    // 只有在「曾經開始處理」且「現在沒有處理中的文件」時才顯示完成訊息
+    if (isProcessing && hasStartedProcessing.current && !stillProcessing) {
       setIsProcessing(false);
+      hasStartedProcessing.current = false; // 重置標記
       message.success('所有任務處理完畢！');
     }
   }, [fileList, isProcessing]);
@@ -212,6 +223,7 @@ export const TranscriptionProvider = ({ children }) => {
             source_lang: targetLang,
             target_lang: targetTranslateLang || null, // 輸出語言
             prompt: prompt,
+            original_text: file.original_text || null, // <--- 新增此行
           };
           socket.send(JSON.stringify(payload));
         };
@@ -287,6 +299,7 @@ export const TranscriptionProvider = ({ children }) => {
           source_lang: targetLang,
           target_lang: targetTranslateLang || null, // 輸出語言
           prompt: prompt,
+          original_text: file.original_text || null, // <--- 新增此行
         };
         socket.send(JSON.stringify(payload));
       };

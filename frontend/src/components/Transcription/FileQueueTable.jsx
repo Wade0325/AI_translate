@@ -1,10 +1,13 @@
 import React from 'react';
-import { Table, Tooltip, Space, Progress, Button, Popconfirm, Tag, Spin } from 'antd';
+import { Table, Tooltip, Space, Button, Popconfirm, Tag, Spin, Dropdown, Menu } from 'antd'; // <--- 引入 Dropdown 和 Menu
 import {
   EyeOutlined,
   ReloadOutlined,
   CloseCircleOutlined,
   InfoCircleOutlined,
+  FileTextOutlined,
+  DownloadOutlined, // <--- 引入下載圖示
+  UploadOutlined, // <--- 引入 UploadOutlined
 } from '@ant-design/icons';
 
 const FileQueueTable = ({
@@ -13,6 +16,8 @@ const FileQueueTable = ({
   onReprocessFile,
   onRemoveFile,
   onPreviewFile,
+  onAttachText, // Modal 的函式
+  onAttachFileDirectly, // <--- 接收新的 prop
 }) => {
   const fileListColumns = [
     { 
@@ -20,16 +25,23 @@ const FileQueueTable = ({
       dataIndex: 'name', 
       key: 'name', 
       width: '33%',
-      render: (name) => (
+      render: (name, record) => ( // <--- 修改 render 函式
         <Tooltip title={name} popupStyle={{ maxWidth: '600px' }}>
-          <span style={{
-            display: 'block',
-            whiteSpace: 'nowrap',
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-          }}>
-            {name}
-          </span>
+          <Space>
+            {record.has_original_text && (
+              <Tooltip title="此檔案已附加文本，將執行對齊任務">
+                <FileTextOutlined style={{ color: '#1890ff' }} />
+              </Tooltip>
+            )}
+            <span style={{
+              display: 'block',
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+            }}>
+              {name}
+            </span>
+          </Space>
         </Tooltip>
       ),
     },
@@ -105,11 +117,48 @@ const FileQueueTable = ({
     {
       title: '操作',
       key: 'action',
-      width: '25%',
+      width: '22%', // 稍微調整寬度以容納新按鈕
       render: (_, record) => {
         const availableFormats = ['lrc', 'srt', 'vtt', 'txt'];
+
+        // --- 建立下載選單 ---
+        const downloadMenu = (
+          <Menu>
+            {availableFormats.map(format => (
+              <Menu.Item
+                key={format}
+                disabled={!record.result?.[format]}
+                onClick={() => onDownloadFile(record.result[format], record.name, format)}
+              >
+                下載 {format.toUpperCase()}
+              </Menu.Item>
+            ))}
+          </Menu>
+        );
+
         return (
           <Space>
+            <Tooltip title={record.has_original_text ? "編輯附加文本" : "貼上文本"}>
+              <Button
+                size="small"
+                icon={<FileTextOutlined />}
+                onClick={() => onAttachText(record)}
+                disabled={record.status === 'processing'}
+                type={record.has_original_text ? "primary" : "default"}
+                ghost={record.has_original_text}
+              />
+            </Tooltip>
+            
+            {/* --- 新增的直接附加檔案按鈕 --- */}
+            <Tooltip title="從檔案附加文本">
+              <Button
+                size="small"
+                icon={<UploadOutlined />}
+                onClick={() => onAttachFileDirectly(record.uid)}
+                disabled={record.status === 'processing'}
+              />
+            </Tooltip>
+
             {record.status === 'completed' && record.result?.txt && (
               <Tooltip title="預覽內容">
                 <Button
@@ -119,17 +168,16 @@ const FileQueueTable = ({
                 />
               </Tooltip>
             )}
-            {record.status === 'completed' && record.result && availableFormats.map(format => (
-              <Tooltip title={`下載 ${format.toUpperCase()}`} key={format}>
-                <Button
-                  size="small"
-                  onClick={() => onDownloadFile(record.result[format], record.name, format)}
-                  disabled={!record.result[format]}
-                >
-                  {format.toUpperCase()}
+
+            {/* --- 使用 Dropdown 取代原本的按鈕列表 --- */}
+            {record.status === 'completed' && record.result && (
+              <Dropdown overlay={downloadMenu} placement="bottom">
+                <Button size="small" icon={<DownloadOutlined />}>
+                  下載
                 </Button>
-              </Tooltip>
-            ))}
+              </Dropdown>
+            )}
+
             {(record.status === 'completed' || record.status === 'error') && (
               <Tooltip title="重新處理">
                 <Popconfirm

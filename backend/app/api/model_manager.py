@@ -26,7 +26,7 @@ async def save_model_setting(
 ):
     logger.info(f"收到模型設定請求:'{config.provider}'")
     try:
-        api_keys = json.dumps(config.api_keys)
+        api_keys = json.dumps(config.api_keys, ensure_ascii=False)
         config_to_save = ModelConfigurationSchema(
             provider=config.provider,
             api_keys=api_keys,
