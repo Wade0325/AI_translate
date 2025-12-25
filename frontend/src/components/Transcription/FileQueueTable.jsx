@@ -25,23 +25,22 @@ const FileQueueTable = ({
       dataIndex: 'name', 
       key: 'name', 
       width: '33%',
-      render: (name, record) => ( // <--- 修改 render 函式
+      render: (name, record) => (
         <Tooltip title={name} popupStyle={{ maxWidth: '600px' }}>
-          <Space>
+          <div style={{ display: 'flex', alignItems: 'center', overflow: 'hidden' }}>
             {record.has_original_text && (
               <Tooltip title="此檔案已附加文本，將執行對齊任務">
-                <FileTextOutlined style={{ color: '#1890ff' }} />
+                <FileTextOutlined style={{ color: '#1890ff', marginRight: 8, flexShrink: 0 }} />
               </Tooltip>
             )}
             <span style={{
-              display: 'block',
               whiteSpace: 'nowrap',
               overflow: 'hidden',
               textOverflow: 'ellipsis',
             }}>
               {name}
             </span>
-          </Space>
+          </div>
         </Tooltip>
       ),
     },

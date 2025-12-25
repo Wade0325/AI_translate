@@ -1,0 +1,17 @@
+{
+    // Python 虛擬環境設定
+    "python.defaultInterpreterPath": "${workspaceFolder}/backend/.venv/Scripts/python.exe",
+    "python.terminal.activateEnvironment": true,
+    // 終端機預設啟動時自動執行虛擬環境啟動腳本
+    "terminal.integrated.profiles.windows": {
+        "PowerShell (venv)": {
+            "source": "PowerShell",
+            "args": [
+                "-NoExit",
+                "-Command",
+                "& '${workspaceFolder}/backend/.venv/Scripts/Activate.ps1'"
+            ]
+        }
+    },
+    "terminal.integrated.defaultProfile.windows": "PowerShell (venv)"
+}
