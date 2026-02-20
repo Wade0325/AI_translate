@@ -8,9 +8,10 @@ export default defineConfig({
   server: {
     proxy: {
       '/api': {
-        target: 'http://localhost:8000',
+        // Docker 環境用 backend-service:8000，本機開發用 localhost:8000
+        target: process.env.VITE_PROXY_TARGET || 'http://localhost:8000',
         changeOrigin: true,
-        ws: true, // <--- 新增這一行
+        ws: true,
       },
     },
   },

@@ -18,9 +18,32 @@ class Settings(BaseSettings):
     """
 
     # Database
-    database_url: str = "postgresql://user:password@localhost:5432/mydatabase"
+    postgres_user: str = "user"
+    postgres_password: str = "password"
+    postgres_server: str = "localhost"
+    postgres_port: str = "5432"
+    postgres_db: str = "mydatabase"
+    
+    database_url: str | None = None
     db_pool_size: int = 10
     db_max_overflow: int = 20
+
+    @property
+    def sync_database_url(self) -> str:
+        """取得同步資料庫連線 URL"""
+        if self.database_url:
+            return self.database_url
+        
+        return f"postgresql://{self.postgres_user}:{self.postgres_password}@{self.postgres_server}:{self.postgres_port}/{self.postgres_db}"
+
+    @property
+    def async_database_url(self) -> str:
+        """取得非同步資料庫連線 URL (如果需要)"""
+        url = self.sync_database_url
+        if url.startswith("postgresql://"):
+            return url.replace("postgresql://", "postgresql+asyncpg://")
+        return url
+
 
     # Redis
     redis_host: str = "localhost"
@@ -47,11 +70,12 @@ class Settings(BaseSettings):
     @property
     def celery_backend_url(self) -> str:
         """轉換 DATABASE_URL 為 Celery 相容格式"""
-        if self.database_url.startswith("postgresql+psycopg2://"):
-            return self.database_url.replace("postgresql+psycopg2://", "db+postgresql://")
-        elif self.database_url.startswith("postgresql://"):
-            return self.database_url.replace("postgresql://", "db+postgresql://")
-        return self.database_url
+        url = self.sync_database_url
+        if url.startswith("postgresql+psycopg2://"):
+            return url.replace("postgresql+psycopg2://", "db+postgresql://")
+        elif url.startswith("postgresql://"):
+            return url.replace("postgresql://", "db+postgresql://")
+        return url
 
 
 @lru_cache()

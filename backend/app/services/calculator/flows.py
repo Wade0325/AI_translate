@@ -29,25 +29,27 @@ def calculate_price_flow(request: PriceCalculationRequest) -> PriceCalculationRe
     model_price = MODEL_PRICES.get(request.model, MODEL_PRICES["default"])
 
     total_cost = 0.0
+    total_input_cost = 0.0
+    total_output_cost = 0.0
     total_tokens = 0
     breakdown = []
 
     for item in request.items:
-        item_cost = 0.0
         item_tokens = item.input_tokens + item.output_tokens
         total_tokens += item_tokens
 
-        # 計算輸入成本
         if item.content_type == 'audio':
-            item_cost += (item.input_tokens / 1_000_000) * \
+            item_input_cost = (item.input_tokens / 1_000_000) * \
                 model_price.input_audio
-        else:  # 預設為 text
-            item_cost += (item.input_tokens / 1_000_000) * \
+        else:
+            item_input_cost = (item.input_tokens / 1_000_000) * \
                 model_price.input_text
 
-        # 計算輸出成本
-        item_cost += (item.output_tokens / 1_000_000) * model_price.output_text
+        item_output_cost = (item.output_tokens / 1_000_000) * model_price.output_text
+        item_cost = item_input_cost + item_output_cost
 
+        total_input_cost += item_input_cost
+        total_output_cost += item_output_cost
         total_cost += item_cost
 
         breakdown.append({
@@ -55,12 +57,16 @@ def calculate_price_flow(request: PriceCalculationRequest) -> PriceCalculationRe
             "input_tokens": item.input_tokens,
             "output_tokens": item.output_tokens,
             "content_type": item.content_type,
-            "cost": item_cost
+            "cost": item_cost,
+            "input_cost": item_input_cost,
+            "output_cost": item_output_cost,
         })
 
     return PriceCalculationResponse(
         total_tokens=total_tokens,
         cost=total_cost,
+        input_cost=total_input_cost,
+        output_cost=total_output_cost,
         model=request.model,
         breakdown=breakdown,
         processing_time_seconds=request.processing_time_seconds,

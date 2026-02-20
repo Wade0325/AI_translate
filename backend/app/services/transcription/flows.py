@@ -1,8 +1,8 @@
 from pathlib import Path
 from typing import List, Dict, Optional
-import soundfile as sf
 
 from app.utils.logger import setup_logger
+from app.utils.audio import get_audio_duration as _ffprobe_duration
 from app.provider.google.gemini import (
     upload_file_to_gemini,
     transcribe_with_uploaded_file,
@@ -160,12 +160,10 @@ class TranscriptionTask:
 
     def _get_audio_duration(self, audio_path: Path) -> Optional[float]:
         """取得音訊檔案時長"""
-        try:
-            with sf.SoundFile(str(audio_path)) as f:
-                return f.frames / f.samplerate
-        except Exception as e:
-            logger.error(f"無法取得音訊時長 {audio_path.name}: {e}")
-            return None
+        duration = _ffprobe_duration(audio_path)
+        if duration is None:
+            logger.error(f"無法取得音訊時長 {audio_path.name}")
+        return duration
 
     def _attempt_transcription(self, audio_path: Path) -> TranscriptionTaskResult:
         """嘗試轉錄單一音訊檔案"""

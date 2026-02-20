@@ -61,7 +61,7 @@ const FileQueueTable = ({
     {
       title: (
         <Space size="small">
-          <span>金額 (USD)</span>
+          <span>Input (USD)</span>
           <Tooltip title="此為預估值，點擊圖示查看 Gemini API 官方計價。">
             <a href="https://ai.google.dev/pricing" target="_blank" rel="noopener noreferrer">
               <InfoCircleOutlined style={{ color: 'rgba(0,0,0,.45)', cursor: 'pointer', fontSize: '12px' }} />
@@ -69,10 +69,17 @@ const FileQueueTable = ({
           </Tooltip>
         </Space>
       ),
-      dataIndex: 'cost',
-      key: 'cost',
-      width: '10%',
-      render: (cost, record) => (record.status === 'completed' && cost ? `$${cost.toFixed(4)}` : '-'),
+      dataIndex: 'input_cost',
+      key: 'input_cost',
+      width: '8%',
+      render: (input_cost, record) => (record.status === 'completed' && input_cost != null ? `$${input_cost.toFixed(4)}` : '-'),
+    },
+    {
+      title: 'Output (USD)',
+      dataIndex: 'output_cost',
+      key: 'output_cost',
+      width: '8%',
+      render: (output_cost, record) => (record.status === 'completed' && output_cost != null ? `$${output_cost.toFixed(4)}` : '-'),
     },
     {
       title: '進度',

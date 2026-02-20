@@ -5,7 +5,6 @@ from typing import Generator
 import json
 import redis
 
-import soundfile as sf
 from sqlalchemy.orm import Session
 from langdetect import detect, LangDetectException
 
@@ -21,6 +20,7 @@ from app.services.transcription.flows import (
     TranscriptionTask,
     _remap_lrc_timestamps
 )
+from app.utils.audio import get_audio_duration
 from app.services.transcription.models import TranscriptionResponse
 from app.services.translator.flows import _perform_translation
 from app.utils.logger import setup_logger
@@ -112,17 +112,15 @@ def transcribe_media_task(self, task_params_dict: dict):
         update_status("檔案處理與分析...")
 
         # 2. 獲取音訊時長
-        try:
-            with sf.SoundFile(str(local_path)) as f:
-                audio_duration_seconds = f.frames / f.samplerate
+        audio_duration_seconds = get_audio_duration(local_path) or 0.0
+        if audio_duration_seconds > 0:
             logger.info(f"Audio file info for task {task_uuid}:")
             logger.info(f" - Filename: {local_path.name}")
             logger.info(
                 f" - Duration: {audio_duration_seconds:>10.2f} seconds")
-        except Exception as e:
+        else:
             logger.warning(
-                f"Could not read audio duration for {local_path.name}. Error: {e}")
-            audio_duration_seconds = 0.0
+                f"Could not read audio duration for {local_path.name}.")
 
         # 3. 初始化 Gemini Client
         if task_params.provider.lower() != 'google':
@@ -290,6 +288,8 @@ def transcribe_media_task(self, task_params_dict: dict):
             transcripts=final_transcripts,
             tokens_used=metrics_response.total_tokens,
             cost=metrics_response.cost,
+            input_cost=metrics_response.input_cost,
+            output_cost=metrics_response.output_cost,
             model=task_params.model,
             source_language=task_params.source_lang,
             processing_time_seconds=metrics_response.processing_time_seconds,

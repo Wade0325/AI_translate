@@ -245,6 +245,8 @@ export const TranscriptionProvider = ({ children }) => {
                   updatedFile.result = data.result?.transcripts;
                   updatedFile.tokens_used = data.result?.tokens_used;
                   updatedFile.cost = data.result?.cost;
+                  updatedFile.input_cost = data.result?.input_cost;
+                  updatedFile.output_cost = data.result?.output_cost;
                 } else if (data.status_code === 'FAILED') {
                   updatedFile.status = 'error';
                   updatedFile.percent = 100;
@@ -321,6 +323,8 @@ export const TranscriptionProvider = ({ children }) => {
                 updatedFile.result = data.result?.transcripts;
                 updatedFile.tokens_used = data.result?.tokens_used;
                 updatedFile.cost = data.result?.cost;
+                updatedFile.input_cost = data.result?.input_cost;
+                updatedFile.output_cost = data.result?.output_cost;
               } else if (data.status_code === 'FAILED') {
                 updatedFile.status = 'error';
                 updatedFile.percent = 100;

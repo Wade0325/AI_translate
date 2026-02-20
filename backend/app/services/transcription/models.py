@@ -34,6 +34,8 @@ class TranscriptionResponse(BaseModel):
     transcripts: Dict[str, Any] = Field(..., description="各種格式的轉錄結果")
     tokens_used: int = Field(..., description="使用的 token 總數")
     cost: float = Field(..., description="轉錄費用")
+    input_cost: float = Field(0.0, description="輸入費用")
+    output_cost: float = Field(0.0, description="輸出費用")
     model: str = Field(..., description="使用的模型名稱")
     source_language: str = Field(..., description="來源語言")
     processing_time_seconds: float = Field(..., description="處理時間（秒）")

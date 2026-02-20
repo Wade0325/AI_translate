@@ -40,8 +40,9 @@ class PriceCalculationResponse(BaseModel):
     """
     total_tokens: int = Field(..., description="所有項目加總的總 token 數量")
     cost: float = Field(..., description="計算出的總費用")
+    input_cost: float = Field(0.0, description="所有項目的輸入總費用")
+    output_cost: float = Field(0.0, description="所有項目的輸出總費用")
     model: str = Field(..., description="用於計價的模型名稱")
-    # 可選：提供成本細目
     breakdown: list[dict] | None = Field(None, description="每個計費項目的成本細目")
     processing_time_seconds: float | None = Field(
         None, description="任務總處理時間（秒）")

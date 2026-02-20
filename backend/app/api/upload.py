@@ -22,6 +22,23 @@ SUPPORTED_MIME_TYPES = {
 }
 
 
+def _get_unique_filepath(directory: Path, filename: str) -> Path:
+    """若檔名已存在，自動加上編號避免覆蓋，例如 file(1).mp3"""
+    filepath = directory / filename
+    if not filepath.exists():
+        return filepath
+
+    stem = Path(filename).stem
+    suffix = Path(filename).suffix
+    counter = 1
+    while True:
+        new_name = f"{stem}({counter}){suffix}"
+        filepath = directory / new_name
+        if not filepath.exists():
+            return filepath
+        counter += 1
+
+
 @router.post("/upload", tags=["Upload"])
 async def upload_file(
     file: UploadFile = File(..., description="要上傳的檔案")
@@ -40,17 +57,22 @@ async def upload_file(
     # 確保 temp_uploads 目錄存在
     TEMP_UPLOADS_DIR.mkdir(exist_ok=True)
 
-    # 保持原始檔名
-    temp_file_path = TEMP_UPLOADS_DIR / file.filename
+    # 使用原始檔名，若有同名檔案則自動加編號
+    original_filename = Path(file.filename).name
+    temp_file_path = _get_unique_filepath(TEMP_UPLOADS_DIR, original_filename)
 
     try:
-        # 保存檔案
         with temp_file_path.open("wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
 
+        if temp_file_path.stat().st_size == 0:
+            temp_file_path.unlink()
+            raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+
+        saved_filename = temp_file_path.name
         logger.info(f"臨時檔案已保存: {temp_file_path}")
 
-        return {"filename": file.filename, "message": "檔案上傳成功"}
+        return {"filename": saved_filename, "message": "檔案上傳成功"}
 
     except Exception as e:
         logger.error(f"保存檔案失敗: {e}")

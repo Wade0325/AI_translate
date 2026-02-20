@@ -1,0 +1,96 @@
+# 開發環境用 - 使用 Volume 掛載原始碼，程式碼變更無需 rebuild
+# 使用方式: docker-compose -f docker-compose.dev.yml up
+#
+# Backend: 支援 uvicorn --reload，修改後端程式會自動重啟
+# Celery: 修改程式後需手動 restart: docker-compose -f docker-compose.dev.yml restart celery-worker
+# Frontend: 使用 Vite dev server + HMR，修改前端會即時熱更新
+
+services:
+  postgres:
+    image: postgres:13-alpine
+    container_name: dev_postgres
+    ports:
+      - "5432:5432"
+    env_file:
+      - ./.env.prod
+    volumes:
+      - postgres_data_dev:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  redis:
+    image: redis:6-alpine
+    container_name: dev_redis
+    restart: unless-stopped
+
+  backend-service:
+    build:
+      context: ./backend
+    container_name: dev_backend
+    # --reload 會監聽檔案變更並自動重啟，無需 rebuild
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    ports:
+      - "8000:8000"
+    volumes:
+      # 掛載程式碼，修改後會觸發 uvicorn --reload
+      - ./backend:/app
+      - backend_static_cache:/app/.cache
+    env_file:
+      - ./.env.prod
+    environment:
+      - DATABASE_URL=
+      - POSTGRES_SERVER=postgres
+      - POSTGRES_PORT=5432
+      - REDIS_HOST=redis
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    restart: unless-stopped
+
+  celery-worker:
+    build:
+      context: ./backend
+    container_name: dev_celery
+    command: celery -A app.celery.celery:celery_app worker --loglevel=info
+    volumes:
+      - ./backend:/app
+      - ./backend/temp_uploads:/app/temp_uploads
+    env_file:
+      - ./.env.prod
+    environment:
+      - DATABASE_URL=
+      - POSTGRES_SERVER=postgres
+      - POSTGRES_PORT=5432
+      - REDIS_HOST=redis
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    restart: unless-stopped
+
+  # 前端開發伺服器（Vite dev server，支援 HMR）
+  frontend-dev:
+    image: node:18-alpine
+    container_name: dev_frontend
+    working_dir: /app
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app
+    environment:
+      - VITE_PROXY_TARGET=http://backend-service:8000
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
+    depends_on:
+      - backend-service
+    restart: unless-stopped
+
+volumes:
+  postgres_data_dev:
+  backend_static_cache:

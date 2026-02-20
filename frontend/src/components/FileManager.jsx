@@ -176,6 +176,12 @@ const FileManager = () => {
   const totalCost = fileList
     .filter(f => f.status === 'completed')
     .reduce((acc, file) => acc + (file.cost || 0), 0);
+  const totalInputCost = fileList
+    .filter(f => f.status === 'completed')
+    .reduce((acc, file) => acc + (file.input_cost || 0), 0);
+  const totalOutputCost = fileList
+    .filter(f => f.status === 'completed')
+    .reduce((acc, file) => acc + (file.output_cost || 0), 0);
 
   return (
     <Card title="1. 上傳與管理檔案">
@@ -210,6 +216,8 @@ const FileManager = () => {
             completedFilesCount={completedFilesCount}
             totalTokens={totalTokens}
             totalCost={totalCost}
+            totalInputCost={totalInputCost}
+            totalOutputCost={totalOutputCost}
           />
         </div>
       )}

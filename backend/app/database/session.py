@@ -13,7 +13,7 @@ settings = get_settings()
 logger.info("Creating database engine...")
 
 engine = create_engine(
-    settings.database_url,
+    settings.sync_database_url,
     pool_size=settings.db_pool_size,
     max_overflow=settings.db_max_overflow,
     pool_pre_ping=True,  # 自動檢測斷線

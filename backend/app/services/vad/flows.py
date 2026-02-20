@@ -1,5 +1,6 @@
 import soundfile as sf
 import numpy as np
+import torchaudio
 from pathlib import Path
 from typing import List, Dict, Optional
 
@@ -53,9 +54,10 @@ def extract_speech_segments(request: VADProcessRequest, vad_service) -> SpeechEx
                 total_duration=len(wav) / SAMPLING_RATE
             )
 
-        # 載入原始音訊以保持品質
-        audio_data, original_sr = sf.read(request.audio_path)
-        total_duration = len(audio_data) / original_sr
+        # 載入原始音訊以保持品質（使用 torchaudio 支援 M4A 等格式）
+        waveform, original_sr = torchaudio.load(request.audio_path)
+        audio_data = waveform.numpy().T if waveform.shape[0] > 1 else waveform.squeeze(0).numpy()
+        total_duration = len(audio_data) / original_sr if audio_data.ndim == 1 else audio_data.shape[0] / original_sr
 
         # 收集所有語音片段
         speech_segments = []
@@ -116,10 +118,11 @@ def split_audio_on_silence(request: AudioSplitRequest, vad_service) -> AudioSpli
         model, utils = vad_service.get_model_and_utils()
         get_speech_timestamps, _, read_audio, _, _ = utils
 
-        # 讀取音訊
+        # 讀取音訊（使用 torchaudio 支援 M4A 等格式）
         wav = read_audio(request.audio_path, sampling_rate=SAMPLING_RATE)
-        audio_data, original_sr = sf.read(request.audio_path)
-        total_duration = len(audio_data) / original_sr
+        waveform, original_sr = torchaudio.load(request.audio_path)
+        audio_data = waveform.numpy().T if waveform.shape[0] > 1 else waveform.squeeze(0).numpy()
+        total_duration = len(audio_data) / original_sr if audio_data.ndim == 1 else audio_data.shape[0] / original_sr
 
         # 檢測語音片段
         speech_timestamps = get_speech_timestamps(

@@ -9,7 +9,7 @@ import {
 } from '@ant-design/icons';
 import { useTranscription } from '../../context/TranscriptionContext';
 
-const QueueSummary = ({ completedFilesCount, totalTokens, totalCost }) => {
+const QueueSummary = ({ completedFilesCount, totalTokens, totalCost, totalInputCost, totalOutputCost }) => {
   const { downloadAllFiles } = useTranscription();
 
   const downloadMenuItems = [
@@ -51,6 +51,24 @@ const QueueSummary = ({ completedFilesCount, totalTokens, totalCost }) => {
           value={totalTokens}
           valueStyle={{ fontSize: '20px' }}
           prefix={<DashboardOutlined />}
+        />
+      </Col>
+      <Col>
+        <Statistic
+          title={<span style={{ fontSize: '14px', color: 'rgba(0, 0, 0, 0.45)' }}>Input 花費 (USD)</span>}
+          value={totalInputCost}
+          precision={4}
+          valueStyle={{ fontSize: '20px' }}
+          prefix={<DollarCircleOutlined />}
+        />
+      </Col>
+      <Col>
+        <Statistic
+          title={<span style={{ fontSize: '14px', color: 'rgba(0, 0, 0, 0.45)' }}>Output 花費 (USD)</span>}
+          value={totalOutputCost}
+          precision={4}
+          valueStyle={{ fontSize: '20px' }}
+          prefix={<DollarCircleOutlined />}
         />
       </Col>
       <Col>
