@@ -4,14 +4,13 @@
     "python.terminal.activateEnvironment": true,
     // 終端機預設啟動時自動執行虛擬環境啟動腳本
     "terminal.integrated.profiles.windows": {
-        "PowerShell (venv)": {
-            "source": "PowerShell",
+        "CMD (venv)": {
+            "path": "C:\\Windows\\System32\\cmd.exe",
             "args": [
-                "-NoExit",
-                "-Command",
-                "& '${workspaceFolder}/backend/.venv/Scripts/Activate.ps1'"
+                "/K",
+                "${workspaceFolder}\\backend\\.venv\\Scripts\\activate.bat"
             ]
         }
     },
-    "terminal.integrated.defaultProfile.windows": "PowerShell (venv)"
+    "terminal.integrated.defaultProfile.windows": "CMD (venv)"
 }

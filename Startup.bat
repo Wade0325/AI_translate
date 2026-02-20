@@ -1,23 +1,67 @@
 @echo off
 SETLOCAL
 
-REM --- 將路徑變數的定義移至此處 ---
-REM 定義相對於腳本位置的路徑
+REM --- 路徑變數定義 ---
 SET "SCRIPT_DIR=%~dp0"
 SET "VENV_ACTIVATE_SCRIPT=%SCRIPT_DIR%backend\.venv\Scripts\activate.bat"
-SET "VENV_DEACTIVATE_SCRIPT=%SCRIPT_DIR%backend\.venv\Scripts\deactivate.bat"
-REM **** 修正 START ****
-REM Celery 和 FastAPI 的工作目錄都應該是 backend
 SET "BACKEND_DIR=%SCRIPT_DIR%backend"
-REM **** 修正 END ****
 SET "FRONTEND_APP_DIR=%SCRIPT_DIR%frontend"
 REM --- 路徑變數定義結束 ---
 
-REM 檢查第一個參數
+REM 如果沒有參數，啟動所有服務
+IF "%1"=="" (
+    echo ============================================
+    echo   Starting All Services in Separate Windows
+    echo ============================================
+    echo.
+
+    REM 檢查必要的目錄和檔案是否存在
+    IF NOT EXIST "%VENV_ACTIVATE_SCRIPT%" (
+        echo Error: Virtual environment not found at "%VENV_ACTIVATE_SCRIPT%"
+        echo Please create virtual environment first.
+        GOTO EndScript
+    )
+    IF NOT EXIST "%BACKEND_DIR%" (
+        echo Error: Backend directory not found at "%BACKEND_DIR%"
+        GOTO EndScript
+    )
+    IF NOT EXIST "%FRONTEND_APP_DIR%" (
+        echo Error: Frontend directory not found at "%FRONTEND_APP_DIR%"
+        GOTO EndScript
+    )
+
+    echo [1/3] Starting Celery Worker...
+    start "Celery Worker" cmd /k "cd /d "%BACKEND_DIR%" && call "%VENV_ACTIVATE_SCRIPT%" && echo Starting Celery Worker... && celery -A app.celery.celery:celery_app worker -l INFO -P gevent"
+
+    REM 稍微延遲一下，避免同時啟動造成資源競爭
+    timeout /t 2 /nobreak > nul
+
+    echo [2/3] Starting FastAPI Server...
+    start "FastAPI Server" cmd /k "cd /d "%BACKEND_DIR%" && call "%VENV_ACTIVATE_SCRIPT%" && echo Starting FastAPI Server... && uvicorn main:app --reload --host 0.0.0.0 --port 8000"
+
+    timeout /t 2 /nobreak > nul
+
+    echo [3/3] Starting React Frontend...
+    start "React Frontend" cmd /k "cd /d "%FRONTEND_APP_DIR%" && echo Starting React Frontend... && npm run dev"
+
+    echo.
+    echo ============================================
+    echo   All services started successfully!
+    echo ============================================
+    echo.
+    echo   - Celery Worker:  Running in separate window
+    echo   - FastAPI Server: http://localhost:8000
+    echo   - React Frontend: http://localhost:5173
+    echo.
+    echo   Close this window or press any key to exit.
+    pause > nul
+    GOTO EndScript
+)
+
+REM 檢查第一個參數 (保留單獨啟動功能)
 IF /I "%1"=="celery" (
     echo Starting Celery...
 
-    REM 檢查虛擬環境激活腳本是否存在
     IF NOT EXIST "%VENV_ACTIVATE_SCRIPT%" (
         echo Error: Virtual environment activation script not found at "%VENV_ACTIVATE_SCRIPT%"
         GOTO EndScript
@@ -29,8 +73,6 @@ IF /I "%1"=="celery" (
         GOTO EndScript
     )
 
-    REM **** 修正 START ****
-    REM 檢查 backend 目錄是否存在
     IF NOT EXIST "%BACKEND_DIR%" (
         echo Error: Backend directory not found at "%BACKEND_DIR%"
         GOTO DeactivateAndEnd
@@ -43,9 +85,7 @@ IF /I "%1"=="celery" (
     )
 
     echo Starting Celery worker: celery -A app.celery.celery:celery_app worker -l INFO -P gevent
-    REM 使用正確的應用程式路徑，並加上 -P gevent 參數
     celery -A app.celery.celery:celery_app worker -l INFO -P gevent
-    REM **** 修正 END ****
 
     echo Celery process finished or was interrupted.
     echo Returning to original directory...
@@ -56,7 +96,6 @@ IF /I "%1"=="celery" (
 ) ELSE IF /I "%1"=="app" (
     echo Starting FastAPI app...
 
-    REM 檢查虛擬環境激活腳本是否存在
     IF NOT EXIST "%VENV_ACTIVATE_SCRIPT%" (
         echo Error: Virtual environment activation script not found at "%VENV_ACTIVATE_SCRIPT%"
         GOTO EndScript
@@ -68,8 +107,6 @@ IF /I "%1"=="celery" (
         GOTO EndScript
     )
 
-    REM **** 修正 START ****
-    REM 檢查 backend 目錄是否存在
     IF NOT EXIST "%BACKEND_DIR%" (
         echo Error: Backend directory not found at "%BACKEND_DIR%"
         GOTO DeactivateAndEnd
@@ -80,7 +117,6 @@ IF /I "%1"=="celery" (
         echo Failed to change directory to "%BACKEND_DIR%"
         GOTO DeactivateAndEnd
     )
-    REM **** 修正 END ****
 
     echo Starting FastAPI app: uvicorn main:app --reload
     uvicorn main:app --reload --host 0.0.0.0 --port 8000
@@ -94,7 +130,6 @@ IF /I "%1"=="celery" (
 ) ELSE IF /I "%1"=="react" (
     echo Starting React project...
 
-    REM 檢查 Frontend 應用程式目錄是否存在
     IF NOT EXIST "%FRONTEND_APP_DIR%" (
         echo Error: Frontend app directory not found at "%FRONTEND_APP_DIR%"
         GOTO EndScript
@@ -113,22 +148,26 @@ IF /I "%1"=="celery" (
     echo Returning to original directory...
     popd
     
-    REM React 專案不需要停用虛擬環境，直接跳到結束
     GOTO EndScript
 
 ) ELSE (
-    echo Invalid or no parameter provided.
-    echo To start Celery, run: %~n0 celery
-    echo To start FastAPI app, run: %~n0 app
-    echo To start React project, run: %~n0 react
+    echo.
+    echo ============================================
+    echo   Startup Script Usage
+    echo ============================================
+    echo.
+    echo   %~n0          - Start ALL services (each in separate window)
+    echo   %~n0 celery   - Start Celery worker only
+    echo   %~n0 app      - Start FastAPI server only
+    echo   %~n0 react    - Start React frontend only
+    echo.
     GOTO EndScript
 )
 
 :DeactivateAndEnd
-REM 檢查 VIRTUAL_ENV 環境變數是否已定義 (activate.bat 通常會設置此變數)
 IF DEFINED VIRTUAL_ENV (
   echo Deactivating virtual environment...
-  CALL "%VENV_DEACTIVATE_SCRIPT%"
+  CALL "%SCRIPT_DIR%backend\.venv\Scripts\deactivate.bat"
   IF ERRORLEVEL 1 (
       echo Failed to deactivate virtual environment.
   )

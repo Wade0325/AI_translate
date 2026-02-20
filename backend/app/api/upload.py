@@ -3,13 +3,16 @@ from pathlib import Path
 
 from fastapi import APIRouter, UploadFile, File, HTTPException
 
+from app.core.config import get_settings
 from app.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
 
 router = APIRouter()
 
-TEMP_UPLOADS_DIR = Path("temp_uploads")
+# 取得集中管理的設定
+settings = get_settings()
+TEMP_UPLOADS_DIR = Path(settings.temp_uploads_dir)
 
 SUPPORTED_MIME_TYPES = {
     "audio/wav", "audio/x-wav", "audio/wave", "audio/mpeg", "audio/mp3",

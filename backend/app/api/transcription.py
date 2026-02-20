@@ -1,4 +1,3 @@
-import os
 from pathlib import Path
 
 from fastapi import (
@@ -10,6 +9,7 @@ from fastapi.concurrency import run_in_threadpool
 
 from app.celery.task import transcribe_media_task
 from app.celery.models import TranscriptionTaskParams
+from app.core.config import get_settings
 from app.utils.logger import setup_logger
 from app.websocket.manager import manager
 from app.schemas.schemas import WebSocketTranscriptionRequest
@@ -19,8 +19,9 @@ logger = setup_logger(__name__)
 
 router = APIRouter()
 
-# 從環境變數或預設值取得上傳目錄
-TEMP_UPLOADS_DIR = Path(os.getenv("TEMP_UPLOADS_DIR", "temp_uploads"))
+# 取得集中管理的設定
+settings = get_settings()
+TEMP_UPLOADS_DIR = Path(settings.temp_uploads_dir)
 TEMP_UPLOADS_DIR.mkdir(exist_ok=True)
 
 

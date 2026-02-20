@@ -1,8 +1,6 @@
 import asyncio
-import json
 from fastapi import FastAPI
 from contextlib import asynccontextmanager
-from dotenv import load_dotenv
 from app.api import model_manager
 from app.api import transcription
 from app.api import upload
@@ -11,9 +9,6 @@ from app.websocket.manager import manager as websocket_manager
 from fastapi.middleware.cors import CORSMiddleware
 from app.database.session import init_db
 from app.utils.logger import setup_logger
-
-# 載入 .env 檔案中的環境變數
-load_dotenv()
 
 # 建立 logger
 logger = setup_logger(__name__)
@@ -27,7 +22,7 @@ async def lifespan(app: FastAPI):
     # 初始化資料庫
     init_db()
 
-    # 啟動 WebSocket 的 Redis 監聽器
+    # 啟動 WebSocket 的 Redis 監聯器
     asyncio.create_task(websocket_manager.redis_listener())
     logger.info("WebSocket Redis 監聽器已在背景啟動。")
 

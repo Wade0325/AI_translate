@@ -1,26 +1,29 @@
-import os
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 from .models import Base, ModelConfiguration
+from app.core.config import get_settings
 from app.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
 
+# 取得集中管理的設定
+settings = get_settings()
+
 # --- Database Setup ---
-SQLALCHEMY_DATABASE_URL = os.getenv(
-    "DATABASE_URL", "postgresql://user:password@localhost:5432/mydatabase"
-)
-logger.info(f"Creating database engine...")
+logger.info("Creating database engine...")
 
 engine = create_engine(
-    SQLALCHEMY_DATABASE_URL
+    settings.database_url,
+    pool_size=settings.db_pool_size,
+    max_overflow=settings.db_max_overflow,
+    pool_pre_ping=True,  # 自動檢測斷線
 )
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
 def init_db():
     """初始化資料庫，建立資料表並插入預設資料"""
-    logger.info(f"Initializing database...")
+    logger.info("Initializing database...")
     Base.metadata.create_all(bind=engine)
 
     db = SessionLocal()

@@ -3,15 +3,15 @@ import json
 from fastapi import WebSocket
 from typing import Dict
 import redis.asyncio as redis
-import os
 
+from app.core.config import get_settings
 from app.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
 
-REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
-REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
-REDIS_URL = f"redis://{REDIS_HOST}:{REDIS_PORT}"
+# 取得集中管理的設定
+settings = get_settings()
+REDIS_URL = settings.redis_url
 
 
 class ConnectionManager:
