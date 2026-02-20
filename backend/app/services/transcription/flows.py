@@ -2,7 +2,7 @@ from pathlib import Path
 from typing import List, Dict, Optional
 
 from app.utils.logger import setup_logger
-from app.utils.audio import get_audio_duration as _ffprobe_duration
+from app.utils.audio import get_audio_duration as _ffprobe_duration, convert_to_wav
 from app.provider.google.gemini import (
     upload_file_to_gemini,
     transcribe_with_uploaded_file,
@@ -198,8 +198,20 @@ class TranscriptionTask:
 
     def _transcribe_with_splitting(self, audio_path: Path) -> TranscriptionTaskResult:
         """使用 VAD 分割音訊並分別轉錄"""
+        # VAD (soundfile/libsndfile) 不支援 m4a 等壓縮格式，先轉為 wav
+        wav_path = convert_to_wav(audio_path, self.temp_dir)
+        if wav_path is None:
+            logger.error(f"無法將 {audio_path.name} 轉換為 WAV 格式")
+            return TranscriptionTaskResult(
+                success=False,
+                text="[[音訊格式轉換失敗]]",
+                total_tokens=0
+            )
+        if wav_path != audio_path:
+            self.local_cleanup_list.append(wav_path)
+
         # 使用 VAD 尋找靜音點並分割
-        segments = self._split_audio_file(audio_path)
+        segments = self._split_audio_file(wav_path)
 
         if not segments or len(segments) < 2:
             logger.error("無法分割音訊檔案")

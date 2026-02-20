@@ -6,6 +6,7 @@ import time
 
 from app.schemas.schemas import ServiceStatus
 from app.utils.logger import setup_logger
+from app.utils.audio import get_mime_type
 
 logger = setup_logger(__name__)
 
@@ -62,7 +63,13 @@ def upload_file_to_gemini(file_path: Path, client: genai.Client, status_callback
     if status_callback:
         status_callback(f"上傳檔案至AI模型...")
 
-    gemini_file = client.files.upload(file=file_path)
+    mime_type = get_mime_type(file_path)
+    upload_kwargs = {"file": file_path}
+    if mime_type:
+        upload_kwargs["config"] = {"mime_type": mime_type}
+        logger.info(f"使用 MIME 類型: {mime_type}")
+
+    gemini_file = client.files.upload(**upload_kwargs)
 
     # 等待檔案處理完成
     processing_dots = 0
