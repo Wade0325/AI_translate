@@ -66,3 +66,21 @@ class WebSocketTranscriptionRequest(BaseModel):
     prompt: Optional[str] = None
     original_text: Optional[str] = None  # <--- 新增此行
     segments_for_remapping: Optional[List[Dict[str, float]]] = None
+
+
+class BatchFileItem(BaseModel):
+    """批次處理中的單一檔案項目"""
+    filename: str
+    original_filename: str
+    file_uid: str
+
+
+class WebSocketBatchRequest(BaseModel):
+    """用於接收 WebSocket 批次轉錄請求的資料模型"""
+    files: List[BatchFileItem]
+    provider: str
+    model: str
+    api_keys: str
+    source_lang: str
+    target_lang: Optional[str] = None
+    prompt: Optional[str] = None

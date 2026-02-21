@@ -64,12 +64,13 @@ def upload_file_to_gemini(file_path: Path, client: genai.Client, status_callback
         status_callback(f"上傳檔案至AI模型...")
 
     mime_type = get_mime_type(file_path)
-    upload_kwargs = {"file": file_path}
+    config = {"display_name": file_path.stem}
     if mime_type:
-        upload_kwargs["config"] = {"mime_type": mime_type}
+        config["mime_type"] = mime_type
         logger.info(f"使用 MIME 類型: {mime_type}")
 
-    gemini_file = client.files.upload(**upload_kwargs)
+    with open(file_path, "rb") as f:
+        gemini_file = client.files.upload(file=f, config=config)
 
     # 等待檔案處理完成
     processing_dots = 0
@@ -215,3 +216,63 @@ def cleanup_gemini_file(client, gemini_file):
     """
     client.files.delete(name=gemini_file.name)
     logger.info(f"已從 Gemini API 清理檔案: {gemini_file.name}")
+
+
+# ==================== Batch API ====================
+
+BATCH_COMPLETED_STATES = frozenset({
+    'JOB_STATE_SUCCEEDED',
+    'JOB_STATE_FAILED',
+    'JOB_STATE_CANCELLED',
+    'JOB_STATE_EXPIRED',
+})
+
+
+def create_batch_transcription_job(
+    client: genai.Client,
+    gemini_files: list,
+    model: str,
+    prompt: str,
+    display_name: str = "transcription-batch"
+) -> Any:
+    """
+    使用 Gemini Batch API 建立批次轉錄任務。
+    將多個已上傳的音訊檔案打包為 inline requests 提交，
+    享有標準 API 50% 的費用折扣。
+    """
+    inline_requests = []
+    for gemini_file in gemini_files:
+        request = {
+            'contents': [{
+                'parts': [
+                    {'text': prompt},
+                    {'file_data': {
+                        'file_uri': gemini_file.uri,
+                        'mime_type': gemini_file.mime_type
+                    }}
+                ],
+                'role': 'user'
+            }]
+        }
+        inline_requests.append(request)
+
+    logger.info(f"建立批次任務: {len(inline_requests)} 個請求, 模型: {model}")
+    batch_job = client.batches.create(
+        model=model,
+        src=inline_requests,
+        config={'display_name': display_name},
+    )
+    logger.info(f"批次任務已建立: {batch_job.name}")
+    return batch_job
+
+
+def poll_batch_job_status(client: genai.Client, job_name: str) -> Any:
+    """查詢 Gemini Batch API 任務狀態"""
+    return client.batches.get(name=job_name)
+
+
+def get_batch_job_state_name(batch_job) -> str:
+    """安全地取得批次任務狀態名稱"""
+    if hasattr(batch_job.state, 'name'):
+        return batch_job.state.name
+    return str(batch_job.state)

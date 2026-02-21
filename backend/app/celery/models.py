@@ -19,3 +19,26 @@ class TranscriptionTaskParams(BaseModel):
     original_text: Optional[str] = None  # 新增: 前端傳來的文字稿
     segments_for_remapping: Optional[List[Dict[str, float]]] = None
     target_lang: Optional[str] = None  # 新增: 前端指定的輸出語言
+
+
+class BatchFileItemParams(BaseModel):
+    """批次任務中的單一檔案參數"""
+    file_path: str
+    original_filename: str
+    file_uid: str
+
+
+class BatchTranscriptionTaskParams(BaseModel):
+    """
+    定義批次轉錄任務所需的所有參數。
+    使用 Gemini Batch API 以 50% 的費用非同步處理多個檔案。
+    """
+    files: List[BatchFileItemParams]
+    provider: str
+    model: str
+    api_keys: str
+    source_lang: str
+    target_lang: Optional[str] = None
+    prompt: Optional[str] = None
+    client_id: str
+    batch_id: str

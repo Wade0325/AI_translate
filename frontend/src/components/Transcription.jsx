@@ -9,12 +9,15 @@ import {
   Card,
   Tooltip,
   Modal,
+  Switch,
+  Tag,
 } from 'antd';
 import {
   AudioOutlined,
   EditOutlined,
   SlidersOutlined,
   PlayCircleOutlined,
+  ThunderboltOutlined,
 } from '@ant-design/icons';
 import { useTranscription } from '../context/TranscriptionContext';
 import { useModelManager } from './ModelManager';
@@ -42,6 +45,8 @@ const Transcription = () => {
     targetTranslateLang,
     setTargetTranslateLang,
     isProcessing,
+    useBatchMode,
+    setUseBatchMode,
     handleStartTranscription,
     isPreviewModalVisible,
     previewContent,
@@ -161,6 +166,31 @@ const Transcription = () => {
       </Card>
       
       <Card title="3. 開始轉錄">
+        <Row align="middle" justify="space-between" style={{ marginBottom: 12 }}>
+          <Col>
+            <Space align="center">
+              <Tooltip title="啟用 Gemini Batch API，費用降為標準的 50%，但處理時間較長（通常數分鐘，最長 24 小時）。適合大量檔案且不急需結果的情境。">
+                <Switch
+                  checked={useBatchMode}
+                  onChange={setUseBatchMode}
+                  disabled={isProcessing}
+                  checkedChildren={<ThunderboltOutlined />}
+                />
+              </Tooltip>
+              <Text>批次模式</Text>
+              {useBatchMode && (
+                <Tag color="blue" style={{ marginLeft: 4 }}>費用 -50%</Tag>
+              )}
+            </Space>
+          </Col>
+          {useBatchMode && (
+            <Col>
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                所有檔案將合併為一個 Batch 任務送出，不支援 YouTube 連結
+              </Text>
+            </Col>
+          )}
+        </Row>
         <Button
           type="primary"
           icon={<AudioOutlined />}
@@ -170,7 +200,12 @@ const Transcription = () => {
           style={{ width: '100%' }}
           disabled={fileList.filter(f => f.status === 'waiting').length === 0}
         >
-          {isProcessing ? '正在處理中...' : `開始轉錄 (${fileList.filter(f => f.status === 'waiting').length} 個新檔案)`}
+          {isProcessing
+            ? '正在處理中...'
+            : useBatchMode
+              ? `批次轉錄 (${fileList.filter(f => f.status === 'waiting').length} 個新檔案)`
+              : `開始轉錄 (${fileList.filter(f => f.status === 'waiting').length} 個新檔案)`
+          }
         </Button>
       </Card>
 

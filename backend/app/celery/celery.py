@@ -10,7 +10,7 @@ celery_app = Celery(
     "app",
     broker=settings.redis_url,
     backend=settings.celery_backend_url,
-    include=["app.celery.task"]  # 自動發現任務的模組
+    include=["app.celery.task", "app.celery.batch_task"]
 )
 
 # Celery 的設定

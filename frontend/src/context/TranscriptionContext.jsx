@@ -7,6 +7,7 @@ import { useModelManager } from '../components/ModelManager';
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api/v1';
 const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
 const WS_BASE_URL = import.meta.env.VITE_WS_BASE_URL || `${wsProtocol}//${window.location.host}/api/v1/ws`;
+const WS_BATCH_URL = import.meta.env.VITE_WS_BATCH_URL || `${wsProtocol}//${window.location.host}/api/v1/batch/ws`;
 
 
 
@@ -23,6 +24,7 @@ export const TranscriptionProvider = ({ children }) => {
   const [targetTranslateLang, setTargetTranslateLang] = useState(null); // 新增: 翻譯目標語言
   const [model, setModel] = useState(modelOptions.Google[0].value);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [useBatchMode, setUseBatchMode] = useState(false);
   const { getProviderConfig } = useModelManager();
 
   const activeSockets = useRef({}); // 用於管理所有活躍的 socket
@@ -140,7 +142,10 @@ export const TranscriptionProvider = ({ children }) => {
     setFileList(updatedList);
   };
   
-  const handleStartTranscription = async () => {
+  // =============================================
+  // 一般模式：每個檔案各自建立 WebSocket 連線
+  // =============================================
+  const handleRegularTranscription = async () => {
     const filesToProcess = fileList.filter(f => 
       (f.status === 'waiting' || f.status === 'error') && f.originFileObj
     );
@@ -223,7 +228,7 @@ export const TranscriptionProvider = ({ children }) => {
             source_lang: targetLang,
             target_lang: targetTranslateLang || null, // 輸出語言
             prompt: prompt,
-            original_text: file.original_text || null, // <--- 新增此行
+            original_text: file.original_text || null,
           };
           socket.send(JSON.stringify(payload));
         };
@@ -301,7 +306,7 @@ export const TranscriptionProvider = ({ children }) => {
           source_lang: targetLang,
           target_lang: targetTranslateLang || null, // 輸出語言
           prompt: prompt,
-          original_text: file.original_text || null, // <--- 新增此行
+          original_text: file.original_text || null,
         };
         socket.send(JSON.stringify(payload));
       };
@@ -352,6 +357,194 @@ export const TranscriptionProvider = ({ children }) => {
     });
   };
 
+  // =============================================
+  // 批次模式：所有檔案共用一個 Batch WebSocket
+  // 使用 Gemini Batch API，費用為標準的 50%
+  // =============================================
+  const handleBatchTranscription = async () => {
+    const filesToProcess = fileList.filter(f =>
+      (f.status === 'waiting' || f.status === 'error') && f.originFileObj
+    );
+
+    if (filesToProcess.length === 0) {
+      message.warning('沒有等待處理的新檔案！（批次模式不支援 YouTube 連結）');
+      return;
+    }
+
+    setIsProcessing(true);
+
+    const provider = findProviderForModel(model);
+    if (!provider) {
+      message.error(`找不到模型 ${model} 對應的服務商設定。`);
+      setIsProcessing(false);
+      return;
+    }
+
+    const config = await getProviderConfig(provider);
+    const apiKey = config?.apiKeys?.[0];
+    const prompt = config?.prompt;
+
+    if (!apiKey) {
+      message.error(`請先在模型管理中為 ${provider} 設定 API 金鑰。`);
+      setIsProcessing(false);
+      return;
+    }
+
+    // 將所有待處理檔案標記為 processing
+    setFileList(currentList =>
+      currentList.map(file =>
+        filesToProcess.find(p => p.uid === file.uid)
+          ? { ...file, status: 'processing', statusText: '正在上傳檔案...' }
+          : file
+      )
+    );
+
+    // 第一步：逐一上傳所有檔案到伺服器
+    const uploadedFiles = [];
+    for (const file of filesToProcess) {
+      try {
+        const formData = new FormData();
+        formData.append('file', file.originFileObj);
+
+        const response = await fetch(`${API_BASE_URL}/upload`, {
+          method: 'POST',
+          body: formData,
+        });
+
+        if (!response.ok) throw new Error('檔案上傳失敗');
+
+        const { filename: serverFilename } = await response.json();
+
+        setFileList(currentList => currentList.map(f =>
+          f.uid === file.uid
+            ? { ...f, statusText: '檔案已上傳，等待批次處理...', serverFilename }
+            : f
+        ));
+
+        uploadedFiles.push({ ...file, serverFilename });
+      } catch (error) {
+        console.error(`上傳檔案 ${file.name} 失敗:`, error);
+        setFileList(currentList => currentList.map(f =>
+          f.uid === file.uid
+            ? { ...f, status: 'error', statusText: '上傳失敗', percent: 100 }
+            : f
+        ));
+      }
+    }
+
+    if (uploadedFiles.length === 0) {
+      message.error('所有檔案上傳失敗，無法啟動批次任務');
+      setIsProcessing(false);
+      return;
+    }
+
+    // 第二步：建立批次 WebSocket 連線
+    const batchId = `batch-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    const socket = new WebSocket(`${WS_BATCH_URL}/${batchId}`);
+    activeSockets.current[batchId] = socket;
+
+    socket.onopen = () => {
+      console.log(`Batch WebSocket connected: ${batchId}`);
+
+      setFileList(currentList => currentList.map(f =>
+        uploadedFiles.find(uf => uf.uid === f.uid)
+          ? { ...f, statusText: '批次任務已提交，等待處理...' }
+          : f
+      ));
+
+      const payload = {
+        files: uploadedFiles.map(f => ({
+          filename: f.serverFilename,
+          original_filename: f.name,
+          file_uid: f.uid,
+        })),
+        provider,
+        model,
+        api_keys: apiKey,
+        source_lang: targetLang,
+        target_lang: targetTranslateLang || null,
+        prompt,
+      };
+      socket.send(JSON.stringify(payload));
+    };
+
+    socket.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      console.log('Batch message:', data);
+
+      // BATCH_COMPLETED 表示整個批次結束，不需要更新個別檔案
+      if (data.status_code === 'BATCH_COMPLETED') {
+        console.log('Batch job completed:', data.status_text);
+        return;
+      }
+
+      // 有 file_uid 表示是某個檔案的個別更新
+      if (data.file_uid) {
+        setFileList(currentList =>
+          currentList.map(f => {
+            if (f.uid === data.file_uid) {
+              const updatedFile = {
+                ...f,
+                statusText: data.status_text,
+                task_uuid: data.task_uuid,
+              };
+              if (data.status_code === 'COMPLETED') {
+                updatedFile.status = 'completed';
+                updatedFile.percent = 100;
+                updatedFile.result = data.result?.transcripts;
+                updatedFile.tokens_used = data.result?.tokens_used;
+                updatedFile.cost = data.result?.cost;
+                updatedFile.input_cost = data.result?.input_cost;
+                updatedFile.output_cost = data.result?.output_cost;
+              } else if (data.status_code === 'FAILED') {
+                updatedFile.status = 'error';
+                updatedFile.percent = 100;
+                updatedFile.error = data.status_text;
+              }
+              return updatedFile;
+            }
+            return f;
+          })
+        );
+      } else {
+        // 沒有 file_uid 的是整體批次進度更新，同步到所有仍在處理中的檔案
+        setFileList(currentList =>
+          currentList.map(f => {
+            if (f.status === 'processing' && uploadedFiles.find(uf => uf.uid === f.uid)) {
+              return { ...f, statusText: data.status_text };
+            }
+            return f;
+          })
+        );
+      }
+    };
+
+    socket.onerror = (error) => {
+      console.error('Batch WebSocket error:', error);
+      message.error('批次任務連線發生錯誤');
+      setFileList(currentList => currentList.map(f =>
+        uploadedFiles.find(uf => uf.uid === f.uid) && f.status === 'processing'
+          ? { ...f, status: 'error', percent: 100, error: '批次連線錯誤', statusText: '連線失敗' }
+          : f
+      ));
+    };
+
+    socket.onclose = () => {
+      console.log(`Batch WebSocket closed: ${batchId}`);
+      delete activeSockets.current[batchId];
+    };
+  };
+
+  // =============================================
+  // 分流 Wrapper：根據 useBatchMode 選擇模式
+  // =============================================
+  const handleStartTranscription = async () => {
+    if (useBatchMode) {
+      return handleBatchTranscription();
+    }
+    return handleRegularTranscription();
+  };
+
   const handleReprocess = (uidToReprocess) => {
     setFileList((currentList) => {
       const fileToReprocess = currentList.find(f => f.uid === uidToReprocess);
@@ -396,6 +589,8 @@ export const TranscriptionProvider = ({ children }) => {
     model,
     setModel,
     isProcessing,
+    useBatchMode,
+    setUseBatchMode,
     handleUploadChange,
     handleStartTranscription,
     downloadFile,
