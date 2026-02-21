@@ -1,8 +1,10 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Layout, Menu, theme } from 'antd';
 import ModelManagerProvider from './components/ModelManager';
 import Transcription from './components/Transcription';
+import History from './components/History';
 import { TranscriptionProvider } from './context/TranscriptionContext';
+import { AudioOutlined, HistoryOutlined } from '@ant-design/icons';
 
 const { Header, Content } = Layout;
 
@@ -10,6 +12,8 @@ const App = () => {
   const {
     token: { colorBgContainer, borderRadiusLG },
   } = theme.useToken();
+
+  const [activeKey, setActiveKey] = useState('transcription');
 
   return (
     <ModelManagerProvider>
@@ -20,8 +24,12 @@ const App = () => {
               <Menu
                 theme="dark"
                 mode="horizontal"
-                defaultSelectedKeys={['1']}
-                items={[{ key: '1', label: '語音轉錄' }]}
+                selectedKeys={[activeKey]}
+                onClick={(e) => setActiveKey(e.key)}
+                items={[
+                  { key: 'transcription', label: '語音轉錄', icon: <AudioOutlined /> },
+                  { key: 'history', label: '歷史紀錄', icon: <HistoryOutlined /> },
+                ]}
                 style={{ flex: 1, minWidth: 0, lineHeight: '64px' }}
               />
             </div>
@@ -38,7 +46,8 @@ const App = () => {
                   overflow: 'auto',
                 }}
               >
-                <Transcription />
+                {activeKey === 'transcription' && <Transcription />}
+                {activeKey === 'history' && <History />}
               </Content>
             </Layout>
           </Layout>

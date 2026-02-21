@@ -121,3 +121,47 @@ class RecoverBatchResponse(BaseModel):
     batch_id: str
     files: List[RecoverFileResult]
 
+
+# ==================== History ====================
+
+class HistoryLogResponse(BaseModel):
+    """歷史紀錄中的單筆任務回應"""
+    task_uuid: str
+    request_timestamp: Optional[str] = None
+    completed_at: Optional[str] = None
+    status: Optional[str] = None
+    original_filename: Optional[str] = None
+    audio_duration_seconds: Optional[float] = None
+    processing_time_seconds: Optional[float] = None
+    model_used: Optional[str] = None
+    provider: Optional[str] = None
+    source_language: Optional[str] = None
+    target_language: Optional[str] = None
+    total_tokens: Optional[int] = None
+    cost: Optional[float] = None
+    error_message: Optional[str] = None
+    is_batch: Optional[bool] = None
+    batch_id: Optional[str] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class HistoryListResponse(BaseModel):
+    """GET /history 的分頁回應"""
+    items: List[HistoryLogResponse]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+
+
+class HistoryStatsResponse(BaseModel):
+    """GET /history/stats 的回應"""
+    total_tasks: int
+    completed_tasks: int
+    failed_tasks: int
+    success_rate: float
+    total_cost: float
+    total_tokens: int
+    total_audio_duration_seconds: float
+    avg_processing_time_seconds: float

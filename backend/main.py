@@ -5,6 +5,7 @@ from app.api import model_manager
 from app.api import transcription
 from app.api import upload
 from app.api import batch
+from app.api import history
 from app.websocket.manager import manager as websocket_manager
 
 from fastapi.middleware.cors import CORSMiddleware
@@ -55,6 +56,7 @@ app.include_router(model_manager.router,
                    tags=["Model Settings"])
 app.include_router(upload.router, prefix="/api/v1", tags=["Upload"])
 app.include_router(batch.router, prefix="/api/v1/batch", tags=["Batch Transcription"])
+app.include_router(history.router, prefix="/api/v1/history", tags=["History"])
 
 origins = [
     "http://localhost:8000",

@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import Column, String, Text, DateTime, func, Float, Integer, UUID
+from sqlalchemy import Column, String, Text, DateTime, func, Float, Integer, UUID, Boolean
 from sqlalchemy.orm import declarative_base
 
 Base = declarative_base()
@@ -34,6 +34,11 @@ class TranscriptionLog(Base):
     cost = Column(Float, nullable=True)
     error_message = Column(Text, nullable=True)
     user_id = Column(String, nullable=True)
+    is_batch = Column(Boolean, default=False, nullable=True)
+    batch_id = Column(String, nullable=True)
+    provider = Column(String, nullable=True)
+    target_language = Column(String, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
 
 
 class BatchJob(Base):
@@ -47,5 +52,8 @@ class BatchJob(Base):
     file_mapping_json = Column(Text, nullable=True)      # {index: {file_uid, original_filename}}
     file_durations_json = Column(Text, nullable=True)    # {file_uid: duration}
     file_log_uuids_json = Column(Text, nullable=True)    # {file_uid: task_uuid}
+    results_json = Column(Text, nullable=True)           # {file_uid: result_dict} — 完成後存入的結果
+    file_count = Column(Integer, nullable=True)
+    completed_file_count = Column(Integer, default=0, nullable=True)
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())

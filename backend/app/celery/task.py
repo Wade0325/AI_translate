@@ -2,6 +2,7 @@ import time
 import traceback
 from pathlib import Path
 from typing import Generator
+from datetime import datetime
 import json
 import redis
 
@@ -104,6 +105,9 @@ def transcribe_media_task(self, task_params_dict: dict):
             "model_used": task_params.model,
             "source_language": task_params.source_lang,
             "task_uuid": task_uuid,
+            "provider": task_params.provider,
+            "target_language": task_params.target_lang,
+            "is_batch": False,
         }
         log_repo.insert_log(db, initial_log_data)
         logger.info(
@@ -278,6 +282,7 @@ def transcribe_media_task(self, task_params_dict: dict):
             "processing_time_seconds": metrics_response.processing_time_seconds,
             "total_tokens": metrics_response.total_tokens,
             "cost": metrics_response.cost,
+            "completed_at": datetime.utcnow(),
         }
         log_repo.update_log(db, task_uuid, update_data)
         logger.info(f"Task status updated to COMPLETED. Task ID: {task_uuid}")

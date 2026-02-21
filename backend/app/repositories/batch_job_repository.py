@@ -37,10 +37,12 @@ class BatchJobRepository:
 
     def get_pending_jobs(self, db: Session) -> List[BatchJob]:
         """
-        查詢 status 為 UPLOADING 或 POLLING 的未完成任務。
+        查詢需要恢復的任務：
+        - UPLOADING / POLLING：任務尚未完成
+        - COMPLETED：任務已完成但前端尚未取回結果
         """
         return db.query(BatchJob).filter(
-            BatchJob.status.in_(["UPLOADING", "POLLING"])
+            BatchJob.status.in_(["UPLOADING", "POLLING", "COMPLETED"])
         ).all()
 
     def get_job(self, db: Session, batch_id: str) -> Optional[BatchJob]:

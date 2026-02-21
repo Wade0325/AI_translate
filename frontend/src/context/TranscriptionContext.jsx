@@ -101,36 +101,88 @@ export const TranscriptionProvider = ({ children }) => {
 
       const result = await response.json();
 
-      // 將恢復的檔案結果填入 fileList（對齊 WebSocket 流程的資料結構）
-      const recoveredFiles = result.files.map(f => ({
-        uid: f.file_uid,
-        name: f.original_filename,
-        status: f.status === 'COMPLETED' ? 'completed' : 'error',
-        percent: 100,
-        statusText: f.status === 'COMPLETED' ? '已恢復' : `恢復失敗: ${f.error || '未知錯誤'}`,
-        result: f.result?.transcripts || null,
-        tokens_used: f.result?.tokens_used || 0,
-        cost: f.result?.cost || 0,
-        input_cost: f.result?.input_cost || 0,
-        output_cost: f.result?.output_cost || 0,
-        error: f.error || null,
-      }));
+      // 路徑 1：有結果（DB 快速路徑）→ 直接填入
+      if (result.files && result.files.length > 0) {
+        const recoveredFiles = result.files.map(f => ({
+          uid: f.file_uid,
+          name: f.original_filename,
+          status: f.status === 'COMPLETED' ? 'completed' : 'error',
+          percent: 100,
+          statusText: f.status === 'COMPLETED' ? '已恢復' : `恢復失敗: ${f.error || '未知錯誤'}`,
+          result: f.result?.transcripts || null,
+          tokens_used: f.result?.tokens_used || 0,
+          cost: f.result?.cost || 0,
+          input_cost: f.result?.input_cost || 0,
+          output_cost: f.result?.output_cost || 0,
+          error: f.error || null,
+        }));
+        setFileList(prev => [...recoveredFiles, ...prev]);
+        setPendingBatches(prev => prev.filter(b => b.batch_id !== batchId));
+        const completedCount = result.files.filter(f => f.status === 'COMPLETED').length;
+        message.success({ content: `已恢復 ${completedCount} / ${result.files.length} 個檔案`, key: 'recover' });
+        setIsRecovering(false);
+        return;
+      }
 
-      setFileList(prev => [...recoveredFiles, ...prev]);
+      // 路徑 2：空結果（Celery 在背景從 Gemini 恢復）→ 輪詢等待結果
+      message.loading({ content: '正在從 Gemini 恢復結果，請稍候...', key: 'recover', duration: 0 });
 
-      // 從 pendingBatches 中移除已恢復的
-      setPendingBatches(prev => prev.filter(b => b.batch_id !== batchId));
+      // 每 5 秒輪詢一次，直到結果出現在 DB 或超時
+      const maxAttempts = 60; // 最多等 5 分鐘
+      let attempts = 0;
 
-      const completedCount = result.files.filter(f => f.status === 'COMPLETED').length;
-      message.success({
-        content: `已成功恢復 ${completedCount} / ${result.files.length} 個檔案的轉錄結果！`,
-        key: 'recover',
-      });
+      const pollForResults = async () => {
+        attempts++;
+        try {
+          const pollResp = await fetch(`${API_BASE_URL}/batch/${batchId}/recover`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ api_keys: apiKey }),
+          });
+
+          if (pollResp.ok) {
+            const pollResult = await pollResp.json();
+            if (pollResult.files && pollResult.files.length > 0) {
+              // 結果到了！
+              const recoveredFiles = pollResult.files.map(f => ({
+                uid: f.file_uid,
+                name: f.original_filename,
+                status: f.status === 'COMPLETED' ? 'completed' : 'error',
+                percent: 100,
+                statusText: f.status === 'COMPLETED' ? '已恢復' : `恢復失敗: ${f.error || '未知錯誤'}`,
+                result: f.result?.transcripts || null,
+                tokens_used: f.result?.tokens_used || 0,
+                cost: f.result?.cost || 0,
+                input_cost: f.result?.input_cost || 0,
+                output_cost: f.result?.output_cost || 0,
+                error: f.error || null,
+              }));
+              setFileList(prev => [...recoveredFiles, ...prev]);
+              setPendingBatches(prev => prev.filter(b => b.batch_id !== batchId));
+              const completedCount = pollResult.files.filter(f => f.status === 'COMPLETED').length;
+              message.success({ content: `已恢復 ${completedCount} 個檔案的轉錄結果！`, key: 'recover' });
+              setIsRecovering(false);
+              return;
+            }
+          }
+        } catch (e) {
+          console.log('Poll attempt failed:', e);
+        }
+
+        if (attempts < maxAttempts) {
+          setTimeout(pollForResults, 5000);
+        } else {
+          message.warning({ content: '恢復超時，請稍後重新整理頁面再試', key: 'recover' });
+          setIsRecovering(false);
+        }
+      };
+
+      // 第一次等 5 秒讓 Celery 有時間處理
+      setTimeout(pollForResults, 5000);
 
     } catch (error) {
       console.error('恢復批次任務失敗:', error);
       message.error({ content: `恢復失敗: ${error.message}`, key: 'recover' });
-    } finally {
       setIsRecovering(false);
     }
   };
@@ -556,6 +608,23 @@ export const TranscriptionProvider = ({ children }) => {
     socket.onmessage = (event) => {
       const data = JSON.parse(event.data);
       console.log('Batch message:', data);
+
+      // BATCH_SUBMITTED 表示檔案已全部提交至 Gemini，可以釋放前端 UI
+      if (data.status_code === 'BATCH_SUBMITTED') {
+        console.log('Batch submitted to Gemini:', data.status_text);
+        setIsProcessing(false);
+        hasStartedProcessing.current = false;
+        // 將所有仍在 processing 的批次檔案標記為 batch_pending（不再卡住 UI）
+        setFileList(currentList =>
+          currentList.map(f =>
+            f.status === 'processing' && uploadedFiles.find(uf => uf.uid === f.uid)
+              ? { ...f, status: 'batch_pending', statusText: data.status_text }
+              : f
+          )
+        );
+        message.success('批次任務已提交，可繼續其他操作。結果將自動更新或可稍後恢復。');
+        return;
+      }
 
       // BATCH_COMPLETED 表示整個批次結束，不需要更新個別檔案
       if (data.status_code === 'BATCH_COMPLETED') {

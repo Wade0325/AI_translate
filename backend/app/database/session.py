@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, select, text, inspect as sa_inspect
 from sqlalchemy.orm import sessionmaker
 from .models import Base, ModelConfiguration
 from app.core.config import get_settings
@@ -21,10 +21,29 @@ engine = create_engine(
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
+def _migrate_add_missing_columns():
+    """檢查並自動新增 models 中有但 DB 表中缺少的欄位"""
+    inspector = sa_inspect(engine)
+    for table_name, table in Base.metadata.tables.items():
+        if not inspector.has_table(table_name):
+            continue  # 新表由 create_all 處理
+        existing_columns = {col["name"] for col in inspector.get_columns(table_name)}
+        for column in table.columns:
+            if column.name not in existing_columns:
+                col_type = column.type.compile(engine.dialect)
+                sql = f'ALTER TABLE {table_name} ADD COLUMN {column.name} {col_type}'
+                logger.info(f"Auto-migration: {sql}")
+                with engine.begin() as conn:
+                    conn.execute(text(sql))
+
+
 def init_db():
     """初始化資料庫，建立資料表並插入預設資料"""
     logger.info("Initializing database...")
     Base.metadata.create_all(bind=engine)
+
+    # 自動新增 models 中新增但 DB 中缺少的欄位
+    _migrate_add_missing_columns()
 
     db = SessionLocal()
     try:

@@ -4,6 +4,7 @@ import traceback
 from pathlib import Path
 import json
 import redis
+from datetime import datetime
 
 from langdetect import detect, LangDetectException
 
@@ -222,6 +223,7 @@ def _process_single_result(
         "processing_time_seconds": processing_time,
         "total_tokens": metrics.total_tokens,
         "cost": batch_cost,
+        "completed_at": datetime.utcnow(),
     })
 
     # --- 回傳結果 ---
@@ -301,6 +303,10 @@ def batch_transcribe_task(self, task_params_dict: dict):
             "target_lang": task_params.target_lang,
             "prompt": task_params.prompt,
         }))
+        batch_repo.update_job(db, batch_id, {
+            "file_count": len(task_params.files),
+            "completed_file_count": 0,
+        })
 
         # --- 1. 取得音訊時長 & 建立資料庫日誌 ---
         file_durations = {}
@@ -319,6 +325,10 @@ def batch_transcribe_task(self, task_params_dict: dict):
                 "model_used": task_params.model,
                 "source_language": task_params.source_lang,
                 "task_uuid": file_task_uuid,
+                "is_batch": True,
+                "batch_id": batch_id,
+                "provider": task_params.provider,
+                "target_language": task_params.target_lang,
             })
 
         # --- 2. 上傳所有檔案至 Gemini ---
@@ -384,6 +394,12 @@ def batch_transcribe_task(self, task_params_dict: dict):
             "file_log_uuids_json": json.dumps(file_log_uuids),
         })
 
+        # 通知前端：檔案已全部提交，可以釋放 UI（結果可稍後恢復）
+        update_status(
+            f"批次任務已提交至 Gemini，共 {len(file_gemini_mapping)} 個檔案，等待處理中...",
+            status_code="BATCH_SUBMITTED",
+        )
+
         # --- 4. 輪詢等待完成 ---
         poll_count = 0
         poll_interval = 10
@@ -424,6 +440,16 @@ def batch_transcribe_task(self, task_params_dict: dict):
         # --- 5. 逐一處理結果 ---
         update_status("批次任務完成，正在處理結果...")
 
+        # 包裝 update_status 以捕獲各檔案結果（供恢復時使用）
+        captured_results = {}
+
+        def update_status_capture(
+            status_text, status_code="PROCESSING", result_data=None, file_uid=None
+        ):
+            update_status(status_text, status_code, result_data, file_uid)
+            if file_uid and result_data and status_code == "COMPLETED":
+                captured_results[file_uid] = result_data
+
         if batch_job.dest and batch_job.dest.inlined_responses:
             for response_idx, inline_response in enumerate(
                 batch_job.dest.inlined_responses
@@ -454,7 +480,7 @@ def batch_transcribe_task(self, task_params_dict: dict):
                         start_time=start_time,
                         db=db,
                         log_repo=log_repo,
-                        update_fn=update_status,
+                        update_fn=update_status_capture,
                     )
                 except Exception as e:
                     logger.error(
@@ -473,8 +499,11 @@ def batch_transcribe_task(self, task_params_dict: dict):
             logger.warning("批次任務成功但沒有回傳結果")
 
         # --- 批次完成 ---
-        # === 持久化節點 3a：任務完成 ===
-        batch_repo.update_job(db, batch_id, {"status": "COMPLETED"})
+        # === 持久化節點 3a：任務完成，同時存入結果 ===
+        batch_repo.update_job(db, batch_id, {
+            "status": "COMPLETED",
+            "results_json": json.dumps(captured_results, default=str, ensure_ascii=False),
+        })
 
         elapsed = time.time() - start_time
         update_status(
@@ -515,4 +544,131 @@ def batch_transcribe_task(self, task_params_dict: dict):
         for file_item in task_params.files:
             _cleanup_local_file(file_item.file_path)
 
+        db.close()
+
+
+@celery_app.task(name="batch_recover_task", bind=True, max_retries=0)
+def batch_recover_task(self, batch_id: str, api_key: str):
+    """
+    從 Celery worker 中恢復批次任務結果。
+    client.batches.get() 只能在 Celery worker 中運行，
+    所以需要透過這個 task 來呼叫。
+    """
+    from types import SimpleNamespace
+
+    db = SessionLocal()
+    batch_repo = BatchJobRepository()
+    log_repo = TranscriptionLogRepository()
+
+    try:
+        job = batch_repo.get_job(db, batch_id)
+        if not job:
+            logger.error(f"恢復任務找不到 batch_id: {batch_id}")
+            return
+
+        if not job.gemini_job_name:
+            logger.error(f"恢復任務 {batch_id} 沒有 gemini_job_name")
+            return
+
+        # 發布狀態更新
+        def update_status(status_text, status_code="PROCESSING", result_data=None, file_uid=None):
+            _publish_batch_status(batch_id, "", status_text, status_code, result_data, file_uid)
+
+        update_status("正在從 Gemini 恢復批次任務結果...")
+
+        # 初始化客戶端
+        client = GeminiClient(api_key).client
+        if not client:
+            update_status("API Key 無效", status_code="BATCH_COMPLETED")
+            return
+
+        # 查詢 Gemini 批次任務
+        try:
+            batch_job = poll_batch_job_status(client, job.gemini_job_name)
+        except Exception as e:
+            update_status(f"查詢 Gemini 失敗: {e}", status_code="BATCH_COMPLETED")
+            return
+
+        state_name = get_batch_job_state_name(batch_job)
+
+        if state_name not in BATCH_COMPLETED_STATES:
+            update_status(f"任務仍在進行中 ({state_name})", status_code="BATCH_COMPLETED")
+            return
+
+        if state_name != "JOB_STATE_SUCCEEDED":
+            batch_repo.update_job(db, batch_id, {"status": "FAILED"})
+            update_status(f"任務失敗 ({state_name})", status_code="BATCH_COMPLETED")
+            return
+
+        # 解析映射
+        file_mapping = json.loads(job.file_mapping_json) if job.file_mapping_json else {}
+        file_durations = json.loads(job.file_durations_json) if job.file_durations_json else {}
+        file_log_uuids = json.loads(job.file_log_uuids_json) if job.file_log_uuids_json else {}
+        task_params_data = json.loads(job.task_params_json) if job.task_params_json else {}
+
+        task_params = SimpleNamespace(
+            model=task_params_data.get("model", ""),
+            provider=task_params_data.get("provider", "google"),
+            source_lang=task_params_data.get("source_lang", ""),
+            target_lang=task_params_data.get("target_lang"),
+            prompt=task_params_data.get("prompt", ""),
+        )
+
+        start_time = time.time()
+        captured_results = {}
+
+        def update_status_capture(status_text, status_code="PROCESSING", result_data=None, file_uid=None):
+            update_status(status_text, status_code, result_data, file_uid)
+            if file_uid and result_data and status_code == "COMPLETED":
+                captured_results[file_uid] = result_data
+
+        ordered_indices = sorted(file_mapping.keys(), key=int)
+
+        if batch_job.dest and batch_job.dest.inlined_responses:
+            for response_idx, inline_response in enumerate(batch_job.dest.inlined_responses):
+                if response_idx >= len(ordered_indices):
+                    break
+
+                idx_str = ordered_indices[response_idx]
+                entry = file_mapping[idx_str]
+                file_uid = entry["file_uid"]
+                original_filename = entry["original_filename"]
+
+                file_item = SimpleNamespace(file_uid=file_uid, original_filename=original_filename)
+
+                update_status(
+                    f"恢復 ({response_idx + 1}/{len(ordered_indices)}): {original_filename}",
+                    file_uid=file_uid,
+                )
+
+                try:
+                    _process_single_result(
+                        inline_response=inline_response,
+                        file_item=file_item,
+                        task_params=task_params,
+                        client=client,
+                        file_task_uuid=file_log_uuids.get(file_uid, ""),
+                        audio_duration=file_durations.get(file_uid, 0.0),
+                        start_time=start_time,
+                        db=db,
+                        log_repo=log_repo,
+                        update_fn=update_status_capture,
+                    )
+                except Exception as e:
+                    logger.error(f"恢復檔案 {original_filename} 失敗: {e}", exc_info=True)
+                    update_status(f"恢復失敗: {e}", status_code="FAILED", file_uid=file_uid)
+
+        # 存入結果
+        batch_repo.update_job(db, batch_id, {
+            "status": "COMPLETED",
+            "results_json": json.dumps(captured_results, default=str, ensure_ascii=False),
+        })
+
+        elapsed = time.time() - start_time
+        update_status(f"恢復完成 (耗時 {elapsed:.1f} 秒)", status_code="BATCH_COMPLETED")
+        logger.info(f"批次 {batch_id} 恢復完成，{len(captured_results)} 個檔案")
+
+    except Exception as e:
+        logger.error(f"恢復任務 {batch_id} 失敗: {e}", exc_info=True)
+    finally:
         db.close()
