@@ -11,6 +11,7 @@ import {
   Modal,
   Switch,
   Tag,
+  Alert,
 } from 'antd';
 import {
   AudioOutlined,
@@ -18,6 +19,7 @@ import {
   SlidersOutlined,
   PlayCircleOutlined,
   ThunderboltOutlined,
+  HistoryOutlined,
 } from '@ant-design/icons';
 import { useTranscription } from '../context/TranscriptionContext';
 import { useModelManager } from './ModelManager';
@@ -52,6 +54,9 @@ const Transcription = () => {
     previewContent,
     previewTitle,
     handleClosePreview,
+    pendingBatches,
+    isRecovering,
+    recoverBatch,
   } = useTranscription();
   
   const { handleEditProvider, handleEditProviderParams, handleTestProvider } = useModelManager();
@@ -77,7 +82,47 @@ const Transcription = () => {
 
   return (
     <Space direction="vertical" size="large" style={{ width: '100%' }}>
-      
+
+      {/* --- 批次任務恢復提示 --- */}
+      {pendingBatches.length > 0 && (
+        <Alert
+          type="info"
+          showIcon
+          icon={<HistoryOutlined />}
+          message={`發現 ${pendingBatches.length} 個未完成的批次任務`}
+          description={
+            <Space direction="vertical" style={{ width: '100%', marginTop: 8 }}>
+              {pendingBatches.map(batch => (
+                <Row key={batch.batch_id} align="middle" justify="space-between">
+                  <Col>
+                    <Text type="secondary">
+                      {batch.files.length} 個檔案
+                      {batch.files.length > 0 &&
+                        ` (${batch.files.map(f => f.original_filename).slice(0, 3).join(', ')}${batch.files.length > 3 ? '...' : ''})`
+                      }
+                      {batch.created_at && ` — ${new Date(batch.created_at).toLocaleString()}`}
+                    </Text>
+                  </Col>
+                  <Col>
+                    <Button
+                      type="primary"
+                      size="small"
+                      icon={<HistoryOutlined />}
+                      loading={isRecovering}
+                      onClick={() => recoverBatch(batch.batch_id)}
+                    >
+                      恢復結果
+                    </Button>
+                  </Col>
+                </Row>
+              ))}
+            </Space>
+          }
+          closable
+          style={{ marginBottom: 0 }}
+        />
+      )}
+
       {/* --- FileManager --- */}
       <FileManager />
 

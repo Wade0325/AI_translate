@@ -25,6 +25,8 @@ export const TranscriptionProvider = ({ children }) => {
   const [model, setModel] = useState(modelOptions.Google[0].value);
   const [isProcessing, setIsProcessing] = useState(false);
   const [useBatchMode, setUseBatchMode] = useState(false);
+  const [pendingBatches, setPendingBatches] = useState([]);
+  const [isRecovering, setIsRecovering] = useState(false);
   const { getProviderConfig } = useModelManager();
 
   const activeSockets = useRef({}); // 用於管理所有活躍的 socket
@@ -49,6 +51,89 @@ export const TranscriptionProvider = ({ children }) => {
       message.success('所有任務處理完畢！');
     }
   }, [fileList, isProcessing]);
+
+
+  // --- 頁面載入時檢查未完成的批次任務 ---
+  useEffect(() => {
+    const checkPendingBatches = async () => {
+      try {
+        const response = await fetch(`${API_BASE_URL}/batch/pending`);
+        if (response.ok) {
+          const data = await response.json();
+          setPendingBatches(data);
+          if (data.length > 0) {
+            console.log(`發現 ${data.length} 個未完成的批次任務`);
+          }
+        }
+      } catch (error) {
+        console.error('檢查未完成批次任務失敗:', error);
+      }
+    };
+    checkPendingBatches();
+  }, []);
+
+
+  // --- 恢復批次任務 ---
+  const recoverBatch = async (batchId) => {
+    setIsRecovering(true);
+    try {
+      // 取得 API Key（使用已儲存的 Google 設定）
+      const config = await getProviderConfig('Google');
+      const apiKey = config?.apiKeys?.[0];
+      if (!apiKey) {
+        message.error('請先在模型管理中為 Google 設定 API 金鑰，才能恢復批次任務。');
+        setIsRecovering(false);
+        return;
+      }
+
+      message.loading({ content: '正在恢復批次任務...', key: 'recover', duration: 0 });
+
+      const response = await fetch(`${API_BASE_URL}/batch/${batchId}/recover`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ api_keys: apiKey }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.detail || `恢復失敗 (${response.status})`);
+      }
+
+      const result = await response.json();
+
+      // 將恢復的檔案結果填入 fileList（對齊 WebSocket 流程的資料結構）
+      const recoveredFiles = result.files.map(f => ({
+        uid: f.file_uid,
+        name: f.original_filename,
+        status: f.status === 'COMPLETED' ? 'completed' : 'error',
+        percent: 100,
+        statusText: f.status === 'COMPLETED' ? '已恢復' : `恢復失敗: ${f.error || '未知錯誤'}`,
+        result: f.result?.transcripts || null,
+        tokens_used: f.result?.tokens_used || 0,
+        cost: f.result?.cost || 0,
+        input_cost: f.result?.input_cost || 0,
+        output_cost: f.result?.output_cost || 0,
+        error: f.error || null,
+      }));
+
+      setFileList(prev => [...recoveredFiles, ...prev]);
+
+      // 從 pendingBatches 中移除已恢復的
+      setPendingBatches(prev => prev.filter(b => b.batch_id !== batchId));
+
+      const completedCount = result.files.filter(f => f.status === 'COMPLETED').length;
+      message.success({
+        content: `已成功恢復 ${completedCount} / ${result.files.length} 個檔案的轉錄結果！`,
+        key: 'recover',
+      });
+
+    } catch (error) {
+      console.error('恢復批次任務失敗:', error);
+      message.error({ content: `恢復失敗: ${error.message}`, key: 'recover' });
+    } finally {
+      setIsRecovering(false);
+    }
+  };
 
 
   // --- Modal 狀態管理 ---
@@ -597,6 +682,9 @@ export const TranscriptionProvider = ({ children }) => {
     downloadAllFiles,
     clearAllFiles,
     handleReprocess,
+    pendingBatches,
+    isRecovering,
+    recoverBatch,
     isPreviewModalVisible,
     previewContent,
     previewTitle,

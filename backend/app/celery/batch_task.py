@@ -20,6 +20,7 @@ from app.provider.google.gemini import (
     BATCH_COMPLETED_STATES,
 )
 from app.repositories.transcription_log_repository import TranscriptionLogRepository
+from app.repositories.batch_job_repository import BatchJobRepository
 from app.services.calculator.service import CalculatorService
 from app.services.calculator.models import CalculationItem
 from app.services.converter.service import convert_from_lrc, _parse_lrc
@@ -271,6 +272,7 @@ def batch_transcribe_task(self, task_params_dict: dict):
 
     db = SessionLocal()
     log_repo = TranscriptionLogRepository()
+    batch_repo = BatchJobRepository()
     gemini_files = []
     client = None
     start_time = time.time()
@@ -290,6 +292,15 @@ def batch_transcribe_task(self, task_params_dict: dict):
         prompt = task_params.prompt or "請將以下音檔轉錄成LRC格式的逐字稿。"
         total_files = len(task_params.files)
         update_status(f"正在初始化批次任務 ({total_files} 個檔案)...")
+
+        # === 持久化節點 1：任務開始，建立 BatchJob 記錄 ===
+        batch_repo.create_job(db, batch_id, json.dumps({
+            "model": task_params.model,
+            "provider": task_params.provider,
+            "source_lang": task_params.source_lang,
+            "target_lang": task_params.target_lang,
+            "prompt": task_params.prompt,
+        }))
 
         # --- 1. 取得音訊時長 & 建立資料庫日誌 ---
         file_durations = {}
@@ -358,6 +369,20 @@ def batch_transcribe_task(self, task_params_dict: dict):
 
         job_name = batch_job.name
         logger.info(f"Gemini 批次任務已建立: {job_name}")
+
+        # === 持久化節點 2：Gemini batch job 建立後，存入 job_name 和檔案映射 ===
+        file_mapping = {
+            str(i): {"file_uid": file_gemini_mapping[i][0].file_uid,
+                     "original_filename": file_gemini_mapping[i][0].original_filename}
+            for i in ordered_indices
+        }
+        batch_repo.update_job(db, batch_id, {
+            "gemini_job_name": job_name,
+            "status": "POLLING",
+            "file_mapping_json": json.dumps(file_mapping),
+            "file_durations_json": json.dumps(file_durations),
+            "file_log_uuids_json": json.dumps(file_log_uuids),
+        })
 
         # --- 4. 輪詢等待完成 ---
         poll_count = 0
@@ -448,6 +473,9 @@ def batch_transcribe_task(self, task_params_dict: dict):
             logger.warning("批次任務成功但沒有回傳結果")
 
         # --- 批次完成 ---
+        # === 持久化節點 3a：任務完成 ===
+        batch_repo.update_job(db, batch_id, {"status": "COMPLETED"})
+
         elapsed = time.time() - start_time
         update_status(
             f"批次任務全部完成 (耗時 {elapsed:.1f} 秒)", status_code="BATCH_COMPLETED"
@@ -457,6 +485,9 @@ def batch_transcribe_task(self, task_params_dict: dict):
     except Exception as e:
         error_message = traceback.format_exc()
         logger.error(f"批次任務發生嚴重錯誤: {error_message}")
+
+        # === 持久化節點 3b：任務失敗 ===
+        batch_repo.update_job(db, batch_id, {"status": "FAILED"})
 
         for file_item in task_params.files:
             fuid = file_item.file_uid

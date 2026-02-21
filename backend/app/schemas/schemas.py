@@ -84,3 +84,40 @@ class WebSocketBatchRequest(BaseModel):
     source_lang: str
     target_lang: Optional[str] = None
     prompt: Optional[str] = None
+
+
+# ==================== Batch Recovery ====================
+
+class PendingBatchFile(BaseModel):
+    """恢復流程中的檔案項目"""
+    file_uid: str
+    original_filename: str
+
+
+class PendingBatchResponse(BaseModel):
+    """GET /batch/pending 的回應"""
+    batch_id: str
+    status: str
+    created_at: str
+    files: List[PendingBatchFile]
+
+
+class RecoverBatchRequest(BaseModel):
+    """POST /batch/{batch_id}/recover 的請求"""
+    api_keys: str
+
+
+class RecoverFileResult(BaseModel):
+    """恢復流程中單一檔案的結果"""
+    file_uid: str
+    original_filename: str
+    status: str  # "COMPLETED" or "FAILED"
+    result: Optional[dict] = None
+    error: Optional[str] = None
+
+
+class RecoverBatchResponse(BaseModel):
+    """POST /batch/{batch_id}/recover 的回應"""
+    batch_id: str
+    files: List[RecoverFileResult]
+
