@@ -155,8 +155,17 @@ def transcribe_media_task(self, task_params_dict: dict):
 請仔細聆聽音檔，為這份逐字稿加上精確的時間戳，並以LRC格式輸出。
 """
         else:
-            # 否則，使用使用者自訂的 prompt 或預設值
-            user_prompt = task_params.prompt or "請將以下音檔轉錄成LRC格式的逐字稿。"
+            # 否則，使用使用者自訂的 prompt 或預設值（ASMR 優化）
+            default_prompt = (
+                "你是一位專業的 ASMR 逐字稿專家。請將以下音檔精確轉錄為 LRC 格式。\\n"
+                "注意：\\n"
+                "1. 這是 ASMR 音檔，包含耳語、口腔音、敲擊聲等聲效。\\n"
+                "2. 非語音的聲音請適當標注為描述（如：[耳語]、[水聲]）。\\n"
+                "3. 時間戳必須精確對應聲音的起始位置。\\n"
+                "4. 純靜默段落不要產生任何行。\\n"
+                "5. 每行文字請盡量簡短。"
+            )
+            user_prompt = task_params.prompt or default_prompt
 
         task_manager = TranscriptionTask(
             client=client,
@@ -282,7 +291,7 @@ def transcribe_media_task(self, task_params_dict: dict):
             "processing_time_seconds": metrics_response.processing_time_seconds,
             "total_tokens": metrics_response.total_tokens,
             "cost": metrics_response.cost,
-            "completed_at": datetime.utcnow(),
+            "completed_at": datetime.now(),
         }
         log_repo.update_log(db, task_uuid, update_data)
         logger.info(f"Task status updated to COMPLETED. Task ID: {task_uuid}")

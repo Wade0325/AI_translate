@@ -6,6 +6,8 @@ services:
       - "5432:5432"
     env_file:
       - ./.env.prod
+    environment:
+      - TZ=Asia/Taipei
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -18,6 +20,8 @@ services:
   redis:
     image: redis:6-alpine
     container_name: prod_redis
+    environment:
+      - TZ=Asia/Taipei
     restart: unless-stopped
 
   backend-service:
@@ -30,6 +34,7 @@ services:
     env_file:
       - ./.env.prod
     environment:
+      - TZ=Asia/Taipei
       - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       - REDIS_HOST=redis
     depends_on:
@@ -49,6 +54,7 @@ services:
     env_file:
       - ./.env.prod
     environment:
+      - TZ=Asia/Taipei
       - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       - REDIS_HOST=redis
     depends_on:

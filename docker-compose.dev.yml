@@ -13,6 +13,8 @@ services:
       - "5432:5432"
     env_file:
       - ./.env.prod
+    environment:
+      - TZ=Asia/Taipei
     volumes:
       - postgres_data_dev:/var/lib/postgresql/data
     healthcheck:
@@ -25,6 +27,8 @@ services:
   redis:
     image: redis:6-alpine
     container_name: dev_redis
+    environment:
+      - TZ=Asia/Taipei
     restart: unless-stopped
 
   backend-service:
@@ -42,6 +46,7 @@ services:
     env_file:
       - ./.env.prod
     environment:
+      - TZ=Asia/Taipei
       - DATABASE_URL=
       - POSTGRES_SERVER=postgres
       - POSTGRES_PORT=5432
@@ -64,6 +69,7 @@ services:
     env_file:
       - ./.env.prod
     environment:
+      - TZ=Asia/Taipei
       - DATABASE_URL=
       - POSTGRES_SERVER=postgres
       - POSTGRES_PORT=5432
@@ -85,6 +91,7 @@ services:
     volumes:
       - ./frontend:/app
     environment:
+      - TZ=Asia/Taipei
       - VITE_PROXY_TARGET=http://backend-service:8000
     command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
     depends_on:

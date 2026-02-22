@@ -120,7 +120,12 @@ class TranscriptionTask:
     def transcribe_audio(self, audio_path: Path) -> TranscriptionTaskResult:
         """
         轉錄音訊檔案的主要方法
-        如果檔案太長且轉錄失敗，會自動分割並分別轉錄
+
+        流程：
+        1. VAD 靜音移除 → 建立純語音檔案
+        2. 轉錄純語音檔案
+        3. 時間戳重映射回原始時間軸
+        4. 如果轉錄失敗且檔案夠長，嘗試分割重試
         """
         logger.info(f"開始轉錄音訊: {audio_path.name}")
 
@@ -141,8 +146,40 @@ class TranscriptionTask:
                 total_tokens=0
             )
 
-        # 嘗試直接轉錄
-        result = self._attempt_transcription(audio_path)
+        # --- VAD 靜音移除前處理 ---
+        speech_segments = None
+        transcription_path = audio_path  # 預設直接使用原始檔案
+
+        if self.vad_service:
+            vad_result = self._extract_speech_only(audio_path)
+            if vad_result and vad_result.get("speech_only_path"):
+                speech_ratio = vad_result.get("speech_ratio", 1.0)
+                # 如果語音佔比低於 95%，表示有明顯靜音，使用純語音檔
+                if speech_ratio < 0.95:
+                    transcription_path = Path(vad_result["speech_only_path"])
+                    speech_segments = vad_result["segments"]
+                    logger.info(
+                        f"VAD 前處理完成: 語音佔比 {speech_ratio*100:.1f}%, "
+                        f"使用純語音檔 ({vad_result['speech_duration']:.1f}s / {duration:.1f}s)"
+                    )
+                else:
+                    logger.info(f"語音佔比 {speech_ratio*100:.1f}% (>95%), 跳過 VAD 前處理")
+
+        # --- 轉錄 ---
+        result = self._attempt_transcription(transcription_path)
+
+        # --- 時間戳重映射 ---
+        if result.success and speech_segments:
+            if self.status_callback:
+                self.status_callback("校正時間軸...")
+            result = TranscriptionTaskResult(
+                success=True,
+                text=_remap_lrc_timestamps(result.text, speech_segments),
+                input_tokens=result.input_tokens,
+                output_tokens=result.output_tokens,
+                total_tokens=result.total_tokens,
+            )
+            logger.info("時間戳已重映射回原始時間軸")
 
         # 如果成功或檔案很短，直接返回結果
         if result.success or duration < self.max_duration_seconds:
@@ -157,6 +194,59 @@ class TranscriptionTask:
             return self._transcribe_with_splitting(audio_path)
 
         return result
+
+    def _extract_speech_only(self, audio_path: Path) -> Optional[dict]:
+        """
+        使用 VAD 提取純語音檔案，移除靜音段。
+        回傳 dict 包含 speech_only_path, segments, speech_ratio, speech_duration。
+        """
+        try:
+            if self.status_callback:
+                self.status_callback("分析語音活動...")
+
+            # VAD 需要 WAV 格式
+            wav_path = convert_to_wav(audio_path, self.temp_dir)
+            if wav_path is None:
+                logger.warning(f"無法轉換 {audio_path.name} 為 WAV，跳過 VAD 前處理")
+                return None
+            if wav_path != audio_path and wav_path not in self.local_cleanup_list:
+                self.local_cleanup_list.append(wav_path)
+
+            # 呼叫 VAD 提取語音段（使用 flows 的完整結果）
+            from app.services.vad.models import VADProcessRequest
+            from app.services.vad.flows import extract_speech_segments
+
+            request = VADProcessRequest(
+                audio_path=str(wav_path),
+                output_dir=str(self.temp_dir),
+            )
+            extraction_result = extract_speech_segments(request, self.vad_service)
+
+            if not extraction_result.success or not extraction_result.speech_only_path:
+                logger.warning("VAD 語音提取失敗，將使用原始檔案")
+                return None
+
+            # 將純語音檔加入清理列表
+            speech_path = Path(extraction_result.speech_only_path)
+            if speech_path not in self.local_cleanup_list:
+                self.local_cleanup_list.append(speech_path)
+
+            # 轉換 segments 為 _remap_lrc_timestamps 所需的格式
+            segments = [
+                {"start": seg.start, "end": seg.end}
+                for seg in extraction_result.segments
+            ]
+
+            return {
+                "speech_only_path": extraction_result.speech_only_path,
+                "segments": segments,
+                "speech_ratio": extraction_result.speech_ratio,
+                "speech_duration": extraction_result.total_speech_duration,
+            }
+
+        except Exception as e:
+            logger.warning(f"VAD 前處理失敗: {e}，將使用原始檔案")
+            return None
 
     def _get_audio_duration(self, audio_path: Path) -> Optional[float]:
         """取得音訊檔案時長"""

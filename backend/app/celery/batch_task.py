@@ -223,7 +223,7 @@ def _process_single_result(
         "processing_time_seconds": processing_time,
         "total_tokens": metrics.total_tokens,
         "cost": batch_cost,
-        "completed_at": datetime.utcnow(),
+        "completed_at": datetime.now(),
     })
 
     # --- 回傳結果 ---
@@ -291,7 +291,16 @@ def batch_transcribe_task(self, task_params_dict: dict):
         if not client:
             raise ValueError("Failed to initialize Gemini Client. Check API key.")
 
-        prompt = task_params.prompt or "請將以下音檔轉錄成LRC格式的逐字稿。"
+        default_prompt = (
+            "你是一位專業的 ASMR 逐字稿專家。請將以下音檔精確轉錄為 LRC 格式。\\n"
+            "注意：\\n"
+            "1. 這是 ASMR 音檔，包含耳語、口腔音、敲擊聲等聲效。\\n"
+            "2. 非語音的聲音請適當標注為描述（如：[敲擊聲]、[耳語]、[心跳聲]）。\\n"
+            "3. 時間戳必須精確對應聲音的起始位置。\\n"
+            "4. 純靜默段落不要產生任何行。\\n"
+            "5. 每行文字請盡量簡短。"
+        )
+        prompt = task_params.prompt or default_prompt
         total_files = len(task_params.files)
         update_status(f"正在初始化批次任務 ({total_files} 個檔案)...")
 
