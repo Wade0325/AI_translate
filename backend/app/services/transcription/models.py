@@ -12,7 +12,6 @@ class TranscriptionRequest(BaseModel):
     source_lang: str
     prompt: Optional[str] = None  # 新增 prompt 欄位
     original_filename: Optional[str] = None
-    segments_for_remapping: Optional[List[Dict[str, float]]] = None
 
 
 class TranscriptionTaskResult(BaseModel):

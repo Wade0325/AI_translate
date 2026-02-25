@@ -133,3 +133,10 @@ async def test_model_interface(
             "testedInterface": request_data.provider,
             "status": "NotImplemented"
         }
+
+
+@router.get("/default-prompt")
+async def get_default_prompt():
+    """回傳系統預設的 Prompt 模板與語言對照表"""
+    from app.core.default_prompt import DEFAULT_PROMPT_TEMPLATE, LANG_MAP
+    return {"template": DEFAULT_PROMPT_TEMPLATE, "lang_map": LANG_MAP}

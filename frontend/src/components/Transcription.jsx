@@ -49,6 +49,8 @@ const Transcription = () => {
     isProcessing,
     useBatchMode,
     setUseBatchMode,
+    multiSpeaker,
+    setMultiSpeaker,
     handleStartTranscription,
     isPreviewModalVisible,
     previewContent,
@@ -226,6 +228,16 @@ const Transcription = () => {
               {useBatchMode && (
                 <Tag color="blue" style={{ marginLeft: 4 }}>費用 -50%</Tag>
               )}
+            </Space>
+            <Space align="center" style={{ marginLeft: 24 }}>
+              <Tooltip title="音檔中有多位說話者時啟用，AI 會自動用 Speaker 1:、Speaker 2: 區分不同說話者。">
+                <Switch
+                  checked={multiSpeaker}
+                  onChange={setMultiSpeaker}
+                  disabled={isProcessing}
+                />
+              </Tooltip>
+              <Text>多人模式</Text>
             </Space>
           </Col>
           {useBatchMode && (

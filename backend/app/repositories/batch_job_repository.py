@@ -40,9 +40,10 @@ class BatchJobRepository:
         查詢需要恢復的任務：
         - UPLOADING / POLLING：任務尚未完成
         - COMPLETED：任務已完成但前端尚未取回結果
+        - RECOVERING：恢復任務正在進行中
         """
         return db.query(BatchJob).filter(
-            BatchJob.status.in_(["UPLOADING", "POLLING", "COMPLETED"])
+            BatchJob.status.in_(["UPLOADING", "POLLING", "COMPLETED", "RECOVERING"])
         ).all()
 
     def get_job(self, db: Session, batch_id: str) -> Optional[BatchJob]:

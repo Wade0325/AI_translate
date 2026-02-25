@@ -81,10 +81,10 @@ def recover_batch(batch_id: str, body: RecoverBatchRequest, db: Session = Depend
     file_mapping = json.loads(job.file_mapping_json) if job.file_mapping_json else {}
 
     # ============================================================
-    # 快速路徑：COMPLETED + 有存檔結果 → 直接從 DB 回傳
+    # 快速路徑：有存檔結果 → 直接從 DB 回傳
     # ============================================================
-    if job.status == "COMPLETED" and job.results_json:
-        logger.info(f"恢復批次 {batch_id}: 從 DB 讀取已存檔的結果")
+    if job.status in ("COMPLETED", "RETRIEVED", "RECOVERING") and job.results_json:
+        logger.info(f"恢復批次 {batch_id}: 從 DB 讀取已存檔的結果 (status={job.status})")
         stored_results = json.loads(job.results_json)
 
         file_results = []
@@ -107,7 +107,6 @@ def recover_batch(batch_id: str, body: RecoverBatchRequest, db: Session = Depend
 
     # ============================================================
     # Celery 路徑：派送 Celery task 從 Gemini 取得結果
-    # （client.batches.get() 只能在 Celery worker 中運行）
     # ============================================================
     if not job.gemini_job_name:
         raise HTTPException(status_code=400, detail="此任務尚未建立 Gemini batch job，無法恢復")
@@ -116,10 +115,12 @@ def recover_batch(batch_id: str, body: RecoverBatchRequest, db: Session = Depend
     if not api_key:
         raise HTTPException(status_code=400, detail="請提供 API Key")
 
+    logger.info(f"恢復批次 {batch_id}: 派送 Celery 恢復任務 (當前狀態={job.status})")
+
     from app.celery.batch_task import batch_recover_task
     batch_recover_task.delay(batch_id, api_key)
 
-    # 回傳空結果 — 前端需透過 WebSocket 接收恢復結果
+    # 回傳空結果 — 前端透過輪詢等待結果出現在 DB
     return RecoverBatchResponse(batch_id=batch_id, files=[])
 
 
@@ -157,6 +158,7 @@ def start_batch_celery_task(payload_str: str, batch_id: str) -> None:
         source_lang=request_data.source_lang,
         target_lang=request_data.target_lang,
         prompt=request_data.prompt,
+        multi_speaker=request_data.multi_speaker,
         client_id=batch_id,
         batch_id=batch_id,
     )

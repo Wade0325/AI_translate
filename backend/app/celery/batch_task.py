@@ -6,7 +6,6 @@ import json
 import redis
 from datetime import datetime
 
-from langdetect import detect, LangDetectException
 
 from app.celery.celery import celery_app
 from app.celery.models import BatchTranscriptionTaskParams
@@ -24,9 +23,8 @@ from app.repositories.transcription_log_repository import TranscriptionLogReposi
 from app.repositories.batch_job_repository import BatchJobRepository
 from app.services.calculator.service import CalculatorService
 from app.services.calculator.models import CalculationItem
-from app.services.converter.service import convert_from_lrc, _parse_lrc
+from app.services.converter.service import convert_from_lrc
 from app.services.transcription.models import TranscriptionResponse
-from app.services.translator.flows import _perform_translation
 from app.utils.audio import get_audio_duration
 from app.utils.logger import setup_logger
 
@@ -132,52 +130,6 @@ def _process_single_result(
 
     final_lrc_text = raw_lrc_text
 
-    # --- 翻譯 ---
-    translation_input_tokens = 0
-    translation_output_tokens = 0
-    if task_params.target_lang and final_lrc_text:
-        parsed_lines = _parse_lrc(final_lrc_text)
-        if parsed_lines:
-            full_text = "\n".join(line.text for line in parsed_lines)
-
-            source_lang_to_check = task_params.source_lang
-            if not source_lang_to_check:
-                try:
-                    source_lang_to_check = detect(full_text)
-                except LangDetectException:
-                    source_lang_to_check = None
-
-            if (
-                source_lang_to_check
-                and source_lang_to_check.split("-")[0]
-                != task_params.target_lang.split("-")[0]
-            ):
-                update_fn(
-                    f"翻譯字幕中 ({file_item.original_filename})...",
-                    file_uid=file_uid,
-                )
-                translation_prompt = (
-                    f"Translate the text portions of the following LRC format content "
-                    f"from {source_lang_to_check} to {task_params.target_lang}. "
-                    "It is crucial that you DO NOT alter the timestamps (e.g., [00:01.23]). "
-                    "Your response should be only the translated LRC content in the exact same format."
-                )
-                trans_result = _perform_translation(
-                    client=client,
-                    model=task_params.model,
-                    prompt=translation_prompt,
-                    text_to_translate=final_lrc_text,
-                )
-                if trans_result.success:
-                    final_lrc_text = trans_result.translated_text
-                    translation_input_tokens = trans_result.input_tokens
-                    translation_output_tokens = trans_result.output_tokens
-                    logger.info(f"檔案 {file_item.original_filename} 翻譯成功")
-                else:
-                    logger.warning(
-                        f"檔案 {file_item.original_filename} 翻譯失敗，使用原始轉錄結果"
-                    )
-
     # --- 格式轉換 ---
     transcripts_model = convert_from_lrc(final_lrc_text)
     final_transcripts = transcripts_model.model_dump() if transcripts_model else {}
@@ -194,15 +146,7 @@ def _process_single_result(
                 output_tokens=output_tokens,
             )
         )
-    if translation_input_tokens > 0 or translation_output_tokens > 0:
-        items.append(
-            CalculationItem(
-                model=task_params.model,
-                task_name="total_translation",
-                input_tokens=translation_input_tokens,
-                output_tokens=translation_output_tokens,
-            )
-        )
+
 
     calculator = CalculatorService()
     metrics = calculator.calculate_metrics(
@@ -291,16 +235,12 @@ def batch_transcribe_task(self, task_params_dict: dict):
         if not client:
             raise ValueError("Failed to initialize Gemini Client. Check API key.")
 
-        default_prompt = (
-            "你是一位專業的 ASMR 逐字稿專家。請將以下音檔精確轉錄為 LRC 格式。\\n"
-            "注意：\\n"
-            "1. 這是 ASMR 音檔，包含耳語、口腔音、敲擊聲等聲效。\\n"
-            "2. 非語音的聲音請適當標注為描述（如：[敲擊聲]、[耳語]、[心跳聲]）。\\n"
-            "3. 時間戳必須精確對應聲音的起始位置。\\n"
-            "4. 純靜默段落不要產生任何行。\\n"
-            "5. 每行文字請盡量簡短。"
+        from app.core.default_prompt import build_prompt
+        prompt = task_params.prompt or build_prompt(
+            source_lang=task_params.source_lang,
+            target_lang=task_params.target_lang,
+            multi_speaker=task_params.multi_speaker,
         )
-        prompt = task_params.prompt or default_prompt
         total_files = len(task_params.files)
         update_status(f"正在初始化批次任務 ({total_files} 個檔案)...")
 
@@ -577,6 +517,7 @@ def batch_recover_task(self, batch_id: str, api_key: str):
 
         if not job.gemini_job_name:
             logger.error(f"恢復任務 {batch_id} 沒有 gemini_job_name")
+            batch_repo.update_job(db, batch_id, {"status": "POLLING"})
             return
 
         # 發布狀態更新
@@ -589,6 +530,7 @@ def batch_recover_task(self, batch_id: str, api_key: str):
         client = GeminiClient(api_key).client
         if not client:
             update_status("API Key 無效", status_code="BATCH_COMPLETED")
+            batch_repo.update_job(db, batch_id, {"status": "POLLING"})
             return
 
         # 查詢 Gemini 批次任務
@@ -596,18 +538,25 @@ def batch_recover_task(self, batch_id: str, api_key: str):
             batch_job = poll_batch_job_status(client, job.gemini_job_name)
         except Exception as e:
             update_status(f"查詢 Gemini 失敗: {e}", status_code="BATCH_COMPLETED")
+            batch_repo.update_job(db, batch_id, {"status": "POLLING"})
             return
 
         state_name = get_batch_job_state_name(batch_job)
+        logger.info(f"恢復任務 {batch_id}: Gemini 狀態 = {state_name} (raw: {batch_job.state})")
 
         if state_name not in BATCH_COMPLETED_STATES:
+            logger.info(f"恢復任務 {batch_id}: 任務尚未完成，狀態={state_name}")
             update_status(f"任務仍在進行中 ({state_name})", status_code="BATCH_COMPLETED")
+            batch_repo.update_job(db, batch_id, {"status": "POLLING"})
             return
 
         if state_name != "JOB_STATE_SUCCEEDED":
+            logger.info(f"恢復任務 {batch_id}: 任務失敗，狀態={state_name}")
             batch_repo.update_job(db, batch_id, {"status": "FAILED"})
             update_status(f"任務失敗 ({state_name})", status_code="BATCH_COMPLETED")
             return
+
+        logger.info(f"恢復任務 {batch_id}: 任務成功，開始處理結果...")
 
         # 解析映射
         file_mapping = json.loads(job.file_mapping_json) if job.file_mapping_json else {}
@@ -679,5 +628,9 @@ def batch_recover_task(self, batch_id: str, api_key: str):
 
     except Exception as e:
         logger.error(f"恢復任務 {batch_id} 失敗: {e}", exc_info=True)
+        try:
+            batch_repo.update_job(db, batch_id, {"status": "POLLING"})
+        except Exception:
+            pass
     finally:
         db.close()

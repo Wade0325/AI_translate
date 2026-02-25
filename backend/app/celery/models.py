@@ -17,8 +17,8 @@ class TranscriptionTaskParams(BaseModel):
     file_uid: str   # 新增: 前端的檔案唯一ID
     prompt: Optional[str] = None
     original_text: Optional[str] = None  # 新增: 前端傳來的文字稿
-    segments_for_remapping: Optional[List[Dict[str, float]]] = None
     target_lang: Optional[str] = None  # 新增: 前端指定的輸出語言
+    multi_speaker: bool = False  # 新增: 多人對話模式
 
 
 class BatchFileItemParams(BaseModel):
@@ -39,6 +39,7 @@ class BatchTranscriptionTaskParams(BaseModel):
     api_keys: str
     source_lang: str
     target_lang: Optional[str] = None
+    multi_speaker: bool = False
     prompt: Optional[str] = None
     client_id: str
     batch_id: str

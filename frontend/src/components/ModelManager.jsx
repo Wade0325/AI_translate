@@ -6,7 +6,6 @@ import {
 } from '@ant-design/icons';
 import { useTranscription } from '../context/TranscriptionContext';
 import { modelOptions } from '../constants/modelConfig';
-import defaultPrompt from '../constants/promptConfig';
 
 // 1. 建立 Context 和自訂 Hook
 const ModelManagerContext = createContext(null);
@@ -179,12 +178,26 @@ const ModelManagerProvider = ({ children }) => {
     setApiKeys(newApiKeys.length > 0 ? newApiKeys : ['']); 
   };
 
-  // handleEditProviderParams 現在也極其簡潔
+  // handleEditProviderParams — 從後端 API 取得預設 Prompt (Single Source of Truth)
   const handleEditProviderParams = async (provider) => {
     setEditingParamsProvider(provider);
     const config = await getProviderConfig(provider);
-    // 如果 config.prompt 是 undefined 或 null，則使用 defaultPrompt
-    setPromptText(config?.prompt ?? defaultPrompt);
+    if (config?.prompt) {
+      setPromptText(config.prompt);
+    } else {
+      // 從後端取得預設 Prompt 模板
+      try {
+        const res = await fetch('/api/v1/setting/default-prompt');
+        if (res.ok) {
+          const data = await res.json();
+          setPromptText(data.template || '');
+        } else {
+          setPromptText('');
+        }
+      } catch {
+        setPromptText('');
+      }
+    }
     setIsParamsModalOpen(true);
   };
 

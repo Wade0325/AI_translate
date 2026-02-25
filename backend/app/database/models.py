@@ -47,7 +47,7 @@ class BatchJob(Base):
 
     batch_id = Column(String, primary_key=True)         # 前端的 batch ID
     gemini_job_name = Column(String, nullable=True)      # Gemini API 的 job name
-    status = Column(String, default="UPLOADING")         # UPLOADING / POLLING / COMPLETED / FAILED
+    status = Column(String, default="UPLOADING")         # UPLOADING / POLLING / BATCH_SUBMITTED / COMPLETED / FAILED / RETRIEVED / RECOVERING
     task_params_json = Column(Text, nullable=True)       # 序列化的任務參數（不含 api_keys）
     file_mapping_json = Column(Text, nullable=True)      # {index: {file_uid, original_filename}}
     file_durations_json = Column(Text, nullable=True)    # {file_uid: duration}

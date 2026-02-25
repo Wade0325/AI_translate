@@ -25,6 +25,7 @@ export const TranscriptionProvider = ({ children }) => {
   const [model, setModel] = useState(modelOptions.Google[0].value);
   const [isProcessing, setIsProcessing] = useState(false);
   const [useBatchMode, setUseBatchMode] = useState(false);
+  const [multiSpeaker, setMultiSpeaker] = useState(false);
   const [pendingBatches, setPendingBatches] = useState([]);
   const [isRecovering, setIsRecovering] = useState(false);
   const { getProviderConfig } = useModelManager();
@@ -366,6 +367,7 @@ export const TranscriptionProvider = ({ children }) => {
             target_lang: targetTranslateLang || null, // 輸出語言
             prompt: prompt,
             original_text: file.original_text || null,
+            multi_speaker: multiSpeaker,
           };
           socket.send(JSON.stringify(payload));
         };
@@ -444,6 +446,7 @@ export const TranscriptionProvider = ({ children }) => {
           target_lang: targetTranslateLang || null, // 輸出語言
           prompt: prompt,
           original_text: file.original_text || null,
+          multi_speaker: multiSpeaker,
         };
         socket.send(JSON.stringify(payload));
       };
@@ -601,6 +604,7 @@ export const TranscriptionProvider = ({ children }) => {
         source_lang: targetLang,
         target_lang: targetTranslateLang || null,
         prompt,
+        multi_speaker: multiSpeaker,
       };
       socket.send(JSON.stringify(payload));
     };
@@ -745,6 +749,8 @@ export const TranscriptionProvider = ({ children }) => {
     isProcessing,
     useBatchMode,
     setUseBatchMode,
+    multiSpeaker,
+    setMultiSpeaker,
     handleUploadChange,
     handleStartTranscription,
     downloadFile,

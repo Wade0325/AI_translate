@@ -52,7 +52,7 @@ def start_celery_task_sync(payload_str: str, file_uid: str) -> None:
         client_id=file_uid,
         file_uid=file_uid,
         prompt=request_data.prompt,
-        segments_for_remapping=request_data.segments_for_remapping
+        multi_speaker=request_data.multi_speaker,
     )
 
     transcribe_media_task.delay(task_params.model_dump())
