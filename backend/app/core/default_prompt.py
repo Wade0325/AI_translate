@@ -39,6 +39,7 @@ def build_prompt(
     source_lang: str = "ja-JP",
     target_lang: str = None,
     multi_speaker: bool = False,
+    template: str = None,
 ) -> str:
     """
     根據前端參數動態組裝最終 Prompt。
@@ -47,7 +48,10 @@ def build_prompt(
         source_lang:   音訊語言代碼 (如 "ja-JP")
         target_lang:   翻譯目標語言代碼 (如 "zh-TW")，None 表示不翻譯
         multi_speaker: 是否為多人對話模式
+        template:      自訂 Prompt 模板（來自 DB），None 時使用 DEFAULT_PROMPT_TEMPLATE
     """
+    base_template = template if template is not None else DEFAULT_PROMPT_TEMPLATE
+
     source_name = LANG_MAP.get(source_lang, source_lang)
 
     speaker_instruction = SPEAKER_INSTRUCTION if multi_speaker else ""
@@ -62,7 +66,7 @@ def build_prompt(
     else:
         translate_instruction = ""
 
-    return DEFAULT_PROMPT_TEMPLATE.format(
+    return base_template.format(
         source_lang=source_name,
         speaker_instruction=speaker_instruction,
         translate_instruction=translate_instruction,

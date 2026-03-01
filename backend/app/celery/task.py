@@ -152,12 +152,14 @@ def transcribe_media_task(self, task_params_dict: dict):
 請仔細聆聽音檔，為這份逐字稿加上精確的時間戳，並以LRC格式輸出。
 """
         else:
-            # 否則，使用使用者自訂的 prompt 或動態組裝預設 prompt
+            # 永遠透過 build_prompt 建構最終 prompt：
+            # 以 DB 裡的模板為基底，根據前端選項動態填入 source_lang、speaker_instruction、translate_instruction
             from app.core.default_prompt import build_prompt
-            user_prompt = task_params.prompt or build_prompt(
+            user_prompt = build_prompt(
                 source_lang=task_params.source_lang,
                 target_lang=task_params.target_lang,
                 multi_speaker=task_params.multi_speaker,
+                template=task_params.prompt or None,
             )
 
         task_manager = TranscriptionTask(

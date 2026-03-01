@@ -1,16 +1,16 @@
 {
-    // Python 虛擬環境設定
-    "python.defaultInterpreterPath": "${workspaceFolder}/backend/.venv/Scripts/python.exe",
-    "python.terminal.activateEnvironment": true,
-    // 終端機預設啟動時自動執行虛擬環境啟動腳本
-    "terminal.integrated.profiles.windows": {
-        "CMD (venv)": {
-            "path": "C:\\Windows\\System32\\cmd.exe",
-            "args": [
-                "/K",
-                "${workspaceFolder}\\backend\\.venv\\Scripts\\activate.bat"
-            ]
-        }
-    },
-    "terminal.integrated.defaultProfile.windows": "CMD (venv)"
+  // Python 虛擬環境設定
+  "python.defaultInterpreterPath": "${workspaceFolder}/backend/.venv/Scripts/python.exe",
+  "python.terminal.activateEnvironment": true,
+  // 終端機預設啟動時自動執行虛擬環境啟動腳本
+  "terminal.integrated.profiles.windows": {
+    "CMD (venv)": {
+      "path": "C:\\Windows\\System32\\cmd.exe",
+      "args": [
+        "/K",
+        "${workspaceFolder}\\backend\\.venv\\Scripts\\activate.bat"
+      ]
+    }
+  },
+  "terminal.integrated.defaultProfile.windows": "CMD (venv)"
 }

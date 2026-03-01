@@ -30,8 +30,8 @@ def _remap_lrc_timestamps(lrc_text: str, segments: List[Dict[str, float]]) -> st
 
     remapped_lrc_lines = []
     for line in parsed_lines:
-        lrc_time = line['time']
-        text = line['text']
+        lrc_time = line.time
+        text = line.text
 
         # 找到 lrc_time 所在的原始片段
         segment_index = -1

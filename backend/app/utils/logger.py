@@ -2,6 +2,10 @@ import logging
 import sys
 from pathlib import Path
 
+# 抑制 httpx / httpcore 的底層 HTTP 請求 log（避免檔案上傳分塊時產生大量雜訊）
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+
 
 def setup_logger(name: str = None) -> logging.Logger:
     """

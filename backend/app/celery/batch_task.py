@@ -25,7 +25,8 @@ from app.services.calculator.service import CalculatorService
 from app.services.calculator.models import CalculationItem
 from app.services.converter.service import convert_from_lrc
 from app.services.transcription.models import TranscriptionResponse
-from app.utils.audio import get_audio_duration
+from app.services.transcription.flows import _remap_lrc_timestamps
+from app.utils.audio import get_audio_duration, convert_to_wav
 from app.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -76,6 +77,63 @@ def _cleanup_local_file(file_path: str):
         logger.warning(f"刪除暫存檔案失敗: {e}")
 
 
+def _vad_preprocess_file(file_path: Path, temp_dir: Path):
+    """
+    對單一音檔執行 VAD 前處理。
+    回傳 (上傳用的檔案路徑, VAD segments or None, 需清理的暫存檔列表)。
+    如果語音佔比 >= 95% 或 VAD 失敗，回傳原始路徑和 None。
+    """
+    try:
+        from app.services.vad.service import get_vad_service
+        vad_service = get_vad_service()
+    except Exception as e:
+        logger.warning(f"VAD 服務不可用: {e}，跳過前處理")
+        return file_path, None, []
+
+    try:
+        wav_path = convert_to_wav(file_path, temp_dir)
+        if wav_path is None:
+            logger.warning(f"無法轉換 {file_path.name} 為 WAV，跳過 VAD 前處理")
+            return file_path, None, []
+
+        from app.services.vad.models import VADProcessRequest
+        from app.services.vad.flows import extract_speech_segments
+
+        request = VADProcessRequest(audio_path=str(wav_path), output_dir=str(temp_dir))
+        result = extract_speech_segments(request, vad_service)
+
+        cleanup_files = []
+        if wav_path != file_path:
+            cleanup_files.append(wav_path)
+
+        if not result.success or not result.speech_only_path:
+            logger.warning(f"VAD 語音提取失敗 ({file_path.name})，使用原始檔案")
+            return file_path, None, cleanup_files
+
+        speech_path = Path(result.speech_only_path)
+        cleanup_files.append(speech_path)
+
+        if result.speech_ratio < 0.95:
+            segments = [{"start": s.start, "end": s.end} for s in result.segments]
+            logger.info(
+                f"VAD 前處理完成 ({file_path.name}): "
+                f"語音佔比 {result.speech_ratio*100:.1f}%, "
+                f"{len(segments)} 個語音片段, "
+                f"純語音時長 {result.total_speech_duration:.1f}s"
+            )
+            return speech_path, segments, cleanup_files
+        else:
+            logger.info(
+                f"語音佔比 {result.speech_ratio*100:.1f}% (>=95%) ({file_path.name}), "
+                f"跳過 VAD 前處理"
+            )
+            return file_path, None, cleanup_files
+
+    except Exception as e:
+        logger.warning(f"VAD 前處理失敗 ({file_path.name}): {e}，使用原始檔案")
+        return file_path, None, []
+
+
 def _process_single_result(
     inline_response,
     file_item,
@@ -87,6 +145,7 @@ def _process_single_result(
     db,
     log_repo,
     update_fn,
+    vad_segments=None,
 ):
     """處理批次中單一檔案的結果：轉換格式、翻譯、計算費用"""
     file_uid = file_item.file_uid
@@ -129,6 +188,11 @@ def _process_single_result(
     )
 
     final_lrc_text = raw_lrc_text
+
+    # --- VAD 時間戳重映射 ---
+    if vad_segments:
+        final_lrc_text = _remap_lrc_timestamps(final_lrc_text, vad_segments)
+        logger.info(f"檔案 {file_item.original_filename}: 時間戳已重映射回原始時間軸")
 
     # --- 格式轉換 ---
     transcripts_model = convert_from_lrc(final_lrc_text)
@@ -236,10 +300,12 @@ def batch_transcribe_task(self, task_params_dict: dict):
             raise ValueError("Failed to initialize Gemini Client. Check API key.")
 
         from app.core.default_prompt import build_prompt
-        prompt = task_params.prompt or build_prompt(
+        # 取得提示詞
+        prompt = build_prompt(
             source_lang=task_params.source_lang,
             target_lang=task_params.target_lang,
             multi_speaker=task_params.multi_speaker,
+            template=task_params.prompt or None,
         )
         total_files = len(task_params.files)
         update_status(f"正在初始化批次任務 ({total_files} 個檔案)...")
@@ -250,7 +316,7 @@ def batch_transcribe_task(self, task_params_dict: dict):
             "provider": task_params.provider,
             "source_lang": task_params.source_lang,
             "target_lang": task_params.target_lang,
-            "prompt": task_params.prompt,
+            "prompt": prompt,
         }))
         batch_repo.update_job(db, batch_id, {
             "file_count": len(task_params.files),
@@ -280,17 +346,27 @@ def batch_transcribe_task(self, task_params_dict: dict):
                 "target_language": task_params.target_lang,
             })
 
-        # --- 2. 上傳所有檔案至 Gemini ---
+        # --- 2. VAD 前處理 + 上傳所有檔案至 Gemini ---
         file_gemini_mapping = {}
+        file_vad_segments = {}   # {file_uid: segments_list or None}
+        vad_cleanup_files = []   # 需要清理的 VAD 暫存檔案
+
         for i, file_item in enumerate(task_params.files):
             update_status(
-                f"上傳檔案至AI模型 ({i + 1}/{total_files}): {file_item.original_filename}",
+                f"前處理與上傳 ({i + 1}/{total_files}): {file_item.original_filename}",
                 file_uid=file_item.file_uid,
             )
             local_path = Path(file_item.file_path)
 
+            # VAD 前處理
+            upload_path, segments, cleanup = _vad_preprocess_file(
+                local_path, local_path.parent
+            )
+            file_vad_segments[file_item.file_uid] = segments
+            vad_cleanup_files.extend(cleanup)
+
             try:
-                gemini_file = upload_file_to_gemini(local_path, client)
+                gemini_file = upload_file_to_gemini(upload_path, client)
                 gemini_files.append(gemini_file)
                 file_gemini_mapping[i] = (file_item, gemini_file)
             except Exception as e:
@@ -331,8 +407,11 @@ def batch_transcribe_task(self, task_params_dict: dict):
 
         # === 持久化節點 2：Gemini batch job 建立後，存入 job_name 和檔案映射 ===
         file_mapping = {
-            str(i): {"file_uid": file_gemini_mapping[i][0].file_uid,
-                     "original_filename": file_gemini_mapping[i][0].original_filename}
+            str(i): {
+                "file_uid": file_gemini_mapping[i][0].file_uid,
+                "original_filename": file_gemini_mapping[i][0].original_filename,
+                "vad_segments": file_vad_segments.get(file_gemini_mapping[i][0].file_uid),
+            }
             for i in ordered_indices
         }
         batch_repo.update_job(db, batch_id, {
@@ -430,6 +509,7 @@ def batch_transcribe_task(self, task_params_dict: dict):
                         db=db,
                         log_repo=log_repo,
                         update_fn=update_status_capture,
+                        vad_segments=file_vad_segments.get(file_uid),
                     )
                 except Exception as e:
                     logger.error(
@@ -492,6 +572,15 @@ def batch_transcribe_task(self, task_params_dict: dict):
         # 清理本地暫存檔案
         for file_item in task_params.files:
             _cleanup_local_file(file_item.file_path)
+
+        # 清理 VAD 暫存檔案
+        for vad_file in vad_cleanup_files:
+            try:
+                if vad_file.exists() and "temp_uploads" in str(vad_file):
+                    vad_file.unlink()
+                    logger.info(f"已清理 VAD 暫存檔: {vad_file.name}")
+            except Exception as e:
+                logger.warning(f"清理 VAD 暫存檔失敗: {e}")
 
         db.close()
 
@@ -591,6 +680,7 @@ def batch_recover_task(self, batch_id: str, api_key: str):
                 entry = file_mapping[idx_str]
                 file_uid = entry["file_uid"]
                 original_filename = entry["original_filename"]
+                vad_segments = entry.get("vad_segments")
 
                 file_item = SimpleNamespace(file_uid=file_uid, original_filename=original_filename)
 
@@ -611,6 +701,7 @@ def batch_recover_task(self, batch_id: str, api_key: str):
                         db=db,
                         log_repo=log_repo,
                         update_fn=update_status_capture,
+                        vad_segments=vad_segments,
                     )
                 except Exception as e:
                     logger.error(f"恢復檔案 {original_filename} 失敗: {e}", exc_info=True)

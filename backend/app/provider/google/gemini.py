@@ -108,6 +108,7 @@ def transcribe_with_uploaded_file(
     使用已上傳的檔案進行轉錄
     """
     logger.info(f"正在使用 {model} 進行轉錄...")
+    logger.info(f"--- 送出給 Gemini 的 Prompt ---\n{prompt}\n--- Prompt End ---")
     response = client.models.generate_content(
         model=model,
         contents=[prompt, gemini_file],
@@ -257,6 +258,7 @@ def create_batch_transcription_job(
         inline_requests.append(request)
 
     logger.info(f"建立批次任務: {len(inline_requests)} 個請求, 模型: {model}")
+    logger.info(f"--- 送出給 Gemini Batch 的 Prompt ---\n{prompt}\n--- Prompt End ---")
     batch_job = client.batches.create(
         model=model,
         src=inline_requests,
