@@ -247,7 +247,8 @@ def transcribe_media_task(self, task_params_dict: dict):
         update_status("任務完成", status_code="COMPLETED",
                       result_data=final_response_dict)
 
-        return final_response_dict
+        # 只需要把最原汁原味的 LRC 文字回傳給 Celery 存進 DB
+        return {"raw_lrc_text": final_lrc_text}
 
     except Exception as e:
         processing_time_seconds = time.time() - start_time

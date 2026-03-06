@@ -6,7 +6,6 @@ celery==5.5.2
 redis==6.0.0 # Python client for Redis (used by Celery and for Pub/Sub)
 python-dotenv==1.1.0 # For managing environment variables
 google-genai>=1.64.0 # Batch API requires >=1.64.0 for inline requests support
-google-api-core
 openai==1.84.0
 torch==2.7.0
 torchaudio==2.7.0

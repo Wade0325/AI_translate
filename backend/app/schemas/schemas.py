@@ -15,7 +15,7 @@ class ProviderConfigResponse(BaseModel):
     """用於向前端返回模型介面設定的回應體。"""
     provider: str
     api_keys: List[str] = Field(..., serialization_alias="apiKeys")
-    model: str = Field(..., serialization_alias="model")
+    model: Optional[str] = Field(None, serialization_alias="model")
     prompt: Optional[str] = None
 
 

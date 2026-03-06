@@ -83,13 +83,14 @@ services:
 
   # 前端開發伺服器（Vite dev server，支援 HMR）
   frontend-dev:
-    image: node:18-alpine
+    image: node:20-alpine
     container_name: dev_frontend
     working_dir: /app
     ports:
       - "5173:5173"
     volumes:
       - ./frontend:/app
+      - /app/node_modules
     environment:
       - TZ=Asia/Taipei
       - VITE_PROXY_TARGET=http://backend-service:8000

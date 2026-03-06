@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls:*)",
+      "Bash(test:*)",
+      "Bash(git tag:*)",
+      "Bash(chmod:*)",
+      "Bash(npm install:*)",
+      "Bash(npm run:*)",
+      "Bash(npx vite:*)",
+      "Bash(python3:*)"
+    ]
+  }
+}

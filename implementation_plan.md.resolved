@@ -1,0 +1,362 @@
+# 前端搬移計畫：AI_translate/frontend → v0
+
+將舊前端（`d:\AI_translate\frontend`）的**全部業務邏輯**搬移到新前端（`d:\v0`）的 UI 外殼中，保持功能不變。
+
+## 兩個前端差異總覽
+
+| 面向 | 舊前端 (AI_translate) | 新前端 (v0) |
+|------|----------------------|-------------|
+| **React** | 18 | 19 |
+| **Ant Design** | 5 | 6 |
+| **Vite** | 5 | 6 |
+| **路由** | 無（Menu 切換 activeKey） | react-router-dom 6 Routes |
+| **佈局** | Header + Content | Sidebar + Header + Content |
+| **主題** | 預設亮色 | 深色暗黑主題 (ConfigProvider) |
+| **頁面** | 2 頁（語音轉錄 / 歷史紀錄） | 6 頁（Dashboard / Transcribe / Result / History / Billing / Settings） |
+| **後端整合** | ✅ 完整 WebSocket + REST API | ❌ 純 UI Mockup，零後端邏輯 |
+| **HTTP/WS** | 原生 fetch + WebSocket | 同左（原生 fetch + WebSocket） |
+| **額外依賴** | jszip | lucide-react, recharts, react-hook-form, zod, react-resizable-panels, date-fns |
+
+## User Review Required
+
+> [!IMPORTANT]
+> 本計畫的目標是將**舊前端全部功能**原封不動搬入新前端。新前端中那些目前還是空殼的頁面（Dashboard / Result / Billing），會先接上真實 API 顯示資料，但不會新增舊前端沒有的功能。
+
+> [!WARNING]
+> v0 是 React 19 + Ant Design 6，舊前端是 React 18 + Ant Design 5。以下列出所有需要注意的 API 差異。
+
+---
+
+## Ant Design v5 → v6 相容性檢查（依官方遷移指南）
+
+根據 [Ant Design 官方 v5→v6 遷移指南](https://ant.design/docs/react/migration-v6)，以下是舊前端程式碼中**實際會受影響**的 API 變更：
+
+### 🔴 必須修改（舊程式碼直接使用了 deprecated API）
+
+| 元件 | 舊 API (v5) | 新 API (v6) | 受影響檔案 | 行號 |
+|------|------------|------------|-----------|------|
+| **Modal** | `destroyOnClose` | `destroyOnHidden` | [FileManager.jsx](file:///d:/AI_translate/frontend/src/components/FileManager.jsx) | L247 |
+| **Dropdown** | `overlay={<Menu>}` | `menu={{ items }}` | [FileQueueTable.jsx](file:///d:/AI_translate/frontend/src/components/Transcription/FileQueueTable.jsx) | L180 |
+| **Space** | `direction="vertical"` | `orientation="vertical"` | [Transcription.jsx](file:///d:/AI_translate/frontend/src/components/Transcription.jsx) L86, [History.jsx](file:///d:/AI_translate/frontend/src/components/History.jsx) L329, [FileManager.jsx](file:///d:/AI_translate/frontend/src/components/FileManager.jsx) L249 | 多處 |
+| **Space.Compact** | `direction` | `orientation` | [Transcription.jsx](file:///d:/AI_translate/frontend/src/components/Transcription.jsx) | L179 |
+| **Statistic** | `valueStyle={...}` | `styles={{ content: ... }}` | [QueueSummary.jsx](file:///d:/AI_translate/frontend/src/components/Transcription/QueueSummary.jsx) | L44, L52, L60, L68, L78 |
+| **Alert** | `message="..."` | `title="..."` | [Transcription.jsx](file:///d:/AI_translate/frontend/src/components/Transcription.jsx) | L94 |
+| **Tag** | 預設有 `margin-inline-end` | v6 **移除**預設 margin | 多處使用 `Tag` 的地方 | — |
+
+### 🟡 注意但不一定要改（deprecated 但仍運作，v7 才移除）
+
+| 元件 | 舊 API (v5) | 新 API (v6) | 說明 |
+|------|------------|------------|------|
+| **Menu** | `children` | `items` | 舊 [App.jsx](file:///d:/v0/src/App.jsx) 已用 `items`，✅ 無需改 |
+| **Modal** | `bodyStyle` | `styles={{ body: ... }}` | 舊前端未使用 `bodyStyle`，✅ 無需改 |
+| **Card** | `bodyStyle` | `styles={{ body: ... }}` | 舊前端未使用 `bodyStyle`，✅ 無需改 |
+| **Card** | `bordered` | `variant` | 舊前端未使用 `bordered`，✅ 無需改 |
+
+### 🟢 已正確使用 v6 API（無需修改）
+
+| 項目 | 說明 |
+|------|------|
+| [ModelManager.jsx](file:///d:/AI_translate/frontend/src/components/ModelManager.jsx) Modal | 已使用 `destroyOnHidden`（非 `destroyOnClose`）✅ |
+| `Menu` items | 已使用 `items` 陣列寫法 ✅ |
+| `@ant-design/icons` | v0 已用 `^6.1.0` ✅ |
+
+### 📝 具體修改範例
+
+#### 1. [Modal](file:///d:/AI_translate/frontend/src/components/FileManager.jsx#47-52) — `destroyOnClose` → `destroyOnHidden`
+```diff
+// FileManager.jsx L247
+  <Modal
+    title={`為 "${currentFile?.name}" 附加文本`}
+    open={isTextModalVisible}
+    onOk={handleSaveText}
+    onCancel={handleCancelTextModal}
+-   destroyOnClose
++   destroyOnHidden
+  >
+```
+
+#### 2. `Dropdown` — `overlay` → `menu`
+```diff
+// FileQueueTable.jsx L180
+- <Dropdown overlay={downloadMenu} placement="bottom">
++ <Dropdown menu={{ items: downloadMenuItems }} placement="bottom">
+```
+同時需要將 `<Menu>` + `<Menu.Item>` 改為 `items` 陣列格式。
+
+#### 3. `Space` — `direction` → `orientation`
+```diff
+// Transcription.jsx L86
+- <Space direction="vertical" size="large" style={{ width: '100%' }}>
++ <Space orientation="vertical" size="large" style={{ width: '100%' }}>
+```
+
+#### 4. `Statistic` — `valueStyle` → `styles.content`
+```diff
+// QueueSummary.jsx L44
+  <Statistic
+    title={...}
+    value={completedFilesCount}
+-   valueStyle={{ fontSize: '20px' }}
++   styles={{ content: { fontSize: '20px' } }}
+    prefix={<CheckCircleOutlined />}
+  />
+```
+
+#### 5. `Alert` — [message](file:///d:/AI_translate/frontend/src/context/TranscriptionContext.jsx#375-405) → `title`
+```diff
+// Transcription.jsx L94
+  <Alert
+    type="info"
+    showIcon
+    icon={<HistoryOutlined />}
+-   message={`發現 ${pendingBatches.length} 個未完成的批次任務`}
++   title={`發現 ${pendingBatches.length} 個未完成的批次任務`}
+    description={...}
+  />
+```
+
+#### 6. `Tag` — 預設 margin 移除
+v6 移除了 `Tag` 的預設 `margin-inline-end`。如果多個 Tag 並排需要間距，要用 `Space` 包裹或透過 `ConfigProvider` 設定全域 Tag 樣式。舊前端的 `Tag` 多已在 `Space` 內，影響有限。
+
+### ⚠️ React 18 → 19 注意事項
+
+| 變更 | 說明 |
+|------|------|
+| `ReactDOM.createRoot` | 舊前端已使用 `createRoot`，✅ 無需改 |
+| `ref` 轉發 | React 19 中 `ref` 作為普通 prop 傳遞，不再需要 `forwardRef`。舊前端未使用 `forwardRef`，✅ 無需改 |
+| `useRef(null)` | React 19 `useRef()` 不帶參數會報 warning，舊前端已帶 `null`，✅ 無需改 |
+| Strict Mode 行為 | React 19 不會雙重觸發 effect，行為更接近 production，✅ 有利 |
+
+---
+
+## Proposed Changes
+
+### 1. 基礎設施 (Infrastructure)
+
+#### [MODIFY] [package.json](file:///d:/v0/package.json)
+- 新增 `jszip` 依賴（用於批次下載 ZIP 打包）
+- 所有 HTTP 請求使用原生 `fetch`，WebSocket 使用原生 `WebSocket`，不引入任何額外 HTTP 庫
+- 可選：移除未使用的 `react-hook-form`、`zod`、`@hookform/resolvers`
+
+#### [MODIFY] [vite.config.js](file:///d:/v0/vite.config.js)
+- 新增 API proxy 設定（從舊前端搬過來）：
+```js
+server: {
+    host: true,
+    watch: { usePolling: true },
+    proxy: {
+        '/api': {
+            target: process.env.VITE_PROXY_TARGET || 'http://localhost:8000',
+            changeOrigin: true,
+            ws: true,  // <-- 關鍵：WebSocket proxy
+        },
+    },
+},
+```
+
+---
+
+### 2. 核心業務邏輯層 (Core Business Logic)
+
+#### [NEW] [modelConfig.js](file:///d:/v0/src/constants/modelConfig.js)
+- 從舊前端 [src/constants/modelConfig.js](file:///d:/AI_translate/frontend/src/constants/modelConfig.js) **直接複製**
+- 内容：`modelOptions`（Google 模型列表）+ [findProviderForModel](file:///d:/AI_translate/frontend/src/constants/modelConfig.js#15-25) 輔助函式
+
+#### [NEW] [TranscriptionContext.jsx](file:///d:/v0/src/context/TranscriptionContext.jsx)
+- 從舊前端 [src/context/TranscriptionContext.jsx](file:///d:/AI_translate/frontend/src/context/TranscriptionContext.jsx) **直接複製**（776 行）
+- 此為整個應用的核心狀態與邏輯，包括：
+  - **檔案佇列管理**：`fileList`, [handleUploadChange](file:///d:/AI_translate/frontend/src/context/TranscriptionContext.jsx#273-282), [clearAllFiles](file:///d:/AI_translate/frontend/src/context/TranscriptionContext.jsx#731-739), [handleReprocess](file:///d:/AI_translate/frontend/src/context/TranscriptionContext.jsx#706-730)
+  - **WebSocket 即時轉錄**：[handleRegularTranscription](file:///d:/AI_translate/frontend/src/context/TranscriptionContext.jsx#283-499)（每檔各建一個 WS 連線）
+  - **批次轉錄**：[handleBatchTranscription](file:///d:/AI_translate/frontend/src/context/TranscriptionContext.jsx#500-695)（共用一個 Batch WS）
+  - **批次恢復**：[recoverBatch](file:///d:/AI_translate/frontend/src/context/TranscriptionContext.jsx#77-190)（輪詢 API 恢復結果）
+  - **檔案下載**：[downloadFile](file:///d:/AI_translate/frontend/src/context/TranscriptionContext.jsx#210-221)（單檔）/ [downloadAllFiles](file:///d:/AI_translate/frontend/src/context/TranscriptionContext.jsx#222-272)（ZIP 打包）
+  - **預覽 Modal**：[handleOpenPreview](file:///d:/AI_translate/frontend/src/context/TranscriptionContext.jsx#197-202) / [handleClosePreview](file:///d:/AI_translate/frontend/src/context/TranscriptionContext.jsx#203-208)
+  - **設定狀態**：`targetLang`, `targetTranslateLang`, `model`, `useBatchMode`, `multiSpeaker`
+- 此檔案依賴 [ModelManager](file:///d:/AI_translate/frontend/src/components/ModelManager.jsx#12-19) 的 [useModelManager](file:///d:/AI_translate/frontend/src/components/ModelManager.jsx#12-19) hook → 需同時搬移
+
+#### [NEW] [ModelManager.jsx](file:///d:/v0/src/components/ModelManager.jsx)
+- 從舊前端 [src/components/ModelManager.jsx](file:///d:/AI_translate/frontend/src/components/ModelManager.jsx) **直接複製**（353 行）
+- 提供 `ModelManagerContext`，包括：
+  - [getProviderConfig](file:///d:/AI_translate/frontend/src/components/ModelManager.jsx#34-77)：記憶體 → localStorage → 後端 API 三層查詢
+  - [saveProviderConfig](file:///d:/AI_translate/frontend/src/components/ModelManager.jsx#78-128)：統一儲存到後端 + localStorage
+  - [handleEditProvider](file:///d:/AI_translate/frontend/src/components/ModelManager.jsx#129-145)：編輯 API 金鑰 Modal
+  - [handleEditProviderParams](file:///d:/AI_translate/frontend/src/components/ModelManager.jsx#181-203)：編輯 Prompt 參數 Modal
+  - [handleTestProvider](file:///d:/AI_translate/frontend/src/components/ModelManager.jsx#219-265)：測試 API 連通性
+- Ant Design 6 相容性調整：`destroyOnClose` → `destroyOnHidden`（舊前端已經用了 `destroyOnHidden`，無需修改）
+
+---
+
+### 3. TranscribePage 改造
+
+#### [MODIFY] [TranscribePage.jsx](file:///d:/v0/src/pages/TranscribePage.jsx)
+**目前狀態**：純前端 mockup，`files` state 純本地，[handleSubmit](file:///d:/v0/src/pages/TranscribePage.jsx#103-107) 只做 `setTimeout`
+**改造方向**：接入 `TranscriptionContext`，實現真實轉錄流程
+
+具體改動：
+1. 從 [useTranscription()](file:///d:/AI_translate/frontend/src/context/TranscriptionContext.jsx#17-19) 取得 `fileList`, [handleStartTranscription](file:///d:/AI_translate/frontend/src/context/TranscriptionContext.jsx#696-705), `isProcessing` 等
+2. 保留 v0 現有的 [GlobalDefaults](file:///d:/v0/src/components/transcribe/global-defaults.jsx#46-216) UI 元件，但將其 `config` 同步到 TranscriptionContext 的 `model`, `targetLang`, `multiSpeaker` 等
+3. 保留 [UploadZone](file:///d:/v0/src/components/transcribe/upload-zone.jsx#21-124) 元件但對接 [handleUploadChange](file:///d:/AI_translate/frontend/src/context/TranscriptionContext.jsx#273-282)
+4. 保留 [FileConfigCard](file:///d:/v0/src/components/transcribe/file-config-card.jsx#64-275) 顯示每個檔案的狀態（加入 status / statusText / progress）
+5. 底部 [CostEstimator](file:///d:/v0/src/components/transcribe/cost-estimator.jsx#7-97) 的 Submit 按鈕接到 [handleStartTranscription](file:///d:/AI_translate/frontend/src/context/TranscriptionContext.jsx#696-705)
+6. 新增 YouTube URL 輸入區（從舊前端 [FileManager.jsx](file:///d:/AI_translate/frontend/src/components/FileManager.jsx) 搬入）
+7. 新增批次恢復提示（從舊前端 [Transcription.jsx](file:///d:/AI_translate/frontend/src/components/Transcription.jsx) 搬入）
+8. 新增「下載全部」和「預覽」功能
+9. 新增用於附加文本（`original_text`）的 Modal（從舊前端 [FileManager.jsx](file:///d:/AI_translate/frontend/src/components/FileManager.jsx) 搬入）
+
+#### [MODIFY] [upload-zone.jsx](file:///d:/v0/src/components/transcribe/upload-zone.jsx)
+- 修改 `handleFiles` 使其透過 `TranscriptionContext.handleUploadChange` 更新 `fileList`
+- 或保留現有介面，由 [TranscribePage](file:///d:/v0/src/pages/TranscribePage.jsx#20-228) 在 `onFilesAdded` callback 中呼叫 Context
+
+#### [MODIFY] [file-config-card.jsx](file:///d:/v0/src/components/transcribe/file-config-card.jsx)
+- 新增顯示：`status`（waiting / processing / completed / error）
+- 新增顯示：`statusText`（即時 WebSocket 狀態文字）
+- 新增操作按鈕：預覽、下載（支援 lrc/srt/vtt/txt dropdown）、重新處理、移除
+- 新增 `tokens_used`, `cost`, `input_cost`, `output_cost` 統計顯示
+
+#### [MODIFY] [cost-estimator.jsx](file:///d:/v0/src/components/transcribe/cost-estimator.jsx)
+- 接入 `isProcessing` 切換 loading 狀態
+- Submit 按鈕改為呼叫 [handleStartTranscription](file:///d:/AI_translate/frontend/src/context/TranscriptionContext.jsx#696-705)
+- 新增已完成統計（完成檔案數 / tokens / 花費），類似舊前端的 [QueueSummary](file:///d:/AI_translate/frontend/src/components/Transcription/QueueSummary.jsx#12-103)
+
+#### [MODIFY] [global-defaults.jsx](file:///d:/v0/src/components/transcribe/global-defaults.jsx)
+- 新增「服務商」選擇（Google / 未來 Anthropic 等）
+- 新增「模型」選擇（從 [modelConfig.js](file:///d:/AI_translate/frontend/src/constants/modelConfig.js) 讀取）
+- 新增「翻譯目標語言」選項
+- 新增「批次模式」開關（`useBatchMode`）
+- 新增「編輯 API」/「編輯參數」/「測試 API」按鈕（呼叫 [ModelManager](file:///d:/AI_translate/frontend/src/components/ModelManager.jsx#12-19)）
+- 將現有的 Language 選項同步到 `targetLang`
+- 將現有的 Multi-Speaker 開關同步到 `multiSpeaker`
+
+---
+
+### 4. HistoryPage 改造
+
+#### [MODIFY] [HistoryPage.jsx](file:///d:/v0/src/pages/HistoryPage.jsx)
+**目前狀態**：`historyData = []`（空陣列），純本地篩選
+**改造方向**：接入 `/api/v1/history` REST API
+
+具體改動：
+1. 實作 `fetchHistory(page, pageSize)` — 呼叫 `GET /api/v1/history?page=&page_size=&status=&keyword=`
+2. 實作 `fetchStats()` — 呼叫 `GET /api/v1/history/stats`
+3. 實作 [handleDelete(task_uuid)](file:///d:/AI_translate/frontend/src/components/History.jsx#138-155) — 呼叫 `DELETE /api/v1/history/{task_uuid}`
+4. 新增服務端分頁（目前使用 `pagination={false}`，改為 antd Table 分頁）
+5. 新增展開列（[expandedRowRender](file:///d:/AI_translate/frontend/src/components/History.jsx#173-227)）顯示詳細資訊
+6. 新增頂部統計卡片（總任務 / 成功率 / 總費用 / 平均處理時間）
+7. 保留現有的搜尋和篩選 UI，改為呼叫 API 時傳送參數
+8. 新增「批次/一般」模式篩選
+
+---
+
+### 5. SettingsPage 改造
+
+#### [MODIFY] [SettingsPage.jsx](file:///d:/v0/src/pages/SettingsPage.jsx)
+**目前狀態**：硬編碼 API Key，無保存功能
+**改造方向**：接入 [ModelManager](file:///d:/AI_translate/frontend/src/components/ModelManager.jsx#12-19) 的 `getProviderConfig / saveProviderConfig`
+
+具體改動：
+1. 使用 [useModelManager()](file:///d:/AI_translate/frontend/src/components/ModelManager.jsx#12-19) 取得設定管理函式
+2. API Key 欄位接到 [handleEditProvider](file:///d:/AI_translate/frontend/src/components/ModelManager.jsx#129-145) 的 save 邏輯
+3. Default Model 下拉選單從 [modelConfig.js](file:///d:/AI_translate/frontend/src/constants/modelConfig.js) 讀取
+4. Save 按鈕呼叫 [saveProviderConfig](file:///d:/AI_translate/frontend/src/components/ModelManager.jsx#78-128)
+5. 頁面載入時呼叫 [getProviderConfig](file:///d:/AI_translate/frontend/src/components/ModelManager.jsx#34-77) 初始化表單
+
+---
+
+### 6. DashboardPage 改造
+
+#### [MODIFY] [DashboardPage.jsx](file:///d:/v0/src/pages/DashboardPage.jsx)
+**改造方向**：接入 `/api/v1/history/stats` 顯示真實數據
+
+具體改動：
+1. [StatCards](file:///d:/v0/src/components/dashboard/stat-cards.jsx#44-78) 元件改為呼叫 `GET /api/v1/history/stats` 取得真實資料
+2. [RecentTranscriptions](file:///d:/v0/src/components/dashboard/recent-transcriptions.jsx#21-101) 元件呼叫 `GET /api/v1/history?page=1&page_size=5` 取得最新 5 筆
+3. [UsageChart](file:///d:/v0/src/components/dashboard/usage-chart.jsx#47-87) 目前保留 mock（舊前端無此功能）
+
+---
+
+### 7. ResultPage 改造
+
+#### [MODIFY] [ResultPage.jsx](file:///d:/v0/src/pages/ResultPage.jsx)
+**改造方向**：顯示當前工作階段的轉錄結果
+
+具體改動：
+1. 從 `TranscriptionContext` 讀取已完成的 `fileList`
+2. [ResultFileCard](file:///d:/v0/src/components/result/result-file-card.jsx#38-243) 接入真實 result 資料（txt / srt / vtt / lrc）
+3. 下載按鈕接入 [downloadFile](file:///d:/AI_translate/frontend/src/context/TranscriptionContext.jsx#210-221) 函式
+4. 預覽功能接入 [handleOpenPreview](file:///d:/AI_translate/frontend/src/context/TranscriptionContext.jsx#197-202)
+5. 「下載全部」接入 [downloadAllFiles](file:///d:/AI_translate/frontend/src/context/TranscriptionContext.jsx#222-272)（ZIP 打包）
+
+---
+
+### 8. App 入口改造
+
+#### [MODIFY] [App.jsx](file:///d:/v0/src/App.jsx)
+- 將 `Routes` 包裹在 `<ModelManagerProvider>` 和 `<TranscriptionProvider>` 中
+
+#### [MODIFY] [main.jsx](file:///d:/v0/src/main.jsx)
+- 無需修改（已有 `BrowserRouter` 和 `ConfigProvider`）
+
+---
+
+## 搬移檔案對照表
+
+| 舊前端檔案 | 動作 | 新前端目標 |
+|-----------|------|----------|
+| [constants/modelConfig.js](file:///d:/AI_translate/frontend/src/constants/modelConfig.js) | 直接複製 | [src/constants/modelConfig.js](file:///d:/AI_translate/frontend/src/constants/modelConfig.js) |
+| [context/TranscriptionContext.jsx](file:///d:/AI_translate/frontend/src/context/TranscriptionContext.jsx) | 直接複製 | [src/context/TranscriptionContext.jsx](file:///d:/AI_translate/frontend/src/context/TranscriptionContext.jsx) |
+| [components/ModelManager.jsx](file:///d:/AI_translate/frontend/src/components/ModelManager.jsx) | 直接複製 | [src/components/ModelManager.jsx](file:///d:/AI_translate/frontend/src/components/ModelManager.jsx) |
+| [components/Transcription.jsx](file:///d:/AI_translate/frontend/src/components/Transcription.jsx) | 邏輯融入 | → [TranscribePage.jsx](file:///d:/v0/src/pages/TranscribePage.jsx) + [global-defaults.jsx](file:///d:/v0/src/components/transcribe/global-defaults.jsx) |
+| [components/FileManager.jsx](file:///d:/AI_translate/frontend/src/components/FileManager.jsx) | 邏輯融入 | → [TranscribePage.jsx](file:///d:/v0/src/pages/TranscribePage.jsx)（YouTube URL / 文本附加） |
+| [components/Transcription/UploadArea.jsx](file:///d:/AI_translate/frontend/src/components/Transcription/UploadArea.jsx) | 由 v0 取代 | v0 [upload-zone.jsx](file:///d:/v0/src/components/transcribe/upload-zone.jsx) 已有同功能 |
+| [components/Transcription/FileQueueHeader.jsx](file:///d:/AI_translate/frontend/src/components/Transcription/FileQueueHeader.jsx) | 由 v0 取代 | v0 [upload-zone.jsx](file:///d:/v0/src/components/transcribe/upload-zone.jsx) compact mode |
+| [components/Transcription/FileQueueTable.jsx](file:///d:/AI_translate/frontend/src/components/Transcription/FileQueueTable.jsx) | 邏輯融入 | → [file-config-card.jsx](file:///d:/v0/src/components/transcribe/file-config-card.jsx) 增強 |
+| [components/Transcription/QueueSummary.jsx](file:///d:/AI_translate/frontend/src/components/Transcription/QueueSummary.jsx) | 邏輯融入 | → [cost-estimator.jsx](file:///d:/v0/src/components/transcribe/cost-estimator.jsx) 增強 |
+| [components/History.jsx](file:///d:/AI_translate/frontend/src/components/History.jsx) | 邏輯融入 | → [HistoryPage.jsx](file:///d:/v0/src/pages/HistoryPage.jsx) |
+| [App.jsx](file:///d:/v0/src/App.jsx) | 概念搬移 | → [App.jsx](file:///d:/v0/src/App.jsx)（Provider 包裹） |
+
+---
+
+## Verification Plan
+
+### Automated Tests
+目前兩個專案都沒有自動化測試套件。
+
+### Manual Verification
+
+以下為手動驗證步驟（需要後端服務 `localhost:8000` 運行中）：
+
+1. **啟動開發伺服器**
+   ```bash
+   cd d:\v0
+   npm install
+   npm run dev
+   ```
+   ✅ 預期：無編譯錯誤，伺服器啟動成功
+
+2. **側邊欄導覽**
+   - 點擊側邊欄每個頁面連結
+   - ✅ 預期：所有 6 頁正常載入
+
+3. **Settings 頁面**
+   - 輸入 Google API Key → 點擊「Save」
+   - ✅ 預期：Key 存入 localStorage 和後端
+
+4. **Transcribe 頁面 (核心流程)**
+   - 選擇語言 / 模型 / 服務商
+   - 拖曳上傳一個音檔
+   - 點擊「Start」
+   - ✅ 預期：WebSocket 連線建立，狀態即時更新（上傳中 → 處理中 → 完成）
+   - 完成後點擊「Preview」和各格式下載
+   - 測試批次模式開關
+
+5. **History 頁面**
+   - ✅ 預期：看到服務端資料表格（帶分頁）
+   - 測試搜尋 / 篩選（狀態 / 模式）
+   - 測試刪除一筆紀錄
+
+6. **Dashboard 頁面**
+   - ✅ 預期：統計卡片顯示真實數值（總任務數 / 成功率 / 費用）
+
+> [!IMPORTANT]
+> 若無後端服務運行，上述步驟 3-6 會因 API 無法連通而失敗，但步驟 1-2 仍可驗證 UI 和路由正確性。
+> 你是否有後端服務可以運行？如果沒有，我可以先完成所有程式碼變更，讓你手動測試。

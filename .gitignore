@@ -179,6 +179,7 @@ backend/.venv/ # 有些工具會用 .venv
 
 # Node.js / React
 frontend/node_modules/
+frontend/dist/
 frontend/build/
 frontend/.pnp/
 frontend/.pnp.js

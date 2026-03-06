@@ -24,7 +24,7 @@ export const TranscriptionProvider = ({ children }) => {
   const [targetTranslateLang, setTargetTranslateLang] = useState(null); // 新增: 翻譯目標語言
   const [model, setModel] = useState(modelOptions.Google[0].value);
   const [isProcessing, setIsProcessing] = useState(false);
-  const [useBatchMode, setUseBatchMode] = useState(false);
+  const [useBatchMode, setUseBatchMode] = useState(true);
   const [multiSpeaker, setMultiSpeaker] = useState(false);
   const [pendingBatches, setPendingBatches] = useState([]);
   const [isRecovering, setIsRecovering] = useState(false);

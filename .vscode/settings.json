@@ -2,6 +2,7 @@
   // Python 虛擬環境設定
   "python.defaultInterpreterPath": "${workspaceFolder}/backend/.venv/Scripts/python.exe",
   "python.terminal.activateEnvironment": true,
+  "python.analysis.extraPaths": ["${workspaceFolder}/backend"],
   // 終端機預設啟動時自動執行虛擬環境啟動腳本
   "terminal.integrated.profiles.windows": {
     "CMD (venv)": {
