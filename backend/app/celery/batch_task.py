@@ -585,18 +585,12 @@ def batch_transcribe_task(self, task_params_dict: dict):
         db.close()
 
 
-@celery_app.task(name="batch_recover_task", bind=True, max_retries=0)
-def batch_recover_task(self, batch_id: str, api_key: str):
+def process_gemini_batch_results(batch_id: str, api_key: str, db, batch_repo, log_repo):
     """
-    從 Celery worker 中恢復批次任務結果。
-    client.batches.get() 只能在 Celery worker 中運行，
-    所以需要透過這個 task 來呼叫。
+    從 db 和 Gemini 恢復批次任務結果（同步函式）。
+    由 API endpoints 或 Celery Task 呼叫。
     """
     from types import SimpleNamespace
-
-    db = SessionLocal()
-    batch_repo = BatchJobRepository()
-    log_repo = TranscriptionLogRepository()
 
     try:
         job = batch_repo.get_job(db, batch_id)
@@ -607,7 +601,7 @@ def batch_recover_task(self, batch_id: str, api_key: str):
         if not job.gemini_job_name:
             logger.error(f"恢復任務 {batch_id} 沒有 gemini_job_name")
             batch_repo.update_job(db, batch_id, {"status": "POLLING"})
-            return
+            return {"status": "POLLING", "files": []}
 
         # 發布狀態更新
         def update_status(status_text, status_code="PROCESSING", result_data=None, file_uid=None):
@@ -620,7 +614,7 @@ def batch_recover_task(self, batch_id: str, api_key: str):
         if not client:
             update_status("API Key 無效", status_code="BATCH_COMPLETED")
             batch_repo.update_job(db, batch_id, {"status": "POLLING"})
-            return
+            return {"status": "POLLING", "files": []}
 
         # 查詢 Gemini 批次任務
         try:
@@ -628,7 +622,7 @@ def batch_recover_task(self, batch_id: str, api_key: str):
         except Exception as e:
             update_status(f"查詢 Gemini 失敗: {e}", status_code="BATCH_COMPLETED")
             batch_repo.update_job(db, batch_id, {"status": "POLLING"})
-            return
+            return {"status": "POLLING", "files": []}
 
         state_name = get_batch_job_state_name(batch_job)
         logger.info(f"恢復任務 {batch_id}: Gemini 狀態 = {state_name} (raw: {batch_job.state})")
@@ -637,13 +631,13 @@ def batch_recover_task(self, batch_id: str, api_key: str):
             logger.info(f"恢復任務 {batch_id}: 任務尚未完成，狀態={state_name}")
             update_status(f"任務仍在進行中 ({state_name})", status_code="BATCH_COMPLETED")
             batch_repo.update_job(db, batch_id, {"status": "POLLING"})
-            return
+            return {"status": "POLLING", "files": []}
 
         if state_name != "JOB_STATE_SUCCEEDED":
             logger.info(f"恢復任務 {batch_id}: 任務失敗，狀態={state_name}")
             batch_repo.update_job(db, batch_id, {"status": "FAILED"})
             update_status(f"任務失敗 ({state_name})", status_code="BATCH_COMPLETED")
-            return
+            return {"status": "FAILED", "files": []}
 
         logger.info(f"恢復任務 {batch_id}: 任務成功，開始處理結果...")
 
@@ -716,6 +710,7 @@ def batch_recover_task(self, batch_id: str, api_key: str):
         elapsed = time.time() - start_time
         update_status(f"恢復完成 (耗時 {elapsed:.1f} 秒)", status_code="BATCH_COMPLETED")
         logger.info(f"批次 {batch_id} 恢復完成，{len(captured_results)} 個檔案")
+        return {"status": "COMPLETED", "files": captured_results}
 
     except Exception as e:
         logger.error(f"恢復任務 {batch_id} 失敗: {e}", exc_info=True)
@@ -723,5 +718,19 @@ def batch_recover_task(self, batch_id: str, api_key: str):
             batch_repo.update_job(db, batch_id, {"status": "POLLING"})
         except Exception:
             pass
+        return {"status": "ERROR", "files": []}
+
+
+@celery_app.task(name="batch_recover_task", bind=True, max_retries=0)
+def batch_recover_task(self, batch_id: str, api_key: str):
+    """
+    從 Celery worker 中恢復批次任務結果的 Task wrapper。
+    """
+    db = SessionLocal()
+    batch_repo = BatchJobRepository()
+    log_repo = TranscriptionLogRepository()
+    try:
+        process_gemini_batch_results(batch_id, api_key, db, batch_repo, log_repo)
     finally:
         db.close()
+

@@ -93,6 +93,7 @@ export function FileConfigCard({
     onReprocess,
     onAttachText,
     onAttachTextFromFile,
+    readOnly = false,
 }) {
     const [expanded, setExpanded] = useState(false)
 
@@ -258,7 +259,7 @@ export function FileConfigCard({
                         </Dropdown>
                     )}
                     {/* Attach text */}
-                    {!isCompleted && onAttachText && (
+                    {!readOnly && !isCompleted && onAttachText && (
                         <Tooltip title="附加文本">
                             <Button
                                 type="text"
@@ -270,7 +271,7 @@ export function FileConfigCard({
                         </Tooltip>
                     )}
                     {/* Reprocess */}
-                    {(isCompleted || isError) && onReprocess && (
+                    {!readOnly && (isCompleted || isError) && onReprocess && (
                         <Tooltip title="重新處理">
                             <Button
                                 type="text"
@@ -282,27 +283,31 @@ export function FileConfigCard({
                         </Tooltip>
                     )}
                     {/* Settings */}
-                    <Button
-                        type="text"
-                        size="small"
-                        icon={<Settings2 size={14} />}
-                        onClick={() => setExpanded(!expanded)}
-                        style={{
-                            width: 28,
-                            height: 28,
-                            color: expanded ? "#2dd4a8" : config.hasOverride ? "#2dd4a8" : "#8888a8",
-                            background: expanded ? "rgba(45, 212, 168, 0.1)" : "transparent",
-                        }}
-                    />
+                    {!readOnly && (
+                        <Button
+                            type="text"
+                            size="small"
+                            icon={<Settings2 size={14} />}
+                            onClick={() => setExpanded(!expanded)}
+                            style={{
+                                width: 28,
+                                height: 28,
+                                color: expanded ? "#2dd4a8" : config.hasOverride ? "#2dd4a8" : "#8888a8",
+                                background: expanded ? "rgba(45, 212, 168, 0.1)" : "transparent",
+                            }}
+                        />
+                    )}
                     {/* Remove */}
-                    <Button
-                        type="text"
-                        size="small"
-                        icon={<X size={14} />}
-                        onClick={() => onRemove(config.id)}
-                        style={{ width: 28, height: 28, color: "#8888a8" }}
-                        danger
-                    />
+                    {!readOnly && (
+                        <Button
+                            type="text"
+                            size="small"
+                            icon={<X size={14} />}
+                            onClick={() => onRemove(config.id)}
+                            style={{ width: 28, height: 28, color: "#8888a8" }}
+                            danger
+                        />
+                    )}
                 </div>
             </div>
 
