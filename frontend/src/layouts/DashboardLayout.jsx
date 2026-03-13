@@ -19,6 +19,10 @@ const pageConfig = {
         title: "Transcription Results",
         description: "Browse and download your transcription results grouped by date.",
     },
+    "/tasks": {
+        title: "Tasks",
+        description: "Track your transcription tasks status, retrieve completed results",
+    },
     "/history": {
         title: "Transcription History",
         description: "Browse and manage all your past transcription jobs",
@@ -35,7 +39,7 @@ const pageConfig = {
 
 export function DashboardLayout() {
     const { pathname } = useLocation()
-    const config = pageConfig[pathname] || { title: "VoxScribe", description: "" }
+    const config = pageConfig[pathname] || { title: "AI_translate", description: "" }
     const [collapsed, setCollapsed] = useState(false)
     const [sidebarWidth, setSidebarWidth] = useState(240)
 

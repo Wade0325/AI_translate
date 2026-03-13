@@ -20,6 +20,7 @@ celery_app.conf.update(
     result_serializer="json",
     timezone=settings.celery_timezone,
     enable_utc=True,
+    task_track_started=True,
     # 任務結果的過期時間
     result_expires=settings.celery_result_expires,
 )

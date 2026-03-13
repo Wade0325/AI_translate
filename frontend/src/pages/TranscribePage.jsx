@@ -10,9 +10,9 @@ import { modelOptions, findProviderForModel } from "@/constants/modelConfig"
 import {
     LinkOutlined,
     FileTextOutlined,
-    HistoryOutlined,
     DownloadOutlined,
     EyeOutlined,
+    CloseOutlined,
 } from "@ant-design/icons"
 import { AlertCircle, Youtube } from "lucide-react"
 
@@ -42,9 +42,6 @@ export default function TranscribePage() {
         downloadAllFiles,
         clearAllFiles,
         handleReprocess,
-        pendingBatches,
-        isRecovering,
-        recoverBatch,
         isPreviewModalVisible,
         previewContent,
         previewTitle,
@@ -209,38 +206,6 @@ export default function TranscribePage() {
 
     return (
         <div style={{ display: "flex", flexDirection: "column", gap: 16, padding: 24 }}>
-            {/* 批次恢復提示 */}
-            {pendingBatches.length > 0 && (
-                <Card
-                    size="small"
-                    style={{
-                        border: "1px solid rgba(212, 167, 45, 0.3)",
-                        background: "rgba(212, 167, 45, 0.05)",
-                    }}
-                >
-                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                            <HistoryOutlined style={{ color: "#d4a72d" }} />
-                            <Text style={{ color: "#e8e8e8" }}>
-                                發現 {pendingBatches.length} 個未完成的批次任務
-                            </Text>
-                        </div>
-                        <Space>
-                            {pendingBatches.map((batch) => (
-                                <Button
-                                    key={batch.batch_id}
-                                    size="small"
-                                    loading={isRecovering}
-                                    onClick={() => recoverBatch(batch.batch_id)}
-                                >
-                                    恢復 ({batch.file_count} 檔)
-                                </Button>
-                            ))}
-                        </Space>
-                    </div>
-                </Card>
-            )}
-
             {/* 服務商 / 模型 / 批次模式 控制列 */}
             <Card
                 size="small"

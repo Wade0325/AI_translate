@@ -53,6 +53,7 @@ class BatchJob(Base):
     file_durations_json = Column(Text, nullable=True)    # {file_uid: duration}
     file_log_uuids_json = Column(Text, nullable=True)    # {file_uid: task_uuid}
     results_json = Column(Text, nullable=True)           # {file_uid: result_dict} — 完成後存入的結果
+    celery_task_id = Column(String, nullable=True)      # Celery task ID，用於查詢任務是否還在執行
     file_count = Column(Integer, nullable=True)
     completed_file_count = Column(Integer, default=0, nullable=True)
     created_at = Column(DateTime, default=func.now())

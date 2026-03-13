@@ -128,11 +128,12 @@ async def test_model_interface(
     #     pass
 
     else:
-        return {
-            "message": f"API類型 '{request_data.provider}' 的測試邏輯尚未實現。",
-            "testedInterface": request_data.provider,
-            "status": "NotImplemented"
-        }
+        return TestProviderResponse(
+            success=False,
+            message=f"API類型 '{request_data.provider}' 的測試邏輯尚未實現。",
+            testedInterface=request_data.provider,
+            details="NotImplemented",
+        )
 
 
 @router.get("/default-prompt")

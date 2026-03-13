@@ -105,7 +105,7 @@ class PendingBatchResponse(BaseModel):
 
 class RecoverBatchRequest(BaseModel):
     """POST /batch/{batch_id}/recover 的請求"""
-    api_keys: str
+    api_keys: Optional[str] = None
 
 
 class RecoverFileResult(BaseModel):
@@ -121,6 +121,26 @@ class RecoverBatchResponse(BaseModel):
     """POST /batch/{batch_id}/recover 的回應"""
     batch_id: str
     files: List[RecoverFileResult]
+
+
+# ==================== Task Page ====================
+
+class BatchTaskFile(BaseModel):
+    """Task 頁面中的檔案項目"""
+    file_uid: str
+    original_filename: str
+
+
+class BatchTaskResponse(BaseModel):
+    """GET /batch/tasks 的回應項目"""
+    batch_id: str
+    status: str
+    file_count: int
+    is_alive: Optional[bool] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+    elapsed_seconds: Optional[float] = None
+    files: List[BatchTaskFile]
 
 
 # ==================== History ====================

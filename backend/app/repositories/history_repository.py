@@ -1,3 +1,4 @@
+import uuid as _uuid_module
 from typing import Optional, List, Tuple
 from datetime import datetime
 
@@ -55,16 +56,31 @@ class HistoryRepository:
         )
         return results, total
 
+    def _coerce_uuid(self, task_uuid):
+        """確保 task_uuid 為 Python uuid.UUID 物件（相容 PostgreSQL 與 SQLite）。"""
+        if isinstance(task_uuid, _uuid_module.UUID):
+            return task_uuid
+        try:
+            return _uuid_module.UUID(str(task_uuid))
+        except (ValueError, AttributeError):
+            return None
+
     def get_log_by_uuid(self, db: Session, task_uuid) -> Optional[TranscriptionLog]:
         """根據 task_uuid 查詢單筆紀錄。"""
+        uuid_val = self._coerce_uuid(task_uuid)
+        if uuid_val is None:
+            return None
         return db.query(TranscriptionLog).filter(
-            TranscriptionLog.task_uuid == task_uuid
+            TranscriptionLog.task_uuid == uuid_val
         ).first()
 
     def delete_log(self, db: Session, task_uuid) -> bool:
         """刪除單筆紀錄。"""
+        uuid_val = self._coerce_uuid(task_uuid)
+        if uuid_val is None:
+            return False
         log = db.query(TranscriptionLog).filter(
-            TranscriptionLog.task_uuid == task_uuid
+            TranscriptionLog.task_uuid == uuid_val
         ).first()
         if log:
             db.delete(log)

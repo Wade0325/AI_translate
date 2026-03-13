@@ -1,3 +1,4 @@
+from datetime import datetime
 from pathlib import Path
 import json
 import time
@@ -26,6 +27,8 @@ from app.schemas.schemas import (
     RecoverBatchRequest,
     RecoverFileResult,
     RecoverBatchResponse,
+    BatchTaskFile,
+    BatchTaskResponse,
 )
 
 logger = setup_logger(__name__)
@@ -37,6 +40,88 @@ TEMP_UPLOADS_DIR = Path(settings.temp_uploads_dir)
 TEMP_UPLOADS_DIR.mkdir(exist_ok=True)
 
 batch_repo = BatchJobRepository()
+
+
+# ==================== Task Page Endpoints ====================
+
+def _check_celery_task_alive(celery_task_id: str) -> bool | None:
+    """
+    檢查 Celery 任務是否仍在執行。
+    回傳 True=執行中, False=已結束/已死, None=無法判斷。
+    """
+    if not celery_task_id:
+        return None
+    try:
+        from celery.result import AsyncResult
+        from app.celery.celery import celery_app
+        result = AsyncResult(celery_task_id, app=celery_app)
+        # STARTED = 正在執行 (需要 task_track_started=True)
+        # PENDING = 尚未開始 或 worker 已死 或 結果已過期
+        # SUCCESS/FAILURE/REVOKED = 已結束
+        if result.state == "STARTED":
+            return True
+        if result.state in ("SUCCESS", "FAILURE", "REVOKED"):
+            return False
+        # PENDING: 無法確定，但如果任務在 DB 中已存在一段時間，很可能已死
+        return None
+    except Exception as e:
+        logger.warning(f"檢查 Celery 任務狀態失敗 ({celery_task_id}): {e}")
+        return None
+
+
+@router.get("/tasks", response_model=list[BatchTaskResponse])
+def get_batch_tasks(db: Session = Depends(get_db)):
+    """取得所有活躍的批次任務（Task 頁面用），自動歸檔超過 24 小時的已完成任務。"""
+    archived = batch_repo.archive_old_completed(db)
+    if archived > 0:
+        logger.info(f"自動歸檔 {archived} 個超過 24 小時的已完成批次")
+
+    jobs = batch_repo.get_active_tasks(db)
+    results = []
+    for job in jobs:
+        files = []
+        if job.file_mapping_json:
+            mapping = json.loads(job.file_mapping_json)
+            for idx in sorted(mapping.keys(), key=int):
+                entry = mapping[idx]
+                files.append(BatchTaskFile(
+                    file_uid=entry["file_uid"],
+                    original_filename=entry["original_filename"],
+                ))
+
+        elapsed = None
+        if job.created_at:
+            elapsed = (datetime.utcnow() - job.created_at).total_seconds()
+
+        is_alive = None
+        if job.status in ("UPLOADING", "POLLING", "RECOVERING"):
+            alive = _check_celery_task_alive(job.celery_task_id)
+            if alive is not None:
+                is_alive = alive
+            elif elapsed and elapsed > 300:
+                # PENDING 狀態超過 5 分鐘，極大概率已死
+                is_alive = False
+
+        results.append(BatchTaskResponse(
+            batch_id=job.batch_id,
+            status=job.status,
+            file_count=job.file_count or len(files),
+            is_alive=is_alive,
+            created_at=str(job.created_at) if job.created_at else None,
+            updated_at=str(job.updated_at) if job.updated_at else None,
+            elapsed_seconds=elapsed,
+            files=files,
+        ))
+    return results
+
+
+@router.post("/{batch_id}/dismiss")
+def dismiss_batch_task(batch_id: str, db: Session = Depends(get_db)):
+    """用戶手動忽略/歸檔一個批次任務。"""
+    success = batch_repo.mark_as_retrieved(db, batch_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="找不到此批次任務")
+    return {"success": True}
 
 
 # ==================== Recovery REST Endpoints ====================
@@ -112,7 +197,10 @@ def recover_batch(batch_id: str, body: RecoverBatchRequest, db: Session = Depend
 
     api_key = body.api_keys
     if not api_key:
-        raise HTTPException(status_code=400, detail="請提供 API Key")
+        raise HTTPException(
+            status_code=400,
+            detail="Gemini 批次任務尚在處理中，需要 API Key 才能查詢狀態",
+        )
 
     logger.info(f"恢復批次 {batch_id}: 在 API 中同步檢查 Gemini 狀態 (當前狀態={job.status})")
 

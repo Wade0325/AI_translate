@@ -74,6 +74,8 @@ async def upload_file(
 
         return {"filename": saved_filename, "message": "檔案上傳成功"}
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"保存檔案失敗: {e}")
         raise HTTPException(

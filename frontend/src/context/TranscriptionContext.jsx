@@ -26,8 +26,6 @@ export const TranscriptionProvider = ({ children }) => {
   const [isProcessing, setIsProcessing] = useState(false);
   const [useBatchMode, setUseBatchMode] = useState(true);
   const [multiSpeaker, setMultiSpeaker] = useState(false);
-  const [pendingBatches, setPendingBatches] = useState([]);
-  const [isRecovering, setIsRecovering] = useState(false);
   const { getProviderConfig } = useModelManager();
 
   const activeSockets = useRef({}); // 用於管理所有活躍的 socket
@@ -48,145 +46,22 @@ export const TranscriptionProvider = ({ children }) => {
     // 只有在「曾經開始處理」且「現在沒有處理中的文件」時才顯示完成訊息
     if (isProcessing && hasStartedProcessing.current && !stillProcessing) {
       setIsProcessing(false);
-      hasStartedProcessing.current = false; // 重置標記
-      message.success('所有任務處理完畢！');
+      hasStartedProcessing.current = false;
+
+      const completed = fileList.filter(f => f.status === 'completed').length;
+      const failed = fileList.filter(f => f.status === 'error').length;
+
+      if (failed > 0 && completed === 0) {
+        message.error(`${failed} 個任務失敗`);
+      } else if (failed > 0) {
+        message.warning(`完成 ${completed} 個，${failed} 個失敗`);
+      } else {
+        message.success(`${completed} 個任務已完成`);
+      }
     }
   }, [fileList, isProcessing]);
 
 
-  // --- 頁面載入時檢查未完成的批次任務 ---
-  useEffect(() => {
-    const checkPendingBatches = async () => {
-      try {
-        const response = await fetch(`${API_BASE_URL}/batch/pending`);
-        if (response.ok) {
-          const data = await response.json();
-          setPendingBatches(data);
-          if (data.length > 0) {
-            console.log(`發現 ${data.length} 個未完成的批次任務`);
-          }
-        }
-      } catch (error) {
-        console.error('檢查未完成批次任務失敗:', error);
-      }
-    };
-    checkPendingBatches();
-  }, []);
-
-
-  // --- 恢復批次任務 ---
-  const recoverBatch = async (batchId) => {
-    setIsRecovering(true);
-    try {
-      // 取得 API Key（使用已儲存的 Google 設定）
-      const config = await getProviderConfig('Google');
-      const apiKey = config?.apiKeys?.[0];
-      if (!apiKey) {
-        message.error('請先在模型管理中為 Google 設定 API 金鑰，才能恢復批次任務。');
-        setIsRecovering(false);
-        return;
-      }
-
-      message.loading({ content: '正在恢復批次任務...', key: 'recover', duration: 0 });
-
-      const response = await fetch(`${API_BASE_URL}/batch/${batchId}/recover`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ api_keys: apiKey }),
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.detail || `恢復失敗 (${response.status})`);
-      }
-
-      const result = await response.json();
-
-      // 路徑 1：有結果（DB 快速路徑）→ 直接填入
-      if (result.files && result.files.length > 0) {
-        const recoveredFiles = result.files.map(f => ({
-          uid: f.file_uid,
-          name: f.original_filename,
-          status: f.status === 'COMPLETED' ? 'completed' : 'error',
-          percent: 100,
-          statusText: f.status === 'COMPLETED' ? '已恢復' : `恢復失敗: ${f.error || '未知錯誤'}`,
-          result: f.result?.transcripts || null,
-          tokens_used: f.result?.tokens_used || 0,
-          cost: f.result?.cost || 0,
-          input_cost: f.result?.input_cost || 0,
-          output_cost: f.result?.output_cost || 0,
-          error: f.error || null,
-        }));
-        setFileList(prev => [...recoveredFiles, ...prev]);
-        setPendingBatches(prev => prev.filter(b => b.batch_id !== batchId));
-        const completedCount = result.files.filter(f => f.status === 'COMPLETED').length;
-        message.success({ content: `已恢復 ${completedCount} / ${result.files.length} 個檔案`, key: 'recover' });
-        setIsRecovering(false);
-        return;
-      }
-
-      // 路徑 2：空結果（Celery 在背景從 Gemini 恢復）→ 輪詢等待結果
-      message.loading({ content: '正在從 Gemini 恢復結果，請稍候...', key: 'recover', duration: 0 });
-
-      // 每 5 秒輪詢一次，直到結果出現在 DB 或超時
-      const maxAttempts = 60; // 最多等 5 分鐘
-      let attempts = 0;
-
-      const pollForResults = async () => {
-        attempts++;
-        try {
-          const pollResp = await fetch(`${API_BASE_URL}/batch/${batchId}/recover`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ api_keys: apiKey }),
-          });
-
-          if (pollResp.ok) {
-            const pollResult = await pollResp.json();
-            if (pollResult.files && pollResult.files.length > 0) {
-              // 結果到了！
-              const recoveredFiles = pollResult.files.map(f => ({
-                uid: f.file_uid,
-                name: f.original_filename,
-                status: f.status === 'COMPLETED' ? 'completed' : 'error',
-                percent: 100,
-                statusText: f.status === 'COMPLETED' ? '已恢復' : `恢復失敗: ${f.error || '未知錯誤'}`,
-                result: f.result?.transcripts || null,
-                tokens_used: f.result?.tokens_used || 0,
-                cost: f.result?.cost || 0,
-                input_cost: f.result?.input_cost || 0,
-                output_cost: f.result?.output_cost || 0,
-                error: f.error || null,
-              }));
-              setFileList(prev => [...recoveredFiles, ...prev]);
-              setPendingBatches(prev => prev.filter(b => b.batch_id !== batchId));
-              const completedCount = pollResult.files.filter(f => f.status === 'COMPLETED').length;
-              message.success({ content: `已恢復 ${completedCount} 個檔案的轉錄結果！`, key: 'recover' });
-              setIsRecovering(false);
-              return;
-            }
-          }
-        } catch (e) {
-          console.log('Poll attempt failed:', e);
-        }
-
-        if (attempts < maxAttempts) {
-          setTimeout(pollForResults, 5000);
-        } else {
-          message.warning({ content: '恢復超時，請稍後重新整理頁面再試', key: 'recover' });
-          setIsRecovering(false);
-        }
-      };
-
-      // 第一次等 5 秒讓 Celery 有時間處理
-      setTimeout(pollForResults, 5000);
-
-    } catch (error) {
-      console.error('恢復批次任務失敗:', error);
-      message.error({ content: `恢復失敗: ${error.message}`, key: 'recover' });
-      setIsRecovering(false);
-    }
-  };
 
 
   // --- Modal 狀態管理 ---
@@ -704,28 +579,29 @@ export const TranscriptionProvider = ({ children }) => {
   };
 
   const handleReprocess = (uidToReprocess) => {
-    setFileList((currentList) => {
-      const fileToReprocess = currentList.find(f => f.uid === uidToReprocess);
-      if (fileToReprocess) {
-        message.info(`任務 "${fileToReprocess.name}" 已重新加入佇列。`);
-      }
-      return currentList.map(file => {
-          if(file.uid === uidToReprocess) {
-              return {
-                  ...file,
-                  status: 'waiting',
-                  percent: 0,
-                  tokens_used: 0,
-                  cost: 0,
-                  result: null,
-                  statusText: '等待處理',
-                  task_uuid: null,
-                  error: null,
-              };
-          }
-          return file;
-      });
-    });
+    const fileToReprocess = fileList.find(f => f.uid === uidToReprocess);
+    if (fileToReprocess) {
+      message.info(`任務 "${fileToReprocess.name}" 已重新加入佇列。`);
+    }
+
+    setFileList((currentList) =>
+      currentList.map(file => {
+        if (file.uid === uidToReprocess) {
+          return {
+            ...file,
+            status: 'waiting',
+            percent: 0,
+            tokens_used: 0,
+            cost: 0,
+            result: null,
+            statusText: '等待處理',
+            task_uuid: null,
+            error: null,
+          };
+        }
+        return file;
+      })
+    );
   };
 
   const clearAllFiles = () => {
@@ -757,9 +633,6 @@ export const TranscriptionProvider = ({ children }) => {
     downloadAllFiles,
     clearAllFiles,
     handleReprocess,
-    pendingBatches,
-    isRecovering,
-    recoverBatch,
     isPreviewModalVisible,
     previewContent,
     previewTitle,

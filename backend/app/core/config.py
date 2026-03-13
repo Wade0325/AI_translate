@@ -2,12 +2,18 @@ from functools import lru_cache
 from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# 計算 backend/.env 的絕對路徑，確保不受工作目錄影響
-# __file__ = backend/app/core/config.py
-# .parent = backend/app/core/
-# .parent.parent = backend/app/
-# .parent.parent.parent = backend/
-ENV_FILE_PATH = Path(__file__).resolve().parent.parent.parent / ".env"
+# 設定檔搜尋順序：backend/.env → 專案根目錄/.env.prod
+# 本機開發和 Docker 都能用同一份設定
+_BACKEND_DIR = Path(__file__).resolve().parent.parent.parent      # backend/
+_PROJECT_ROOT = _BACKEND_DIR.parent                                # 專案根目錄
+
+def _find_env_file() -> Path | None:
+    for candidate in [_BACKEND_DIR / ".env", _PROJECT_ROOT / ".env.prod"]:
+        if candidate.exists():
+            return candidate
+    return None
+
+ENV_FILE_PATH = _find_env_file()
 
 
 class Settings(BaseSettings):
@@ -57,7 +63,7 @@ class Settings(BaseSettings):
     temp_uploads_dir: str = "temp_uploads"
 
     model_config = SettingsConfigDict(
-        env_file=ENV_FILE_PATH if ENV_FILE_PATH.exists() else None,
+        env_file=ENV_FILE_PATH if ENV_FILE_PATH else None,
         env_file_encoding="utf-8",
         extra="ignore"
     )

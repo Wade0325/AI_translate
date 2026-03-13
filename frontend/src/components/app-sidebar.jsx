@@ -8,6 +8,7 @@ import {
     CreditCard,
     Settings,
     AudioWaveform,
+    ListTodo,
 } from "lucide-react"
 import { Layout, Menu, Avatar, Typography } from "antd"
 import {
@@ -22,6 +23,7 @@ const mainNav = [
     { title: "Dashboard", icon: LayoutDashboard, href: "/" },
     { title: "New Transcription", icon: Upload, href: "/transcribe" },
     { title: "Result Viewer", icon: FileText, href: "/result" },
+    { title: "Tasks", icon: ListTodo, href: "/tasks" },
     { title: "History", icon: History, href: "/history" },
 ]
 
@@ -124,7 +126,7 @@ export function AppSidebar({ collapsed, onCollapse, sidebarWidth = 240, onSideba
                 </div>
                 {!collapsed && (
                     <div style={{ display: 'flex', flexDirection: 'column', lineHeight: 1.2 }}>
-                        <Text strong style={{ color: '#e8e8e8', fontSize: 14 }}>VoxScribe</Text>
+                        <Text strong style={{ color: '#e8e8e8', fontSize: 14 }}>AI_translate</Text>
                         <Text style={{ color: '#8888a8', fontSize: 11 }}>AI Transcription</Text>
                     </div>
                 )}

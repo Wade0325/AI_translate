@@ -234,3 +234,8 @@ backend/*.db
 /temp_uploads/
 /backend/temp_uploads/
 /backend/app/celery/results/
+
+# Test - Fake Gemini mock server
+backend/fake_gemini/
+tests/test_fake_server.py
+tests/test_gemini_integration.py

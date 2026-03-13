@@ -258,8 +258,8 @@ export function FileConfigCard({
                             </Tooltip>
                         </Dropdown>
                     )}
-                    {/* Attach text */}
-                    {!readOnly && !isCompleted && onAttachText && (
+                    {/* Attach text：處理中時隱藏 */}
+                    {!readOnly && !isCompleted && !isActive && onAttachText && (
                         <Tooltip title="附加文本">
                             <Button
                                 type="text"
@@ -282,8 +282,8 @@ export function FileConfigCard({
                             />
                         </Tooltip>
                     )}
-                    {/* Settings */}
-                    {!readOnly && (
+                    {/* Settings：處理中時隱藏 */}
+                    {!readOnly && !isActive && (
                         <Button
                             type="text"
                             size="small"
@@ -311,8 +311,8 @@ export function FileConfigCard({
                 </div>
             </div>
 
-            {/* Expanded per-file override settings */}
-            {expanded && (
+            {/* Expanded per-file override settings：處理中時強制收起 */}
+            {expanded && !isActive && (
                 <div style={{ borderTop: "1px solid #3a3a5c", background: "rgba(20, 20, 40, 0.8)", padding: "12px 16px" }}>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
                         <Text style={{ fontSize: 11, fontWeight: 500, color: "#8888a8", textTransform: "uppercase", letterSpacing: 1 }}>

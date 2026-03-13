@@ -319,6 +319,7 @@ def batch_transcribe_task(self, task_params_dict: dict):
             "prompt": prompt,
         }))
         batch_repo.update_job(db, batch_id, {
+            "celery_task_id": task_uuid,
             "file_count": len(task_params.files),
             "completed_file_count": 0,
         })
