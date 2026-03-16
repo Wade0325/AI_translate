@@ -14,9 +14,10 @@
 
 | 層級 | 技術 | 說明 |
 |------|------|------|
-| **前端** | React 18 + Vite 5 | SPA 應用程式 |
-| **UI 框架** | Ant Design 5 | 元件庫 |
-| **HTTP 請求** | Axios / Fetch API | 前後端通訊 |
+| **前端** | React 19 + Vite 6 | SPA 應用程式 |
+| **UI 框架** | Ant Design 6 | 元件庫 |
+| **前端路由** | react-router-dom 7 | 多頁面路由 |
+| **HTTP 請求** | Fetch API | 前後端通訊 |
 | **即時通訊** | WebSocket | 任務進度即時推播 |
 | **後端 API** | FastAPI (Python) | RESTful + WebSocket 端點 |
 | **任務佇列** | Celery | 非同步任務處理 |
@@ -383,69 +384,75 @@ erDiagram
 
 ```
 frontend/src/
-├── main.jsx                          # 應用程式入口 (ReactDOM.createRoot)
-├── App.jsx                           # 根元件 + 頂部導航選單
+├── main.jsx                          # 應用程式入口 (createRoot + ConfigProvider 深色主題)
+├── App.jsx                           # 路由設定 (react-router-dom)
 ├── index.css                         # 全域樣式
 ├── constants/
 │   └── modelConfig.js                # AI 模型/服務商定義
 ├── context/
-│   └── TranscriptionContext.jsx      # 全域狀態管理 (776 行核心)
+│   └── TranscriptionContext.jsx      # 全域狀態管理
+├── hooks/
+│   ├── use-mobile.js                 # 行動裝置偵測
+│   └── use-toast.js                  # Toast 通知
+├── layouts/
+│   └── DashboardLayout.jsx           # 主版面（側邊欄 + 內容區）
+├── pages/
+│   ├── DashboardPage.jsx             # 儀表板
+│   ├── TranscribePage.jsx            # 轉錄頁面
+│   ├── ResultPage.jsx                # 結果檢視
+│   ├── TaskPage.jsx                  # 任務管理
+│   ├── HistoryPage.jsx               # 歷史記錄
+│   ├── BillingPage.jsx               # 用量計費
+│   └── SettingsPage.jsx              # 設定
 └── components/
-    ├── Transcription.jsx             # 轉錄設定頁面
-    ├── FileManager.jsx               # 檔案上傳與管理元件
     ├── ModelManager.jsx              # API 金鑰與參數管理 (Context Provider)
-    ├── History.jsx                   # 歷史紀錄頁面
-    └── Transcription/
-        ├── UploadArea.jsx            # 拖拽上傳區域
-        ├── FileQueueHeader.jsx       # 佇列操作列
-        ├── FileQueueTable.jsx        # 檔案佇列表格
-        └── QueueSummary.jsx          # 處理結果摘要
+    ├── app-sidebar.jsx               # 側邊欄導航
+    ├── dashboard/                    # 儀表板元件
+    │   ├── stat-cards.jsx            # 統計卡片
+    │   ├── recent-transcriptions.jsx # 最近轉錄
+    │   └── usage-chart.jsx           # 用量圖表
+    ├── transcribe/                   # 轉錄相關元件
+    │   ├── upload-zone.jsx           # 拖拽上傳區域
+    │   ├── file-config-card.jsx      # 檔案設定卡片
+    │   ├── cost-estimator.jsx        # 費用估算
+    │   └── global-defaults.jsx       # 全域預設值
+    └── result/                       # 結果檢視元件
+        ├── result-file-card.jsx      # 單檔結果卡片
+        └── result-batch-group.jsx    # 批次結果群組
 ```
 
 ## 3.2 元件樹與 Context 架構
 
 ```
-<React.StrictMode>
-  <App>
-    <ModelManagerProvider>              ← 提供 API 金鑰/Prompt 管理功能
-      <TranscriptionProvider>           ← 提供檔案列表/轉錄流程/WebSocket
-        <Layout>
-          <Header>
-            <Menu>                      ← 語音轉錄 | 歷史紀錄
-          </Header>
-          <Content>
-            ├─ <Transcription />        ← activeKey === 'transcription'
-            │   ├─ <FileManager />
-            │   │   ├─ <UploadArea />
-            │   │   ├─ <FileQueueHeader />
-            │   │   ├─ <FileQueueTable />
-            │   │   └─ <QueueSummary />
-            │   ├─ 轉錄設定 Card
-            │   └─ 開始轉錄 Card
-            └─ <History />              ← activeKey === 'history'
-          </Content>
-        </Layout>
-      </TranscriptionProvider>
-      <Modal 編輯API />                 ← ModelManagerProvider 內部渲染
-      <Modal 編輯參數 />
-    </ModelManagerProvider>
-  </App>
-</React.StrictMode>
+<App>  (react-router-dom BrowserRouter)
+  <ModelManagerProvider>              ← 提供 API 金鑰/Prompt 管理功能
+    <TranscriptionProvider>           ← 提供檔案列表/轉錄流程/WebSocket
+      <DashboardLayout>               ← 側邊欄 + 內容區
+        <Routes>
+          / → <DashboardPage />       ← 儀表板（統計、圖表）
+          /transcribe → <TranscribePage />  ← 轉錄（上傳、設定、費用估算）
+          /result → <ResultPage />    ← 結果檢視
+          /tasks → <TaskPage />       ← 任務管理
+          /history → <HistoryPage />  ← 歷史記錄
+          /billing → <BillingPage />  ← 用量計費
+          /settings → <SettingsPage /> ← 設定
+        </Routes>
+      </DashboardLayout>
+    </TranscriptionProvider>
+  </ModelManagerProvider>
+</App>
 ```
 
 ## 3.3 頁面功能詳解
 
-### 3.3.1 語音轉錄頁
+### 3.3.1 語音轉錄頁 (`TranscribePage`)
 
 | 功能區塊 | 元件 | 說明 |
 |----------|------|------|
-| **1. 上傳與管理** | `FileManager` | 拖拽上傳音訊檔、貼上 YouTube 連結、附加原始文字稿 |
-| **上傳區域** | `UploadArea` | 無檔案時顯示拖拽上傳區域 |
-| **佇列操作** | `FileQueueHeader` | 追加更多檔案、清除所有 |
-| **檔案表格** | `FileQueueTable` | 顯示檔名、狀態進度、操作按鈕（下載/預覽/重試/附加文字/刪除） |
-| **處理摘要** | `QueueSummary` | 已完成數量、總 token、總費用（含 input/output 拆分） |
-| **2. 轉錄設定** | `Transcription` | 服務商 → 模型 → 音訊語言 → 翻譯目標，編輯 API/參數/測試按鈕 |
-| **3. 開始轉錄** | `Transcription` | 批次模式開關（-50% 費用）、多人模式開關、一鍵轉錄 |
+| **1. 上傳區域** | `upload-zone.jsx` | 拖拽上傳音訊檔、貼上 YouTube 連結 |
+| **2. 檔案設定** | `file-config-card.jsx` | 單一檔案設定（語言、Prompt 等） |
+| **3. 費用估算** | `cost-estimator.jsx` | Token 數量、成本預估 |
+| **4. 全域預設** | `global-defaults.jsx` | 全域語言與參數預設值 |
 
 ### 3.3.2 歷史紀錄頁
 

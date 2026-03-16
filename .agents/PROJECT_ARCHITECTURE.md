@@ -38,14 +38,15 @@
 ### 2.1 前端
 | 套件 | 版本 | 說明 |
 |------|------|------|
-| React | ^18.2.0 | 使用者介面框架（使用函數式元件 + Hooks） |
-| Vite | ^5.4.19 | 前端建構工具（HMR、Proxy） |
-| Ant Design (antd) | ^5.17.0 | UI 元件庫 |
-| @ant-design/icons | ^5.3.7 | Ant Design 圖示 |
-| Axios | ^1.9.0 | HTTP 客戶端 |
+| React | 19.2.4 | 使用者介面框架（使用函數式元件 + Hooks） |
+| Vite | ^6.3.0 | 前端建構工具（HMR、Proxy） |
+| Ant Design (antd) | ^6.3.1 | UI 元件庫 |
+| @ant-design/icons | ^6.1.0 | Ant Design 圖示 |
+| react-router-dom | ^7.5.0 | 前端路由（SPA 多頁面） |
+| Recharts | 2.15.0 | 資料圖表 |
 | JSZip | ^3.10.1 | 批量下載時的 ZIP 壓縮 |
-| ESLint | ^8.57.0 | 程式碼品質檢查 |
-| @vitejs/plugin-react | ^4.2.1 | Vite 的 React 插件 |
+| Lucide React | ^0.564.0 | 圖示庫 |
+| @vitejs/plugin-react | ^4.5.0 | Vite 的 React 插件 |
 
 ### 2.2 後端
 | 套件 | 版本 | 說明 |
@@ -326,44 +327,62 @@ AI_translate/
 │           ├── audio.py              # 音訊工具（ffprobe 取時長、MIME 類型、WAV 轉換）
 │           └── logger.py             # 統一 Logger 設定（自訂格式、路徑對齊）
 │
-├── frontend/                         # 前端應用（React + Vite）
+├── frontend/                         # 前端應用（React 19 + Vite 6 + Ant Design 6）
 │   ├── Dockerfile                    # 多階段建構（node:18-alpine build → nginx:alpine）
 │   ├── nginx.conf                    # Nginx 設定（靜態檔案 + API/WS 反向代理）
-│   ├── .env.development              # 開發環境變數
 │   ├── .gitignore
 │   ├── package.json                  # NPM 依賴與腳本
-│   ├── package-lock.json
 │   ├── vite.config.js                # Vite 設定（React 插件、API Proxy）
-│   ├── eslint.config.js              # ESLint 設定
 │   ├── index.html                    # HTML 入口
 │   │
 │   └── src/                          # 前端原始碼
-│       ├── main.jsx                  # React 應用程式入口（ReactDOM.createRoot）
-│       ├── App.jsx                   # 根元件（Layout、導覽列、頁面切換）
+│       ├── main.jsx                  # React 應用程式入口（createRoot + ConfigProvider 深色主題）
+│       ├── App.jsx                   # 路由設定（react-router-dom）
 │       ├── index.css                 # 全域樣式
 │       │
 │       ├── components/               # React 元件
 │       │   ├── ModelManager.jsx      # 模型設定元件（API Key、模型選擇、Prompt 編輯）
 │       │   │                         #   提供 ModelManagerProvider Context
-│       │   ├── FileManager.jsx       # 檔案管理元件（上傳、YouTube URL 輸入）
-│       │   ├── Transcription.jsx     # 轉錄主頁面元件
-│       │   ├── History.jsx           # 歷史紀錄頁面（分頁表格、統計總覽）
-│       │   └── Transcription/        # 轉錄子元件
-│       │       ├── UploadArea.jsx    # 上傳區域
-│       │       ├── FileQueueHeader.jsx # 檔案佇列標題
-│       │       ├── FileQueueTable.jsx  # 檔案佇列表格（狀態、預覽、下載）
-│       │       └── QueueSummary.jsx    # 佇列摘要（費用、進度統計）
+│       │   ├── app-sidebar.jsx       # 側邊欄導航
+│       │   ├── dashboard/            # 儀表板元件
+│       │   │   ├── stat-cards.jsx    # 統計卡片
+│       │   │   ├── recent-transcriptions.jsx # 最近轉錄
+│       │   │   └── usage-chart.jsx   # 用量圖表
+│       │   ├── transcribe/           # 轉錄相關元件
+│       │   │   ├── upload-zone.jsx   # 上傳區域
+│       │   │   ├── file-config-card.jsx # 檔案設定卡片
+│       │   │   ├── cost-estimator.jsx   # 費用估算
+│       │   │   └── global-defaults.jsx  # 全域預設值
+│       │   └── result/               # 結果檢視元件
+│       │       ├── result-file-card.jsx   # 單檔結果卡片
+│       │       └── result-batch-group.jsx # 批次結果群組
 │       │
 │       ├── constants/                # 常數設定
 │       │   └── modelConfig.js        # 模型選項清單 + findProviderForModel 輔助函式
 │       │
-│       └── context/                  # React Context
-│           └── TranscriptionContext.jsx  # 核心狀態管理（776 行）
-│                                         # - 檔案上傳狀態
-│                                         # - WebSocket 連線管理
-│                                         # - 單檔/批次轉錄控制
-│                                         # - 結果預覽/下載
-│                                         # - 批次恢復 (pending + recover + polling)
+│       ├── context/                  # React Context
+│       │   └── TranscriptionContext.jsx  # 核心狀態管理
+│       │                                 # - 檔案上傳狀態
+│       │                                 # - WebSocket 連線管理
+│       │                                 # - 單檔/批次轉錄控制
+│       │                                 # - 結果預覽/下載
+│       │                                 # - 批次恢復 (pending + recover + polling)
+│       │
+│       ├── hooks/                    # React Hooks
+│       │   ├── use-mobile.js         # 行動裝置偵測
+│       │   └── use-toast.js          # Toast 通知
+│       │
+│       ├── layouts/                  # 版面配置
+│       │   └── DashboardLayout.jsx   # 主版面（側邊欄 + 內容區）
+│       │
+│       └── pages/                    # 頁面元件
+│           ├── DashboardPage.jsx     # 儀表板
+│           ├── TranscribePage.jsx    # 轉錄頁面
+│           ├── ResultPage.jsx        # 結果檢視
+│           ├── TaskPage.jsx          # 任務管理
+│           ├── HistoryPage.jsx       # 歷史記錄
+│           ├── BillingPage.jsx       # 用量計費
+│           └── SettingsPage.jsx      # 設定
 │
 ├── tests/                            # 測試檔案
 │   ├── __init__.py
@@ -382,7 +401,6 @@ AI_translate/
 ├── Startup.bat                       # Windows 本地開發快速啟動腳本
 ├── React_Startup.bat                 # Windows React 快速啟動腳本
 ├── pytest.ini                        # Pytest 設定
-├── package.json                      # 根目錄 package.json（空，僅用於 node_modules）
 └── README.md                         # 專案說明文件
 ```
 
@@ -674,19 +692,20 @@ Celery Worker → redis.publish("transcription_updates", JSON)
 
 ### 6.1 狀態管理架構
 
-使用 **React Context** 進行全域狀態管理（無 Redux）：
+使用 **React Context** 進行全域狀態管理（無 Redux），搭配 **react-router-dom** 進行頁面路由：
 
 ```
-App
+App (react-router-dom)
 ├── ModelManagerProvider (Context) — 模型設定狀態
 │   └── TranscriptionProvider (Context) — 轉錄核心狀態
-│       ├── Transcription (頁面)
-│       │   ├── FileManager
-│       │   ├── UploadArea
-│       │   ├── FileQueueHeader
-│       │   ├── FileQueueTable
-│       │   └── QueueSummary
-│       └── History (頁面)
+│       └── DashboardLayout — 側邊欄 + 內容區
+│           ├── DashboardPage — 儀表板（統計、圖表）
+│           ├── TranscribePage — 轉錄頁面（上傳、設定、費用估算）
+│           ├── ResultPage — 結果檢視
+│           ├── TaskPage — 任務管理
+│           ├── HistoryPage — 歷史記錄
+│           ├── BillingPage — 用量計費
+│           └── SettingsPage — 設定
 ```
 
 ### 6.2 核心 Context — `TranscriptionContext.jsx`
@@ -727,19 +746,25 @@ App
 - 呼叫 `/api/v1/setting/models` CRUD API
 - 提供 `useModelManager()` Hook
 
-#### `FileManager.jsx`
+#### `app-sidebar.jsx`
+- 側邊欄導航元件
+- 提供各頁面的路由連結
+
+#### `transcribe/upload-zone.jsx`
 - 檔案上傳區域（拖放 + 點擊）
-- YouTube URL 輸入
 - 呼叫 `POST /api/v1/upload` 上傳檔案
 
-#### `Transcription.jsx`
-- 轉錄主頁面，整合所有子元件
-- 控制面板：語言選擇、Prompt 編輯、批次模式切換
+#### `transcribe/file-config-card.jsx`
+- 單一檔案設定卡片（語言選擇、Prompt 編輯等）
 
-#### `History.jsx`
-- 歷史紀錄表格（分頁、篩選、排序）
-- 統計卡片（總任務數、成功率、總費用等）
-- 呼叫 `/api/v1/history` API
+#### `transcribe/cost-estimator.jsx`
+- 費用估算元件（Token 數量、成本預估）
+
+#### `dashboard/stat-cards.jsx`
+- 儀表板統計卡片（總任務數、成功率、總費用等）
+
+#### `result/result-file-card.jsx`
+- 單檔結果顯示卡片（字幕預覽、下載）
 
 ### 6.4 模型設定 — `modelConfig.js`
 
@@ -984,8 +1009,6 @@ pytest tests/ -v
 
 1. **OpenAI 測試邏輯**：`model_manager.py` 中 OpenAI 測試標記為 TODO
 2. **Alembic 遷移**：目前使用自動 ALTER TABLE，未使用正式的遷移框架
-3. **前端路由**：目前使用 Menu 切換（非 React Router），無 URL 路由
-4. **認證與授權**：無使用者認證機制（`user_id` 欄位存在但未使用）
-5. **`pika` 套件**：已安裝但未使用（可能是舊的 RabbitMQ 遺留）
-6. **前端 `targetLang` 重命名**：有計畫將前端 `targetLang` 重命名為 `sourceLang`（已延遲）
-7. **CORS 設定**：生產環境 CORS 允許 `["*"]`，應限制
+3. **認證與授權**：無使用者認證機制（`user_id` 欄位存在但未使用）
+4. **`pika` 套件**：已安裝但未使用（可能是舊的 RabbitMQ 遺留）
+5. **CORS 設定**：生產環境 CORS 允許 `["*"]`，應限制

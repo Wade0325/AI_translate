@@ -5,7 +5,7 @@
   
   ![Python](https://img.shields.io/badge/Python-3.11-blue?logo=python&logoColor=white)
   ![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688?logo=fastapi&logoColor=white)
-  ![React](https://img.shields.io/badge/React-18.2-61DAFB?logo=react&logoColor=black)
+  ![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black)
   ![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker&logoColor=white)
 </div>
 
@@ -70,7 +70,7 @@
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                         Frontend (React)                         │
-│                    React 18 + Vite + Ant Design                  │
+│                   React 19 + Vite 6 + Ant Design 6                │
 └─────────────────────────────────────────────────────────────────┘
                                 │
                                 │ HTTP / WebSocket
@@ -109,10 +109,11 @@
 ### 前端
 | 技術 | 版本 | 說明 |
 |------|------|------|
-| React | 18.2 | 使用者介面框架 |
-| Vite | 5.4 | 前端建構工具 |
-| Ant Design | 5.17 | UI 元件庫 |
-| Axios | 1.9 | HTTP 客戶端 |
+| React | 19.2 | 使用者介面框架 |
+| Vite | 6.3 | 前端建構工具 |
+| Ant Design | 6.3 | UI 元件庫 |
+| React Router | 7.5 | 前端路由 |
+| Recharts | 2.15 | 資料圖表 |
 | JSZip | 3.10 | 批量下載壓縮 |
 
 ### 後端
@@ -265,7 +266,7 @@ npm run dev
 
 #### 4️⃣ 存取應用程式
 
-- 🌐 前端介面：[http://localhost:3000](http://localhost:3000)
+- 🌐 前端介面：[http://localhost:5173](http://localhost:5173)
 - 📡 API 文件：[http://localhost:8000/docs](http://localhost:8000/docs)
 - 📊 ReDoc：[http://localhost:8000/redoc](http://localhost:8000/redoc)
 
@@ -351,22 +352,33 @@ AI_translate/
 │   ├── requirements.txt           # Python 依賴
 │   └── Dockerfile
 │
-├── 📂 frontend/                   # 前端應用
+├── 📂 frontend/                   # 前端應用 (React 19 + Vite 6 + Ant Design 6)
 │   ├── 📂 src/
 │   │   ├── 📂 components/         # React 元件
-│   │   │   ├── FileManager.jsx    # 檔案管理元件
 │   │   │   ├── ModelManager.jsx   # 模型設定元件
-│   │   │   ├── Transcription.jsx  # 轉錄主元件
-│   │   │   └── Transcription/     # 轉錄子元件
+│   │   │   ├── app-sidebar.jsx    # 側邊欄導航
+│   │   │   ├── 📂 dashboard/     # 儀表板元件
+│   │   │   ├── 📂 transcribe/    # 轉錄相關元件
+│   │   │   └── 📂 result/        # 結果檢視元件
 │   │   ├── 📂 constants/          # 常數設定
-│   │   │   ├── modelConfig.js     # 模型選項
-│   │   │   └── promptConfig.js    # 預設 Prompt
+│   │   │   └── modelConfig.js     # 模型選項
 │   │   ├── 📂 context/            # React Context
 │   │   │   └── TranscriptionContext.jsx
-│   │   ├── App.jsx                # 應用程式根元件
+│   │   ├── 📂 layouts/            # 版面配置
+│   │   │   └── DashboardLayout.jsx
+│   │   ├── 📂 pages/              # 頁面元件
+│   │   │   ├── DashboardPage.jsx  # 儀表板
+│   │   │   ├── TranscribePage.jsx # 轉錄頁面
+│   │   │   ├── ResultPage.jsx     # 結果檢視
+│   │   │   ├── TaskPage.jsx       # 任務管理
+│   │   │   ├── HistoryPage.jsx    # 歷史記錄
+│   │   │   ├── BillingPage.jsx    # 用量計費
+│   │   │   └── SettingsPage.jsx   # 設定
+│   │   ├── App.jsx                # 路由設定 (react-router-dom)
 │   │   └── main.jsx               # 應用程式入口
 │   ├── package.json
 │   ├── vite.config.js
+│   ├── nginx.conf                 # 生產環境 Nginx 設定
 │   └── Dockerfile
 │
 ├── 📂 tests/                      # 測試檔案
@@ -398,11 +410,11 @@ export const modelOptions = {
 
 ### 自訂 Prompt
 
-在 `frontend/src/constants/promptConfig.js` 修改預設 Prompt 模板：
+Prompt 模板由後端統一管理，在 `backend/app/core/default_prompt.py` 中修改：
 
-- `{{language}}`：替換為目標語言
-- `{{terms_prompt}}`：自訂術語表
-- `{{speaker_prompt}}`：說話者標記規則
+- `build_prompt()` 函式負責組裝最終 Prompt
+- 支援自訂術語表與說話者標記規則
+- 前端透過 API 傳遞參數，後端動態生成 Prompt
 
 ### 執行測試
 
