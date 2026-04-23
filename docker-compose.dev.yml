@@ -1,5 +1,5 @@
 # 開發環境用 - 使用 Volume 掛載原始碼，程式碼變更無需 rebuild
-# 使用方式: docker-compose -f docker-compose.dev.yml up
+# 使用方式: docker-compose -f docker-compose.dev.yml up -d
 #
 # Backend: 支援 uvicorn --reload，修改後端程式會自動重啟
 # Celery: 修改程式後需手動 restart: docker-compose -f docker-compose.dev.yml restart celery-worker

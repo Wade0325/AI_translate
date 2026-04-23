@@ -22,7 +22,7 @@ export default function HistoryPage() {
     const [searchKeyword, setSearchKeyword] = useState("")
     const [statusFilter, setStatusFilter] = useState(null)
     const [modeFilter, setModeFilter] = useState(null)
-    const [stats, setStats] = useState({ total: 0, completed: 0, failed: 0, total_cost: 0, total_tokens: 0 })
+    const [stats, setStats] = useState({ total_tasks: 0, completed_tasks: 0, failed_tasks: 0, total_cost: 0, total_tokens: 0 })
 
     // Fetch history data
     const fetchHistory = useCallback(async (page = 1, pageSize = 10) => {
@@ -216,7 +216,7 @@ export default function HistoryPage() {
         },
     ]
 
-    const successRate = stats.total > 0 ? ((stats.completed / stats.total) * 100).toFixed(1) : 0
+    const successRate = stats.total_tasks > 0 ? ((stats.completed_tasks / stats.total_tasks) * 100).toFixed(1) : 0
 
     return (
         <div style={{ display: "flex", flexDirection: "column", gap: 24, padding: 24 }}>
@@ -227,7 +227,7 @@ export default function HistoryPage() {
                         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
                             <div>
                                 <div style={{ color: "#8888a8", fontSize: 13, marginBottom: 8 }}>總任務數</div>
-                                <div style={{ fontSize: 24, fontWeight: 700, color: "#e8e8e8" }}>{stats.total}</div>
+                                <div style={{ fontSize: 24, fontWeight: 700, color: "#e8e8e8" }}>{stats.total_tasks}</div>
                             </div>
                             <div style={{ width: 36, height: 36, borderRadius: 8, background: "rgba(45, 212, 168, 0.1)", display: "flex", alignItems: "center", justifyContent: "center" }}>
                                 <FileAudio size={16} color="#2dd4a8" />
@@ -241,7 +241,7 @@ export default function HistoryPage() {
                             <div>
                                 <div style={{ color: "#8888a8", fontSize: 13, marginBottom: 8 }}>成功率</div>
                                 <div style={{ fontSize: 24, fontWeight: 700, color: "#e8e8e8" }}>{successRate}%</div>
-                                <div style={{ color: "#8888a8", fontSize: 12, marginTop: 4 }}>{stats.completed} 完成 / {stats.failed} 失敗</div>
+                                <div style={{ color: "#8888a8", fontSize: 12, marginTop: 4 }}>{stats.completed_tasks} 完成 / {stats.failed_tasks} 失敗</div>
                             </div>
                             <div style={{ width: 36, height: 36, borderRadius: 8, background: "rgba(71, 184, 212, 0.1)", display: "flex", alignItems: "center", justifyContent: "center" }}>
                                 <TrendingUp size={16} color="#47b8d4" />
