@@ -66,6 +66,7 @@ class WebSocketTranscriptionRequest(BaseModel):
     prompt: Optional[str] = None
     original_text: Optional[str] = None  # <--- 新增此行
     multi_speaker: bool = False
+    service_tier: Optional[str] = None  # 'flex' 啟用 Flex 推論
 
 
 class BatchFileItem(BaseModel):

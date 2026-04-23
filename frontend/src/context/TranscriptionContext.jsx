@@ -24,8 +24,13 @@ export const TranscriptionProvider = ({ children }) => {
   const [targetTranslateLang, setTargetTranslateLang] = useState(null); // 新增: 翻譯目標語言
   const [model, setModel] = useState(modelOptions.Google[0].value);
   const [isProcessing, setIsProcessing] = useState(false);
-  const [useBatchMode, setUseBatchMode] = useState(true);
+  // 處理模式：'standard' | 'flex' | 'batch'（預設 'batch' 維持原有行為）
+  const [processingMode, setProcessingMode] = useState('batch');
   const [multiSpeaker, setMultiSpeaker] = useState(false);
+
+  // 相容性：舊程式碼使用 useBatchMode / setUseBatchMode
+  const useBatchMode = processingMode === 'batch';
+  const setUseBatchMode = (v) => setProcessingMode(v ? 'batch' : 'standard');
   const { getProviderConfig } = useModelManager();
 
   const activeSockets = useRef({}); // 用於管理所有活躍的 socket
@@ -243,6 +248,7 @@ export const TranscriptionProvider = ({ children }) => {
             prompt: prompt,
             original_text: file.original_text || null,
             multi_speaker: multiSpeaker,
+            service_tier: processingMode === 'flex' ? 'flex' : null,
           };
           socket.send(JSON.stringify(payload));
         };
@@ -322,6 +328,7 @@ export const TranscriptionProvider = ({ children }) => {
           prompt: prompt,
           original_text: file.original_text || null,
           multi_speaker: multiSpeaker,
+          service_tier: processingMode === 'flex' ? 'flex' : null,
         };
         socket.send(JSON.stringify(payload));
       };
@@ -625,6 +632,8 @@ export const TranscriptionProvider = ({ children }) => {
     isProcessing,
     useBatchMode,
     setUseBatchMode,
+    processingMode,
+    setProcessingMode,
     multiSpeaker,
     setMultiSpeaker,
     handleUploadChange,

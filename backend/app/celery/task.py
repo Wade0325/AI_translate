@@ -26,6 +26,10 @@ from app.utils.logger import setup_logger
 logger = setup_logger(__name__)
 
 
+# Flex 推論費用折扣（與 Batch 相同為 50%）
+FLEX_COST_DISCOUNT = 0.5
+
+
 # 使用與 FastAPI 完全相同的 Redis 設定。
 redis_client = redis.from_url(celery_app.conf.broker_url)
 logger.info("Celery task: Redis client initialized from Celery broker URL.")
@@ -167,7 +171,8 @@ def transcribe_media_task(self, task_params_dict: dict):
             model=task_params.model,
             prompt=user_prompt,  # 使用上面決定的 prompt
             temp_dir=local_path.parent,
-            status_callback=update_status
+            status_callback=update_status,
+            service_tier=task_params.service_tier,
         )
 
         # 5. 執行轉錄 (包含VAD失敗重試邏輯)
@@ -209,8 +214,22 @@ def transcribe_media_task(self, task_params_dict: dict):
             processing_time_seconds=processing_time_seconds,
             audio_duration_seconds=audio_duration_seconds
         )
+
+        # 若實際以 Flex 層級完成（非 fallback 回 Standard），套用 50% 費用折扣
+        flex_applied = transcription_result.service_tier_used == "flex"
+        if flex_applied:
+            final_cost = metrics_response.cost * FLEX_COST_DISCOUNT
+            final_input_cost = metrics_response.input_cost * FLEX_COST_DISCOUNT
+            final_output_cost = metrics_response.output_cost * FLEX_COST_DISCOUNT
+            logger.info(
+                f"Flex 層級生效，費用套用 {int(FLEX_COST_DISCOUNT * 100)}% 折扣")
+        else:
+            final_cost = metrics_response.cost
+            final_input_cost = metrics_response.input_cost
+            final_output_cost = metrics_response.output_cost
+
         logger.info(
-            f"Metrics calculated. Task ID: {task_uuid}. Cost: ${metrics_response.cost:.6f}")
+            f"Metrics calculated. Task ID: {task_uuid}. Cost: ${final_cost:.6f}")
 
         # 10. 更新任務狀態為 COMPLETED
         update_data = {
@@ -218,7 +237,7 @@ def transcribe_media_task(self, task_params_dict: dict):
             "audio_duration_seconds": metrics_response.audio_duration_seconds,
             "processing_time_seconds": metrics_response.processing_time_seconds,
             "total_tokens": metrics_response.total_tokens,
-            "cost": metrics_response.cost,
+            "cost": final_cost,
             "completed_at": datetime.now(),
         }
         log_repo.update_log(db, task_uuid, update_data)
@@ -229,9 +248,9 @@ def transcribe_media_task(self, task_params_dict: dict):
             task_uuid=task_uuid,
             transcripts=final_transcripts,
             tokens_used=metrics_response.total_tokens,
-            cost=metrics_response.cost,
-            input_cost=metrics_response.input_cost,
-            output_cost=metrics_response.output_cost,
+            cost=final_cost,
+            input_cost=final_input_cost,
+            output_cost=final_output_cost,
             model=task_params.model,
             source_language=task_params.source_lang,
             processing_time_seconds=metrics_response.processing_time_seconds,

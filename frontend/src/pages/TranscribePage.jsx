@@ -32,8 +32,8 @@ export default function TranscribePage() {
         model,
         setModel,
         isProcessing,
-        useBatchMode,
-        setUseBatchMode,
+        processingMode,
+        setProcessingMode,
         multiSpeaker,
         setMultiSpeaker,
         handleUploadChange,
@@ -243,18 +243,30 @@ export default function TranscribePage() {
                     </div>
                     <div style={{ height: 32, width: 1, background: "#3a3a5c" }} />
                     <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                        <Text style={{ fontSize: 11, color: "#8888a8" }}>批次模式 (50% 費用)</Text>
-                        <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
-                            <input
-                                type="checkbox"
-                                checked={useBatchMode}
-                                onChange={(e) => setUseBatchMode(e.target.checked)}
-                                style={{ accentColor: "#2dd4a8" }}
-                            />
-                            <Text style={{ fontSize: 12, color: useBatchMode ? "#2dd4a8" : "#8888a8" }}>
-                                {useBatchMode ? "已啟用" : "關閉"}
-                            </Text>
-                        </label>
+                        <Text style={{ fontSize: 11, color: "#8888a8" }}>處理模式</Text>
+                        <select
+                            value={processingMode}
+                            onChange={(e) => setProcessingMode(e.target.value)}
+                            style={{
+                                background: "#2a2a48",
+                                border: "1px solid #3a3a5c",
+                                borderRadius: 6,
+                                color: processingMode === "standard" ? "#e8e8e8" : "#2dd4a8",
+                                padding: "4px 8px",
+                                fontSize: 12,
+                            }}
+                        >
+                            <option value="standard">標準（即時）</option>
+                            <option value="flex">Flex（50% 費用．分鐘級延遲）</option>
+                            <option value="batch">批次（50% 費用．非同步）</option>
+                        </select>
+                        <Text style={{ fontSize: 10, color: "#8888a8" }}>
+                            {processingMode === "flex"
+                                ? "失敗時自動降級為標準層級"
+                                : processingMode === "batch"
+                                    ? "提交後可離線等待結果"
+                                    : "標準同步推論"}
+                        </Text>
                     </div>
                     <div style={{ flex: 1 }} />
                     <Space size={6}>

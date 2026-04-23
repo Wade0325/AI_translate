@@ -98,12 +98,13 @@ class AudioSegment:
 class TranscriptionTask:
     """轉錄任務管理器，處理音訊分割和轉錄流程"""
 
-    def __init__(self, client, model: str, prompt: str, temp_dir: Path, status_callback=None):
+    def __init__(self, client, model: str, prompt: str, temp_dir: Path, status_callback=None, service_tier: Optional[str] = None):
         self.client = client
         self.model = model
         self.prompt = prompt
         self.temp_dir = temp_dir
         self.status_callback = status_callback
+        self.service_tier = service_tier  # None/"standard" 或 "flex"
         self.local_cleanup_list = []
         self.gemini_cleanup_list = []
         self.max_duration_seconds = 180  # 3 分鐘
@@ -178,6 +179,7 @@ class TranscriptionTask:
                 input_tokens=result.input_tokens,
                 output_tokens=result.output_tokens,
                 total_tokens=result.total_tokens,
+                service_tier_used=result.service_tier_used,
             )
             logger.info("時間戳已重映射回原始時間軸")
 
@@ -268,7 +270,8 @@ class TranscriptionTask:
                 self.status_callback("AI模型處理中...")
 
             result = transcribe_with_uploaded_file(
-                self.client, gemini_file, self.model, self.prompt
+                self.client, gemini_file, self.model, self.prompt,
+                service_tier=self.service_tier,
             )
 
             return TranscriptionTaskResult(
@@ -276,7 +279,8 @@ class TranscriptionTask:
                 text=result.get("text", ""),
                 input_tokens=result.get("input_tokens", 0),
                 output_tokens=result.get("output_tokens", 0),
-                total_tokens=result.get("total_tokens", 0)
+                total_tokens=result.get("total_tokens", 0),
+                service_tier_used=result.get("service_tier_used"),
             )
         except Exception as e:
             logger.error(f"轉錄過程發生錯誤: {e}")
@@ -316,6 +320,7 @@ class TranscriptionTask:
         total_input_tokens = 0
         total_output_tokens = 0
         total_tokens = 0
+        all_flex = True  # 所有片段皆用 flex 才回報 "flex"，只要有一段 fallback 就視為 standard
 
         for i, segment in enumerate(segments):
             logger.info(f"轉錄片段 {i+1}/{len(segments)}: {segment}")
@@ -340,16 +345,21 @@ class TranscriptionTask:
             total_input_tokens += segment_result.input_tokens
             total_output_tokens += segment_result.output_tokens
             total_tokens += segment_result.total_tokens
+            if segment_result.service_tier_used != "flex":
+                all_flex = False
 
         # 合併所有結果
         combined_text = "\n".join(results)
+
+        final_tier = "flex" if (self.service_tier == "flex" and all_flex) else "standard"
 
         return TranscriptionTaskResult(
             success=True,
             text=combined_text,
             input_tokens=total_input_tokens,
             output_tokens=total_output_tokens,
-            total_tokens=total_tokens
+            total_tokens=total_tokens,
+            service_tier_used=final_tier,
         )
 
     def _split_audio_file(self, audio_path: Path) -> List[AudioSegment]:

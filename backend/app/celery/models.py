@@ -19,6 +19,7 @@ class TranscriptionTaskParams(BaseModel):
     original_text: Optional[str] = None  # 新增: 前端傳來的文字稿
     target_lang: Optional[str] = None  # 新增: 前端指定的輸出語言
     multi_speaker: bool = False  # 新增: 多人對話模式
+    service_tier: Optional[str] = None  # 新增: 'flex' 啟用 Flex 推論，其餘視為 Standard
 
 
 class BatchFileItemParams(BaseModel):

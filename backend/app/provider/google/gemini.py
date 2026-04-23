@@ -1,4 +1,4 @@
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 from google import genai
 from google.genai import types
 from pathlib import Path
@@ -9,6 +9,28 @@ from app.utils.logger import setup_logger
 from app.utils.audio import get_mime_type
 
 logger = setup_logger(__name__)
+
+
+# Flex 推論設定（參考 Google 官方文件）
+# https://ai.google.dev/gemini-api/docs/flex-inference
+FLEX_MAX_RETRIES = 3
+FLEX_BASE_DELAY = 5  # 初始退避秒數
+FLEX_TIMEOUT_MS = 900_000  # 15 分鐘，Flex 建議至少 10 分鐘以上
+
+
+def _is_flex_retryable_error(err: Exception) -> bool:
+    """判斷 Flex 請求是否遇到 429 / 503 之類可重試錯誤"""
+    code = getattr(err, "code", None)
+    if code in (429, 503):
+        return True
+    status_code = getattr(err, "status_code", None)
+    if status_code in (429, 503):
+        return True
+    message = str(err).lower()
+    return ("429" in message or "503" in message
+            or "resource_exhausted" in message
+            or "service unavailable" in message
+            or "unavailable" in message)
 
 
 class GeminiClient:
@@ -98,24 +120,86 @@ def count_tokens_with_uploaded_file(client, gemini_file, model: str) -> int:
     return response.total_tokens
 
 
+def _build_transcription_config(service_tier: Optional[str]) -> types.GenerateContentConfig:
+    """建構 generate_content 的 config；Flex 會加上 service_tier 與延長逾時"""
+    kwargs: Dict[str, Any] = {
+        "thinking_config": types.ThinkingConfig(thinking_budget=128),
+    }
+    if service_tier == "flex":
+        kwargs["service_tier"] = "flex"
+        kwargs["http_options"] = types.HttpOptions(timeout=FLEX_TIMEOUT_MS)
+    return types.GenerateContentConfig(**kwargs)
+
+
 def transcribe_with_uploaded_file(
     client,
     gemini_file,
     model: str,
-    prompt: str
+    prompt: str,
+    service_tier: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    使用已上傳的檔案進行轉錄
+    使用已上傳的檔案進行轉錄。
+
+    service_tier:
+      - None / "standard": 使用標準同步 API（原有行為）
+      - "flex": 使用 Flex 推論（50% 折扣、分鐘級延遲、可捨棄）；
+                當遇到 429/503 時以指數退避重試 FLEX_MAX_RETRIES 次，
+                若仍失敗則自動降級回 Standard 層級重送一次。
+    回傳字典額外帶有 `service_tier_used`，讓上層可據此決定是否套用費用折扣。
     """
-    logger.info(f"正在使用 {model} 進行轉錄...")
+    logger.info(f"正在使用 {model} 進行轉錄... (service_tier={service_tier or 'standard'})")
     logger.info(f"--- 送出給 Gemini 的 Prompt ---\n{prompt}\n--- Prompt End ---")
-    response = client.models.generate_content(
-        model=model,
-        contents=[prompt, gemini_file],
-        config=types.GenerateContentConfig(
-            thinking_config=types.ThinkingConfig(thinking_budget=128)
+
+    response = None
+    tier_used = "standard"
+
+    if service_tier == "flex":
+        flex_config = _build_transcription_config("flex")
+        last_error: Optional[Exception] = None
+        for attempt in range(FLEX_MAX_RETRIES):
+            try:
+                response = client.models.generate_content(
+                    model=model,
+                    contents=[prompt, gemini_file],
+                    config=flex_config,
+                )
+                tier_used = "flex"
+                last_error = None
+                break
+            except Exception as e:
+                last_error = e
+                if _is_flex_retryable_error(e) and attempt < FLEX_MAX_RETRIES - 1:
+                    delay = FLEX_BASE_DELAY * (2 ** attempt)
+                    logger.warning(
+                        f"Flex 呼叫失敗 (attempt {attempt + 1}/{FLEX_MAX_RETRIES}): {e}，"
+                        f"{delay} 秒後重試..."
+                    )
+                    time.sleep(delay)
+                    continue
+                # 不可重試或重試次數用盡
+                logger.warning(
+                    f"Flex 呼叫失敗 (attempt {attempt + 1}/{FLEX_MAX_RETRIES}): {e}，停止重試"
+                )
+                break
+
+        if response is None:
+            logger.warning(
+                f"Flex 推論耗盡，改以 Standard 層級重試: {last_error}"
+            )
+            response = client.models.generate_content(
+                model=model,
+                contents=[prompt, gemini_file],
+                config=_build_transcription_config(None),
+            )
+            tier_used = "standard"
+    else:
+        response = client.models.generate_content(
+            model=model,
+            contents=[prompt, gemini_file],
+            config=_build_transcription_config(None),
         )
-    )
+        tier_used = "standard"
 
     # 檢查回應是否被阻擋
     if not response.candidates:
@@ -148,7 +232,8 @@ def transcribe_with_uploaded_file(
         "text": response.text,
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
-        "total_tokens": total_tokens
+        "total_tokens": total_tokens,
+        "service_tier_used": tier_used,
     }
 
 

@@ -23,6 +23,9 @@ class TranscriptionTaskResult(BaseModel):
     input_tokens: int = Field(0, description="輸入 token 數量")
     output_tokens: int = Field(0, description="輸出 token 數量")
     total_tokens: int = Field(0, description="使用的 token 總數")
+    service_tier_used: Optional[str] = Field(
+        None, description="實際採用的 service tier：'flex' 或 'standard'（None 表示 standard）"
+    )
 
 
 class TranscriptionResponse(BaseModel):
