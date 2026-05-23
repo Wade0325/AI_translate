@@ -16,7 +16,7 @@ const ACCEPTED_TYPES = [
     "audio/webm",
 ]
 
-const MAX_FILE_SIZE = 500 * 1024 * 1024
+const MAX_FILE_SIZE = 1024 * 1024 * 1024
 
 export function UploadZone({ hasFiles, onFilesAdded }) {
     const [error, setError] = useState(null)

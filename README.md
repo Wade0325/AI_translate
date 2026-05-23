@@ -58,26 +58,38 @@ git clone https://github.com/Wade0325/AI_translate.git
 cd AI_translate
 
 # 2. 建立 .env.prod 環境變數（見下方範本）
-# 3. 啟動所有服務
-docker-compose -f docker-compose.prod.yml up --build -d
+
+# 3. 一鍵 build + 啟動（Windows，等同 docker compose up --build -d）
+.\dc.bat                # 等同  .\dc.bat up prod
 ```
+
+> `dc.bat` / `dc.ps1` 是專案附的 Docker 管理腳本：自動偵測 `docker compose` v2/v1、自動帶 `--env-file .env.prod`、跑前先檢查 Docker Desktop 是否啟動；零依賴、雙擊即可執行。
 
 開啟瀏覽器：
 
 - 🌐 前端：<http://localhost>
 - 📡 API 文件：<http://localhost:8000/docs>
 
-常用指令：
+常用指令（一鍵腳本）：
 
 ```bash
-# 查看後端日誌
-docker-compose -f docker-compose.prod.yml logs -f backend-service
+.\dc.bat                            # 第一次 / 改程式後：build + up -d
+.\dc.bat start                      # 只是要執行（不 build、秒起，最常用）
+.\dc.bat stop                       # 收工：停止但保留容器，下次 start 秒起
+.\dc.bat up dev                     # dev  build + up -d
+.\dc.bat logs prod backend-service  # 看單一服務 log
+.\dc.bat restart prod celery-worker # 改程式後重啟 celery
+.\dc.bat rebuild                    # --no-cache 重新 build 並重啟
+.\dc.bat down                       # 停止並移除全部容器
+.\dc.bat help                       # 看全部用法
+```
 
-# 程式碼變更後重啟 Celery (開發環境)
-docker-compose -f docker-compose.dev.yml restart celery-worker
+若想直接用原生指令：
 
-# 停止
-docker-compose -f docker-compose.prod.yml down
+```bash
+docker compose --env-file .env.prod -f docker-compose.prod.yml up --build -d
+docker compose --env-file .env.prod -f docker-compose.prod.yml logs -f backend-service
+docker compose --env-file .env.prod -f docker-compose.prod.yml down
 ```
 
 ### 方式二：本地開發（Windows）
