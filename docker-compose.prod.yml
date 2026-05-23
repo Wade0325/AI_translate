@@ -48,7 +48,7 @@ services:
     build:
       context: ./backend
     container_name: prod_celery_worker
-    command: celery -A app.celery.celery:celery_app worker --loglevel=info
+    command: celery -A app.celery.celery:celery_app worker --loglevel=info -P gevent -c 20
     volumes:
       - ./backend/temp_uploads:/app/temp_uploads
     env_file:

@@ -33,6 +33,32 @@ def _is_flex_retryable_error(err: Exception) -> bool:
             or "unavailable" in message)
 
 
+def _extract_actual_service_tier(response) -> Optional[str]:
+    """
+    從 Gemini 回應的 HTTP header 取得實際使用的 service tier。
+    參考: https://ai.google.dev/gemini-api/docs/flex-inference (cookbook 範例)
+    回應 header `x-gemini-service-tier` 可能為:
+        'flex' / 'standard' / 'priority'
+    若 SDK 版本不支援 sdk_http_response（< 1.69.0）或 header 不存在則回 None。
+    """
+    try:
+        sdk_http_response = getattr(response, "sdk_http_response", None)
+        if sdk_http_response is None:
+            return None
+        headers = getattr(sdk_http_response, "headers", None)
+        if headers is None:
+            return None
+        # headers 可能是 dict 或類 dict 物件
+        tier = None
+        if hasattr(headers, "get"):
+            tier = headers.get("x-gemini-service-tier") or headers.get("X-Gemini-Service-Tier")
+        if tier:
+            return str(tier).strip().lower()
+    except Exception as e:  # pragma: no cover - 防呆
+        logger.debug(f"讀取 x-gemini-service-tier header 失敗: {e}")
+    return None
+
+
 class GeminiClient:
     """
     與 Google Gemini API 進行互動的客戶端。
@@ -148,7 +174,7 @@ def transcribe_with_uploaded_file(
                 若仍失敗則自動降級回 Standard 層級重送一次。
     回傳字典額外帶有 `service_tier_used`，讓上層可據此決定是否套用費用折扣。
     """
-    logger.info(f"正在使用 {model} 進行轉錄... (service_tier={service_tier or 'standard'})")
+    logger.info(f"正在使用 {model} 進行轉錄... (requested service_tier={service_tier or 'standard'})")
     logger.info(f"--- 送出給 Gemini 的 Prompt ---\n{prompt}\n--- Prompt End ---")
 
     response = None
@@ -156,6 +182,15 @@ def transcribe_with_uploaded_file(
 
     if service_tier == "flex":
         flex_config = _build_transcription_config("flex")
+        # 驗證 log: 確認真的把 service_tier=flex 包進 config 才送出
+        try:
+            cfg_dump = flex_config.model_dump(exclude_none=True)  # type: ignore[attr-defined]
+        except Exception:
+            cfg_dump = {"service_tier": getattr(flex_config, "service_tier", None)}
+        logger.info(
+            f"[FLEX] 準備呼叫 Gemini Flex API (https://ai.google.dev/gemini-api/docs/flex-inference) "
+            f"model={model} config={cfg_dump}"
+        )
         last_error: Optional[Exception] = None
         for attempt in range(FLEX_MAX_RETRIES):
             try:
@@ -172,20 +207,20 @@ def transcribe_with_uploaded_file(
                 if _is_flex_retryable_error(e) and attempt < FLEX_MAX_RETRIES - 1:
                     delay = FLEX_BASE_DELAY * (2 ** attempt)
                     logger.warning(
-                        f"Flex 呼叫失敗 (attempt {attempt + 1}/{FLEX_MAX_RETRIES}): {e}，"
+                        f"[FLEX] 呼叫失敗 (attempt {attempt + 1}/{FLEX_MAX_RETRIES}): {e}，"
                         f"{delay} 秒後重試..."
                     )
                     time.sleep(delay)
                     continue
                 # 不可重試或重試次數用盡
                 logger.warning(
-                    f"Flex 呼叫失敗 (attempt {attempt + 1}/{FLEX_MAX_RETRIES}): {e}，停止重試"
+                    f"[FLEX] 呼叫失敗 (attempt {attempt + 1}/{FLEX_MAX_RETRIES}): {e}，停止重試"
                 )
                 break
 
         if response is None:
             logger.warning(
-                f"Flex 推論耗盡，改以 Standard 層級重試: {last_error}"
+                f"[FLEX] 推論耗盡，自動降級改以 Standard 層級重試: {last_error}"
             )
             response = client.models.generate_content(
                 model=model,
@@ -194,12 +229,38 @@ def transcribe_with_uploaded_file(
             )
             tier_used = "standard"
     else:
+        logger.info(f"[STANDARD] 呼叫 Gemini 標準同步 API model={model}")
         response = client.models.generate_content(
             model=model,
             contents=[prompt, gemini_file],
             config=_build_transcription_config(None),
         )
         tier_used = "standard"
+
+    # === 從回應 HTTP header 驗證 API 實際使用的 service tier ===
+    actual_tier = _extract_actual_service_tier(response)
+    if actual_tier:
+        if service_tier == "flex" and actual_tier == "flex":
+            logger.info(
+                f"[FLEX VERIFIED] Gemini 回應 header x-gemini-service-tier=flex"
+                f"（已確認使用 Flex API，享 50% 折扣）"
+            )
+        elif service_tier == "flex" and actual_tier != "flex":
+            logger.warning(
+                f"[FLEX DOWNGRADED] 請求送出 service_tier=flex，但回應 header "
+                f"x-gemini-service-tier={actual_tier}（API 端降級或未套用 Flex）"
+            )
+        else:
+            logger.info(
+                f"[TIER] Gemini 回應 header x-gemini-service-tier={actual_tier}"
+            )
+        # 以 header 為權威來源（避免 SDK 端聲明與實際處理不一致）
+        tier_used = actual_tier if actual_tier in ("flex", "standard", "priority") else tier_used
+    else:
+        logger.info(
+            f"[TIER] 無法從回應讀取 x-gemini-service-tier header"
+            f"（可能 google-genai SDK < 1.69.0），維持以請求端判定 tier_used={tier_used}"
+        )
 
     # 檢查回應是否被阻擋
     if not response.candidates:
