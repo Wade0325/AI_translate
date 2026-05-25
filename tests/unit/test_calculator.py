@@ -21,6 +21,9 @@ class TestModelPricesDefinition:
     def test_gemini_flash_price_exists(self):
         assert "gemini-2.5-flash" in MODEL_PRICES
 
+    def test_gemini_35_flash_price_exists(self):
+        assert "gemini-3.5-flash" in MODEL_PRICES
+
     def test_prices_are_positive(self):
         for model_name, price in MODEL_PRICES.items():
             assert price.input_text > 0, f"{model_name} input_text should be positive"

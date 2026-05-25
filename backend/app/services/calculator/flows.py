@@ -3,6 +3,11 @@ from .models import ModelPrice, PriceCalculationRequest, PriceCalculationRespons
 
 # 模型價格設定（每百萬 token）
 MODEL_PRICES: Dict[str, ModelPrice] = {
+    "gemini-3.5-flash": ModelPrice(
+        input_text=1.50,
+        input_audio=1.50,
+        output_text=9.00
+    ),
     "gemini-2.5-flash": ModelPrice(
         input_text=0.30,
         input_audio=1.00,

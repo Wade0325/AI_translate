@@ -161,10 +161,26 @@ def upload_file_to_gemini(file_path: Path, client: genai.Client, status_callback
     return gemini_file
 
 
-def _build_transcription_config(service_tier: Optional[str]) -> types.GenerateContentConfig:
+def _is_gemini_3_model(model: str) -> bool:
+    """Gemini 3.x 系列使用 thinking_level，不再建議 thinking_budget。"""
+    return model.startswith("gemini-3")
+
+
+def _build_thinking_config(model: str) -> types.ThinkingConfig:
+    """依模型世代選擇思考設定（參考 Gemini 3.5 遷移指南）。"""
+    if _is_gemini_3_model(model):
+        # 轉錄屬分析型任務，low 在品質與延遲/成本間較平衡
+        return types.ThinkingConfig(thinking_level="low")
+    return types.ThinkingConfig(thinking_budget=128)
+
+
+def _build_transcription_config(
+    model: str,
+    service_tier: Optional[str],
+) -> types.GenerateContentConfig:
     """建構 generate_content 的 config；Flex 會加上 service_tier 與延長逾時"""
     kwargs: Dict[str, Any] = {
-        "thinking_config": types.ThinkingConfig(thinking_budget=128),
+        "thinking_config": _build_thinking_config(model),
     }
     if service_tier == "flex":
         kwargs["service_tier"] = "flex"
@@ -196,7 +212,7 @@ def transcribe_with_uploaded_file(
     tier_used = "standard"
 
     if service_tier == "flex":
-        flex_config = _build_transcription_config("flex")
+        flex_config = _build_transcription_config(model, "flex")
         # 驗證 log: 確認真的把 service_tier=flex 包進 config 才送出
         try:
             cfg_dump = flex_config.model_dump(exclude_none=True)  # type: ignore[attr-defined]
@@ -241,7 +257,7 @@ def transcribe_with_uploaded_file(
                 response = client.models.generate_content(
                     model=model,
                     contents=[prompt, gemini_file],
-                    config=_build_transcription_config(None),
+                    config=_build_transcription_config(model, None),
                 )
             except Exception as e:
                 raise _classify_gemini_error(e) from e
@@ -252,7 +268,7 @@ def transcribe_with_uploaded_file(
             response = client.models.generate_content(
                 model=model,
                 contents=[prompt, gemini_file],
-                config=_build_transcription_config(None),
+                config=_build_transcription_config(model, None),
             )
         except Exception as e:
             raise _classify_gemini_error(e) from e
