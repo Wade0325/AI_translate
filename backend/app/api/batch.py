@@ -111,6 +111,7 @@ def get_batch_tasks(db: Session = Depends(get_db)):
             updated_at=str(job.updated_at) if job.updated_at else None,
             elapsed_seconds=elapsed,
             files=files,
+            session_id=job.session_id or job.batch_id,
         ))
     return results
 
@@ -249,6 +250,7 @@ def start_batch_celery_task(payload_str: str, batch_id: str) -> None:
         multi_speaker=request_data.multi_speaker,
         client_id=batch_id,
         batch_id=batch_id,
+        session_id=request_data.session_id or batch_id,
     )
 
     batch_transcribe_task.delay(task_params.model_dump())

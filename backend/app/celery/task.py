@@ -88,8 +88,17 @@ def transcribe_media_task(self, task_params_dict: dict):
             "provider": task_params.provider,
             "target_language": task_params.target_lang,
             "is_batch": False,
+            "session_id": task_params.session_id,
+            "file_uid": task_params.file_uid,
         }
         log_repo.insert_log(db, initial_log_data)
+        if task_params.session_id:
+            logger.info(
+                f"TranscriptionLog created session_id={task_params.session_id} "
+                f"file_uid={task_params.file_uid}")
+        else:
+            logger.warning(
+                f"TranscriptionLog missing session_id file_uid={task_params.file_uid}")
         logger.info(
             f"Celery task started. Task ID: {task_uuid}")
 
@@ -220,9 +229,13 @@ def transcribe_media_task(self, task_params_dict: dict):
             "total_tokens": metrics_response.total_tokens,
             "cost": final_cost,
             "completed_at": datetime.now(),
+            "lrc_content": final_lrc_text or None,
         }
-        log_repo.update_log(db, task_uuid, update_data)
-        logger.info(f"Task status updated to COMPLETED. Task ID: {task_uuid}")
+        if not log_repo.update_log(db, task_uuid, update_data):
+            logger.warning(
+                f"無法更新 transcription_log（可能 task_uuid 不符）: {task_uuid}")
+        else:
+            logger.info(f"Task status updated to COMPLETED. Task ID: {task_uuid}")
 
         # 準備回傳結果
         final_response = TranscriptionResponse(

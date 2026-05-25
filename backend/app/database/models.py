@@ -33,6 +33,7 @@ class BatchJob(Base):
     __tablename__ = 'batch_jobs'
 
     batch_id = Column(String, primary_key=True)         # 前端的 batch ID
+    session_id = Column(String, nullable=True, index=True)  # 同一次 Start 的任務群組
     gemini_job_name = Column(String, nullable=True)      # Gemini API 的 job name
     status = Column(String, default="UPLOADING", index=True)  # UPLOADING / POLLING / BATCH_SUBMITTED / COMPLETED / FAILED / RETRIEVED / RECOVERING
     task_params_json = Column(Text, nullable=True)       # 序列化的任務參數（不含 api_keys）
@@ -75,3 +76,7 @@ class TranscriptionLog(Base):
     provider = Column(String, nullable=True)
     target_language = Column(String, nullable=True)
     completed_at = Column(DateTime, nullable=True)
+    # 僅儲存 LRC；SRT/VTT/TXT 於下載時由後端即時轉換
+    lrc_content = Column(Text, nullable=True)
+    file_uid = Column(String, nullable=True, index=True)  # 前端檔案 uid
+    session_id = Column(String, nullable=True, index=True)  # 同一次 Start 的任務群組

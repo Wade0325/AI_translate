@@ -243,3 +243,59 @@ class TestHistoryDelete:
         client.delete(f"/api/v1/history/{task_uuid}")
         after = client.get("/api/v1/history").json()["total"]
         assert after == before - 1
+
+
+# ─── 字幕下載 ─────────────────────────────────────────────────────────────────
+
+class TestHistoryDownload:
+    _SAMPLE_LRC = "[00:01.00]Hello\n[00:03.00]World"
+
+    def test_download_lrc(self, client: TestClient, db_session: Session):
+        log = _create_log(
+            db_session,
+            status="COMPLETED",
+            original_filename="song.mp3",
+            lrc_content=self._SAMPLE_LRC,
+        )
+        response = client.get(f"/api/v1/history/{log.task_uuid}/download/lrc")
+        assert response.status_code == 200
+        assert "Hello" in response.text
+
+    def test_download_srt_converts_from_lrc(self, client: TestClient, db_session: Session):
+        log = _create_log(
+            db_session,
+            status="COMPLETED",
+            lrc_content=self._SAMPLE_LRC,
+        )
+        response = client.get(f"/api/v1/history/{log.task_uuid}/download/srt")
+        assert response.status_code == 200
+        assert "-->" in response.text
+
+    def test_download_without_lrc_returns_404(self, client: TestClient, db_session: Session):
+        log = _create_log(db_session, status="COMPLETED", lrc_content=None)
+        response = client.get(f"/api/v1/history/{log.task_uuid}/download/lrc")
+        assert response.status_code == 404
+
+    def test_download_failed_task_returns_400(self, client: TestClient, db_session: Session):
+        log = _create_log(
+            db_session,
+            status="FAILED",
+            lrc_content=self._SAMPLE_LRC,
+        )
+        response = client.get(f"/api/v1/history/{log.task_uuid}/download/lrc")
+        assert response.status_code == 400
+
+    def test_download_invalid_format_returns_400(self, client: TestClient, db_session: Session):
+        log = _create_log(
+            db_session,
+            status="COMPLETED",
+            lrc_content=self._SAMPLE_LRC,
+        )
+        response = client.get(f"/api/v1/history/{log.task_uuid}/download/xyz")
+        assert response.status_code == 400
+
+    def test_list_includes_has_transcript(self, client: TestClient, db_session: Session):
+        _create_log(db_session, status="COMPLETED", lrc_content=self._SAMPLE_LRC)
+        response = client.get("/api/v1/history")
+        assert response.status_code == 200
+        assert any(item.get("has_transcript") for item in response.json()["items"])

@@ -20,6 +20,7 @@ class TranscriptionTaskParams(BaseModel):
     target_lang: Optional[str] = None  # 新增: 前端指定的輸出語言
     multi_speaker: bool = False  # 新增: 多人對話模式
     service_tier: Optional[str] = None  # 新增: 'flex' 啟用 Flex 推論，其餘視為 Standard
+    session_id: Optional[str] = None
 
 
 class BatchFileItemParams(BaseModel):
@@ -44,3 +45,4 @@ class BatchTranscriptionTaskParams(BaseModel):
     prompt: Optional[str] = None
     client_id: str
     batch_id: str
+    session_id: Optional[str] = None

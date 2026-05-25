@@ -72,7 +72,8 @@ export const api = {
       });
       if (keyword) params.append('keyword', keyword);
       if (status) params.append('status', status);
-      if (mode) params.append('mode', mode);
+      if (mode === 'batch') params.append('is_batch', 'true');
+      else if (mode === 'regular') params.append('is_batch', 'false');
       return request(`/history?${params.toString()}`);
     },
     stats() {
@@ -80,6 +81,21 @@ export const api = {
     },
     delete(taskUuid) {
       return request(`/history/${taskUuid}`, { method: 'DELETE' });
+    },
+    /** 下載字幕檔（fmt: lrc | srt | vtt | txt），回傳純文字內容 */
+    async downloadTranscript(taskUuid, fmt) {
+      const res = await fetch(`${BASE_URL}/history/${taskUuid}/download/${fmt}`);
+      if (!res.ok) {
+        let payload = null;
+        try {
+          payload = await res.json();
+        } catch {
+          /* ignore */
+        }
+        const message = payload?.detail || res.statusText;
+        throw new ApiError(res.status, message, payload);
+      }
+      return res.text();
     },
     activeSingle({ hours = 6 } = {}) {
       return request(`/history/active?hours=${hours}`);

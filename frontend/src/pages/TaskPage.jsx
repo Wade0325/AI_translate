@@ -1,11 +1,20 @@
-import { useState, useEffect, useCallback, useRef } from "react"
+import { useState, useEffect, useCallback, useRef, useMemo } from "react"
 import { Card, Button, Typography, message, Empty, Spin, Popconfirm } from "antd"
-import { CheckCircle2, Archive } from "lucide-react"
+import { Archive } from "lucide-react"
 import { ReloadOutlined, LoadingOutlined } from "@ant-design/icons"
 import { useModelManager } from "@/components/ModelManager"
 import { api, ApiError } from "../services/api"
 import TaskCard from "@/components/task/TaskCard"
 import SingleTaskRow from "@/components/task/SingleTaskRow"
+import TaskSessionDivider from "@/components/task/TaskSessionDivider"
+import {
+    buildTaskSessions,
+    isBatchProcessing,
+    isBatchCompleted,
+    isSingleProcessing,
+    isSingleCompleted,
+    sessionHasProcessing,
+} from "@/utils/taskSessions"
 
 const { Text } = Typography
 
@@ -34,6 +43,11 @@ export default function TaskPage() {
         }
     }, [])
 
+    const sessions = useMemo(
+        () => buildTaskSessions(tasks, singleTasks),
+        [tasks, singleTasks]
+    )
+
     const retrieveResults = async (batchId) => {
         setRetrievingIds(prev => new Set(prev).add(batchId))
         try {
@@ -41,7 +55,6 @@ export default function TaskPage() {
             try {
                 result = await api.batch.recover(batchId, {})
             } catch (err) {
-                // 後端在批次仍處理中時會回 400 並要求 api_keys
                 if (err instanceof ApiError && err.status === 400) {
                     const config = await getProviderConfig("Google")
                     const apiKey = config?.apiKeys?.[0]
@@ -146,8 +159,8 @@ export default function TaskPage() {
     }, [fetchTasks])
 
     useEffect(() => {
-        const hasBatchPolling = tasks.some(t => ["POLLING", "UPLOADING", "RECOVERING"].includes(t.status))
-        const hasSinglePolling = singleTasks.some(t => t.status === "PROCESSING")
+        const hasBatchPolling = tasks.some(t => isBatchProcessing(t))
+        const hasSinglePolling = singleTasks.some(t => isSingleProcessing(t))
         if (hasBatchPolling || hasSinglePolling) {
             pollIntervalRef.current = setInterval(fetchTasks, hasSinglePolling ? 5000 : 30000)
         } else {
@@ -156,13 +169,34 @@ export default function TaskPage() {
         return () => clearInterval(pollIntervalRef.current)
     }, [tasks, singleTasks, fetchTasks])
 
-    const processingTasks = tasks.filter(t => ["POLLING", "UPLOADING", "RECOVERING"].includes(t.status))
-    const completedTasks = tasks.filter(t => ["COMPLETED", "RETRIEVED"].includes(t.status))
-    const processingSingle = singleTasks.filter(t => t.status === "PROCESSING")
-    const completedSingle = singleTasks.filter(t => ["COMPLETED", "FAILED"].includes(t.status))
-    const hasAny = tasks.length > 0 || singleTasks.length > 0
-    const hasAnyProcessing = processingTasks.length > 0 || processingSingle.length > 0
-    const hasAnyCompleted = completedTasks.length > 0 || completedSingle.length > 0
+    const hasAny = sessions.length > 0
+    const hasAnyProcessing = sessions.some(sessionHasProcessing)
+    const completedBatchCount = tasks.filter(t => t.status === "COMPLETED").length
+
+    const renderSessionItem = (item) => {
+        if (item.kind === "batch") {
+            const task = item.task
+            const showBatch =
+                isBatchProcessing(task) || isBatchCompleted(task)
+            if (!showBatch) return null
+            return (
+                <TaskCard
+                    key={task.batch_id}
+                    task={task}
+                    expanded={expandedIds.has(task.batch_id)}
+                    retrieving={retrievingIds.has(task.batch_id)}
+                    taskResult={taskResults[task.batch_id]}
+                    onToggleExpand={() => toggleExpand(task.batch_id)}
+                    onRetrieve={() => retrieveResults(task.batch_id)}
+                    onDismiss={() => dismissTask(task.batch_id)}
+                    onDownload={downloadResult}
+                />
+            )
+        }
+        const task = item.task
+        if (!isSingleProcessing(task) && !isSingleCompleted(task)) return null
+        return <SingleTaskRow key={task.task_uuid} task={task} />
+    }
 
     if (loading) {
         return (
@@ -174,7 +208,6 @@ export default function TaskPage() {
 
     return (
         <div style={{ display: "flex", flexDirection: "column", gap: 20, padding: 24 }}>
-            {/* Top action bar */}
             <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
                 <Button
                     icon={<ReloadOutlined />}
@@ -183,7 +216,7 @@ export default function TaskPage() {
                 >
                     重新整理
                 </Button>
-                {completedTasks.some(t => t.status === "COMPLETED") && (
+                {completedBatchCount > 0 && (
                     <Button
                         type="primary"
                         ghost
@@ -224,65 +257,25 @@ export default function TaskPage() {
                 </Card>
             )}
 
-            {/* Processing section */}
             {hasAnyProcessing && (
-                <div>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
-                        <Spin indicator={<LoadingOutlined style={{ fontSize: 14, color: "#d4a72d" }} spin />} />
-                        <Text style={{ color: "#d4a72d", fontSize: 14, fontWeight: 600 }}>
-                            處理中 ({processingTasks.length + processingSingle.length})
-                        </Text>
-                    </div>
-                    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                        {processingTasks.map(task => (
-                            <TaskCard
-                                key={task.batch_id}
-                                task={task}
-                                expanded={expandedIds.has(task.batch_id)}
-                                retrieving={retrievingIds.has(task.batch_id)}
-                                taskResult={taskResults[task.batch_id]}
-                                onToggleExpand={() => toggleExpand(task.batch_id)}
-                                onRetrieve={() => retrieveResults(task.batch_id)}
-                                onDismiss={() => dismissTask(task.batch_id)}
-                                onDownload={downloadResult}
-                            />
-                        ))}
-                        {processingSingle.map(task => (
-                            <SingleTaskRow key={task.task_uuid} task={task} />
-                        ))}
-                    </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <Spin indicator={<LoadingOutlined style={{ fontSize: 14, color: "#d4a72d" }} spin />} />
+                    <Text style={{ color: "#d4a72d", fontSize: 13 }}>有任務處理中，將自動更新</Text>
                 </div>
             )}
 
-            {/* Completed section */}
-            {hasAnyCompleted && (
-                <div>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
-                        <CheckCircle2 size={14} color="#2dd4a8" />
-                        <Text style={{ color: "#2dd4a8", fontSize: 14, fontWeight: 600 }}>
-                            已完成 ({completedTasks.length + completedSingle.length})
-                        </Text>
-                    </div>
+            {sessions.map((session, idx) => (
+                <div key={session.sessionId}>
+                    <TaskSessionDivider
+                        showTopMargin={idx > 0}
+                        startedAt={session.startedAt}
+                        fileCount={session.fileCount}
+                    />
                     <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                        {completedTasks.map(task => (
-                            <TaskCard
-                                key={task.batch_id}
-                                task={task}
-                                expanded={expandedIds.has(task.batch_id)}
-                                retrieving={retrievingIds.has(task.batch_id)}
-                                taskResult={taskResults[task.batch_id]}
-                                onToggleExpand={() => toggleExpand(task.batch_id)}
-                                onRetrieve={() => retrieveResults(task.batch_id)}
-                                onDismiss={() => dismissTask(task.batch_id)}
-                                onDownload={downloadResult}
-                            />
-                        ))}
-                        {completedSingle.map(task => (
-                            <SingleTaskRow key={task.task_uuid} task={task} />
-                        ))}
+                        {session.items.map((item) => renderSessionItem(item))}
                     </div>
                 </div>
-            )}
+            ))}
         </div>
     )
 }

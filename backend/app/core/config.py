@@ -71,8 +71,9 @@ class Settings(BaseSettings):
     # Batch / Flex 推論的費用折扣率（0.5 表示原價 50%）
     batch_cost_discount: float = 0.5
     flex_cost_discount: float = 0.5
-    # 語音佔比 >= 此閾值時，跳過 VAD 預處理直接用原檔
-    vad_speech_ratio_skip_threshold: float = 0.95
+    # 語音佔比 >= 此閾值（預設 0.8）時跳過 VAD 預處理，直接用原檔轉錄；
+    # 空白超過 20%（語音佔比 < 80%）才執行 VAD 靜音移除
+    vad_speech_ratio_skip_threshold: float = 0.80
 
     model_config = SettingsConfigDict(
         env_file=ENV_FILE_PATH if ENV_FILE_PATH else None,

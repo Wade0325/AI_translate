@@ -67,6 +67,7 @@ class WebSocketTranscriptionRequest(BaseModel):
     original_text: Optional[str] = None  # <--- 新增此行
     multi_speaker: bool = False
     service_tier: Optional[str] = None  # 'flex' 啟用 Flex 推論
+    session_id: Optional[str] = None  # 同一次 Start 的任務群組 ID
 
 
 class BatchFileItem(BaseModel):
@@ -86,6 +87,7 @@ class WebSocketBatchRequest(BaseModel):
     target_lang: Optional[str] = None
     prompt: Optional[str] = None
     multi_speaker: bool = False
+    session_id: Optional[str] = None
 
 
 # ==================== Batch Recovery ====================
@@ -142,6 +144,7 @@ class BatchTaskResponse(BaseModel):
     updated_at: Optional[str] = None
     elapsed_seconds: Optional[float] = None
     files: List[BatchTaskFile]
+    session_id: Optional[str] = None
 
 
 # ==================== History ====================
@@ -164,6 +167,9 @@ class HistoryLogResponse(BaseModel):
     error_message: Optional[str] = None
     is_batch: Optional[bool] = None
     batch_id: Optional[str] = None
+    has_transcript: bool = False
+    session_id: Optional[str] = None
+    file_uid: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
 

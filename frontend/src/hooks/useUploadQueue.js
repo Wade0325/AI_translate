@@ -1,6 +1,7 @@
 import { useCallback } from 'react';
 import { message } from 'antd';
 import { api, WS_URLS } from '../services/api';
+import { registerTranscribeSession } from '../utils/transcribeSessions';
 
 /**
  * 封裝「上傳檔案 → 開啟 WebSocket → 接收後端推送」的完整流程。
@@ -19,7 +20,11 @@ import { api, WS_URLS } from '../services/api';
  * service_tier；當檔案本身沒指定 per-file 設定時會用 defaults 補上。
  */
 
-function buildSinglePayload({ serverFilename, file, provider, model, apiKey, prompt, defaults }) {
+function makeSessionId() {
+  return `session-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+}
+
+function buildSinglePayload({ serverFilename, file, provider, model, apiKey, prompt, defaults, sessionId }) {
   return {
     filename: serverFilename,
     original_filename: file.name,
@@ -32,6 +37,7 @@ function buildSinglePayload({ serverFilename, file, provider, model, apiKey, pro
     original_text: file.original_text || null,
     multi_speaker: file.multiSpeaker ?? defaults.multiSpeaker,
     service_tier: defaults.serviceTier,
+    session_id: sessionId,
   };
 }
 
@@ -93,11 +99,18 @@ export function useUploadQueue({ fileList, setFileList, socketManager, onBatchSu
       return { skipped: true };
     }
 
+    const sessionId = makeSessionId();
+    const startTargets = [...candidates, ...youtubeUrls];
+    registerTranscribeSession({
+      sessionId,
+      fileUids: startTargets.map((f) => f.uid),
+    });
+
     // 全部標記成 processing
     setFileList((current) =>
       current.map((f) =>
-        [...candidates, ...youtubeUrls].find((p) => p.uid === f.uid)
-          ? { ...f, status: 'processing', statusText: '正在上傳檔案...' }
+        startTargets.find((p) => p.uid === f.uid)
+          ? { ...f, status: 'processing', statusText: '正在上傳檔案...', sessionId }
           : f
       )
     );
@@ -114,6 +127,7 @@ export function useUploadQueue({ fileList, setFileList, socketManager, onBatchSu
             apiKey,
             prompt,
             defaults,
+            sessionId,
           });
           socketManager.sendMessage(file.uid, payload);
         },
@@ -165,10 +179,16 @@ export function useUploadQueue({ fileList, setFileList, socketManager, onBatchSu
       return { skipped: true, reason: 'no-files' };
     }
 
+    const sessionId = makeSessionId();
+    registerTranscribeSession({
+      sessionId,
+      fileUids: candidates.map((f) => f.uid),
+    });
+
     setFileList((current) =>
       current.map((f) =>
         candidates.find((p) => p.uid === f.uid)
-          ? { ...f, status: 'processing', statusText: '正在上傳檔案...' }
+          ? { ...f, status: 'processing', statusText: '正在上傳檔案...', sessionId }
           : f
       )
     );
@@ -232,6 +252,7 @@ export function useUploadQueue({ fileList, setFileList, socketManager, onBatchSu
           target_lang: defaults.targetLang || null,
           prompt,
           multi_speaker: defaults.multiSpeaker,
+          session_id: sessionId,
         };
         socketManager.sendMessage(batchId, payload);
       },

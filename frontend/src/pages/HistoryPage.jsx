@@ -1,16 +1,16 @@
 import { useState, useEffect, useCallback } from "react"
-import { Card, Table, Button, Input, Select, Tag, Typography, Row, Col, Statistic, Popconfirm, message, Space, Tooltip } from "antd"
+import { Card, Table, Button, Input, Select, Tag, Typography, Row, Col, Popconfirm, message, Space, Tooltip, Dropdown } from "antd"
 import {
     SearchOutlined,
     DeleteOutlined,
     ReloadOutlined,
-    CheckCircleOutlined,
-    CloseCircleOutlined,
-    ClockCircleOutlined,
     FileTextOutlined,
+    DownloadOutlined,
 } from "@ant-design/icons"
 import { FileAudio, Coins, Clock, TrendingUp } from "lucide-react"
 import { api } from "../services/api"
+import { downloadFormats } from "../constants/downloadFormats"
+import { downloadBlob, renameExtension } from "../utils/download"
 
 const { Text } = Typography
 
@@ -86,6 +86,18 @@ export default function HistoryPage() {
         fetchHistory(1, pagination.pageSize)
     }
 
+    const handleDownload = async (record, format) => {
+        try {
+            const content = await api.history.downloadTranscript(record.task_uuid, format)
+            const fileName = record.original_filename || "transcript"
+            downloadBlob(content, renameExtension(fileName, format))
+            message.success(`已下載 ${format.toUpperCase()} 字幕`)
+        } catch (error) {
+            console.error("下載字幕失敗:", error)
+            message.error(error?.message || "下載失敗")
+        }
+    }
+
     const statusColors = {
         COMPLETED: "green",
         FAILED: "red",
@@ -126,33 +138,33 @@ export default function HistoryPage() {
         },
         {
             title: "模式",
-            dataIndex: "mode",
-            key: "mode",
+            dataIndex: "is_batch",
+            key: "is_batch",
             width: 80,
             render: (v) => (
                 <Tag style={{ fontSize: 11 }}>
-                    {v === "batch" ? "批次" : "一般"}
+                    {v ? "批次" : "一般"}
                 </Tag>
             ),
         },
         {
             title: "模型",
-            dataIndex: "model",
-            key: "model",
+            dataIndex: "model_used",
+            key: "model_used",
             width: 160,
             render: (v) => <Text style={{ color: "#8888a8", fontSize: 12 }}>{v || "—"}</Text>,
         },
         {
             title: "語言",
-            dataIndex: "source_lang",
-            key: "source_lang",
+            dataIndex: "source_language",
+            key: "source_language",
             width: 80,
             render: (v) => <Text style={{ color: "#8888a8", fontSize: 12 }}>{v || "—"}</Text>,
         },
         {
             title: "Tokens",
-            dataIndex: "tokens_used",
-            key: "tokens_used",
+            dataIndex: "total_tokens",
+            key: "total_tokens",
             width: 100,
             render: (v) => (
                 <Text style={{ color: "#e8e8e8", fontFamily: "monospace", fontSize: 12 }}>
@@ -173,8 +185,8 @@ export default function HistoryPage() {
         },
         {
             title: "時間",
-            dataIndex: "created_at",
-            key: "created_at",
+            dataIndex: "request_timestamp",
+            key: "request_timestamp",
             width: 150,
             render: (v) => (
                 <Text style={{ color: "#8888a8", fontSize: 12 }}>
@@ -185,16 +197,39 @@ export default function HistoryPage() {
         {
             title: "",
             key: "actions",
-            width: 50,
+            width: 100,
+            fixed: "right",
             render: (_, record) => (
-                <Popconfirm
-                    title="確定刪除此紀錄？"
-                    onConfirm={() => handleDelete(record.task_uuid)}
-                    okText="確定"
-                    cancelText="取消"
-                >
-                    <Button type="text" size="small" icon={<DeleteOutlined />} danger style={{ color: "#8888a8" }} />
-                </Popconfirm>
+                <Space size={0}>
+                    {record.status === "COMPLETED" && (
+                        <Dropdown
+                            menu={{
+                                items: downloadFormats.map((f) => ({
+                                    key: f.key,
+                                    label: f.label,
+                                })),
+                                onClick: ({ key }) => handleDownload(record, key),
+                            }}
+                        >
+                            <Tooltip title="下載字幕">
+                                <Button
+                                    type="text"
+                                    size="small"
+                                    icon={<DownloadOutlined />}
+                                    style={{ color: "#2dd4a8" }}
+                                />
+                            </Tooltip>
+                        </Dropdown>
+                    )}
+                    <Popconfirm
+                        title="確定刪除此紀錄？"
+                        onConfirm={() => handleDelete(record.task_uuid)}
+                        okText="確定"
+                        cancelText="取消"
+                    >
+                        <Button type="text" size="small" icon={<DeleteOutlined />} danger style={{ color: "#8888a8" }} />
+                    </Popconfirm>
+                </Space>
             ),
         },
     ]

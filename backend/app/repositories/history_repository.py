@@ -1,3 +1,4 @@
+import json
 import uuid as _uuid_module
 from typing import Optional, List, Tuple
 from datetime import datetime, timedelta
@@ -6,6 +7,9 @@ from sqlalchemy import or_, desc
 from sqlalchemy.orm import Session
 
 from app.database.models import TranscriptionLog, BatchJob
+from app.utils.logger import setup_logger
+
+logger = setup_logger(__name__)
 
 
 class HistoryRepository:
@@ -115,6 +119,62 @@ class HistoryRepository:
             .order_by(desc(TranscriptionLog.request_timestamp))
             .all()
         )
+
+    def resolve_lrc_content(
+        self,
+        db: Session,
+        log: TranscriptionLog,
+        *,
+        backfill: bool = True,
+    ) -> Optional[str]:
+        """取得任務的 LRC 內容；若 log 無資料則從 batch_jobs.results_json 回退。"""
+        stored = getattr(log, "lrc_content", None)
+        if stored and str(stored).strip():
+            return str(stored).strip()
+
+        if not log.batch_id:
+            return None
+
+        job = db.query(BatchJob).filter(BatchJob.batch_id == log.batch_id).first()
+        if not job or not job.results_json:
+            return None
+
+        try:
+            results = json.loads(job.results_json)
+            file_log_uuids = json.loads(job.file_log_uuids_json or "{}")
+        except json.JSONDecodeError as e:
+            logger.warning(f"解析批次 {log.batch_id} 結果 JSON 失敗: {e}")
+            return None
+
+        task_uuid_str = str(log.task_uuid)
+        file_uid = None
+        for fuid, tuuid in file_log_uuids.items():
+            if str(tuuid) == task_uuid_str:
+                file_uid = fuid
+                break
+
+        if not file_uid:
+            return None
+
+        result = results.get(file_uid) or {}
+        transcripts = result.get("transcripts") or {}
+        lrc = (transcripts.get("lrc") or "").strip()
+        if not lrc:
+            return None
+
+        if backfill and not stored:
+            try:
+                log.lrc_content = lrc
+                db.commit()
+                db.refresh(log)
+            except Exception as e:
+                db.rollback()
+                logger.warning(f"回寫 lrc_content 失敗 ({task_uuid_str}): {e}")
+
+        return lrc
+
+    def has_transcript(self, db: Session, log: TranscriptionLog) -> bool:
+        return bool(self.resolve_lrc_content(db, log, backfill=False))
 
     def get_stats(self, db: Session) -> dict:
         """取得統計總覽。"""

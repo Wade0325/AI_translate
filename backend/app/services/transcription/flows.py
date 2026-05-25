@@ -20,6 +20,10 @@ from .models import (
 
 logger = setup_logger(__name__)
 
+_settings = get_settings()
+# 語音佔比 >= 此閾值時跳過 VAD 預處理；低於則使用純語音檔轉錄
+VAD_SPEECH_RATIO_SKIP_THRESHOLD = _settings.vad_speech_ratio_skip_threshold
+
 
 def _remap_lrc_timestamps(lrc_text: str, segments: List[Dict[str, float]]) -> str:
     """將 LRC 時間戳從拼接後的時間軸重對應回原始時間軸"""
@@ -170,8 +174,7 @@ class TranscriptionTask:
             vad_result = self._extract_speech_only(audio_path)
             if vad_result and vad_result.get("speech_only_path"):
                 speech_ratio = vad_result.get("speech_ratio", 1.0)
-                # 如果語音佔比低於 95%，表示有明顯靜音，使用純語音檔
-                if speech_ratio < 0.95:
+                if speech_ratio < VAD_SPEECH_RATIO_SKIP_THRESHOLD:
                     transcription_path = Path(vad_result["speech_only_path"])
                     speech_segments = vad_result["segments"]
                     logger.info(
@@ -179,7 +182,10 @@ class TranscriptionTask:
                         f"使用純語音檔 ({vad_result['speech_duration']:.1f}s / {duration:.1f}s)"
                     )
                 else:
-                    logger.info(f"語音佔比 {speech_ratio*100:.1f}% (>95%), 跳過 VAD 前處理")
+                    logger.info(
+                        f"語音佔比 {speech_ratio*100:.1f}% "
+                        f"(>={VAD_SPEECH_RATIO_SKIP_THRESHOLD*100:.0f}%), 跳過 VAD 前處理"
+                    )
 
         # --- 轉錄 ---
         result = self._attempt_transcription(transcription_path)
@@ -232,7 +238,7 @@ class TranscriptionTask:
             return None
 
         speech_ratio = result.speech_ratio
-        used_for_transcription = speech_ratio < 0.95
+        used_for_transcription = speech_ratio < VAD_SPEECH_RATIO_SKIP_THRESHOLD
         artifact_id = self.artifact_task_id or audio_path.stem
         artifact_name = self.original_filename or audio_path.name
         if result.speech_only_path:

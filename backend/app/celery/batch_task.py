@@ -217,14 +217,18 @@ def _process_single_result(
     batch_output_cost = metrics.output_cost * BATCH_COST_DISCOUNT
 
     # --- 更新資料庫 ---
-    log_repo.update_log(db, file_task_uuid, {
+    if not log_repo.update_log(db, file_task_uuid, {
         "status": "COMPLETED",
         "audio_duration_seconds": audio_duration,
         "processing_time_seconds": processing_time,
         "total_tokens": metrics.total_tokens,
         "cost": batch_cost,
         "completed_at": datetime.now(),
-    })
+        "lrc_content": final_lrc_text or None,
+    }):
+        logger.warning(
+            f"無法更新 transcription_log: task_uuid={file_task_uuid} "
+            f"file={file_item.original_filename}")
 
     # --- 回傳結果 ---
     file_response = TranscriptionResponse(
@@ -316,10 +320,12 @@ def batch_transcribe_task(self, task_params_dict: dict):
             "target_lang": task_params.target_lang,
             "prompt": prompt,
         }))
+        session_id = task_params.session_id or batch_id
         batch_repo.update_job(db, batch_id, {
             "celery_task_id": task_uuid,
             "file_count": len(task_params.files),
             "completed_file_count": 0,
+            "session_id": session_id,
         })
 
         # --- 1. 取得音訊時長 & 建立資料庫日誌 ---
@@ -343,6 +349,8 @@ def batch_transcribe_task(self, task_params_dict: dict):
                 "batch_id": batch_id,
                 "provider": task_params.provider,
                 "target_language": task_params.target_lang,
+                "session_id": session_id,
+                "file_uid": file_item.file_uid,
             })
 
         # --- 2. VAD 前處理 + 上傳所有檔案至 Gemini ---
