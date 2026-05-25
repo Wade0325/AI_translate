@@ -31,6 +31,7 @@ services:
     command: uvicorn main:app --host 0.0.0.0 --port 8000
     volumes:
       - ./backend/temp_uploads:/app/temp_uploads
+      - ./backend/vad_artifacts:/app/vad_artifacts
     env_file:
       - ./.env.prod
     environment:
@@ -51,6 +52,7 @@ services:
     command: celery -A app.celery.celery:celery_app worker --loglevel=info -P gevent -c 20
     volumes:
       - ./backend/temp_uploads:/app/temp_uploads
+      - ./backend/vad_artifacts:/app/vad_artifacts
     env_file:
       - ./.env.prod
     environment:

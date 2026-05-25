@@ -1,4 +1,3 @@
-import asyncio
 from fastapi import FastAPI
 from contextlib import asynccontextmanager
 from app.api import model_manager
@@ -6,6 +5,7 @@ from app.api import transcription
 from app.api import upload
 from app.api import batch
 from app.api import history
+from app.api import vad
 from app.websocket.manager import manager as websocket_manager
 
 from fastapi.middleware.cors import CORSMiddleware
@@ -24,9 +24,8 @@ async def lifespan(app: FastAPI):
     # 初始化資料庫
     init_db()
 
-    # 啟動 WebSocket 的 Redis 監聯器
-    asyncio.create_task(websocket_manager.redis_listener())
-    logger.info("WebSocket Redis 監聽器已在背景啟動。")
+    # 啟動 WebSocket 的 Redis 監聯器（可重連、可乾淨關閉）
+    websocket_manager.start()
 
     # 預先初始化 VAD 服務
     try:
@@ -40,8 +39,11 @@ async def lifespan(app: FastAPI):
         logger.warning(f"無法預先初始化 VAD 服務: {e}")
 
     logger.info("應用程式啟動完成")
-    yield
-    logger.info("應用程式正在關閉...")
+    try:
+        yield
+    finally:
+        logger.info("應用程式正在關閉...")
+        await websocket_manager.shutdown()
 
 
 app = FastAPI(title="AI Voice Transcription API",
@@ -57,12 +59,7 @@ app.include_router(model_manager.router,
 app.include_router(upload.router, prefix="/api/v1", tags=["Upload"])
 app.include_router(batch.router, prefix="/api/v1/batch", tags=["Batch Transcription"])
 app.include_router(history.router, prefix="/api/v1/history", tags=["History"])
-
-origins = [
-    "http://localhost:8000",
-    "http://localhost:3000",
-    "*"
-]
+app.include_router(vad.router, prefix="/api/v1/vad", tags=["VAD"])
 
 app.add_middleware(
     CORSMiddleware,

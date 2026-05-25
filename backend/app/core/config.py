@@ -61,6 +61,18 @@ class Settings(BaseSettings):
 
     # App
     temp_uploads_dir: str = "temp_uploads"
+    # VAD 除錯：保留切割產物供本機试听檢查（預設關閉）
+    vad_keep_artifacts: bool = False
+    vad_artifacts_dir: str = "vad_artifacts"
+
+    # Transcription tuning
+    # 單檔轉錄的最大可接受時長（秒）；超過此值且轉錄失敗時，會嘗試 VAD 分割重試
+    transcription_max_duration_seconds: int = 180
+    # Batch / Flex 推論的費用折扣率（0.5 表示原價 50%）
+    batch_cost_discount: float = 0.5
+    flex_cost_discount: float = 0.5
+    # 語音佔比 >= 此閾值時，跳過 VAD 預處理直接用原檔
+    vad_speech_ratio_skip_threshold: float = 0.95
 
     model_config = SettingsConfigDict(
         env_file=ENV_FILE_PATH if ENV_FILE_PATH else None,

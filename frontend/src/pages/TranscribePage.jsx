@@ -4,9 +4,11 @@ import { UploadZone } from "@/components/transcribe/upload-zone"
 import { GlobalDefaults } from "@/components/transcribe/global-defaults"
 import { FileConfigCard } from "@/components/transcribe/file-config-card"
 import { CostEstimator } from "@/components/transcribe/cost-estimator"
+import VadTestModal from "@/components/transcribe/VadTestModal"
 import { useTranscription } from "@/context/TranscriptionContext"
 import { useModelManager } from "@/components/ModelManager"
 import { modelOptions, findProviderForModel } from "@/constants/modelConfig"
+import { api } from "@/services/api"
 import {
     LinkOutlined,
     FileTextOutlined,
@@ -15,6 +17,7 @@ import {
     CloseOutlined,
 } from "@ant-design/icons"
 import { AlertCircle, Youtube } from "lucide-react"
+import { downloadFormatsLong } from "@/constants/downloadFormats"
 
 const { Text, Title } = Typography
 const { TextArea } = Input
@@ -57,6 +60,9 @@ export default function TranscribePage() {
     const [isTextModalVisible, setIsTextModalVisible] = useState(false)
     const [textModalContent, setTextModalContent] = useState("")
     const [textModalFileUid, setTextModalFileUid] = useState(null)
+    const [vadTestingUid, setVadTestingUid] = useState(null)
+    const [vadModalOpen, setVadModalOpen] = useState(false)
+    const [vadResult, setVadResult] = useState(null)
     const fileInputRef = useRef(null)
 
     // Provider derived from model
@@ -182,6 +188,52 @@ export default function TranscribePage() {
         )
     }
 
+    const handleVadTest = async (fileUid) => {
+        const file = fileList.find((f) => f.uid === fileUid)
+        if (!file?.originFileObj) {
+            message.error("VAD 測試僅支援本機音訊檔案")
+            return
+        }
+        if (isProcessing || vadTestingUid) return
+
+        setVadTestingUid(fileUid)
+        setFileList((prev) =>
+            prev.map((f) =>
+                f.uid === fileUid
+                    ? { ...f, status: "processing", statusText: "VAD 測試中...", percent: 0 }
+                    : f
+            )
+        )
+
+        try {
+            const formData = new FormData()
+            formData.append("file", file.originFileObj)
+            const { filename } = await api.upload(formData)
+            const result = await api.vad.test({
+                filename,
+                originalFilename: file.name,
+            })
+            setVadResult(result)
+            setVadModalOpen(true)
+            if (result.success) {
+                message.success("VAD 測試完成，請查看結果與保存路徑")
+            } else {
+                message.warning(result.error || "VAD 測試部分失敗")
+            }
+        } catch (err) {
+            message.error(`VAD 測試失敗: ${err.message}`)
+        } finally {
+            setVadTestingUid(null)
+            setFileList((prev) =>
+                prev.map((f) =>
+                    f.uid === fileUid
+                        ? { ...f, status: "waiting", statusText: "等待處理", percent: 0 }
+                        : f
+                )
+            )
+        }
+    }
+
     // Pagination
     const paginatedFiles = fileList.slice(
         (currentPage - 1) * PAGE_SIZE,
@@ -196,13 +248,7 @@ export default function TranscribePage() {
     const totalTokens = completedFiles.reduce((sum, f) => sum + (f.tokens_used || 0), 0)
     const totalCost = completedFiles.reduce((sum, f) => sum + (f.cost || 0), 0)
 
-    // Download menu items
-    const downloadMenuItems = [
-        { key: "lrc", label: "LRC 格式" },
-        { key: "srt", label: "SRT 格式" },
-        { key: "vtt", label: "VTT 格式" },
-        { key: "txt", label: "TXT 純文字" },
-    ]
+    const downloadMenuItems = downloadFormatsLong
 
     return (
         <div style={{ display: "flex", flexDirection: "column", gap: 16, padding: 24 }}>
@@ -380,6 +426,8 @@ export default function TranscribePage() {
                         onReprocess={handleReprocess}
                         onAttachText={handleAttachText}
                         onAttachTextFromFile={handleAttachTextFromFile}
+                        onVadTest={file.originFileObj ? handleVadTest : undefined}
+                        vadTesting={vadTestingUid === file.uid}
                     />
                 ))}
             </div>
@@ -451,6 +499,13 @@ export default function TranscribePage() {
                     placeholder="貼上原始文本，讓 AI 對照修正轉錄結果..."
                 />
             </Modal>
+
+            {/* VAD Test Result Modal */}
+            <VadTestModal
+                open={vadModalOpen}
+                result={vadResult}
+                onClose={() => setVadModalOpen(false)}
+            />
 
             {/* Hidden file input for text attachment from file */}
             <input

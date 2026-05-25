@@ -13,7 +13,7 @@ from fastapi import (
 )
 from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session
-from app.celery.batch_task import batch_transcribe_task, process_gemini_batch_results
+from app.celery.batch_task import batch_transcribe_task, batch_recover_task
 from app.celery.models import BatchTranscriptionTaskParams, BatchFileItemParams
 from app.core.config import get_settings
 from app.database.session import get_db
@@ -202,35 +202,13 @@ def recover_batch(batch_id: str, body: RecoverBatchRequest, db: Session = Depend
             detail="Gemini 批次任務尚在處理中，需要 API Key 才能查詢狀態",
         )
 
-    logger.info(f"恢復批次 {batch_id}: 在 API 中同步檢查 Gemini 狀態 (當前狀態={job.status})")
+    logger.info(f"恢復批次 {batch_id}: 派送 Celery task 從 Gemini 取得結果 (當前狀態={job.status})")
 
-    # 同步執行從 Gemini 獲取並處理的邏輯
-    from app.repositories.transcription_log_repository import TranscriptionLogRepository
-    log_repo = TranscriptionLogRepository()
-    result = process_gemini_batch_results(batch_id, api_key, db, batch_repo, log_repo)
+    # 派送 Celery task 非同步處理。結果稍後透過 WebSocket / pending API 通知前端
+    batch_repo.update_job(db, batch_id, {"status": "RECOVERING"})
+    batch_recover_task.delay(batch_id, api_key)
 
-    if result["status"] == "COMPLETED":
-        # 如果完成，剛存進 DB，現在可以直接回傳
-        stored_results = result.get("files", {})
-        file_results = []
-        for file_uid, result_data in stored_results.items():
-            original_filename = file_uid
-            for idx, entry in file_mapping.items():
-                if entry.get("file_uid") == file_uid:
-                    original_filename = entry.get("original_filename", file_uid)
-                    break
-
-            file_results.append(RecoverFileResult(
-                file_uid=file_uid,
-                original_filename=original_filename,
-                status="COMPLETED",
-                result=result_data,
-            ))
-
-        batch_repo.update_job(db, batch_id, {"status": "RETRIEVED"})
-        return RecoverBatchResponse(batch_id=batch_id, files=file_results)
-    
-    # 若在處理中 (POLLING) 或失敗等情況，回傳空陣列（前端顯示處理中）
+    # 立刻回傳空結果；前端應透過 WebSocket 或重新查詢 /pending 取得最新狀態
     return RecoverBatchResponse(batch_id=batch_id, files=[])
 
 

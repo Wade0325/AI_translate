@@ -10,10 +10,9 @@ import {
     FileTextOutlined,
 } from "@ant-design/icons"
 import { FileAudio, Coins, Clock, TrendingUp } from "lucide-react"
+import { api } from "../services/api"
 
 const { Text } = Typography
-
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "/api/v1"
 
 export default function HistoryPage() {
     const [historyData, setHistoryData] = useState([])
@@ -28,27 +27,19 @@ export default function HistoryPage() {
     const fetchHistory = useCallback(async (page = 1, pageSize = 10) => {
         setLoading(true)
         try {
-            const params = new URLSearchParams({
-                page: String(page),
-                page_size: String(pageSize),
+            const data = await api.history.list({
+                page,
+                pageSize,
+                keyword: searchKeyword || undefined,
+                status: statusFilter || undefined,
+                mode: modeFilter || undefined,
             })
-            if (searchKeyword) params.append("keyword", searchKeyword)
-            if (statusFilter) params.append("status", statusFilter)
-            if (modeFilter) params.append("mode", modeFilter)
-
-            const response = await fetch(`${API_BASE_URL}/history?${params}`)
-            if (response.ok) {
-                const data = await response.json()
-                setHistoryData(data.items || data.data || data || [])
-                setPagination({
-                    current: page,
-                    pageSize,
-                    total: data.total || data.items?.length || 0,
-                })
-            } else {
-                console.error("Failed to fetch history:", response.status)
-                setHistoryData([])
-            }
+            setHistoryData(data.items || data.data || data || [])
+            setPagination({
+                current: page,
+                pageSize,
+                total: data.total || data.items?.length || 0,
+            })
         } catch (error) {
             console.error("Error fetching history:", error)
             setHistoryData([])
@@ -60,11 +51,8 @@ export default function HistoryPage() {
     // Fetch stats
     const fetchStats = useCallback(async () => {
         try {
-            const response = await fetch(`${API_BASE_URL}/history/stats`)
-            if (response.ok) {
-                const data = await response.json()
-                setStats(data)
-            }
+            const data = await api.history.stats()
+            setStats(data)
         } catch (error) {
             console.error("Error fetching stats:", error)
         }
@@ -73,23 +61,18 @@ export default function HistoryPage() {
     useEffect(() => {
         fetchHistory(1, pagination.pageSize)
         fetchStats()
-    }, []) // eslint-disable-line react-hooks/exhaustive-deps
+    }, [fetchHistory, fetchStats, pagination.pageSize])
 
     // Delete a record
     const handleDelete = async (taskUuid) => {
         try {
-            const response = await fetch(`${API_BASE_URL}/history/${taskUuid}`, {
-                method: "DELETE",
-            })
-            if (response.ok) {
-                message.success("紀錄已刪除")
-                fetchHistory(pagination.current, pagination.pageSize)
-                fetchStats()
-            } else {
-                message.error("刪除失敗")
-            }
+            await api.history.delete(taskUuid)
+            message.success("紀錄已刪除")
+            fetchHistory(pagination.current, pagination.pageSize)
+            fetchStats()
         } catch (error) {
-            message.error("刪除時發生錯誤")
+            console.error("刪除時發生錯誤:", error)
+            message.error("刪除失敗")
         }
     }
 

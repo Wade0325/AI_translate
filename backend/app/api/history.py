@@ -26,6 +26,42 @@ def get_history_stats(db: Session = Depends(get_db)):
     return HistoryStatsResponse(**stats)
 
 
+@router.get("/active", response_model=list[HistoryLogResponse])
+def get_active_single_tasks(
+    hours: int = Query(6, ge=1, le=72, description="顯示最近多少小時內已完成/失敗的單檔任務"),
+    db: Session = Depends(get_db),
+):
+    """
+    取得「Task 頁面」要顯示的單檔轉錄活躍紀錄：
+      - 進行中：所有 PROCESSING 的單檔任務
+      - 已完成/失敗：最近 hours 小時內
+
+    批次任務不包含在此（已由 GET /api/v1/batch/tasks 提供）。
+    """
+    logs = history_repo.get_active_single_tasks(db, recent_hours=hours)
+    return [
+        HistoryLogResponse(
+            task_uuid=str(log.task_uuid),
+            request_timestamp=str(log.request_timestamp) if log.request_timestamp else None,
+            completed_at=str(log.completed_at) if log.completed_at else None,
+            status=log.status,
+            original_filename=log.original_filename,
+            audio_duration_seconds=log.audio_duration_seconds,
+            processing_time_seconds=log.processing_time_seconds,
+            model_used=log.model_used,
+            provider=log.provider,
+            source_language=log.source_language,
+            target_language=log.target_language,
+            total_tokens=log.total_tokens,
+            cost=log.cost,
+            error_message=log.error_message,
+            is_batch=log.is_batch,
+            batch_id=log.batch_id,
+        )
+        for log in logs
+    ]
+
+
 @router.get("", response_model=HistoryListResponse)
 def get_history(
     page: int = Query(1, ge=1, description="頁碼"),

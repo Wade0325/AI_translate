@@ -2,13 +2,32 @@ from typing import Any, Dict, Optional
 from google import genai
 from google.genai import types
 from pathlib import Path
+import hashlib
 import time
 
+from app.exceptions import GeminiPermanentError, GeminiTransientError
 from app.schemas.schemas import ServiceStatus
 from app.utils.logger import setup_logger
 from app.utils.audio import get_mime_type
 
 logger = setup_logger(__name__)
+
+
+def _prompt_fingerprint(prompt: str) -> str:
+    """回傳 prompt 的長度與 md5 前綴，避免將完整內容寫入 log。"""
+    digest = hashlib.md5(prompt.encode("utf-8", errors="ignore")).hexdigest()[:8]
+    return f"len={len(prompt)} md5={digest}"
+
+
+def _classify_gemini_error(err: Exception) -> Exception:
+    """將原始 Gemini SDK 例外分類為 Transient / Permanent。
+
+    呼叫端應立刻 raise 回傳值，例如：
+        raise _classify_gemini_error(e) from e
+    """
+    if _is_flex_retryable_error(err):
+        return GeminiTransientError(str(err))
+    return GeminiPermanentError(str(err))
 
 
 # Flex 推論設定（參考 Google 官方文件）
@@ -117,8 +136,11 @@ def upload_file_to_gemini(file_path: Path, client: genai.Client, status_callback
         config["mime_type"] = mime_type
         logger.info(f"使用 MIME 類型: {mime_type}")
 
-    with open(file_path, "rb") as f:
-        gemini_file = client.files.upload(file=f, config=config)
+    try:
+        with open(file_path, "rb") as f:
+            gemini_file = client.files.upload(file=f, config=config)
+    except Exception as e:
+        raise _classify_gemini_error(e) from e
 
     # 等待檔案處理完成
     processing_dots = 0
@@ -127,23 +149,16 @@ def upload_file_to_gemini(file_path: Path, client: genai.Client, status_callback
         if processing_dots % 10 == 1:  # 每10個點換行顯示一次
             logger.info(f"檔案處理中{'.' * (processing_dots % 10)}")
         time.sleep(2)
-        gemini_file = client.files.get(name=gemini_file.name)
+        try:
+            gemini_file = client.files.get(name=gemini_file.name)
+        except Exception as e:
+            raise _classify_gemini_error(e) from e
 
     if gemini_file.state.name == "FAILED":
-        raise ValueError(f"Gemini 檔案處理失敗: {gemini_file.state}")
+        raise GeminiPermanentError(f"Gemini 檔案處理失敗: {gemini_file.state}")
 
     logger.info(f"檔案 '{file_path.name}' 上傳並處理完畢")
     return gemini_file
-
-
-def count_tokens_with_uploaded_file(client, gemini_file, model: str) -> int:
-    """
-    使用已上傳的檔案計算 token 數量
-    """
-    logger.info("正在計算檔案的輸入 tokens...")
-    response = client.models.count_tokens(
-        model=model, contents=[gemini_file])
-    return response.total_tokens
 
 
 def _build_transcription_config(service_tier: Optional[str]) -> types.GenerateContentConfig:
@@ -175,7 +190,7 @@ def transcribe_with_uploaded_file(
     回傳字典額外帶有 `service_tier_used`，讓上層可據此決定是否套用費用折扣。
     """
     logger.info(f"正在使用 {model} 進行轉錄... (requested service_tier={service_tier or 'standard'})")
-    logger.info(f"--- 送出給 Gemini 的 Prompt ---\n{prompt}\n--- Prompt End ---")
+    logger.info(f"Prompt fingerprint: {_prompt_fingerprint(prompt)}")
 
     response = None
     tier_used = "standard"
@@ -222,19 +237,25 @@ def transcribe_with_uploaded_file(
             logger.warning(
                 f"[FLEX] 推論耗盡，自動降級改以 Standard 層級重試: {last_error}"
             )
+            try:
+                response = client.models.generate_content(
+                    model=model,
+                    contents=[prompt, gemini_file],
+                    config=_build_transcription_config(None),
+                )
+            except Exception as e:
+                raise _classify_gemini_error(e) from e
+            tier_used = "standard"
+    else:
+        logger.info(f"[STANDARD] 呼叫 Gemini 標準同步 API model={model}")
+        try:
             response = client.models.generate_content(
                 model=model,
                 contents=[prompt, gemini_file],
                 config=_build_transcription_config(None),
             )
-            tier_used = "standard"
-    else:
-        logger.info(f"[STANDARD] 呼叫 Gemini 標準同步 API model={model}")
-        response = client.models.generate_content(
-            model=model,
-            contents=[prompt, gemini_file],
-            config=_build_transcription_config(None),
-        )
+        except Exception as e:
+            raise _classify_gemini_error(e) from e
         tier_used = "standard"
 
     # === 從回應 HTTP header 驗證 API 實際使用的 service tier ===
@@ -275,9 +296,12 @@ def transcribe_with_uploaded_file(
         logger.warning("-----------------------")
 
     # 從回傳中提取 token 用量
-    input_tokens = response.usage_metadata.prompt_token_count
-    output_tokens = response.usage_metadata.candidates_token_count
-    total_tokens = response.usage_metadata.total_token_count
+    # 注意：某些回應（如 thinking 模式、部分阻擋、極短內容）可能讓單一欄位為 None，
+    # 這裡統一防護避免後續 log 格式化或費用計算炸鍋
+    input_tokens = response.usage_metadata.prompt_token_count or 0
+    output_tokens = response.usage_metadata.candidates_token_count or 0
+    total_tokens = response.usage_metadata.total_token_count or 0
+    thoughts_tokens = response.usage_metadata.thoughts_token_count
 
     logger.info(f"Token 使用統計:")
     logger.info(
@@ -285,7 +309,7 @@ def transcribe_with_uploaded_file(
     logger.info(
         f"  Output (Candidates) tokens: {output_tokens:>8,}")
     logger.info(
-        f"  Thoughts tokens: {response.usage_metadata.thoughts_token_count or 'N/A':>8}")
+        f"  Thoughts tokens: {(thoughts_tokens if thoughts_tokens is not None else 'N/A'):>8}")
     logger.info(f"  Total tokens: {total_tokens:>8,}")
 
     return {
@@ -298,71 +322,15 @@ def transcribe_with_uploaded_file(
     }
 
 
-def translate_text(
-    client: genai.Client,
-    model: str,
-    prompt: str,
-    text_to_translate: str
-) -> Dict[str, Any]:
-    """
-    使用 Gemini API 進行文字翻譯。
-    """
-    logger.info(f"正在使用 {model} 進行翻譯...")
-    try:
-        contents = [prompt, text_to_translate]
-        response = client.models.generate_content(
-            model=model,
-            contents=contents
-        )
-
-        if not response.candidates:
-            logger.warning("警告: Gemini 沒有回傳任何內容。回應可能已被其安全機制阻擋。")
-            error_text = "[[翻譯失敗：Gemini 回應被阻擋]]"
-            try:
-                error_text = f"[[翻譯失敗：請求被 Gemini 以 '{response.prompt_feedback.block_reason}' 原因阻擋。]]"
-            except Exception:
-                pass
-
-            total_tokens = 0
-            if hasattr(response.usage_metadata, 'prompt_token_count'):
-                total_tokens = response.usage_metadata.prompt_token_count
-
-            return {
-                "success": False,
-                "translated_text": error_text,
-                "input_tokens": total_tokens,
-                "output_tokens": 0,
-                "total_tokens": total_tokens
-            }
-
-        input_tokens = response.usage_metadata.prompt_token_count
-        output_tokens = response.usage_metadata.candidates_token_count
-        total_tokens = response.usage_metadata.total_token_count
-
-        return {
-            "success": True,
-            "translated_text": response.text,
-            "input_tokens": input_tokens,
-            "output_tokens": output_tokens,
-            "total_tokens": total_tokens
-        }
-    except Exception as e:
-        logger.error(f"Gemini 翻譯 API 呼叫時發生錯誤: {e}", exc_info=True)
-        return {
-            "success": False,
-            "translated_text": f"[[翻譯錯誤: {str(e)}]]",
-            "input_tokens": 0,
-            "output_tokens": 0,
-            "total_tokens": 0
-        }
-
-
 def cleanup_gemini_file(client, gemini_file):
     """
-    清理 Gemini API 上的檔案
+    清理 Gemini API 上的檔案。失敗時僅警告，不中斷流程。
     """
-    client.files.delete(name=gemini_file.name)
-    logger.info(f"已從 Gemini API 清理檔案: {gemini_file.name}")
+    try:
+        client.files.delete(name=gemini_file.name)
+        logger.info(f"已從 Gemini API 清理檔案: {gemini_file.name}")
+    except Exception as e:
+        logger.warning(f"清理 Gemini 檔案 {gemini_file.name} 失敗: {e}")
 
 
 # ==================== Batch API ====================
@@ -404,19 +372,25 @@ def create_batch_transcription_job(
         inline_requests.append(request)
 
     logger.info(f"建立批次任務: {len(inline_requests)} 個請求, 模型: {model}")
-    logger.info(f"--- 送出給 Gemini Batch 的 Prompt ---\n{prompt}\n--- Prompt End ---")
-    batch_job = client.batches.create(
-        model=model,
-        src=inline_requests,
-        config={'display_name': display_name},
-    )
+    logger.info(f"Batch prompt fingerprint: {_prompt_fingerprint(prompt)}")
+    try:
+        batch_job = client.batches.create(
+            model=model,
+            src=inline_requests,
+            config={'display_name': display_name},
+        )
+    except Exception as e:
+        raise _classify_gemini_error(e) from e
     logger.info(f"批次任務已建立: {batch_job.name}")
     return batch_job
 
 
 def poll_batch_job_status(client: genai.Client, job_name: str) -> Any:
     """查詢 Gemini Batch API 任務狀態"""
-    return client.batches.get(name=job_name)
+    try:
+        return client.batches.get(name=job_name)
+    except Exception as e:
+        raise _classify_gemini_error(e) from e
 
 
 def get_batch_job_state_name(batch_job) -> str:

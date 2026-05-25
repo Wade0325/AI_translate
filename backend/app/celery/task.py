@@ -3,14 +3,15 @@ import traceback
 from pathlib import Path
 from typing import Generator
 from datetime import datetime
-import json
-import redis
 
 from sqlalchemy.orm import Session
 
 from app.celery.celery import celery_app
 from app.celery.models import TranscriptionTaskParams
+from app.celery.notifier import publish_status
+from app.core.config import get_settings
 from app.database.session import SessionLocal
+from app.exceptions import GeminiTransientError
 from app.provider.google.gemini import GeminiClient
 from app.repositories.transcription_log_repository import TranscriptionLogRepository
 from app.services.calculator.service import CalculatorService
@@ -26,32 +27,9 @@ from app.utils.logger import setup_logger
 logger = setup_logger(__name__)
 
 
-# Flex 推論費用折扣（與 Batch 相同為 50%）
-FLEX_COST_DISCOUNT = 0.5
-
-
-# 使用與 FastAPI 完全相同的 Redis 設定。
-redis_client = redis.from_url(celery_app.conf.broker_url)
-logger.info("Celery task: Redis client initialized from Celery broker URL.")
-
-
-def publish_status(client_id: str, file_uid: str, task_uuid: str, status_text: str, result_data: dict = None, status_code: str = "PROCESSING"):
-    """向 Redis 發布狀態更新"""
-    message = {
-        "client_id": client_id,
-        "file_uid": file_uid,
-        "task_uuid": task_uuid,
-        "status_code": status_code,
-        "status_text": status_text,
-    }
-    if result_data:
-        message["result"] = result_data
-
-    try:
-        redis_client.publish("transcription_updates",
-                             json.dumps(message, default=str, ensure_ascii=False))
-    except Exception as e:
-        logger.error(f"發布狀態更新至 Redis 時失敗: {e}")
+_settings = get_settings()
+# Flex 推論費用折扣
+FLEX_COST_DISCOUNT = _settings.flex_cost_discount
 
 
 def get_db_session() -> Generator[Session, None, None]:
@@ -63,18 +41,13 @@ def get_db_session() -> Generator[Session, None, None]:
         db.close()
 
 
-def cleanup_original_file(file_path: str):
-    """清理原始上傳檔案"""
-    try:
-        original_file = Path(file_path)
-        if original_file.exists() and "temp_uploads" in str(original_file):
-            original_file.unlink()
-            logger.info(f"已刪除原始上傳檔案: {original_file.name}")
-    except Exception as e:
-        logger.warning(f"刪除原始檔案失敗: {e}")
-
-
-@celery_app.task(bind=True)
+@celery_app.task(
+    bind=True,
+    autoretry_for=(GeminiTransientError,),
+    max_retries=3,
+    retry_backoff=True,
+    retry_backoff_max=60,
+)
 def transcribe_media_task(self, task_params_dict: dict):
     """
     Celery background task for transcription.
@@ -87,8 +60,14 @@ def transcribe_media_task(self, task_params_dict: dict):
 
     # 更新任務狀態
     def update_status(status_text: str, status_code: str = "PROCESSING", result_data: dict = None):
-        publish_status(client_id, file_uid, task_uuid, status_text,
-                       result_data=result_data, status_code=status_code)
+        publish_status(
+            client_id,
+            task_uuid,
+            status_text,
+            status_code=status_code,
+            file_uid=file_uid,
+            result_data=result_data,
+        )
 
     db_generator = get_db_session()
     db = next(db_generator)
@@ -173,6 +152,8 @@ def transcribe_media_task(self, task_params_dict: dict):
             temp_dir=local_path.parent,
             status_callback=update_status,
             service_tier=task_params.service_tier,
+            artifact_task_id=str(task_uuid),
+            original_filename=task_params.original_filename,
         )
 
         # 5. 執行轉錄 (包含VAD失敗重試邏輯)
@@ -198,10 +179,10 @@ def transcribe_media_task(self, task_params_dict: dict):
         items = []
         if total_tokens > 0:
             items.append(CalculationItem(
-                model=task_params.model,
                 task_name="total_transcription",
                 input_tokens=input_tokens,
-                output_tokens=output_tokens
+                output_tokens=output_tokens,
+                content_type="audio",
             ))
 
 
@@ -269,6 +250,13 @@ def transcribe_media_task(self, task_params_dict: dict):
         # 只需要把最原汁原味的 LRC 文字回傳給 Celery 存進 DB
         return {"raw_lrc_text": final_lrc_text}
 
+    except GeminiTransientError as e:
+        # 暫時性錯誤：交給 Celery autoretry 處理，不寫入 FAILED log
+        logger.warning(
+            f"Transcription task {task_uuid} hit transient Gemini error, will retry: {e}"
+        )
+        update_status(f"暫時性錯誤，將重試: {e}", status_code="PROCESSING")
+        raise
     except Exception as e:
         processing_time_seconds = time.time() - start_time
         error_message = traceback.format_exc()

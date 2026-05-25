@@ -1,5 +1,6 @@
 import json
 from fastapi import APIRouter, Body, HTTPException, Depends
+from fastapi.concurrency import run_in_threadpool
 from typing import Optional, List
 from sqlalchemy.orm import Session
 from fastapi import status
@@ -33,7 +34,7 @@ async def save_model_setting(
             model=config.model,
             prompt=config.prompt
         )
-        repo.save(db, config_to_save)
+        await run_in_threadpool(repo.save, db, config_to_save)
         return {
             "data_received": config.model_dump(by_alias=True)
         }
@@ -50,7 +51,7 @@ async def get_model_setting(
     repo: ModelSettingsRepository = Depends(get_repository)
 ):
     try:
-        db_orm_config = repo.get_by_name(db, provider)
+        db_orm_config = await run_in_threadpool(repo.get_by_name, db, provider)
 
         if db_orm_config:
             api_keys_list = []
@@ -91,7 +92,7 @@ async def test_model_interface(
     if "google" in request_data.provider.lower():
         try:
             gemini_client = GeminiClient(api_key=api_key_to_test)
-            test_result: ServiceStatus = gemini_client.test_connection()
+            test_result: ServiceStatus = await run_in_threadpool(gemini_client.test_connection)
 
             # 將後端 Client 的測試結果封裝成 API 回應
             if test_result.success:

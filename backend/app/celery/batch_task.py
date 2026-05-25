@@ -3,13 +3,15 @@ import uuid
 import traceback
 from pathlib import Path
 import json
-import redis
 from datetime import datetime
 
 
 from app.celery.celery import celery_app
 from app.celery.models import BatchTranscriptionTaskParams
+from app.celery.notifier import publish_status
+from app.core.config import get_settings
 from app.database.session import SessionLocal
+from app.exceptions import GeminiTransientError
 from app.provider.google.gemini import (
     GeminiClient,
     upload_file_to_gemini,
@@ -26,14 +28,17 @@ from app.services.calculator.models import CalculationItem
 from app.services.converter.service import convert_from_lrc
 from app.services.transcription.models import TranscriptionResponse
 from app.services.transcription.flows import _remap_lrc_timestamps
-from app.utils.audio import get_audio_duration, convert_to_wav
+from app.services.vad.preprocess import run_vad_extraction
+from app.services.vad.artifacts import persist_speech_extraction
+from app.utils.audio import get_audio_duration
 from app.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
 
-redis_client = redis.from_url(celery_app.conf.broker_url)
-
-BATCH_COST_DISCOUNT = 0.5
+_settings = get_settings()
+BATCH_COST_DISCOUNT = _settings.batch_cost_discount
+# 語音佔比超過此閾值時，視為原音檔幾乎全是語音，跳過 VAD 預處理
+VAD_SPEECH_RATIO_SKIP_THRESHOLD = _settings.vad_speech_ratio_skip_threshold
 
 
 def _publish_batch_status(
@@ -44,26 +49,16 @@ def _publish_batch_status(
     result_data: dict = None,
     file_uid: str = None,
 ):
-    """向 Redis 發布批次任務的狀態更新"""
-    message = {
-        "client_id": batch_id,
-        "batch_id": batch_id,
-        "task_uuid": task_uuid,
-        "status_code": status_code,
-        "status_text": status_text,
-    }
-    if file_uid:
-        message["file_uid"] = file_uid
-    if result_data:
-        message["result"] = result_data
-
-    try:
-        redis_client.publish(
-            "transcription_updates",
-            json.dumps(message, default=str, ensure_ascii=False),
-        )
-    except Exception as e:
-        logger.error(f"發布批次狀態更新至 Redis 時失敗: {e}")
+    """批次任務的 publish_status 薄包裝，自動附上 batch_id。"""
+    publish_status(
+        batch_id,
+        task_uuid,
+        status_text,
+        status_code=status_code,
+        file_uid=file_uid,
+        result_data=result_data,
+        extra={"batch_id": batch_id},
+    )
 
 
 def _cleanup_local_file(file_path: str):
@@ -77,11 +72,18 @@ def _cleanup_local_file(file_path: str):
         logger.warning(f"刪除暫存檔案失敗: {e}")
 
 
-def _vad_preprocess_file(file_path: Path, temp_dir: Path):
-    """
-    對單一音檔執行 VAD 前處理。
+def _vad_preprocess_file(
+    file_path: Path,
+    temp_dir: Path,
+    *,
+    file_uid: str | None = None,
+    original_filename: str | None = None,
+):
+    """對單一音檔執行 VAD 前處理（批次用）。
+
     回傳 (上傳用的檔案路徑, VAD segments or None, 需清理的暫存檔列表)。
-    如果語音佔比 >= 95% 或 VAD 失敗，回傳原始路徑和 None。
+    若語音佔比 >= ``VAD_SPEECH_RATIO_SKIP_THRESHOLD`` 或 VAD 失敗，
+    則回傳原始路徑與 None。
     """
     try:
         from app.services.vad.service import get_vad_service
@@ -90,48 +92,38 @@ def _vad_preprocess_file(file_path: Path, temp_dir: Path):
         logger.warning(f"VAD 服務不可用: {e}，跳過前處理")
         return file_path, None, []
 
-    try:
-        wav_path = convert_to_wav(file_path, temp_dir)
-        if wav_path is None:
-            logger.warning(f"無法轉換 {file_path.name} 為 WAV，跳過 VAD 前處理")
-            return file_path, None, []
+    result = run_vad_extraction(file_path, temp_dir, vad_service)
+    if not result.success:
+        return file_path, None, result.cleanup_files
 
-        from app.services.vad.models import VADProcessRequest
-        from app.services.vad.flows import extract_speech_segments
+    artifact_id = file_uid or file_path.stem
+    artifact_name = original_filename or file_path.name
+    used_for_transcription = result.speech_ratio < VAD_SPEECH_RATIO_SKIP_THRESHOLD
+    if result.speech_only_path:
+        persist_speech_extraction(
+            task_id=artifact_id,
+            original_filename=artifact_name,
+            speech_only_path=result.speech_only_path,
+            segments=result.segments,
+            speech_ratio=result.speech_ratio,
+            speech_duration=result.speech_duration,
+            used_for_transcription=used_for_transcription,
+        )
 
-        request = VADProcessRequest(audio_path=str(wav_path), output_dir=str(temp_dir))
-        result = extract_speech_segments(request, vad_service)
+    if used_for_transcription:
+        logger.info(
+            f"VAD 前處理完成 ({file_path.name}): "
+            f"語音佔比 {result.speech_ratio*100:.1f}%, "
+            f"{len(result.segments)} 個語音片段, "
+            f"純語音時長 {result.speech_duration:.1f}s"
+        )
+        return result.speech_only_path, result.segments, result.cleanup_files
 
-        cleanup_files = []
-        if wav_path != file_path:
-            cleanup_files.append(wav_path)
-
-        if not result.success or not result.speech_only_path:
-            logger.warning(f"VAD 語音提取失敗 ({file_path.name})，使用原始檔案")
-            return file_path, None, cleanup_files
-
-        speech_path = Path(result.speech_only_path)
-        cleanup_files.append(speech_path)
-
-        if result.speech_ratio < 0.95:
-            segments = [{"start": s.start, "end": s.end} for s in result.segments]
-            logger.info(
-                f"VAD 前處理完成 ({file_path.name}): "
-                f"語音佔比 {result.speech_ratio*100:.1f}%, "
-                f"{len(segments)} 個語音片段, "
-                f"純語音時長 {result.total_speech_duration:.1f}s"
-            )
-            return speech_path, segments, cleanup_files
-        else:
-            logger.info(
-                f"語音佔比 {result.speech_ratio*100:.1f}% (>=95%) ({file_path.name}), "
-                f"跳過 VAD 前處理"
-            )
-            return file_path, None, cleanup_files
-
-    except Exception as e:
-        logger.warning(f"VAD 前處理失敗 ({file_path.name}): {e}，使用原始檔案")
-        return file_path, None, []
+    logger.info(
+        f"語音佔比 {result.speech_ratio*100:.1f}% "
+        f"(>={VAD_SPEECH_RATIO_SKIP_THRESHOLD*100:.0f}%) ({file_path.name}), 跳過 VAD 前處理"
+    )
+    return file_path, None, result.cleanup_files
 
 
 def _process_single_result(
@@ -204,10 +196,10 @@ def _process_single_result(
     if total_tokens > 0:
         items.append(
             CalculationItem(
-                model=task_params.model,
                 task_name="total_transcription",
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
+                content_type="audio",
             )
         )
 
@@ -257,7 +249,13 @@ def _process_single_result(
     logger.info(f"檔案 {file_item.original_filename} 處理完成, 費用: ${batch_cost:.6f}")
 
 
-@celery_app.task(bind=True)
+@celery_app.task(
+    bind=True,
+    autoretry_for=(GeminiTransientError,),
+    max_retries=3,
+    retry_backoff=True,
+    retry_backoff_max=60,
+)
 def batch_transcribe_task(self, task_params_dict: dict):
     """
     使用 Gemini Batch API 進行批次轉錄的 Celery 任務。
@@ -361,7 +359,9 @@ def batch_transcribe_task(self, task_params_dict: dict):
 
             # VAD 前處理
             upload_path, segments, cleanup = _vad_preprocess_file(
-                local_path, local_path.parent
+                local_path, local_path.parent,
+                file_uid=file_item.file_uid,
+                original_filename=file_item.original_filename,
             )
             file_vad_segments[file_item.file_uid] = segments
             vad_cleanup_files.extend(cleanup)
@@ -541,6 +541,11 @@ def batch_transcribe_task(self, task_params_dict: dict):
         )
         logger.info(f"批次任務完成: {batch_id}, 耗時 {elapsed:.1f} 秒")
 
+    except GeminiTransientError as e:
+        # 暫時性錯誤：交給 Celery autoretry，狀態保留 POLLING/UPLOADING 以便恢復
+        logger.warning(f"批次任務 {batch_id} hit transient Gemini error, will retry: {e}")
+        update_status(f"暫時性錯誤，將重試: {e}", status_code="PROCESSING")
+        raise
     except Exception as e:
         error_message = traceback.format_exc()
         logger.error(f"批次任務發生嚴重錯誤: {error_message}")

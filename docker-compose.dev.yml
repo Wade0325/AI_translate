@@ -45,6 +45,7 @@ services:
       # 掛載程式碼，修改後會觸發 uvicorn --reload
       - ./backend:/app
       - backend_static_cache:/app/.cache
+      - ./backend/vad_artifacts:/app/vad_artifacts
     env_file:
       - ./.env.prod
     environment:
@@ -68,6 +69,7 @@ services:
     volumes:
       - ./backend:/app
       - ./backend/temp_uploads:/app/temp_uploads
+      - ./backend/vad_artifacts:/app/vad_artifacts
     env_file:
       - ./.env.prod
     environment:

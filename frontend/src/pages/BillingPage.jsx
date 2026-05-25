@@ -22,6 +22,7 @@ import {
     ArrowUpRight,
     Zap,
 } from "lucide-react"
+import RechartsTooltipBox from "@/components/charts/RechartsTooltipBox"
 
 const { Title, Text } = Typography
 
@@ -49,21 +50,18 @@ const modelBreakdown = [
 ]
 
 function CustomTooltip({ active, payload, label }) {
-    if (active && payload && payload.length) {
-        return (
-            <div style={{ borderRadius: 8, border: '1px solid #3a3a5c', background: '#1e1e3a', padding: 12, boxShadow: '0 4px 12px rgba(0,0,0,0.3)' }}>
-                <div style={{ fontSize: 13, fontWeight: 500, color: '#e8e8e8' }}>{label}</div>
-                {payload.map((p, i) => (
-                    <div key={i} style={{ fontSize: 12, color: '#8888a8' }}>
-                        {p.dataKey === "tokens" && `Tokens: ${p.value.toLocaleString()}`}
-                        {p.dataKey === "cost" && `Cost: $${p.value.toFixed(2)}`}
-                        {p.dataKey === "files" && `Files: ${p.value}`}
-                    </div>
-                ))}
-            </div>
-        )
-    }
-    return null
+    if (!active || !payload?.length) return null
+    return (
+        <RechartsTooltipBox label={label}>
+            {payload.map((p, i) => (
+                <div key={i} style={{ fontSize: 12, color: '#8888a8' }}>
+                    {p.dataKey === "tokens" && `Tokens: ${p.value.toLocaleString()}`}
+                    {p.dataKey === "cost" && `Cost: $${p.value.toFixed(2)}`}
+                    {p.dataKey === "files" && `Files: ${p.value}`}
+                </div>
+            ))}
+        </RechartsTooltipBox>
+    )
 }
 
 export default function BillingPage() {

@@ -1,6 +1,6 @@
 import uuid as _uuid_module
 from typing import Optional, List, Tuple
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlalchemy import or_, desc
 from sqlalchemy.orm import Session
@@ -87,6 +87,34 @@ class HistoryRepository:
             db.commit()
             return True
         return False
+
+    def get_active_single_tasks(
+        self,
+        db: Session,
+        recent_hours: int = 6,
+    ) -> List[TranscriptionLog]:
+        """
+        取得單檔轉錄的「活躍」紀錄，供 Task 頁面顯示：
+          - 進行中：status=PROCESSING（不限時間）
+          - 已完成 / 失敗：status in (COMPLETED, FAILED) 且發起時間在 recent_hours 內
+
+        排除批次任務 (is_batch=True)，避免與 BatchJob 區段重複。
+        以發起時間倒序排列。
+        """
+        cutoff = datetime.utcnow() - timedelta(hours=recent_hours)
+        return (
+            db.query(TranscriptionLog)
+            .filter(TranscriptionLog.is_batch.is_(False))
+            .filter(
+                or_(
+                    TranscriptionLog.status == "PROCESSING",
+                    (TranscriptionLog.status.in_(["COMPLETED", "FAILED"]))
+                    & (TranscriptionLog.request_timestamp >= cutoff),
+                )
+            )
+            .order_by(desc(TranscriptionLog.request_timestamp))
+            .all()
+        )
 
     def get_stats(self, db: Session) -> dict:
         """取得統計總覽。"""

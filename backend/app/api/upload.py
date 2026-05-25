@@ -2,6 +2,7 @@ import shutil
 from pathlib import Path
 
 from fastapi import APIRouter, UploadFile, File, HTTPException
+from fastapi.concurrency import run_in_threadpool
 
 from app.core.config import get_settings
 from app.utils.logger import setup_logger
@@ -61,11 +62,15 @@ async def upload_file(
     original_filename = Path(file.filename).name
     temp_file_path = _get_unique_filepath(TEMP_UPLOADS_DIR, original_filename)
 
-    try:
-        with temp_file_path.open("wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+    def _write_to_disk(src, dst: Path) -> int:
+        with dst.open("wb") as buffer:
+            shutil.copyfileobj(src, buffer)
+        return dst.stat().st_size
 
-        if temp_file_path.stat().st_size == 0:
+    try:
+        size = await run_in_threadpool(_write_to_disk, file.file, temp_file_path)
+
+        if size == 0:
             temp_file_path.unlink()
             raise HTTPException(status_code=400, detail="Uploaded file is empty.")
 

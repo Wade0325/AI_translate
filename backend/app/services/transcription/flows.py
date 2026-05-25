@@ -1,6 +1,7 @@
 from pathlib import Path
 from typing import List, Dict, Optional
 
+from app.core.config import get_settings
 from app.utils.logger import setup_logger
 from app.utils.audio import get_audio_duration as _ffprobe_duration, convert_to_wav
 from app.provider.google.gemini import (
@@ -9,6 +10,8 @@ from app.provider.google.gemini import (
     cleanup_gemini_file
 )
 from app.services.converter.service import _parse_lrc
+from app.services.vad.preprocess import run_vad_extraction
+from app.services.vad.artifacts import persist_speech_extraction, persist_split
 from app.services.vad.service import get_vad_service
 
 from .models import (
@@ -98,16 +101,28 @@ class AudioSegment:
 class TranscriptionTask:
     """轉錄任務管理器，處理音訊分割和轉錄流程"""
 
-    def __init__(self, client, model: str, prompt: str, temp_dir: Path, status_callback=None, service_tier: Optional[str] = None):
+    def __init__(
+        self,
+        client,
+        model: str,
+        prompt: str,
+        temp_dir: Path,
+        status_callback=None,
+        service_tier: Optional[str] = None,
+        artifact_task_id: Optional[str] = None,
+        original_filename: Optional[str] = None,
+    ):
         self.client = client
         self.model = model
         self.prompt = prompt
         self.temp_dir = temp_dir
         self.status_callback = status_callback
         self.service_tier = service_tier  # None/"standard" 或 "flex"
+        self.artifact_task_id = artifact_task_id
+        self.original_filename = original_filename
         self.local_cleanup_list = []
         self.gemini_cleanup_list = []
-        self.max_duration_seconds = 180  # 3 分鐘
+        self.max_duration_seconds = get_settings().transcription_max_duration_seconds
         self.original_file = None  # 明確標記原始檔案
 
         # 使用單例 VAD 服務
@@ -198,57 +213,45 @@ class TranscriptionTask:
         return result
 
     def _extract_speech_only(self, audio_path: Path) -> Optional[dict]:
+        """使用 VAD 提取純語音檔案。
+
+        實際 VAD 流程由 :mod:`app.services.vad.preprocess` 共用實作，
+        此處只負責呼叫 callback、把產生的暫存檔登記進 cleanup 列表。
         """
-        使用 VAD 提取純語音檔案，移除靜音段。
-        回傳 dict 包含 speech_only_path, segments, speech_ratio, speech_duration。
-        """
-        try:
-            if self.status_callback:
-                self.status_callback("分析語音活動...")
+        if self.status_callback:
+            self.status_callback("分析語音活動...")
 
-            # VAD 需要 WAV 格式
-            wav_path = convert_to_wav(audio_path, self.temp_dir)
-            if wav_path is None:
-                logger.warning(f"無法轉換 {audio_path.name} 為 WAV，跳過 VAD 前處理")
-                return None
-            if wav_path != audio_path and wav_path not in self.local_cleanup_list:
-                self.local_cleanup_list.append(wav_path)
+        result = run_vad_extraction(audio_path, self.temp_dir, self.vad_service)
 
-            # 呼叫 VAD 提取語音段（使用 flows 的完整結果）
-            from app.services.vad.models import VADProcessRequest
-            from app.services.vad.flows import extract_speech_segments
+        # 不論成功與否，cleanup 都要登記，避免暫存檔殘留
+        for cf in result.cleanup_files:
+            if cf not in self.local_cleanup_list:
+                self.local_cleanup_list.append(cf)
 
-            request = VADProcessRequest(
-                audio_path=str(wav_path),
-                output_dir=str(self.temp_dir),
-            )
-            extraction_result = extract_speech_segments(request, self.vad_service)
-
-            if not extraction_result.success or not extraction_result.speech_only_path:
-                logger.warning("VAD 語音提取失敗，將使用原始檔案")
-                return None
-
-            # 將純語音檔加入清理列表
-            speech_path = Path(extraction_result.speech_only_path)
-            if speech_path not in self.local_cleanup_list:
-                self.local_cleanup_list.append(speech_path)
-
-            # 轉換 segments 為 _remap_lrc_timestamps 所需的格式
-            segments = [
-                {"start": seg.start, "end": seg.end}
-                for seg in extraction_result.segments
-            ]
-
-            return {
-                "speech_only_path": extraction_result.speech_only_path,
-                "segments": segments,
-                "speech_ratio": extraction_result.speech_ratio,
-                "speech_duration": extraction_result.total_speech_duration,
-            }
-
-        except Exception as e:
-            logger.warning(f"VAD 前處理失敗: {e}，將使用原始檔案")
+        if not result.success:
             return None
+
+        speech_ratio = result.speech_ratio
+        used_for_transcription = speech_ratio < 0.95
+        artifact_id = self.artifact_task_id or audio_path.stem
+        artifact_name = self.original_filename or audio_path.name
+        if result.speech_only_path:
+            persist_speech_extraction(
+                task_id=artifact_id,
+                original_filename=artifact_name,
+                speech_only_path=result.speech_only_path,
+                segments=result.segments,
+                speech_ratio=speech_ratio,
+                speech_duration=result.speech_duration,
+                used_for_transcription=used_for_transcription,
+            )
+
+        return {
+            "speech_only_path": str(result.speech_only_path),
+            "segments": result.segments,
+            "speech_ratio": result.speech_ratio,
+            "speech_duration": result.speech_duration,
+        }
 
     def _get_audio_duration(self, audio_path: Path) -> Optional[float]:
         """取得音訊檔案時長"""
@@ -390,6 +393,16 @@ class TranscriptionTask:
             # 加入清理列表
             for segment in segments:
                 self.local_cleanup_list.append(segment.path)
+
+            artifact_id = self.artifact_task_id or audio_path.stem
+            artifact_name = self.original_filename or audio_path.name
+            persist_split(
+                task_id=artifact_id,
+                original_filename=artifact_name,
+                part1_path=Path(part1_path),
+                part2_path=Path(part2_path),
+                split_point=split_point,
+            )
 
             return segments
 

@@ -22,7 +22,11 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
 def _migrate_add_missing_columns():
-    """檢查並自動新增 models 中有但 DB 表中缺少的欄位"""
+    """檢查並自動新增 models 中有但 DB 表中缺少的欄位。
+
+    僅處理 ADD COLUMN，無法處理改型別、改約束、刪欄。需要結構性變更時
+    請手寫 SQL 並透過 ``migrations/*.sql`` 套用。
+    """
     inspector = sa_inspect(engine)
     for table_name, table in Base.metadata.tables.items():
         if not inspector.has_table(table_name):
@@ -32,9 +36,29 @@ def _migrate_add_missing_columns():
             if column.name not in existing_columns:
                 col_type = column.type.compile(engine.dialect)
                 sql = f'ALTER TABLE {table_name} ADD COLUMN {column.name} {col_type}'
-                logger.info(f"Auto-migration: {sql}")
+                logger.info(f"Auto-migrate column: {sql}")
                 with engine.begin() as conn:
                     conn.execute(text(sql))
+
+
+def _migrate_add_missing_indexes():
+    """檢查並自動建立 ORM 上已宣告但 DB 中缺少的 index。
+
+    僅做 CREATE INDEX IF NOT EXISTS；不處理重新命名或刪除。
+    """
+    inspector = sa_inspect(engine)
+    for table_name, table in Base.metadata.tables.items():
+        if not inspector.has_table(table_name):
+            continue
+        existing = {idx.get("name") for idx in inspector.get_indexes(table_name)}
+        for index in table.indexes:
+            if index.name in existing:
+                continue
+            columns = ", ".join(col.name for col in index.columns)
+            sql = f'CREATE INDEX IF NOT EXISTS {index.name} ON {table_name} ({columns})'
+            logger.info(f"Auto-migrate index: {sql}")
+            with engine.begin() as conn:
+                conn.execute(text(sql))
 
 
 def init_db():
@@ -42,8 +66,9 @@ def init_db():
     logger.info("Initializing database...")
     Base.metadata.create_all(bind=engine)
 
-    # 自動新增 models 中新增但 DB 中缺少的欄位
+    # 自動補齊 ORM 與 DB 之間的欄位 / index 差異
     _migrate_add_missing_columns()
+    _migrate_add_missing_indexes()
 
     db = SessionLocal()
     try:

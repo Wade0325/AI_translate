@@ -16,57 +16,15 @@ import {
     CheckCircle2,
     AlertCircle,
     Hourglass,
+    Scissors,
 } from "lucide-react"
 import { Button, Select, Switch, Slider, Tag, Typography, Input, Dropdown, Spin, Space, Tooltip } from "antd"
 import { LoadingOutlined } from "@ant-design/icons"
+import { languages, formatLang } from "@/constants/languages"
+import { downloadFormats } from "@/constants/downloadFormats"
 
 const { Text } = Typography
 const { TextArea } = Input
-
-const languages = [
-    {
-        label: "Common",
-        options: [
-            { value: "auto", label: "Auto Detect" },
-            { value: "zh-TW", label: "Chinese (Traditional)" },
-            { value: "zh-CN", label: "Chinese (Simplified)" },
-            { value: "en", label: "English" },
-            { value: "ja", label: "Japanese" },
-            { value: "ko", label: "Korean" },
-        ],
-    },
-    {
-        label: "European",
-        options: [
-            { value: "fr", label: "French" },
-            { value: "de", label: "German" },
-            { value: "es", label: "Spanish" },
-            { value: "pt", label: "Portuguese" },
-            { value: "it", label: "Italian" },
-            { value: "nl", label: "Dutch" },
-            { value: "ru", label: "Russian" },
-        ],
-    },
-    {
-        label: "Other",
-        options: [
-            { value: "ar", label: "Arabic" },
-            { value: "hi", label: "Hindi" },
-            { value: "th", label: "Thai" },
-            { value: "vi", label: "Vietnamese" },
-            { value: "id", label: "Indonesian" },
-        ],
-    },
-]
-
-function formatLang(value) {
-    for (const g of languages) {
-        for (const item of g.options) {
-            if (item.value === value) return item.label
-        }
-    }
-    return value
-}
 
 const statusConfig = {
     waiting: { icon: Hourglass, color: "#8888a8", label: "等待處理" },
@@ -75,13 +33,6 @@ const statusConfig = {
     error: { icon: AlertCircle, color: "#e05252", label: "錯誤" },
     batch_pending: { icon: Hourglass, color: "#47b8d4", label: "批次等待" },
 }
-
-const downloadFormats = [
-    { key: "lrc", label: "LRC" },
-    { key: "srt", label: "SRT" },
-    { key: "vtt", label: "VTT" },
-    { key: "txt", label: "TXT" },
-]
 
 export function FileConfigCard({
     config,
@@ -93,6 +44,8 @@ export function FileConfigCard({
     onReprocess,
     onAttachText,
     onAttachTextFromFile,
+    onVadTest,
+    vadTesting = false,
     readOnly = false,
 }) {
     const [expanded, setExpanded] = useState(false)
@@ -257,6 +210,19 @@ export function FileConfigCard({
                                 />
                             </Tooltip>
                         </Dropdown>
+                    )}
+                    {/* VAD 切割測試：僅等待中的本機音訊 */}
+                    {!readOnly && !isCompleted && !isActive && onVadTest && (
+                        <Tooltip title="VAD 切割測試（不轉錄）">
+                            <Button
+                                type="text"
+                                size="small"
+                                loading={vadTesting}
+                                icon={<Scissors size={14} />}
+                                onClick={() => onVadTest(config.id)}
+                                style={{ width: 28, height: 28, color: "#47b8d4" }}
+                            />
+                        </Tooltip>
                     )}
                     {/* Attach text：處理中時隱藏 */}
                     {!readOnly && !isCompleted && !isActive && onAttachText && (

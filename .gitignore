@@ -207,6 +207,8 @@ backend/*.db
 # Temporary upload folders
 /temp_uploads/
 /backend/temp_uploads/
+/backend/vad_artifacts/
+/vad_artifacts/
 /backend/app/celery/results/
 
 # Test - Fake Gemini mock server

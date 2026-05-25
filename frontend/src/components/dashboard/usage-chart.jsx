@@ -8,6 +8,7 @@ import {
     Tooltip,
     ResponsiveContainer,
 } from "recharts"
+import RechartsTooltipBox from "@/components/charts/RechartsTooltipBox"
 
 const { Title, Text } = Typography
 
@@ -22,26 +23,17 @@ const data = [
 ]
 
 function CustomTooltip({ active, payload, label }) {
-    if (active && payload && payload.length) {
-        return (
-            <div style={{
-                borderRadius: 8,
-                border: '1px solid #3a3a5c',
-                background: '#1e1e3a',
-                padding: 12,
-                boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
-            }}>
-                <div style={{ fontSize: 13, fontWeight: 500, color: '#e8e8e8' }}>{label}</div>
-                <div style={{ fontSize: 12, color: '#8888a8' }}>
-                    Tokens: {payload[0].value.toLocaleString()}
-                </div>
-                <div style={{ fontSize: 12, color: '#2dd4a8' }}>
-                    Cost: ${(payload[0].value * 0.000015).toFixed(2)}
-                </div>
+    if (!active || !payload?.length) return null
+    return (
+        <RechartsTooltipBox label={label}>
+            <div style={{ fontSize: 12, color: '#8888a8' }}>
+                Tokens: {payload[0].value.toLocaleString()}
             </div>
-        )
-    }
-    return null
+            <div style={{ fontSize: 12, color: '#2dd4a8' }}>
+                Cost: ${(payload[0].value * 0.000015).toFixed(2)}
+            </div>
+        </RechartsTooltipBox>
+    )
 }
 
 export function UsageChart() {
