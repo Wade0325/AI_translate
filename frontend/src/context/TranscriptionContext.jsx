@@ -5,6 +5,7 @@ import { useModelManager } from '../components/ModelManager';
 import { useTranscriptionSocket } from '../hooks/useTranscriptionSocket';
 import { useUploadQueue } from '../hooks/useUploadQueue';
 import { useDownloadBundle } from '../hooks/useDownloadBundle';
+import { api } from '../services/api';
 
 const TranscriptionContext = createContext(null);
 
@@ -53,6 +54,38 @@ export const TranscriptionProvider = ({ children }) => {
       hasStartedProcessing.current = false;
     },
   });
+
+  // ---- 批次任務狀態輪詢：偵測 batch_pending 檔案是否已完成 ----
+  const hasBatchPending = fileList.some((f) => f.status === 'batch_pending');
+  useEffect(() => {
+    if (!hasBatchPending) return;
+    const poll = async () => {
+      try {
+        const tasks = await api.batch.tasks();
+        const bySession = new Map(tasks.map((t) => [t.session_id, t]));
+        setFileList((current) => {
+          const next = current.map((f) => {
+            if (f.status !== 'batch_pending' || !f.sessionId) return f;
+            const task = bySession.get(f.sessionId);
+            if (!task || task.status === 'RETRIEVED') {
+              return { ...f, status: 'completed', statusText: '批次結果已儲存，可在 History 頁面下載' };
+            }
+            if (task.status === 'COMPLETED') {
+              return { ...f, statusText: '批次完成，請前往 Tasks 頁面取回結果' };
+            }
+            return f;
+          });
+          const changed = next.some((f, i) => f !== current[i]);
+          return changed ? next : current;
+        });
+      } catch {
+        // 輪詢失敗時靜默忽略
+      }
+    };
+    poll();
+    const id = setInterval(poll, 30000);
+    return () => clearInterval(id);
+  }, [hasBatchPending]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ---- isProcessing 自動切換 ----
   const hasStartedProcessing = useRef(false);

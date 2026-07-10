@@ -32,7 +32,7 @@ export default function TaskPage() {
         try {
             const [batchData, singleData] = await Promise.all([
                 api.batch.tasks(),
-                api.history.activeSingle({ hours: 6 }),
+                api.history.activeSingle({ hours: 24 }),
             ])
             setTasks(batchData)
             setSingleTasks(singleData)

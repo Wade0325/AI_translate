@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta
 from typing import Dict, Any, Optional, List
+from sqlalchemy import or_, and_
 from sqlalchemy.orm import Session
 from app.database.models import BatchJob
 
@@ -55,12 +56,25 @@ class BatchJobRepository:
 
     def get_active_tasks(self, db: Session) -> List[BatchJob]:
         """
-        取得所有活躍的批次任務（Task 頁面用）。
-        不包含 RETRIEVED 和 FAILED 狀態。
+        取得活躍的批次任務（Task 頁面用）：
+        - 所有進行中/待取回的任務（UPLOADING/POLLING/COMPLETED/RECOVERING）
+        - 24 小時內已取回的任務（RETRIEVED），供用戶確認和下載
         """
-        return db.query(BatchJob).filter(
-            BatchJob.status.in_(["UPLOADING", "POLLING", "COMPLETED", "RECOVERING"])
-        ).order_by(BatchJob.created_at.desc()).all()
+        cutoff = datetime.utcnow() - timedelta(hours=24)
+        return (
+            db.query(BatchJob)
+            .filter(
+                or_(
+                    BatchJob.status.in_(["UPLOADING", "POLLING", "COMPLETED", "RECOVERING"]),
+                    and_(
+                        BatchJob.status == "RETRIEVED",
+                        BatchJob.updated_at >= cutoff,
+                    ),
+                )
+            )
+            .order_by(BatchJob.created_at.desc())
+            .all()
+        )
 
     def archive_old_completed(self, db: Session) -> int:
         """
