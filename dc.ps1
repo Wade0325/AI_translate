@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     AI_translate Docker 一鍵管理腳本（本機 Windows 單一環境）。
 
