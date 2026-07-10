@@ -4,57 +4,47 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Commands
 
-### Backend
+### Run the app (single Docker stack, local Windows)
+
+The whole stack — Postgres, Redis, FastAPI, Celery, Vite — runs from one `docker-compose.yml`
+via the `dc.bat` helper (wraps `docker compose`, auto-checks Docker Desktop + `.env`):
 
 ```bash
-# Local dev (from backend/, with venv active)
-uvicorn main:app --reload --host 0.0.0.0 --port 8000
-celery -A app.celery.celery:celery_app worker -l INFO -P gevent
-
-# Tests
-cd backend && pytest tests/ -v
-# Single test
-cd backend && pytest tests/test_model_manager_api.py -v
-
-# Windows quick-start scripts
-Startup.bat app      # FastAPI only
-Startup.bat celery   # Celery worker only
-Startup.bat react    # React frontend only
-Startup.bat          # All services
+.\dc.bat                          # build + start all services (first run / after code change)
+.\dc.bat start                    # start without rebuild (fastest)
+.\dc.bat stop                     # stop but keep containers
+.\dc.bat down                     # stop and remove containers
+.\dc.bat restart celery-worker    # restart one service after editing celery code
+.\dc.bat logs backend-service     # follow one service's logs
+.\dc.bat rebuild                  # --no-cache rebuild + restart
 ```
 
-### Frontend
+- Frontend: <http://localhost:5173> ｜ API docs: <http://localhost:8000/docs>
+- Backend (`uvicorn --reload`) and frontend (Vite HMR) hot-reload on save; source is volume-mounted, so no rebuild for code edits.
+- Celery has **no** auto-reload — run `.\dc.bat restart celery-worker` after editing task code.
+
+### Tests
 
 ```bash
-cd frontend && npm install
-cd frontend && npm run dev   # dev server at http://localhost:5173
+pytest tests/ -v                                        # full suite (from repo root)
+pytest tests/integration/test_model_manager_api.py -v   # single file
 ```
 
-### Docker
-
-```bash
-# Development
-docker-compose -f docker-compose.dev.yml up --build
-# Restart celery after code change (no auto-reload)
-docker-compose -f docker-compose.dev.yml restart celery-worker
-
-# Production
-docker-compose -f docker-compose.prod.yml up --build -d
-docker-compose -f docker-compose.prod.yml logs -f backend-service
-```
+`pytest.ini` sets `pythonpath = backend`, so tests import from `backend/` (e.g. `from app.api import ...`).
+The suite is self-contained (SQLite in-memory + mocked torch); it needs no Postgres/Redis.
 
 ### Environment
 
-- Backend local: `backend/.env`
-- Docker production: `.env.prod` (only `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`)
-- Required vars: `POSTGRES_*`, `DATABASE_URL`, `REDIS_HOST`, `REDIS_PORT`, `GOOGLE_API_KEY`
+- Single env file: **`.env`** at the repo root (git-ignored). Copy `.env.example` and fill in `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB`.
+- `DATABASE_URL` and `REDIS_HOST` are injected by docker-compose — do not set them manually.
+- The Google Gemini API key is **not** an env var — enter it in the app's **Settings** page (stored in `model_configurations.api_keys`).
 
 ## Architecture
 
 ### System Overview
 
 ```
-Frontend (React/Vite) → Nginx (prod) → FastAPI → Redis + PostgreSQL
+Frontend (React/Vite dev server, /api proxied) → FastAPI → Redis + PostgreSQL
                                               ↓
                                         Celery Worker
                                               ↓
@@ -74,7 +64,7 @@ Communication pattern: Celery Worker publishes results to Redis Pub/Sub → `Con
 - `app/database/session.py` — Engine, SessionLocal, `init_db()`, `_migrate_add_missing_columns()` (auto-migration, no Alembic)
 - `app/database/models.py` — SQLAlchemy ORM: `ModelConfiguration`, `TranscriptionLog`, `BatchJob`
 - `app/repositories/` — Repository pattern over ORM models
-- `app/services/` — Business logic: `vad/`, `transcription/`, `converter/`, `calculator/`, `translator/`
+- `app/services/` — Business logic: `vad/`, `transcription/`, `converter/`, `calculator/`
 - `app/provider/google/gemini.py` — All Gemini API interactions (`GeminiClient` + standalone functions)
 - `app/websocket/manager.py` — `ConnectionManager` singleton, Redis Pub/Sub listener
 

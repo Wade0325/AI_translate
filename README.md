@@ -50,25 +50,28 @@
 
 ## 🚀 快速開始
 
-### 方式一：Docker 部署（推薦）
+只需要 **Docker Desktop**——Postgres / Redis / FFmpeg 全都在容器內，不必自行安裝。
 
 ```bash
 # 1. Clone 專案
 git clone https://github.com/Wade0325/AI_translate.git
 cd AI_translate
 
-# 2. 建立 .env.prod 環境變數（見下方範本）
+# 2. 建立環境變數：複製 .env.example 為 .env，填入 Postgres 帳密
+copy .env.example .env
 
-# 3. 一鍵 build + 啟動（Windows，等同 docker compose up --build -d）
-.\dc.bat                # 等同  .\dc.bat up prod
+# 3. 一鍵 build + 啟動全部服務（Postgres / Redis / FastAPI / Celery / Vite）
+.\dc.bat
 ```
 
-> `dc.bat` / `dc.ps1` 是專案附的 Docker 管理腳本：自動偵測 `docker compose` v2/v1、自動帶 `--env-file .env.prod`、跑前先檢查 Docker Desktop 是否啟動；零依賴、雙擊即可執行。
+> `dc.bat` / `dc.ps1` 是專案附的 Docker 管理腳本：自動偵測 `docker compose` v2/v1、自動帶 `--env-file .env`、跑前先檢查 Docker Desktop 是否啟動；零依賴、雙擊即可執行。
 
 開啟瀏覽器：
 
-- 🌐 前端：<http://localhost>
+- 🌐 前端：<http://localhost:5173>
 - 📡 API 文件：<http://localhost:8000/docs>
+
+> 首次啟動後，到左側 **⚙️ 設定 (Settings)** 頁面填入 Google Gemini API 金鑰即可開始使用。
 
 常用指令（一鍵腳本）：
 
@@ -76,51 +79,22 @@ cd AI_translate
 .\dc.bat                            # 第一次 / 改程式後：build + up -d
 .\dc.bat start                      # 只是要執行（不 build、秒起，最常用）
 .\dc.bat stop                       # 收工：停止但保留容器，下次 start 秒起
-.\dc.bat up dev                     # dev  build + up -d
-.\dc.bat logs prod backend-service  # 看單一服務 log
-.\dc.bat restart prod celery-worker # 改程式後重啟 celery
+.\dc.bat restart celery-worker      # 改 celery 程式後重啟
+.\dc.bat logs backend-service       # 看單一服務 log
 .\dc.bat rebuild                    # --no-cache 重新 build 並重啟
 .\dc.bat down                       # 停止並移除全部容器
 .\dc.bat help                       # 看全部用法
 ```
 
-若想直接用原生指令：
+程式碼以 volume 掛載：改後端（FastAPI `--reload`）與前端（Vite HMR）會自動熱更新；改 celery 需 `.\dc.bat restart celery-worker`。
+
+若想直接用原生 docker compose 指令：
 
 ```bash
-docker compose --env-file .env.prod -f docker-compose.prod.yml up --build -d
-docker compose --env-file .env.prod -f docker-compose.prod.yml logs -f backend-service
-docker compose --env-file .env.prod -f docker-compose.prod.yml down
+docker compose --env-file .env up --build -d
+docker compose --env-file .env logs -f backend-service
+docker compose --env-file .env down
 ```
-
-### 方式二：本地開發（Windows）
-
-需先安裝 **Python 3.11+ / Node.js 18+ / PostgreSQL 13+ / Redis 6+ / FFmpeg**。
-
-```bash
-# 後端
-cd backend
-python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
-
-# 前端
-cd ../frontend
-npm install
-```
-
-使用 `Startup.bat` 一鍵啟動：
-
-```bash
-Startup.bat          # 啟動所有服務 (FastAPI + Celery + React)
-Startup.bat app      # 只啟動 FastAPI
-Startup.bat celery   # 只啟動 Celery Worker
-Startup.bat react    # 只啟動 React 前端
-```
-
-存取：
-
-- 前端：<http://localhost:5173>
-- API 文件：<http://localhost:8000/docs>
 
 ---
 
@@ -166,24 +140,15 @@ Startup.bat react    # 只啟動 React 前端
 
 ## ⚙️ 環境變數
 
-於專案根目錄建立 `.env.prod`（Docker）或 `backend/.env`（本地開發）：
+於專案根目錄建立 `.env`（複製 `.env.example`）：
 
 ```env
-# 資料庫
 POSTGRES_USER=postgres
 POSTGRES_PASSWORD=your_password
 POSTGRES_DB=transcription_db
-DATABASE_URL=postgresql://postgres:your_password@localhost:5432/transcription_db
-
-# Redis
-REDIS_HOST=localhost
-REDIS_PORT=6379
-
-# Google Gemini API（必填）
-GOOGLE_API_KEY=your_google_api_key
 ```
 
-> Docker 部署時 `.env.prod` 只需填 `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB`，`DATABASE_URL` 與 `REDIS_HOST` 由 Compose 自動注入。
+> 只需這三個變數。`DATABASE_URL` 與 `REDIS_HOST` 由 docker-compose 自動注入；**Google Gemini API 金鑰不放這裡**，而是啟動後在前端「設定 (Settings)」頁面填入（儲存於資料庫）。
 
 ---
 
@@ -210,7 +175,7 @@ React Frontend  ──HTTP/WebSocket──▶  FastAPI  ──▶  Redis Pub/Sub
 | 前端 | React 19、Vite 6、Ant Design 6、React Router 7 |
 | 後端 | FastAPI 0.115、Celery 5.5（gevent）、SQLAlchemy 2.0、Pydantic 2 |
 | AI | Google Gemini（`google-genai` ≥ 1.64）、Silero VAD 5.1、PyTorch 2.7 |
-| 基礎設施 | PostgreSQL 13、Redis 6、Docker、Nginx |
+| 基礎設施 | PostgreSQL 13、Redis 6、Docker Compose |
 
 ### 目錄概覽
 
@@ -231,9 +196,8 @@ AI_translate/
 │       ├── pages/           # Dashboard / Transcribe / Result / Tasks / History / Billing / Settings
 │       ├── components/      # UI 元件（含 ModelManager）
 │       └── context/         # TranscriptionContext（單檔/批次/WS 狀態管理）
-├── docker-compose.prod.yml  # 生產環境
-├── docker-compose.dev.yml   # 開發環境
-└── Startup.bat              # Windows 一鍵啟動
+├── docker-compose.yml       # 本機單一環境（5 個容器）
+└── dc.bat / dc.ps1          # Docker 一鍵管理腳本
 ```
 
 ---
@@ -262,10 +226,10 @@ export const modelOptions = {
 ### 執行測試
 
 ```bash
-cd backend && pytest tests/ -v
+pytest tests/ -v
 ```
 
-> `pytest.ini` 已設定 `pythonpath = backend`，測試可直接 `from app.api import ...` 匯入。
+> 從專案根目錄執行。`pytest.ini` 已設定 `pythonpath = backend`，測試可直接 `from app.api import ...` 匯入；測試自帶 SQLite in-memory 與 mock，不需 Postgres/Redis。
 
 ---
 

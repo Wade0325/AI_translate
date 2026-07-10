@@ -27,7 +27,7 @@
 | **AI 模型** | Google Gemini API | 語音轉錄核心 |
 | **音訊處理** | ffmpeg / ffprobe | 格式轉換與時長分析 |
 | **語音活動偵測** | Silero VAD | 靜音移除 |
-| **容器化** | Docker Compose | 開發/生產環境部署 |
+| **容器化** | Docker Compose | 本機單一環境部署 |
 
 ## 1.3 系統架構圖
 
@@ -149,16 +149,16 @@ WebSocket Manager ── redis_listener() ── SUBSCRIBE ───────
 ## 1.6 部署架構 (Docker Compose)
 
 ```yaml
-# docker-compose.dev.yml — 5 個容器
+# docker-compose.yml — 5 個容器（本機單一環境）
 services:
   postgres:        # PostgreSQL 13 (port: 5432)
   redis:           # Redis 6 (Celery Broker + Pub/Sub)
   backend-service: # FastAPI + uvicorn --reload (port: 8000)
   celery-worker:   # Celery Worker
-  frontend-dev:    # Vite dev server + HMR (port: 5173)
+  frontend:        # Vite dev server + HMR (port: 5173)
 ```
 
-**環境變數**透過 `.env.prod` 統一管理，包含 PostgreSQL 帳密、Redis 連線等。前端透過 Vite 的 proxy 將 `/api/v1` 轉發到 `backend-service:8000`。
+**環境變數**透過根目錄 `.env` 統一管理（PostgreSQL 帳密）；`DATABASE_URL` / `REDIS_HOST` 由 Compose 自動注入。前端透過 Vite 的 proxy 將 `/api` 轉發到 `backend-service:8000`。
 
 ---
 
@@ -199,8 +199,7 @@ backend/
 │   │   ├── transcription/     # 轉錄流程 (VAD → 轉錄 → 重映射)
 │   │   ├── converter/         # 格式轉換 (LRC → SRT/VTT/TXT)
 │   │   ├── calculator/        # 費用計算
-│   │   ├── vad/               # 語音活動偵測 (Silero VAD)
-│   │   └── translator/        # 翻譯服務
+│   │   └── vad/               # 語音活動偵測 (Silero VAD)
 │   ├── provider/              # 外部 AI 提供者
 │   │   └── google/gemini.py   # Gemini Client + Batch API
 │   ├── utils/                 # 工具函式
@@ -332,7 +331,7 @@ erDiagram
 
 ### 2.4.2 批次轉錄 (`batch_task.py` — `batch_transcribe_task`)
 
-1. VAD 前處理所有檔案（語音佔比 ≥ 95% 則跳過）
+1. VAD 前處理所有檔案（語音佔比 ≥ 80% 則跳過）
 2. 逐一上傳至 Gemini File API
 3. 建立 Batch API inline requests → `create_batch_transcription_job()`
 4. 持久化至 `batch_jobs` 表（含 `gemini_job_name`、`file_mapping_json`）
