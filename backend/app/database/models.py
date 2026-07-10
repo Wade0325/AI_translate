@@ -80,3 +80,5 @@ class TranscriptionLog(Base):
     lrc_content = Column(Text, nullable=True)
     file_uid = Column(String, nullable=True, index=True)  # 前端檔案 uid
     session_id = Column(String, nullable=True, index=True)  # 同一次 Start 的任務群組
+    # 實際推論層級：standard / flex / batch
+    service_tier_used = Column(String, nullable=True)

@@ -170,6 +170,7 @@ class HistoryLogResponse(BaseModel):
     has_transcript: bool = False
     session_id: Optional[str] = None
     file_uid: Optional[str] = None
+    service_tier_used: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
 

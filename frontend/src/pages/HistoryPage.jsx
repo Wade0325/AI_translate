@@ -138,14 +138,21 @@ export default function HistoryPage() {
         },
         {
             title: "模式",
-            dataIndex: "is_batch",
-            key: "is_batch",
-            width: 80,
-            render: (v) => (
-                <Tag style={{ fontSize: 11 }}>
-                    {v ? "批次" : "一般"}
-                </Tag>
-            ),
+            key: "processing_mode",
+            width: 90,
+            render: (_, record) => {
+                if (record.is_batch) {
+                    return <Tag style={{ fontSize: 11 }}>批次</Tag>
+                }
+                if (record.service_tier_used === "flex") {
+                    return (
+                        <Tag style={{ fontSize: 11, color: "#47b8d4", borderColor: "#47b8d480" }}>
+                            Flex
+                        </Tag>
+                    )
+                }
+                return <Tag style={{ fontSize: 11 }}>一般</Tag>
+            },
         },
         {
             title: "模型",

@@ -230,6 +230,7 @@ def transcribe_media_task(self, task_params_dict: dict):
             "cost": final_cost,
             "completed_at": datetime.now(),
             "lrc_content": final_lrc_text or None,
+            "service_tier_used": transcription_result.service_tier_used or "standard",
         }
         if not log_repo.update_log(db, task_uuid, update_data):
             logger.warning(

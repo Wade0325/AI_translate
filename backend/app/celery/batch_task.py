@@ -225,6 +225,7 @@ def _process_single_result(
         "cost": batch_cost,
         "completed_at": datetime.now(),
         "lrc_content": final_lrc_text or None,
+        "service_tier_used": "batch",
     }):
         logger.warning(
             f"無法更新 transcription_log: task_uuid={file_task_uuid} "

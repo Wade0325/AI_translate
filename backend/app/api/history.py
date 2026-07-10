@@ -53,6 +53,7 @@ def _log_to_response(log: TranscriptionLog, db: Session) -> HistoryLogResponse:
         has_transcript=history_repo.has_transcript(db, log),
         session_id=log.session_id,
         file_uid=log.file_uid,
+        service_tier_used=log.service_tier_used,
     )
 
 
