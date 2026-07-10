@@ -14,11 +14,3 @@ class GeminiTransientError(AppError):
 
 class GeminiPermanentError(AppError):
     """Gemini API 永久性錯誤（API key 無效、prompt 被阻擋、quota 永久耗盡）。不應重試。"""
-
-
-class VadError(AppError):
-    """VAD 處理失敗。一般可繼續使用原始音檔，不重試。"""
-
-
-class AudioConvertError(AppError):
-    """音訊格式轉換失敗。"""

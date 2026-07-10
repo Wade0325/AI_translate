@@ -19,7 +19,7 @@ class ProviderConfigResponse(BaseModel):
     prompt: Optional[str] = None
 
 
-class TestProviderRequest(BaseModel):
+class ProviderTestRequest(BaseModel):
     """用於測試模型介面連接的請求體。"""
     provider: str
     api_keys: List[str] = Field(..., alias="apiKeys")
@@ -46,7 +46,7 @@ class ServiceStatus(BaseModel):
     message: Optional[str] = None
 
 
-class TestProviderResponse(BaseModel):
+class ProviderTestResponse(BaseModel):
     """用於測試模型介面連接的回應體。"""
     success: bool
     message: str
@@ -60,11 +60,11 @@ class WebSocketTranscriptionRequest(BaseModel):
     original_filename: str
     provider: str
     model: str
-    api_keys: str  # 注意：這是單個字符串，不是列表
+    api_keys: str
     source_lang: str
-    target_lang: Optional[str] = None  # 新增: 目標語言
+    target_lang: Optional[str] = None
     prompt: Optional[str] = None
-    original_text: Optional[str] = None  # <--- 新增此行
+    original_text: Optional[str] = None
     multi_speaker: bool = False
     service_tier: Optional[str] = None  # 'flex' 啟用 Flex 推論
     session_id: Optional[str] = None  # 同一次 Start 的任務群組 ID

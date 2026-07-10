@@ -3,17 +3,6 @@ from pydantic import BaseModel, Field
 from typing import List, Dict, Optional, Any
 
 
-class TranscriptionRequest(BaseModel):
-    """轉錄請求的資料模型"""
-    file_path: str
-    provider: str
-    model: str
-    api_key: str
-    source_lang: str
-    prompt: Optional[str] = None  # 新增 prompt 欄位
-    original_filename: Optional[str] = None
-
-
 class TranscriptionTaskResult(BaseModel):
     """
     單次轉錄任務的結果
@@ -43,12 +32,3 @@ class TranscriptionResponse(BaseModel):
     processing_time_seconds: float = Field(..., description="處理時間（秒）")
     audio_duration_seconds: float = Field(..., description="音訊總時長（秒）")
     cost_breakdown: Optional[List[Dict]] = Field(None, description="費用明細")
-
-
-class ModelConfiguration(BaseModel):
-    """
-    模型配置資訊
-    """
-    api_key: str = Field(..., description="API 金鑰")
-    model: str = Field(..., description="Gemini 模型名稱")
-    prompt: str = Field(..., description="轉錄提示詞")

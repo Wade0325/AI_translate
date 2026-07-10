@@ -7,8 +7,8 @@ from pydantic import ValidationError
 from app.schemas.schemas import (
     ProviderConfigRequest,
     ProviderConfigResponse,
-    TestProviderRequest,
-    TestProviderResponse,
+    ProviderTestRequest,
+    ProviderTestResponse,
     ModelConfigurationSchema,
     ServiceStatus,
     WebSocketTranscriptionRequest,
@@ -91,11 +91,11 @@ class TestProviderConfigResponse:
         assert resp.model is None
 
 
-# ─── TestProviderRequest ────────────────────────────────────────────────────
+# ─── ProviderTestRequest ────────────────────────────────────────────────────
 
 class TestProviderRequestSchema:
     def test_valid_test_provider_request(self):
-        req = TestProviderRequest(
+        req = ProviderTestRequest(
             provider="Google",
             apiKeys=["key1"],
             model="gemini-2.5-flash",
@@ -104,11 +104,11 @@ class TestProviderRequestSchema:
         assert req.api_keys == ["key1"]
 
 
-# ─── TestProviderResponse ───────────────────────────────────────────────────
+# ─── ProviderTestResponse ───────────────────────────────────────────────────
 
 class TestProviderResponseSchema:
     def test_valid_success_response(self):
-        resp = TestProviderResponse(
+        resp = ProviderTestResponse(
             success=True,
             message="連線成功",
             testedInterface="Google",
@@ -116,7 +116,7 @@ class TestProviderResponseSchema:
         assert resp.success is True
 
     def test_valid_failure_response(self):
-        resp = TestProviderResponse(
+        resp = ProviderTestResponse(
             success=False,
             message="連線失敗",
             testedInterface="Google",
@@ -124,7 +124,7 @@ class TestProviderResponseSchema:
         assert resp.success is False
 
     def test_details_optional(self):
-        resp = TestProviderResponse(
+        resp = ProviderTestResponse(
             success=True,
             message="OK",
             testedInterface="Google",

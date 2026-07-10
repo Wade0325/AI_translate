@@ -13,13 +13,13 @@ class TranscriptionTaskParams(BaseModel):
     api_keys: str
     source_lang: str
     original_filename: str
-    client_id: str  # 新增: 用於 WebSocket 通訊
-    file_uid: str   # 新增: 前端的檔案唯一ID
+    client_id: str
+    file_uid: str
     prompt: Optional[str] = None
-    original_text: Optional[str] = None  # 新增: 前端傳來的文字稿
-    target_lang: Optional[str] = None  # 新增: 前端指定的輸出語言
-    multi_speaker: bool = False  # 新增: 多人對話模式
-    service_tier: Optional[str] = None  # 新增: 'flex' 啟用 Flex 推論，其餘視為 Standard
+    original_text: Optional[str] = None
+    target_lang: Optional[str] = None
+    multi_speaker: bool = False
+    service_tier: Optional[str] = None  # 'flex' 啟用 Flex 推論，其餘視為 Standard
     session_id: Optional[str] = None
 
 

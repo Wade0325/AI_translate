@@ -1,8 +1,6 @@
 from datetime import datetime
 from pathlib import Path
 import json
-import time
-from types import SimpleNamespace
 
 from fastapi import (
     APIRouter,

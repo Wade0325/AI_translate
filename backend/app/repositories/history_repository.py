@@ -148,9 +148,9 @@ class HistoryRepository:
 
         task_uuid_str = str(log.task_uuid)
         file_uid = None
-        for fuid, tuuid in file_log_uuids.items():
-            if str(tuuid) == task_uuid_str:
-                file_uid = fuid
+        for candidate_file_uid, candidate_task_uuid in file_log_uuids.items():
+            if str(candidate_task_uuid) == task_uuid_str:
+                file_uid = candidate_file_uid
                 break
 
         if not file_uid:

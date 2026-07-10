@@ -58,7 +58,6 @@ def transcribe_media_task(self, task_params_dict: dict):
     client_id = task_params.client_id
     file_uid = task_params.file_uid
 
-    # 更新任務狀態
     def update_status(status_text: str, status_code: str = "PROCESSING", result_data: dict = None):
         publish_status(
             client_id,
@@ -78,7 +77,7 @@ def transcribe_media_task(self, task_params_dict: dict):
     task_manager = None
 
     try:
-        # 1. 新增一筆任務
+        # 建立任務記錄
         initial_log_data = {
             "status": "PROCESSING",
             "original_filename": task_params.original_filename,
@@ -104,7 +103,7 @@ def transcribe_media_task(self, task_params_dict: dict):
 
         update_status("檔案處理與分析...")
 
-        # 2. 獲取音訊時長
+        # 取得音訊時長
         audio_duration_seconds = get_audio_duration(local_path) or 0.0
         if audio_duration_seconds > 0:
             logger.info(f"Audio file info for task {task_uuid}:")
@@ -115,7 +114,7 @@ def transcribe_media_task(self, task_params_dict: dict):
             logger.warning(
                 f"Could not read audio duration for {local_path.name}.")
 
-        # 3. 初始化 Gemini Client
+        # 初始化 Gemini Client
         if task_params.provider.lower() != 'google':
             raise ValueError(
                 f"Provider '{task_params.provider}' is not supported. Only 'google' is allowed.")
@@ -129,8 +128,7 @@ def transcribe_media_task(self, task_params_dict: dict):
 
         update_status("正在初始化模型...")
 
-        # 4. 初始化轉錄任務管理器
-        # 根據是否提供 original_text 來決定 prompt
+        # 初始化轉錄任務管理器；依是否提供 original_text 決定 prompt
         if task_params.original_text:
             # 如果有提供文本，我們就建立一個對齊用的 prompt
             user_prompt = f"""
@@ -157,7 +155,7 @@ def transcribe_media_task(self, task_params_dict: dict):
         task_manager = TranscriptionTask(
             client=client,
             model=task_params.model,
-            prompt=user_prompt,  # 使用上面決定的 prompt
+            prompt=user_prompt,
             temp_dir=local_path.parent,
             status_callback=update_status,
             service_tier=task_params.service_tier,
@@ -165,7 +163,7 @@ def transcribe_media_task(self, task_params_dict: dict):
             original_filename=task_params.original_filename,
         )
 
-        # 5. 執行轉錄 (包含VAD失敗重試邏輯)
+        # 執行轉錄（含 VAD 失敗重試）
         logger.info(f"Starting transcription. Task ID : {task_uuid}")
         transcription_result = task_manager.transcribe_audio(local_path)
 
@@ -178,12 +176,12 @@ def transcribe_media_task(self, task_params_dict: dict):
 
         final_lrc_text = raw_lrc_text
 
-        # 8. 轉換格式
+        # 轉換字幕格式
         update_status("正在轉換字幕格式...")
         transcripts_model = convert_from_lrc(final_lrc_text)
         final_transcripts = transcripts_model.model_dump() if transcripts_model else {}
 
-        # 9. 計算費用
+        # 計算費用
         update_status("正在計算費用...")
         items = []
         if total_tokens > 0:
@@ -221,7 +219,7 @@ def transcribe_media_task(self, task_params_dict: dict):
         logger.info(
             f"Metrics calculated. Task ID: {task_uuid}. Cost: ${final_cost:.6f}")
 
-        # 10. 更新任務狀態為 COMPLETED
+        # 更新任務狀態為 COMPLETED
         update_data = {
             "status": "COMPLETED",
             "audio_duration_seconds": metrics_response.audio_duration_seconds,
@@ -238,7 +236,6 @@ def transcribe_media_task(self, task_params_dict: dict):
         else:
             logger.info(f"Task status updated to COMPLETED. Task ID: {task_uuid}")
 
-        # 準備回傳結果
         final_response = TranscriptionResponse(
             task_uuid=task_uuid,
             transcripts=final_transcripts,

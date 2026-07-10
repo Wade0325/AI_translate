@@ -5,7 +5,7 @@ from typing import Optional, List
 from sqlalchemy.orm import Session
 from fastapi import status
 
-from app.schemas.schemas import ProviderConfigRequest, ProviderConfigResponse, ModelConfigurationSchema, ServiceStatus, TestProviderRequest, TestProviderResponse
+from app.schemas.schemas import ProviderConfigRequest, ProviderConfigResponse, ModelConfigurationSchema, ServiceStatus, ProviderTestRequest, ProviderTestResponse
 from app.database.session import get_db
 from app.repositories.model_manager_repository import ModelSettingsRepository
 from app.provider.google.gemini import GeminiClient
@@ -76,9 +76,9 @@ async def get_model_setting(
         raise HTTPException(status_code=500, detail=message)
 
 
-@router.post("/test", response_model=TestProviderResponse)
+@router.post("/test", response_model=ProviderTestResponse)
 async def test_model_interface(
-    request_data: TestProviderRequest = Body(...)
+    request_data: ProviderTestRequest = Body(...)
 ):
     logger.info(
         f"收到測試API請求: Interface Name - '{request_data.provider}', API Keys count: {len(request_data.api_keys)}")
@@ -88,22 +88,20 @@ async def test_model_interface(
     # Gemini 通常使用單一 API Key。我們將使用列表中的第一個。
     api_key_to_test = request_data.api_keys[0]
 
-    # 判斷是否測試 Gemini
     if "google" in request_data.provider.lower():
         try:
             gemini_client = GeminiClient(api_key=api_key_to_test)
             test_result: ServiceStatus = await run_in_threadpool(gemini_client.test_connection)
 
-            # 將後端 Client 的測試結果封裝成 API 回應
             if test_result.success:
-                return TestProviderResponse(
+                return ProviderTestResponse(
                     success=True,
                     message="Gemini API (Google) 測試成功。",
                     details=test_result.message,
                     testedInterface=request_data.provider
                 )
             else:
-                return TestProviderResponse(
+                return ProviderTestResponse(
                     success=False,
                     message=test_result.message or "測試失敗，但未提供具體原因。",
                     details="",  # 保持為空，前端只顯示 message
@@ -123,13 +121,8 @@ async def test_model_interface(
                 }
             )
 
-    # TODO: 在此處實現其他類型API的測試邏輯，例如 OpenAI
-    # elif "openai" in request_data.provider.lower():
-    #     # ... OpenAI 測試邏輯 ...
-    #     pass
-
     else:
-        return TestProviderResponse(
+        return ProviderTestResponse(
             success=False,
             message=f"API類型 '{request_data.provider}' 的測試邏輯尚未實現。",
             testedInterface=request_data.provider,

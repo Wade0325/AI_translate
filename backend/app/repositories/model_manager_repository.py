@@ -7,7 +7,7 @@ from app.schemas.schemas import ModelConfigurationSchema
 class ModelSettingsRepository:
     def get_by_name(self, db: Session, provider: str) -> Optional[ModelConfigurationSchema]:
         """
-        根據 interface_name 從資料庫獲取模型配置。
+        根據 provider（供應商名稱）從資料庫獲取模型配置。
         返回 ModelConfigurationSchema 對象或 None。
         """
         config = db.query(ModelConfiguration).filter(

@@ -27,7 +27,7 @@ from app.services.calculator.service import CalculatorService
 from app.services.calculator.models import CalculationItem
 from app.services.converter.service import convert_from_lrc
 from app.services.transcription.models import TranscriptionResponse
-from app.services.transcription.flows import _remap_lrc_timestamps
+from app.services.transcription.flows import remap_lrc_timestamps
 from app.services.vad.preprocess import run_vad_extraction
 from app.services.vad.artifacts import persist_speech_extraction
 from app.utils.audio import get_audio_duration
@@ -183,7 +183,7 @@ def _process_single_result(
 
     # --- VAD 時間戳重映射 ---
     if vad_segments:
-        final_lrc_text = _remap_lrc_timestamps(final_lrc_text, vad_segments)
+        final_lrc_text = remap_lrc_timestamps(final_lrc_text, vad_segments)
         logger.info(f"檔案 {file_item.original_filename}: 時間戳已重映射回原始時間軸")
 
     # --- 格式轉換 ---
@@ -191,7 +191,7 @@ def _process_single_result(
     final_transcripts = transcripts_model.model_dump() if transcripts_model else {}
 
     # --- 費用計算 (含 Batch 50% 折扣) ---
-    processing_time = time.time() - start_time
+    processing_time_seconds = time.time() - start_time
     items = []
     if total_tokens > 0:
         items.append(
@@ -208,7 +208,7 @@ def _process_single_result(
     metrics = calculator.calculate_metrics(
         items=items,
         model=task_params.model,
-        processing_time_seconds=processing_time,
+        processing_time_seconds=processing_time_seconds,
         audio_duration_seconds=audio_duration,
     )
 
@@ -220,7 +220,7 @@ def _process_single_result(
     if not log_repo.update_log(db, file_task_uuid, {
         "status": "COMPLETED",
         "audio_duration_seconds": audio_duration,
-        "processing_time_seconds": processing_time,
+        "processing_time_seconds": processing_time_seconds,
         "total_tokens": metrics.total_tokens,
         "cost": batch_cost,
         "completed_at": datetime.now(),
@@ -241,7 +241,7 @@ def _process_single_result(
         output_cost=batch_output_cost,
         model=task_params.model,
         source_language=task_params.source_lang,
-        processing_time_seconds=processing_time,
+        processing_time_seconds=processing_time_seconds,
         audio_duration_seconds=audio_duration,
         cost_breakdown=metrics.breakdown,
     )
@@ -464,10 +464,10 @@ def batch_transcribe_task(self, task_params_dict: dict):
             error_msg = f"批次任務失敗，狀態: {state_name}"
             logger.error(error_msg)
             for file_item in task_params.files:
-                fuid = file_item.file_uid
-                if fuid in file_log_uuids:
-                    update_status(error_msg, status_code="FAILED", file_uid=fuid)
-                    log_repo.update_log(db, file_log_uuids[fuid], {
+                file_uid = file_item.file_uid
+                if file_uid in file_log_uuids:
+                    update_status(error_msg, status_code="FAILED", file_uid=file_uid)
+                    log_repo.update_log(db, file_log_uuids[file_uid], {
                         "status": "FAILED",
                         "error_message": error_msg,
                         "processing_time_seconds": time.time() - start_time,
@@ -563,14 +563,14 @@ def batch_transcribe_task(self, task_params_dict: dict):
         batch_repo.update_job(db, batch_id, {"status": "FAILED"})
 
         for file_item in task_params.files:
-            fuid = file_item.file_uid
-            if fuid in file_log_uuids:
-                log_repo.update_log(db, file_log_uuids[fuid], {
+            file_uid = file_item.file_uid
+            if file_uid in file_log_uuids:
+                log_repo.update_log(db, file_log_uuids[file_uid], {
                     "status": "FAILED",
                     "error_message": str(e),
                     "processing_time_seconds": time.time() - start_time,
                 })
-                update_status(f"批次任務失敗: {e}", status_code="FAILED", file_uid=fuid)
+                update_status(f"批次任務失敗: {e}", status_code="FAILED", file_uid=file_uid)
 
         update_status(f"批次任務失敗: {e}", status_code="BATCH_COMPLETED")
         raise e

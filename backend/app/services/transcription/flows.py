@@ -25,7 +25,7 @@ _settings = get_settings()
 VAD_SPEECH_RATIO_SKIP_THRESHOLD = _settings.vad_speech_ratio_skip_threshold
 
 
-def _remap_lrc_timestamps(lrc_text: str, segments: List[Dict[str, float]]) -> str:
+def remap_lrc_timestamps(lrc_text: str, segments: List[Dict[str, float]]) -> str:
     """將 LRC 時間戳從拼接後的時間軸重對應回原始時間軸"""
     parsed_lines = _parse_lrc(lrc_text)
     if not parsed_lines:
@@ -85,11 +85,6 @@ def _adjust_lrc_timestamps(lrc_text: str, offset_seconds: float) -> str:
     return "\n".join(adjusted_lines)
 
 
-# 刪除整個 _get_model_configuration 函數
-# def _get_model_configuration(db: Session, model: str, prompt_override: Optional[str] = None) -> ModelConfiguration:
-#    ...
-
-
 class AudioSegment:
     """音訊片段資訊"""
 
@@ -127,9 +122,8 @@ class TranscriptionTask:
         self.local_cleanup_list = []
         self.gemini_cleanup_list = []
         self.max_duration_seconds = get_settings().transcription_max_duration_seconds
-        self.original_file = None  # 明確標記原始檔案
+        self.original_file = None
 
-        # 使用單例 VAD 服務
         try:
             self.vad_service = get_vad_service()
             logger.info("使用 VAD 服務單例實例")
@@ -149,15 +143,12 @@ class TranscriptionTask:
         """
         logger.info(f"開始轉錄音訊: {audio_path.name}")
 
-        # 記錄原始檔案
         if self.original_file is None:
             self.original_file = audio_path
 
-        # 將檔案加入清理列表
         if audio_path not in self.local_cleanup_list:
             self.local_cleanup_list.append(audio_path)
 
-        # 取得音訊時長
         duration = self._get_audio_duration(audio_path)
         if duration is None:
             return TranscriptionTaskResult(
@@ -196,7 +187,7 @@ class TranscriptionTask:
                 self.status_callback("校正時間軸...")
             result = TranscriptionTaskResult(
                 success=True,
-                text=_remap_lrc_timestamps(result.text, speech_segments),
+                text=remap_lrc_timestamps(result.text, speech_segments),
                 input_tokens=result.input_tokens,
                 output_tokens=result.output_tokens,
                 total_tokens=result.total_tokens,
