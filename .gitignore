@@ -214,3 +214,7 @@ backend/*.db
 backend/fake_gemini/
 tests/test_fake_server.py
 tests/test_gemini_integration.py
+
+# Claude Code 本機設定與技能（不進版控）
+.claude/settings.local.json
+.claude/skills/
