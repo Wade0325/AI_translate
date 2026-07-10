@@ -2,13 +2,13 @@ from functools import lru_cache
 from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# 設定檔搜尋順序：backend/.env → 專案根目錄/.env.prod
-# 本機開發和 Docker 都能用同一份設定
-_BACKEND_DIR = Path(__file__).resolve().parent.parent.parent      # backend/
-_PROJECT_ROOT = _BACKEND_DIR.parent                                # 專案根目錄
+# 設定檔搜尋順序：backend/.env → 專案根目錄/.env
+# Docker 啟動時環境變數由 docker-compose 直接注入，此處為原生執行的備援。
+_BACKEND_DIR = Path(__file__).resolve().parent.parent.parent
+_PROJECT_ROOT = _BACKEND_DIR.parent
 
 def _find_env_file() -> Path | None:
-    for candidate in [_BACKEND_DIR / ".env", _PROJECT_ROOT / ".env.prod"]:
+    for candidate in [_BACKEND_DIR / ".env", _PROJECT_ROOT / ".env"]:
         if candidate.exists():
             return candidate
     return None
@@ -36,15 +36,13 @@ class Settings(BaseSettings):
 
     @property
     def sync_database_url(self) -> str:
-        """取得同步資料庫連線 URL"""
         if self.database_url:
             return self.database_url
-        
+
         return f"postgresql://{self.postgres_user}:{self.postgres_password}@{self.postgres_server}:{self.postgres_port}/{self.postgres_db}"
 
     @property
     def async_database_url(self) -> str:
-        """取得非同步資料庫連線 URL (如果需要)"""
         url = self.sync_database_url
         if url.startswith("postgresql://"):
             return url.replace("postgresql://", "postgresql+asyncpg://")
@@ -83,7 +81,6 @@ class Settings(BaseSettings):
 
     @property
     def redis_url(self) -> str:
-        """Redis 連線 URL"""
         return f"redis://{self.redis_host}:{self.redis_port}/0"
 
     @property

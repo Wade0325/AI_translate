@@ -1,11 +1,22 @@
+# AI_translate — 本機 Windows 單一環境
+#
+# 一鍵啟動全部服務（Postgres / Redis / FastAPI / Celery / Vite）。
+# 原始碼以 volume 掛載，改程式即生效：
+#   - backend-service : uvicorn --reload，改後端自動重啟
+#   - celery-worker   : 改完 celery 程式需手動  .\dc.bat restart celery-worker
+#   - frontend        : Vite dev server + HMR，改前端即時熱更新
+#
+# 用法：.\dc.bat            （等同 docker compose --env-file .env up -d --build）
+# 網址：前端 http://localhost:5173  ｜  API 文件 http://localhost:8000/docs
+
 services:
   postgres:
     image: postgres:13-alpine
-    container_name: prod_postgres
+    container_name: ait-postgres
     ports:
       - "5432:5432"
     env_file:
-      - ./.env.prod
+      - ./.env
     environment:
       - TZ=Asia/Taipei
     volumes:
@@ -19,7 +30,9 @@ services:
 
   redis:
     image: redis:6-alpine
-    container_name: prod_redis
+    container_name: ait-redis
+    ports:
+      - "6379:6379"
     environment:
       - TZ=Asia/Taipei
     restart: unless-stopped
@@ -27,13 +40,14 @@ services:
   backend-service:
     build:
       context: ./backend
-    container_name: prod_backend
-    command: uvicorn main:app --host 0.0.0.0 --port 8000
+    container_name: ait-backend
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    ports:
+      - "8000:8000"
     volumes:
-      - ./backend/temp_uploads:/app/temp_uploads
-      - ./backend/vad_artifacts:/app/vad_artifacts
+      - ./backend:/app
     env_file:
-      - ./.env.prod
+      - ./.env
     environment:
       - TZ=Asia/Taipei
       - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
@@ -48,13 +62,12 @@ services:
   celery-worker:
     build:
       context: ./backend
-    container_name: prod_celery_worker
+    container_name: ait-celery
     command: celery -A app.celery.celery:celery_app worker --loglevel=info -P gevent -c 20
     volumes:
-      - ./backend/temp_uploads:/app/temp_uploads
-      - ./backend/vad_artifacts:/app/vad_artifacts
+      - ./backend:/app
     env_file:
-      - ./.env.prod
+      - ./.env
     environment:
       - TZ=Asia/Taipei
       - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
@@ -67,11 +80,18 @@ services:
     restart: unless-stopped
 
   frontend:
-    build:
-      context: ./frontend
-    container_name: prod_frontend
+    image: node:20-alpine
+    container_name: ait-frontend
+    working_dir: /app
     ports:
-      - "80:80"
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    environment:
+      - TZ=Asia/Taipei
+      - VITE_PROXY_TARGET=http://backend-service:8000
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
     depends_on:
       - backend-service
     restart: unless-stopped

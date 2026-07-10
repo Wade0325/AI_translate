@@ -2,90 +2,51 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "label": "Celery Worker",
+      "label": "🚀 Start All Services (Docker)",
       "type": "shell",
-      "command": "call backend\\.venv\\Scripts\\activate.bat && cd backend && celery -A app.celery.celery:celery_app worker -l INFO -P gevent",
+      "command": ".\\dc.bat",
       "options": {
         "cwd": "${workspaceFolder}",
-        "shell": {
-          "executable": "cmd.exe",
-          "args": [
-            "/k"
-          ]
-        }
+        "shell": { "executable": "cmd.exe", "args": ["/c"] }
+      },
+      "problemMatcher": [],
+      "group": { "kind": "build", "isDefault": true },
+      "presentation": { "reveal": "always", "panel": "dedicated" }
+    },
+    {
+      "label": "⏹ Stop Services (Docker)",
+      "type": "shell",
+      "command": ".\\dc.bat stop",
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "shell": { "executable": "cmd.exe", "args": ["/c"] }
+      },
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated" }
+    },
+    {
+      "label": "📋 Logs (Docker)",
+      "type": "shell",
+      "command": ".\\dc.bat logs",
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "shell": { "executable": "cmd.exe", "args": ["/c"] }
       },
       "isBackground": true,
       "problemMatcher": [],
-      "presentation": {
-        "reveal": "always",
-        "panel": "dedicated"
-      },
-      "runOptions": {
-        "instanceLimit": 1
-      }
+      "presentation": { "reveal": "always", "panel": "dedicated" }
     },
     {
-      "label": "FastAPI Server",
+      "label": "🧪 Tests (pytest)",
       "type": "shell",
-      "command": "call backend\\.venv\\Scripts\\activate.bat && cd backend && uvicorn main:app --reload --host 0.0.0.0 --port 8000",
+      "command": "backend\\.venv\\Scripts\\python.exe -m pytest tests/ -v",
       "options": {
         "cwd": "${workspaceFolder}",
-        "shell": {
-          "executable": "cmd.exe",
-          "args": [
-            "/k"
-          ]
-        }
+        "shell": { "executable": "cmd.exe", "args": ["/c"] }
       },
-      "isBackground": true,
       "problemMatcher": [],
-      "presentation": {
-        "reveal": "always",
-        "panel": "dedicated"
-      },
-      "runOptions": {
-        "instanceLimit": 1
-      }
-    },
-    {
-      "label": "React Frontend",
-      "type": "shell",
-      "command": "cd frontend && npm run dev",
-      "options": {
-        "cwd": "${workspaceFolder}",
-        "shell": {
-          "executable": "cmd.exe",
-          "args": [
-            "/k"
-          ]
-        }
-      },
-      "isBackground": true,
-      "problemMatcher": [],
-      "presentation": {
-        "reveal": "always",
-        "panel": "dedicated"
-      },
-      "runOptions": {
-        "instanceLimit": 1
-      }
-    },
-    {
-      "label": "🚀 Start All Services",
-      "dependsOn": [
-        "Celery Worker",
-        "FastAPI Server",
-        "React Frontend"
-      ],
-      "dependsOrder": "parallel",
-      "problemMatcher": [],
-      "group": {
-        "kind": "build",
-        "isDefault": true
-      },
-      "runOptions": {
-        "instanceLimit": 1
-      }
+      "group": "test",
+      "presentation": { "reveal": "always", "panel": "dedicated" }
     }
   ]
 }
