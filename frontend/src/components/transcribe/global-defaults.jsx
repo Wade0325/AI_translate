@@ -1,47 +1,10 @@
 import { Select, Switch, Slider, Typography, Input } from "antd"
 import { Languages, Users, Clock, MessageSquareText, ChevronDown, CopyCheck } from "lucide-react"
 import { useState } from "react"
+import { languages } from "@/constants/languages"
 
 const { Text } = Typography
 const { TextArea } = Input
-
-const languages = [
-    {
-        label: "Common",
-        options: [
-            { value: "auto", label: "Auto Detect" },
-            { value: "zh-TW", label: "Chinese (Traditional)" },
-            { value: "zh-CN", label: "Chinese (Simplified)" },
-            { value: "en", label: "English" },
-            { value: "ja", label: "Japanese" },
-            { value: "ko", label: "Korean" },
-        ],
-    },
-    {
-        label: "European",
-        options: [
-            { value: "fr", label: "French" },
-            { value: "de", label: "German" },
-            { value: "es", label: "Spanish" },
-            { value: "pt", label: "Portuguese" },
-            { value: "it", label: "Italian" },
-            { value: "nl", label: "Dutch" },
-            { value: "ru", label: "Russian" },
-        ],
-    },
-    {
-        label: "Other",
-        options: [
-            { value: "ar", label: "Arabic" },
-            { value: "hi", label: "Hindi" },
-            { value: "th", label: "Thai" },
-            { value: "vi", label: "Vietnamese" },
-            { value: "id", label: "Indonesian" },
-        ],
-    },
-]
-
-
 
 export function GlobalDefaults({ config, onChange, onApplyAll, fileCount = 0 }) {
     const [promptOpen, setPromptOpen] = useState(false)

@@ -18,7 +18,6 @@ export const useTranscription = () => {
 };
 
 export const TranscriptionProvider = ({ children }) => {
-  // ---- 全域轉錄設定 ----
   const [fileList, setFileList] = useState([]);
   const [targetLang, setTargetLang] = useState('zh-TW');
   const [targetTranslateLang, setTargetTranslateLang] = useState(null);
@@ -30,17 +29,11 @@ export const TranscriptionProvider = ({ children }) => {
 
   // 相容舊 API
   const useBatchMode = processingMode === 'batch';
-  const setUseBatchMode = useCallback(
-    (v) => setProcessingMode(v ? 'batch' : 'standard'),
-    []
-  );
 
-  // ---- Modal 狀態 ----
   const [isPreviewModalVisible, setIsPreviewModalVisible] = useState(false);
   const [previewContent, setPreviewContent] = useState('');
   const [previewTitle, setPreviewTitle] = useState('');
 
-  // ---- 服務組合 ----
   const { getProviderConfig } = useModelManager();
   const socketManager = useTranscriptionSocket();
   const { downloadFile, downloadAllFiles } = useDownloadBundle(fileList);
@@ -55,7 +48,7 @@ export const TranscriptionProvider = ({ children }) => {
     },
   });
 
-  // ---- 批次任務狀態輪詢：偵測 batch_pending 檔案是否已完成 ----
+  // 批次任務狀態輪詢：偵測 batch_pending 檔案是否已完成
   const hasBatchPending = fileList.some((f) => f.status === 'batch_pending');
   useEffect(() => {
     if (!hasBatchPending) return;
@@ -87,7 +80,7 @@ export const TranscriptionProvider = ({ children }) => {
     return () => clearInterval(id);
   }, [hasBatchPending]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ---- isProcessing 自動切換 ----
+  // isProcessing 自動切換
   const hasStartedProcessing = useRef(false);
   useEffect(() => {
     const stillProcessing = fileList.some((f) => f.status === 'processing');
@@ -163,7 +156,7 @@ export const TranscriptionProvider = ({ children }) => {
     message.success('已清除所有任務');
   }, [socketManager]);
 
-  // ---- 啟動轉錄：解析 provider/apiKey/prompt 後分派給 hook ----
+  // 啟動轉錄：解析 provider/apiKey/prompt 後分派給 hook
   const handleStartTranscription = useCallback(async () => {
     const provider = findProviderForModel(model);
     if (!provider) {
@@ -224,7 +217,6 @@ export const TranscriptionProvider = ({ children }) => {
     setModel,
     isProcessing,
     useBatchMode,
-    setUseBatchMode,
     processingMode,
     setProcessingMode,
     multiSpeaker,

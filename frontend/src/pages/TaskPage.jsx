@@ -4,6 +4,7 @@ import { Archive } from "lucide-react"
 import { ReloadOutlined, LoadingOutlined } from "@ant-design/icons"
 import { useModelManager } from "@/components/ModelManager"
 import { api, ApiError } from "../services/api"
+import { downloadBlob, renameExtension } from "../utils/download"
 import TaskCard from "@/components/task/TaskCard"
 import SingleTaskRow from "@/components/task/SingleTaskRow"
 import TaskSessionDivider from "@/components/task/TaskSessionDivider"
@@ -135,15 +136,7 @@ export default function TaskPage() {
             message.warning("此格式無可用內容")
             return
         }
-        const blob = new Blob([content], { type: "text/plain;charset=utf-8" })
-        const url = URL.createObjectURL(blob)
-        const a = document.createElement("a")
-        a.href = url
-        a.download = `${fileResult.original_filename.replace(/\.[^.]+$/, "")}.${format}`
-        document.body.appendChild(a)
-        a.click()
-        document.body.removeChild(a)
-        URL.revokeObjectURL(url)
+        downloadBlob(content, renameExtension(fileResult.original_filename, format))
     }
 
     const toggleExpand = (batchId) => {

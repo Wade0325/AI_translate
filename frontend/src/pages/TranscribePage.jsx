@@ -65,7 +65,6 @@ export default function TranscribePage() {
     const [vadResult, setVadResult] = useState(null)
     const fileInputRef = useRef(null)
 
-    // Provider derived from model
     const currentProvider = findProviderForModel(model) || "Google"
 
     // Global config for GlobalDefaults component
@@ -84,7 +83,6 @@ export default function TranscribePage() {
         if (newConfig.isMultiSpeaker !== multiSpeaker) setMultiSpeaker(newConfig.isMultiSpeaker)
     }
 
-    // Handle files from UploadZone
     const handleFilesAdded = (files) => {
         const newFiles = files.map((file) => ({
             uid: `file-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
@@ -99,7 +97,6 @@ export default function TranscribePage() {
         setFileList(updatedList)
     }
 
-    // Handle YouTube URL
     const handleAddYoutubeUrl = () => {
         const url = youtubeUrl.trim()
         if (!url) return
@@ -120,7 +117,6 @@ export default function TranscribePage() {
         message.success("YouTube 連結已加入佇列")
     }
 
-    // Handle text attachment
     const handleAttachText = (fileUid) => {
         const file = fileList.find((f) => f.uid === fileUid)
         setTextModalFileUid(fileUid)
@@ -138,7 +134,6 @@ export default function TranscribePage() {
         message.success("文本已附加")
     }
 
-    // Handle text from file
     const handleAttachTextFromFile = (fileUid) => {
         setTextModalFileUid(fileUid)
         fileInputRef.current?.click()
@@ -161,19 +156,16 @@ export default function TranscribePage() {
         e.target.value = ""
     }
 
-    // Remove file
     const handleRemoveFile = (fileUid) => {
         setFileList((prev) => prev.filter((f) => f.uid !== fileUid))
     }
 
-    // File config update (per-file overrides)
     const handleFileConfigUpdate = (fileId, updates) => {
         setFileList((prev) =>
             prev.map((f) => (f.uid === fileId ? { ...f, ...updates } : f))
         )
     }
 
-    // Apply global config to all files
     const handleApplyAll = () => {
         setFileList((prev) =>
             prev.map((f) => ({
@@ -234,16 +226,13 @@ export default function TranscribePage() {
         }
     }
 
-    // Pagination
     const paginatedFiles = fileList.slice(
         (currentPage - 1) * PAGE_SIZE,
         currentPage * PAGE_SIZE
     )
 
-    // File size for CostEstimator
     const totalSizeMB = fileList.reduce((sum, f) => sum + (f.size || 0), 0) / (1024 * 1024)
 
-    // Completed files stats
     const completedFiles = fileList.filter((f) => f.status === "completed")
     const totalTokens = completedFiles.reduce((sum, f) => sum + (f.tokens_used || 0), 0)
     const totalCost = completedFiles.reduce((sum, f) => sum + (f.cost || 0), 0)

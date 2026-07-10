@@ -5,12 +5,9 @@ import {
     ChevronDown,
     Download,
     Clock,
-    Cpu,
     Coins,
-    Zap,
     Languages,
     Users,
-    Timer,
     Eye,
     Copy,
     Check,
@@ -85,9 +82,7 @@ export function ResultFileCard({ file, onDownload }) {
 
     return (
         <div style={{ borderRadius: 8, border: '1px solid #3a3a5c', background: '#1e1e3a', overflow: 'hidden' }}>
-            {/* Header row */}
             <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12, padding: 12 }}>
-                {/* Icon */}
                 <div style={{
                     marginTop: 2,
                     width: 36,
@@ -102,7 +97,6 @@ export function ResultFileCard({ file, onDownload }) {
                     <FileAudio size={16} color={sc.iconColor} />
                 </div>
 
-                {/* Info */}
                 <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
                     {/* Row 1: filename + status */}
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -147,7 +141,6 @@ export function ResultFileCard({ file, onDownload }) {
                     </div>
                 </div>
 
-                {/* Actions */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
                     <Button
                         type="text"
@@ -181,7 +174,6 @@ export function ResultFileCard({ file, onDownload }) {
             {/* Expanded: transcript viewer */}
             {expanded && segments.length > 0 && (
                 <div style={{ borderTop: '1px solid #3a3a5c' }}>
-                    {/* Toolbar */}
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 12px', background: 'rgba(42, 42, 72, 0.2)' }}>
                         <Text style={{ fontSize: 12, color: '#8888a8' }}>
                             {segments.length} segments
@@ -197,7 +189,6 @@ export function ResultFileCard({ file, onDownload }) {
                         </Button>
                     </div>
 
-                    {/* Segments */}
                     <div style={{ maxHeight: 384, overflowY: 'auto' }}>
                         {segments.map((seg, idx) => (
                             <div
@@ -212,7 +203,6 @@ export function ResultFileCard({ file, onDownload }) {
                                 onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(42, 42, 72, 0.2)' }}
                                 onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}
                             >
-                                {/* Timestamp */}
                                 <span style={{
                                     flexShrink: 0,
                                     borderRadius: 4,
@@ -227,7 +217,6 @@ export function ResultFileCard({ file, onDownload }) {
                                     {formatTime(seg.start || 0)}
                                 </span>
 
-                                {/* Content */}
                                 <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
                                     <span style={{ fontSize: 12, fontWeight: 500, color: '#2dd4a8', width: 'fit-content' }}>
                                         {seg.speaker ? `Speaker ${seg.speaker}` : "Speaker"}
@@ -235,7 +224,6 @@ export function ResultFileCard({ file, onDownload }) {
                                     <p style={{ fontSize: 13, lineHeight: 1.6, color: 'rgba(232, 232, 232, 0.9)', margin: 0 }}>{seg.text}</p>
                                 </div>
 
-                                {/* Copy */}
                                 <Button
                                     type="text"
                                     size="small"

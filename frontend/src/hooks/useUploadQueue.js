@@ -41,6 +41,29 @@ function buildSinglePayload({ serverFilename, file, provider, model, apiKey, pro
   };
 }
 
+// 依 COMPLETED/FAILED 的 WS 訊息，算出單一 file 的下一個 state。
+function applyFileResult(file, data) {
+  const next = {
+    ...file,
+    statusText: data.status_text,
+    task_uuid: data.task_uuid,
+  };
+  if (data.status_code === 'COMPLETED') {
+    next.status = 'completed';
+    next.percent = 100;
+    next.result = data.result?.transcripts;
+    next.tokens_used = data.result?.tokens_used;
+    next.cost = data.result?.cost;
+    next.input_cost = data.result?.input_cost;
+    next.output_cost = data.result?.output_cost;
+  } else if (data.status_code === 'FAILED') {
+    next.status = 'error';
+    next.percent = 100;
+    next.error = data.status_text;
+  }
+  return next;
+}
+
 export function useUploadQueue({ fileList, setFileList, socketManager, onBatchSubmitted }) {
   const updateFile = useCallback((uid, patch) => {
     setFileList((current) =>
@@ -59,34 +82,11 @@ export function useUploadQueue({ fileList, setFileList, socketManager, onBatchSu
     if (!data.file_uid) return;
 
     setFileList((current) =>
-      current.map((f) => {
-        if (f.uid !== data.file_uid) return f;
-        const next = {
-          ...f,
-          statusText: data.status_text,
-          task_uuid: data.task_uuid,
-        };
-        if (data.status_code === 'COMPLETED') {
-          next.status = 'completed';
-          next.percent = 100;
-          next.result = data.result?.transcripts;
-          next.tokens_used = data.result?.tokens_used;
-          next.cost = data.result?.cost;
-          next.input_cost = data.result?.input_cost;
-          next.output_cost = data.result?.output_cost;
-        } else if (data.status_code === 'FAILED') {
-          next.status = 'error';
-          next.percent = 100;
-          next.error = data.status_text;
-        }
-        return next;
-      })
+      current.map((f) => (f.uid === data.file_uid ? applyFileResult(f, data) : f))
     );
   }, [setFileList]);
 
-  // ===============================================================
   // 一般模式（單檔/YouTube）：每個 file uid 一條 WebSocket
-  // ===============================================================
   const startRegular = useCallback(async ({ provider, model, apiKey, prompt, defaults }) => {
     const candidates = fileList.filter(
       (f) => (f.status === 'waiting' || f.status === 'error') && f.originFileObj
@@ -167,9 +167,7 @@ export function useUploadQueue({ fileList, setFileList, socketManager, onBatchSu
     return { skipped: false };
   }, [fileList, setFileList, updateFile, socketManager, handleSingleMessage]);
 
-  // ===============================================================
   // 批次模式：所有檔案共用一條 batch WebSocket
-  // ===============================================================
   const startBatch = useCallback(async ({ provider, model, apiKey, prompt, defaults }) => {
     const candidates = fileList.filter(
       (f) => (f.status === 'waiting' || f.status === 'error') && f.originFileObj
@@ -287,28 +285,7 @@ export function useUploadQueue({ fileList, setFileList, socketManager, onBatchSu
         // 個別檔案的進度更新
         if (data.file_uid) {
           setFileList((current) =>
-            current.map((f) => {
-              if (f.uid !== data.file_uid) return f;
-              const next = {
-                ...f,
-                statusText: data.status_text,
-                task_uuid: data.task_uuid,
-              };
-              if (data.status_code === 'COMPLETED') {
-                next.status = 'completed';
-                next.percent = 100;
-                next.result = data.result?.transcripts;
-                next.tokens_used = data.result?.tokens_used;
-                next.cost = data.result?.cost;
-                next.input_cost = data.result?.input_cost;
-                next.output_cost = data.result?.output_cost;
-              } else if (data.status_code === 'FAILED') {
-                next.status = 'error';
-                next.percent = 100;
-                next.error = data.status_text;
-              }
-              return next;
-            })
+            current.map((f) => (f.uid === data.file_uid ? applyFileResult(f, data) : f))
           );
         } else {
           // 整體進度文字（無 file_uid）→ 同步到所有 processing 中的檔案

@@ -5,7 +5,6 @@ import { api, ApiError } from '../services/api';
 import ApiKeyModal from './model-manager/ApiKeyModal';
 import PromptModal from './model-manager/PromptModal';
 
-// 1. 建立 Context 和自訂 Hook
 const ModelManagerContext = createContext(null);
 export const useModelManager = () => {
     const context = useContext(ModelManagerContext);
@@ -15,13 +14,12 @@ export const useModelManager = () => {
     return context;
 };
 
-// Provider 現在只負責提供 Context 和渲染 Modals，不再渲染 UI
 const ModelManagerProvider = ({ children }) => {
     // Modal 相關狀態
     const [isModalOpen, setIsModalOpen] = useState(false);
     const [editingProvider, setEditingProvider] = useState('');
     const [apiKeys, setApiKeys] = useState(['']);
-    const [selectedmodel, setSelectedmodel] = useState(undefined);
+    const [selectedModel, setSelectedModel] = useState(undefined);
     const [providerConfigs, setProviderConfigs] = useState({});
 
     // 編輯參數 Modal 相關狀態
@@ -105,28 +103,26 @@ const ModelManagerProvider = ({ children }) => {
         }
     }, [getProviderConfig]);
 
-    // handleEditProvider
     const handleEditProvider = useCallback(async (provider) => {
         setEditingProvider(provider);
         const config = await getProviderConfig(provider);
 
         if (config) {
             setApiKeys(config.apiKeys && config.apiKeys.length > 0 ? config.apiKeys : ['']);
-            setSelectedmodel(config.model);
+            setSelectedModel(config.model);
         } else {
             setApiKeys(['']);
-            setSelectedmodel(modelOptions[provider]?.[0]?.value || undefined);
+            setSelectedModel(modelOptions[provider]?.[0]?.value || undefined);
         }
 
         setIsModalOpen(true);
     }, [getProviderConfig]);
 
-    // handleOk 現在只負責調用統一的儲存函式
     const handleOk = async () => {
         const validApiKeys = apiKeys.filter(key => key.trim() !== '');
         const success = await saveProviderConfig(editingProvider, {
             apiKeys: validApiKeys,
-            model: selectedmodel,
+            model: selectedModel,
         });
         if (success) {
             setIsModalOpen(false);
@@ -137,7 +133,7 @@ const ModelManagerProvider = ({ children }) => {
         setIsModalOpen(false);
     };
 
-    // handleEditProviderParams — 從後端 API 取得預設 Prompt (Single Source of Truth)
+    // 從後端 API 取得預設 Prompt (Single Source of Truth)
     const handleEditProviderParams = useCallback(async (provider) => {
         setEditingParamsProvider(provider);
         const config = await getProviderConfig(provider);
@@ -154,7 +150,6 @@ const ModelManagerProvider = ({ children }) => {
         setIsParamsModalOpen(true);
     }, [getProviderConfig]);
 
-    // handleParamsOk 現在也只負責調用統一的儲存函式
     const handleParamsOk = async () => {
         const success = await saveProviderConfig(editingParamsProvider, {
             prompt: promptText,
@@ -164,12 +159,10 @@ const ModelManagerProvider = ({ children }) => {
         }
     };
 
-    // handleParamsCancel (保持不變)
     const handleParamsCancel = () => {
         setIsParamsModalOpen(false);
     };
 
-    // handleTestProvider 也使用統一的獲取函式
     const handleTestProvider = useCallback(async (provider) => {
         message.loading({ content: `正在測試 ${provider} API...`, key: 'testInterface' });
 

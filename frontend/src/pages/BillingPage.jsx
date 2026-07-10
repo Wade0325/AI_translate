@@ -20,7 +20,6 @@ import {
     Clock,
     CreditCard,
     ArrowUpRight,
-    Zap,
 } from "lucide-react"
 import RechartsTooltipBox from "@/components/charts/RechartsTooltipBox"
 

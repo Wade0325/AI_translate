@@ -1,20 +1,6 @@
 import React from 'react';
 
-/**
- * Recharts 在深色佈景下使用的 Tooltip 容器。
- *
- * 各圖表自定義要顯示的內容（payload 解讀方式不同），但外觀統一在此控制。
- * 使用方式：
- *   function CustomTooltip({ active, payload, label }) {
- *     if (!active || !payload?.length) return null;
- *     return (
- *       <RechartsTooltipBox label={label}>
- *         {payload.map((p, i) => <div key={i}>...</div>)}
- *       </RechartsTooltipBox>
- *     );
- *   }
- *   <Tooltip content={<CustomTooltip />} />
- */
+/** 深色佈景下共用的 Recharts Tooltip 容器；各圖表自行提供內容，外觀統一於此。 */
 export default function RechartsTooltipBox({ label, children, style }) {
   return (
     <div

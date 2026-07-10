@@ -74,8 +74,6 @@ export function DashboardLayout() {
                             </Text>
                         )}
                     </div>
-                    {/* Page-specific actions rendered via Outlet context */}
-                    <div id="page-header-actions" />
                 </Header>
                 <Content style={{
                     flex: 1,

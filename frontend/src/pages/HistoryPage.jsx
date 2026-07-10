@@ -23,7 +23,6 @@ export default function HistoryPage() {
     const [modeFilter, setModeFilter] = useState(null)
     const [stats, setStats] = useState({ total_tasks: 0, completed_tasks: 0, failed_tasks: 0, total_cost: 0, total_tokens: 0 })
 
-    // Fetch history data
     const fetchHistory = useCallback(async (page = 1, pageSize = 10) => {
         setLoading(true)
         try {
@@ -48,7 +47,6 @@ export default function HistoryPage() {
         }
     }, [searchKeyword, statusFilter, modeFilter])
 
-    // Fetch stats
     const fetchStats = useCallback(async () => {
         try {
             const data = await api.history.stats()
@@ -63,7 +61,6 @@ export default function HistoryPage() {
         fetchStats()
     }, [fetchHistory, fetchStats, pagination.pageSize])
 
-    // Delete a record
     const handleDelete = async (taskUuid) => {
         try {
             await api.history.delete(taskUuid)
@@ -76,12 +73,10 @@ export default function HistoryPage() {
         }
     }
 
-    // Handle table change
     const handleTableChange = (pag) => {
         fetchHistory(pag.current, pag.pageSize)
     }
 
-    // Handle search
     const handleSearch = () => {
         fetchHistory(1, pagination.pageSize)
     }
