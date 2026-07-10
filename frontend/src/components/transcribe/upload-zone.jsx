@@ -16,7 +16,7 @@ const ACCEPTED_TYPES = [
     "audio/webm",
 ]
 
-const MAX_FILE_SIZE = 1024 * 1024 * 1024
+const MAX_FILE_SIZE = 1000 * 1024 * 1024
 
 export function UploadZone({ hasFiles, onFilesAdded }) {
     const [error, setError] = useState(null)
@@ -34,7 +34,7 @@ export function UploadZone({ hasFiles, onFilesAdded }) {
                     continue
                 }
                 if (file.size > MAX_FILE_SIZE) {
-                    setError(`File too large: ${file.name} (max 500MB)`)
+                    setError(`File too large: ${file.name} (max 1000MB)`)
                     continue
                 }
                 valid.push(file)
@@ -107,7 +107,7 @@ export function UploadZone({ hasFiles, onFilesAdded }) {
                     Drag audio files here or click to browse
                 </p>
                 <p style={{ color: '#8888a8', fontSize: 12, margin: 0 }}>
-                    MP3, WAV, M4A, OGG, FLAC, WebM (max 500MB)
+                    MP3, WAV, M4A, OGG, FLAC, WebM (max 1000MB)
                 </p>
             </Dragger>
             {error && (
