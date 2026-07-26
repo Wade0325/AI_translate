@@ -45,6 +45,7 @@ export default function TranscribePage() {
         downloadAllFiles,
         clearAllFiles,
         handleReprocess,
+        cancelTranscription,
         isPreviewModalVisible,
         previewContent,
         previewTitle,
@@ -416,6 +417,7 @@ export default function TranscribePage() {
                         onAttachText={handleAttachText}
                         onAttachTextFromFile={handleAttachTextFromFile}
                         onVadTest={file.originFileObj ? handleVadTest : undefined}
+                        onCancel={file.transcribeMode === 'single' ? cancelTranscription : undefined}
                         vadTesting={vadTestingUid === file.uid}
                     />
                 ))}
@@ -439,7 +441,7 @@ export default function TranscribePage() {
             {fileList.length > 0 && (
                 <Card size="small" style={{ border: "1px solid #3a3a5c" }} styles={{ body: { padding: "12px 16px" } }}>
                     <CostEstimator
-                        fileCount={fileList.filter((f) => f.status === "waiting" || f.status === "error").length}
+                        fileCount={fileList.filter((f) => ["waiting", "error", "cancelled"].includes(f.status)).length}
                         totalSizeMB={totalSizeMB}
                         isSubmitting={isProcessing}
                         onSubmit={handleStartTranscription}

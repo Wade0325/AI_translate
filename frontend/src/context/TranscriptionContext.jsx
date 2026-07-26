@@ -93,11 +93,14 @@ export const TranscriptionProvider = ({ children }) => {
 
       const completed = fileList.filter((f) => f.status === 'completed').length;
       const failed = fileList.filter((f) => f.status === 'error').length;
+      const cancelled = fileList.filter((f) => f.status === 'cancelled').length;
 
       if (failed > 0 && completed === 0) {
         message.error(`${failed} 個任務失敗`);
       } else if (failed > 0) {
         message.warning(`完成 ${completed} 個，${failed} 個失敗`);
+      } else if (completed === 0 && cancelled > 0) {
+        message.info(`${cancelled} 個任務已取消`);
       } else {
         message.success(`${completed} 個任務已完成`);
       }
@@ -156,6 +159,40 @@ export const TranscriptionProvider = ({ children }) => {
     message.success('已清除所有任務');
   }, [socketManager]);
 
+  // 取消單檔轉錄：後端設置取消旗標並 revoke，最終狀態由 WS 的 CANCELLED 訊息更新
+  const cancelTranscription = useCallback(async (uid) => {
+    const target = fileList.find((f) => f.uid === uid);
+    if (!target || target.status !== 'processing') return;
+
+    setFileList((current) =>
+      current.map((f) => (f.uid === uid ? { ...f, statusText: '正在取消...' } : f))
+    );
+    try {
+      const res = await api.transcription.cancel(uid, target.provider);
+      if (res?.cancelled === false) {
+        message.warning('任務尚未提交到佇列（可能還在上傳），請稍後再試。');
+        setFileList((current) =>
+          current.map((f) =>
+            f.uid === uid && f.status === 'processing'
+              ? { ...f, statusText: '處理中...' }
+              : f
+          )
+        );
+        return;
+      }
+      message.info(`已取消任務：${target.name}`);
+    } catch (err) {
+      message.error(`取消失敗: ${err.message}`);
+      setFileList((current) =>
+        current.map((f) =>
+          f.uid === uid && f.status === 'processing'
+            ? { ...f, statusText: '處理中...' }
+            : f
+        )
+      );
+    }
+  }, [fileList]);
+
   // 啟動轉錄：解析 provider/apiKey/prompt 後分派給 hook
   const handleStartTranscription = useCallback(async () => {
     const provider = findProviderForModel(model);
@@ -167,8 +204,13 @@ export const TranscriptionProvider = ({ children }) => {
     const config = await getProviderConfig(provider);
     const apiKey = config?.apiKeys?.[0];
     const prompt = config?.prompt;
-    if (!apiKey) {
+    const isLocalProvider = provider.toLowerCase() === 'local';
+    if (!apiKey && !isLocalProvider) {
       message.error(`請先在模型管理中為 ${provider} 設定 API 金鑰。`);
+      return;
+    }
+    if (isLocalProvider && useBatchMode) {
+      message.error('本地模型不支援批次模式，請改用一般模式。');
       return;
     }
 
@@ -182,7 +224,7 @@ export const TranscriptionProvider = ({ children }) => {
     setIsProcessing(true);
 
     const runner = useBatchMode ? startBatch : startRegular;
-    const result = await runner({ provider, model, apiKey, prompt, defaults });
+    const result = await runner({ provider, model, apiKey: apiKey || '', prompt, defaults });
 
     if (result?.skipped) {
       setIsProcessing(false);
@@ -227,6 +269,7 @@ export const TranscriptionProvider = ({ children }) => {
     downloadAllFiles,
     clearAllFiles,
     handleReprocess,
+    cancelTranscription,
     isPreviewModalVisible,
     previewContent,
     previewTitle,

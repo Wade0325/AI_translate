@@ -7,7 +7,7 @@
 """
 import uuid
 import pytest
-from datetime import datetime
+from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
 
 from app.database.models import TranscriptionLog, ModelConfiguration
@@ -296,3 +296,73 @@ class TestHistoryRepository:
         page2_uuids = {str(log.task_uuid) for log in page2_logs}
         # 兩頁的紀錄不應重疊
         assert len(page1_uuids & page2_uuids) == 0
+
+
+class TestTranscriptionLogRepositoryStaleSweep:
+    """mark_stale_processing_failed — 孤兒 PROCESSING 紀錄的啟動清掃"""
+
+    def setup_method(self):
+        from app.repositories.transcription_log_repository import TranscriptionLogRepository
+        self.repo = TranscriptionLogRepository()
+
+    def test_stale_processing_marked_failed(self, db_session: Session):
+        """超過時限的單檔 PROCESSING 紀錄應標記為 FAILED 並附錯誤訊息"""
+        stale = _create_transcription_log(
+            db_session, status="PROCESSING",
+            request_timestamp=datetime.now() - timedelta(hours=13))
+
+        swept = self.repo.mark_stale_processing_failed(db_session, max_age_hours=12)
+
+        assert swept == 1
+        db_session.refresh(stale)
+        assert stale.status == "FAILED"
+        assert stale.error_message
+        assert stale.completed_at is not None
+
+    def test_recent_processing_untouched(self, db_session: Session):
+        """未超過時限的 PROCESSING 紀錄不應被動到"""
+        recent = _create_transcription_log(
+            db_session, status="PROCESSING",
+            request_timestamp=datetime.now() - timedelta(hours=1))
+
+        swept = self.repo.mark_stale_processing_failed(db_session, max_age_hours=12)
+
+        assert swept == 0
+        db_session.refresh(recent)
+        assert recent.status == "PROCESSING"
+
+    def test_batch_processing_untouched(self, db_session: Session):
+        """批次紀錄有自己的 recover 機制，不應被清掃"""
+        batch = _create_transcription_log(
+            db_session, status="PROCESSING", is_batch=True,
+            request_timestamp=datetime.now() - timedelta(hours=48))
+
+        swept = self.repo.mark_stale_processing_failed(db_session, max_age_hours=12)
+
+        assert swept == 0
+        db_session.refresh(batch)
+        assert batch.status == "PROCESSING"
+
+    def test_completed_untouched(self, db_session: Session):
+        """已完成的舊紀錄不應被清掃"""
+        done = _create_transcription_log(
+            db_session, status="COMPLETED",
+            request_timestamp=datetime.now() - timedelta(hours=48))
+
+        swept = self.repo.mark_stale_processing_failed(db_session, max_age_hours=12)
+
+        assert swept == 0
+        db_session.refresh(done)
+        assert done.status == "COMPLETED"
+
+    def test_null_is_batch_treated_as_single_file(self, db_session: Session):
+        """is_batch 為 NULL 的舊紀錄應視為單檔、納入清掃"""
+        legacy = _create_transcription_log(
+            db_session, status="PROCESSING", is_batch=None,
+            request_timestamp=datetime.now() - timedelta(hours=13))
+
+        swept = self.repo.mark_stale_processing_failed(db_session, max_age_hours=12)
+
+        assert swept == 1
+        db_session.refresh(legacy)
+        assert legacy.status == "FAILED"

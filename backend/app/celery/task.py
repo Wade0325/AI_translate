@@ -7,11 +7,12 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 
 from app.celery.celery import celery_app
+from app.celery.cancellation import clear_cancel_flag, is_cancel_requested
 from app.celery.models import TranscriptionTaskParams
 from app.celery.notifier import publish_status
 from app.core.config import get_settings
 from app.database.session import SessionLocal
-from app.exceptions import GeminiTransientError
+from app.exceptions import GeminiTransientError, TranscriptionCancelledError
 from app.provider.google.gemini import GeminiClient
 from app.repositories.transcription_log_repository import TranscriptionLogRepository
 from app.services.calculator.service import CalculatorService
@@ -68,6 +69,14 @@ def transcribe_media_task(self, task_params_dict: dict):
             result_data=result_data,
         )
 
+    # 任務在佇列等待期間可能已被取消；revoke 廣播可能沒送達（worker 當時離線），
+    # 靠旗標做最後攔截
+    if is_cancel_requested(file_uid):
+        clear_cancel_flag(file_uid)
+        logger.info(f"任務 {task_uuid} 在啟動前已被取消 (file_uid={file_uid})")
+        update_status("任務已取消", status_code="CANCELLED")
+        return {"cancelled": True}
+
     db_generator = get_db_session()
     db = next(db_generator)
 
@@ -114,17 +123,20 @@ def transcribe_media_task(self, task_params_dict: dict):
             logger.warning(
                 f"Could not read audio duration for {local_path.name}.")
 
-        # 初始化 Gemini Client
-        if task_params.provider.lower() != 'google':
+        # 初始化 provider client（local 為本地模型，不需 API key）
+        provider = task_params.provider.lower()
+        if provider not in ('google', 'local'):
             raise ValueError(
-                f"Provider '{task_params.provider}' is not supported. Only 'google' is allowed.")
+                f"Provider '{task_params.provider}' is not supported. Only 'google' or 'local' is allowed.")
 
-        logger.info(
-            f"Initializing Gemini Client for model: {task_params.model}")
-        client = GeminiClient(task_params.api_keys).client
-        if not client:
-            raise ValueError(
-                "Failed to initialize Gemini Client. Check API key.")
+        client = None
+        if provider == 'google':
+            logger.info(
+                f"Initializing Gemini Client for model: {task_params.model}")
+            client = GeminiClient(task_params.api_keys).client
+            if not client:
+                raise ValueError(
+                    "Failed to initialize Gemini Client. Check API key.")
 
         update_status("正在初始化模型...")
 
@@ -161,11 +173,19 @@ def transcribe_media_task(self, task_params_dict: dict):
             service_tier=task_params.service_tier,
             artifact_task_id=str(task_uuid),
             original_filename=task_params.original_filename,
+            provider=provider,
+            source_lang=task_params.source_lang,
+            cancel_check=lambda: is_cancel_requested(file_uid),
         )
 
         # 執行轉錄（含 VAD 失敗重試）
         logger.info(f"Starting transcription. Task ID : {task_uuid}")
         transcription_result = task_manager.transcribe_audio(local_path)
+
+        if not transcription_result.success:
+            # 失敗結果的 text 是錯誤描述而非 LRC，直接走 FAILED 路徑，
+            # 避免被標成 COMPLETED 並產出空字幕
+            raise ValueError(f"轉錄失敗: {transcription_result.text}")
 
         raw_lrc_text = transcription_result.text
         input_tokens = transcription_result.input_tokens
@@ -261,6 +281,18 @@ def transcribe_media_task(self, task_params_dict: dict):
         # 只需要把最原汁原味的 LRC 文字回傳給 Celery 存進 DB
         return {"raw_lrc_text": final_lrc_text}
 
+    except TranscriptionCancelledError:
+        # 使用者取消：標記 CANCELLED（非 FAILED），不重試也不往上拋
+        processing_time_seconds = time.time() - start_time
+        logger.info(f"Transcription task {task_uuid} cancelled by user.")
+        log_repo.update_log(db, task_uuid, {
+            "status": "CANCELLED",
+            "error_message": "使用者取消任務",
+            "processing_time_seconds": processing_time_seconds,
+            "completed_at": datetime.now(),
+        })
+        update_status("任務已取消", status_code="CANCELLED")
+        return {"cancelled": True}
     except GeminiTransientError as e:
         # 暫時性錯誤：交給 Celery autoretry 處理，不寫入 FAILED log
         logger.warning(
@@ -285,6 +317,9 @@ def transcribe_media_task(self, task_params_dict: dict):
         update_status(f"任務失敗: {e}", status_code="FAILED")
         raise e
     finally:
+        # 任務結束後旗標已無作用，清掉以免影響同一檔案的重跑
+        clear_cancel_flag(file_uid)
+
         # 刪除轉錄完成的檔案
         if task_manager:
             task_manager.cleanup()

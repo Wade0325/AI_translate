@@ -82,6 +82,13 @@ async def test_model_interface(
 ):
     logger.info(
         f"收到測試API請求: Interface Name - '{request_data.provider}', API Keys count: {len(request_data.api_keys)}")
+    if request_data.provider.lower() == "local":
+        return ProviderTestResponse(
+            success=True,
+            message="本地模型（VibeVoice + Qwen3-ASR）無需連線測試。",
+            testedInterface=request_data.provider,
+            details="local",
+        )
     if not request_data.api_keys:
         raise HTTPException(status_code=400, detail="未提供 API 金鑰進行測試。")
 

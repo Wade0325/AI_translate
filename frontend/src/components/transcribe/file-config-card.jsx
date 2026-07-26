@@ -16,8 +16,9 @@ import {
     AlertCircle,
     Hourglass,
     Scissors,
+    Ban,
 } from "lucide-react"
-import { Button, Select, Switch, Slider, Tag, Typography, Input, Dropdown, Spin, Space, Tooltip } from "antd"
+import { Button, Select, Switch, Slider, Tag, Typography, Input, Dropdown, Spin, Space, Tooltip, Popconfirm } from "antd"
 import { LoadingOutlined } from "@ant-design/icons"
 import { languages, formatLang } from "@/constants/languages"
 import { downloadFormats } from "@/constants/downloadFormats"
@@ -31,6 +32,7 @@ const statusConfig = {
     completed: { icon: CheckCircle2, color: "#2dd4a8", label: "完成" },
     error: { icon: AlertCircle, color: "#e05252", label: "錯誤" },
     batch_pending: { icon: Hourglass, color: "#47b8d4", label: "批次等待" },
+    cancelled: { icon: Ban, color: "#8888a8", label: "已取消" },
 }
 
 export function FileConfigCard({
@@ -44,6 +46,7 @@ export function FileConfigCard({
     onAttachText,
     onAttachTextFromFile,
     onVadTest,
+    onCancel,
     vadTesting = false,
     readOnly = false,
 }) {
@@ -75,6 +78,7 @@ export function FileConfigCard({
     const isCompleted = config.status === "completed"
     const isError = config.status === "error"
     const isActive = config.status === "processing"
+    const isCancelled = config.status === "cancelled"
 
     const tags = [
         { label: formatLang(config.language), icon: Languages, overridden: isOverridden("language") },
@@ -235,8 +239,28 @@ export function FileConfigCard({
                             />
                         </Tooltip>
                     )}
+                    {/* Cancel：僅執行中且由單檔轉錄啟動的任務 */}
+                    {!readOnly && isActive && onCancel && (
+                        <Popconfirm
+                            title="確定取消此任務？"
+                            description="已取消的任務可重新處理"
+                            onConfirm={() => onCancel(config.id)}
+                            okText="確定"
+                            cancelText="返回"
+                            placement="topRight"
+                        >
+                            <Tooltip title="取消任務">
+                                <Button
+                                    type="text"
+                                    size="small"
+                                    icon={<Ban size={14} />}
+                                    style={{ width: 28, height: 28, color: "#e05252" }}
+                                />
+                            </Tooltip>
+                        </Popconfirm>
+                    )}
                     {/* Reprocess */}
-                    {!readOnly && (isCompleted || isError) && onReprocess && (
+                    {!readOnly && (isCompleted || isError || isCancelled) && onReprocess && (
                         <Tooltip title="重新處理">
                             <Button
                                 type="text"

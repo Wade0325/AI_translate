@@ -64,6 +64,12 @@ export const api = {
   upload(formData) {
     return request('/upload', { method: 'POST', body: formData });
   },
+  transcription: {
+    cancel(fileUid, provider) {
+      const query = provider ? `?provider=${encodeURIComponent(provider)}` : '';
+      return request(`/transcription/${fileUid}/cancel${query}`, { method: 'POST' });
+    },
+  },
   history: {
     list({ page = 1, pageSize = 10, keyword, status, mode } = {}) {
       const params = new URLSearchParams({

@@ -41,7 +41,7 @@ function buildSinglePayload({ serverFilename, file, provider, model, apiKey, pro
   };
 }
 
-// 依 COMPLETED/FAILED 的 WS 訊息，算出單一 file 的下一個 state。
+// 依 COMPLETED/FAILED/CANCELLED 的 WS 訊息，算出單一 file 的下一個 state。
 function applyFileResult(file, data) {
   const next = {
     ...file,
@@ -60,6 +60,9 @@ function applyFileResult(file, data) {
     next.status = 'error';
     next.percent = 100;
     next.error = data.status_text;
+  } else if (data.status_code === 'CANCELLED') {
+    next.status = 'cancelled';
+    next.percent = 100;
   }
   return next;
 }
@@ -88,11 +91,11 @@ export function useUploadQueue({ fileList, setFileList, socketManager, onBatchSu
 
   // 一般模式（單檔/YouTube）：每個 file uid 一條 WebSocket
   const startRegular = useCallback(async ({ provider, model, apiKey, prompt, defaults }) => {
-    const candidates = fileList.filter(
-      (f) => (f.status === 'waiting' || f.status === 'error') && f.originFileObj
-    );
+    const restartable = (f) =>
+      f.status === 'waiting' || f.status === 'error' || f.status === 'cancelled';
+    const candidates = fileList.filter((f) => restartable(f) && f.originFileObj);
     const youtubeUrls = fileList.filter(
-      (f) => (f.status === 'waiting' || f.status === 'error') && !f.originFileObj && f.name.includes('youtube')
+      (f) => restartable(f) && !f.originFileObj && f.name.includes('youtube')
     );
 
     if (candidates.length === 0 && youtubeUrls.length === 0) {
@@ -106,11 +109,18 @@ export function useUploadQueue({ fileList, setFileList, socketManager, onBatchSu
       fileUids: startTargets.map((f) => f.uid),
     });
 
-    // 全部標記成 processing
+    // 全部標記成 processing；記下 provider 與模式供取消端點使用
     setFileList((current) =>
       current.map((f) =>
         startTargets.find((p) => p.uid === f.uid)
-          ? { ...f, status: 'processing', statusText: '正在上傳檔案...', sessionId }
+          ? {
+              ...f,
+              status: 'processing',
+              statusText: '正在上傳檔案...',
+              sessionId,
+              provider,
+              transcribeMode: 'single',
+            }
           : f
       )
     );
@@ -170,7 +180,9 @@ export function useUploadQueue({ fileList, setFileList, socketManager, onBatchSu
   // 批次模式：所有檔案共用一條 batch WebSocket
   const startBatch = useCallback(async ({ provider, model, apiKey, prompt, defaults }) => {
     const candidates = fileList.filter(
-      (f) => (f.status === 'waiting' || f.status === 'error') && f.originFileObj
+      (f) =>
+        (f.status === 'waiting' || f.status === 'error' || f.status === 'cancelled') &&
+        f.originFileObj
     );
 
     if (candidates.length === 0) {
@@ -186,7 +198,14 @@ export function useUploadQueue({ fileList, setFileList, socketManager, onBatchSu
     setFileList((current) =>
       current.map((f) =>
         candidates.find((p) => p.uid === f.uid)
-          ? { ...f, status: 'processing', statusText: '正在上傳檔案...', sessionId }
+          ? {
+              ...f,
+              status: 'processing',
+              statusText: '正在上傳檔案...',
+              sessionId,
+              provider,
+              transcribeMode: 'batch',
+            }
           : f
       )
     );

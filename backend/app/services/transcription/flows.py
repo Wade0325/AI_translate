@@ -2,8 +2,13 @@ from pathlib import Path
 from typing import List, Dict, Optional
 
 from app.core.config import get_settings
+from app.exceptions import TranscriptionCancelledError
 from app.utils.logger import setup_logger
-from app.utils.audio import get_audio_duration as _ffprobe_duration, convert_to_wav
+from app.utils.audio import (
+    get_audio_duration as _ffprobe_duration,
+    convert_to_wav,
+    slice_audio,
+)
 from app.provider.google.gemini import (
     upload_file_to_gemini,
     transcribe_with_uploaded_file,
@@ -23,6 +28,32 @@ logger = setup_logger(__name__)
 _settings = get_settings()
 # 語音佔比 >= 此閾值時跳過 VAD 預處理；低於則使用純語音檔轉錄
 VAD_SPEECH_RATIO_SKIP_THRESHOLD = _settings.vad_speech_ratio_skip_threshold
+# VAD 之後仍超過此時長（秒）的音檔，轉錄前在最接近中點的靜音處對半切；0 = 停用
+LONG_AUDIO_SPLIT_THRESHOLD_SECONDS = _settings.long_audio_split_threshold_seconds
+
+
+def speech_segment_boundaries(segments: List[Dict[str, float]]) -> List[float]:
+    """VAD 片段在「拼接後時間軸」上的交界位置。
+
+    純語音檔是各片段無縫拼接而成，片段交界正是原音檔的靜音處，
+    也是切割純語音檔時唯一不會切在語句中間的位置。
+    """
+    boundaries: List[float] = []
+    accumulated = 0.0
+    for seg in segments[:-1]:
+        accumulated += seg['end'] - seg['start']
+        boundaries.append(accumulated)
+    return boundaries
+
+
+def pick_halving_split_point(
+    boundaries: List[float], duration: float
+) -> Optional[float]:
+    """從候選靜音點中挑最接近中點者；排除距頭尾 1 秒內的退化切點。"""
+    candidates = [b for b in boundaries if 1.0 < b < duration - 1.0]
+    if not candidates:
+        return None
+    return min(candidates, key=lambda b: abs(b - duration / 2))
 
 
 def remap_lrc_timestamps(lrc_text: str, segments: List[Dict[str, float]]) -> str:
@@ -47,6 +78,11 @@ def remap_lrc_timestamps(lrc_text: str, segments: List[Dict[str, float]]) -> str
                 segment_index = i
                 break
 
+        if segment_index == -1 and segments:
+            # 時間點恰好等於（或浮點誤差略超）總長時夾到最後片段結尾，避免整行被丟棄
+            segment_index = len(segments) - 1
+            lrc_time = cumulative_durations[-1] + segment_durations[-1]
+
         if segment_index != -1:
             time_in_segment = lrc_time - cumulative_durations[segment_index]
             original_start_time = segments[segment_index]['start']
@@ -70,7 +106,7 @@ def _adjust_lrc_timestamps(lrc_text: str, offset_seconds: float) -> str:
         return lrc_text
     adjusted_lines = []
     for line in lrc_text.strip().split('\n'):
-        match = re.match(r'\[(\d{2}):(\d{2})\.(\d{2,3})\](.*)', line)
+        match = re.match(r'\[(\d{2,3}):(\d{2})\.(\d{2,3})\](.*)', line)
         if match:
             minutes, seconds, ms_str, text_content = match.groups()
             original_time = int(minutes) * 60 + \
@@ -110,6 +146,9 @@ class TranscriptionTask:
         service_tier: Optional[str] = None,
         artifact_task_id: Optional[str] = None,
         original_filename: Optional[str] = None,
+        provider: str = "google",
+        source_lang: Optional[str] = None,
+        cancel_check=None,
     ):
         self.client = client
         self.model = model
@@ -117,6 +156,9 @@ class TranscriptionTask:
         self.temp_dir = temp_dir
         self.status_callback = status_callback
         self.service_tier = service_tier  # None/"standard" 或 "flex"
+        self.provider = provider
+        self.source_lang = source_lang
+        self.cancel_check = cancel_check
         self.artifact_task_id = artifact_task_id
         self.original_filename = original_filename
         self.local_cleanup_list = []
@@ -178,8 +220,16 @@ class TranscriptionTask:
                         f"(>={VAD_SPEECH_RATIO_SKIP_THRESHOLD*100:.0f}%), 跳過 VAD 前處理"
                     )
 
-        # --- 轉錄 ---
-        result = self._attempt_transcription(transcription_path)
+        # --- 轉錄（VAD 之後仍超過閾值的長檔，先在最接近中點的靜音處對半切） ---
+        if speech_segments:
+            transcription_duration = sum(
+                seg['end'] - seg['start'] for seg in speech_segments)
+            silence_boundaries = speech_segment_boundaries(speech_segments)
+        else:
+            transcription_duration = duration
+            silence_boundaries = None
+        result = self._transcribe_halved(
+            transcription_path, transcription_duration, silence_boundaries)
 
         # --- 時間戳重映射 ---
         if result.success and speech_segments:
@@ -203,7 +253,10 @@ class TranscriptionTask:
             return result
 
         # 如果失敗且檔案夠長，嘗試分割
-        if not result.success and self.vad_service:
+        # local provider 不走失敗後的分割重試：各段 diarization 的說話者編號互相
+        # 獨立，拼接後 [S0]/[S1] 會指向不同人；直接回報失敗讓使用者拿到明確錯誤。
+        # （長檔的轉錄前切半是使用者明確要求的功能，接受此限制，見 _transcribe_halved）
+        if not result.success and self.vad_service and self.provider != "local":
             logger.info(f"轉錄失敗，檔案長度 {duration:.1f} 秒，嘗試 VAD 分割")
             return self._transcribe_with_splitting(audio_path)
 
@@ -260,19 +313,26 @@ class TranscriptionTask:
     def _attempt_transcription(self, audio_path: Path) -> TranscriptionTaskResult:
         """嘗試轉錄單一音訊檔案"""
         try:
-            # 上傳檔案到 Gemini
-            gemini_file = upload_file_to_gemini(
-                audio_path, self.client, self.status_callback)
-            self.gemini_cleanup_list.append(gemini_file)
+            if self.provider == "local":
+                # 主機端 GPU worker 專用；延遲 import，容器 worker 不需 transformers
+                from app.provider.local.asr import transcribe_with_local_models
+                result = transcribe_with_local_models(
+                    audio_path, self.source_lang, self.status_callback,
+                    cancel_check=self.cancel_check)
+            else:
+                # 上傳檔案到 Gemini
+                gemini_file = upload_file_to_gemini(
+                    audio_path, self.client, self.status_callback)
+                self.gemini_cleanup_list.append(gemini_file)
 
-            # 執行轉錄
-            if self.status_callback:
-                self.status_callback("AI模型處理中...")
+                # 執行轉錄
+                if self.status_callback:
+                    self.status_callback("AI模型處理中...")
 
-            result = transcribe_with_uploaded_file(
-                self.client, gemini_file, self.model, self.prompt,
-                service_tier=self.service_tier,
-            )
+                result = transcribe_with_uploaded_file(
+                    self.client, gemini_file, self.model, self.prompt,
+                    service_tier=self.service_tier,
+                )
 
             return TranscriptionTaskResult(
                 success=result["success"],
@@ -282,6 +342,9 @@ class TranscriptionTask:
                 total_tokens=result.get("total_tokens", 0),
                 service_tier_used=result.get("service_tier_used"),
             )
+        except TranscriptionCancelledError:
+            # 取消不是失敗：往上拋給 task.py 標記為 CANCELLED
+            raise
         except Exception as e:
             logger.error(f"轉錄過程發生錯誤: {e}")
             return TranscriptionTaskResult(
@@ -289,6 +352,90 @@ class TranscriptionTask:
                 text=f"[[轉錄錯誤: {str(e)}]]",
                 total_tokens=0
             )
+
+    def _transcribe_halved(
+        self,
+        audio_path: Path,
+        duration: float,
+        silence_boundaries: Optional[List[float]],
+    ) -> TranscriptionTaskResult:
+        """時長超過閾值時在最接近中點的靜音處對半切，兩半分別轉錄後合併。
+
+        遞迴呼叫自身，直到每段低於 ``LONG_AUDIO_SPLIT_THRESHOLD_SECONDS``。
+        silence_boundaries 是音檔內已知的靜音位置（秒）——VAD 純語音檔
+        以片段交界為準；無資訊（跳過 VAD）時改用 VAD 服務在檔案上找。
+        注意：local provider 兩半的說話者編號各自獨立（前半的 S0 未必是
+        後半的 S0），多人對話的長檔請自行斟酌。
+        """
+        if (LONG_AUDIO_SPLIT_THRESHOLD_SECONDS <= 0
+                or duration <= LONG_AUDIO_SPLIT_THRESHOLD_SECONDS):
+            return self._attempt_transcription(audio_path)
+
+        if self.cancel_check and self.cancel_check():
+            raise TranscriptionCancelledError("使用者已取消任務")
+
+        part1 = part2 = None
+        split_point = None
+        if silence_boundaries:
+            split_point = pick_halving_split_point(silence_boundaries, duration)
+        if split_point is not None:
+            part1 = self.temp_dir / f"{audio_path.stem}.half1.wav"
+            part2 = self.temp_dir / f"{audio_path.stem}.half2.wav"
+            if not (slice_audio(audio_path, part1, end=split_point)
+                    and slice_audio(audio_path, part2, start=split_point)):
+                part1 = part2 = None
+                split_point = None
+
+        if split_point is None:
+            # 沒有可用的已知靜音點：交給 VAD 服務找（找不到會切在正中間）
+            if not self.vad_service:
+                logger.warning("無 VAD 服務可尋找切割點，長檔不切割直接轉錄")
+                return self._attempt_transcription(audio_path)
+            segments = self._split_audio_file(audio_path)
+            if len(segments) < 2:
+                logger.warning("長檔切割失敗，不切割直接轉錄")
+                return self._attempt_transcription(audio_path)
+            part1, part2 = segments[0].path, segments[1].path
+            split_point = segments[1].start_time
+            # 交界不在已知靜音清單內，後續遞迴改用 VAD 服務重找
+            silence_boundaries = None
+
+        for p in (part1, part2):
+            if p not in self.local_cleanup_list:
+                self.local_cleanup_list.append(p)
+
+        logger.info(
+            f"長檔切半: {audio_path.name} ({duration:.0f}s) 於 {split_point:.2f}s 切割")
+        if self.status_callback:
+            self.status_callback(
+                f"音檔較長（{duration / 60:.1f} 分鐘），於靜音處切半分段處理...")
+
+        left = right = None
+        if silence_boundaries is not None:
+            left = [b for b in silence_boundaries if 0 < b < split_point]
+            right = [b - split_point for b in silence_boundaries
+                     if split_point < b < duration]
+
+        first = self._transcribe_halved(part1, split_point, left)
+        if not first.success:
+            return first
+        second = self._transcribe_halved(part2, duration - split_point, right)
+        if not second.success:
+            return second
+
+        combined_text = "\n".join(
+            [first.text, _adjust_lrc_timestamps(second.text, split_point)])
+        tier = (first.service_tier_used
+                if first.service_tier_used == second.service_tier_used
+                else "standard")
+        return TranscriptionTaskResult(
+            success=True,
+            text=combined_text,
+            input_tokens=first.input_tokens + second.input_tokens,
+            output_tokens=first.output_tokens + second.output_tokens,
+            total_tokens=first.total_tokens + second.total_tokens,
+            service_tier_used=tier,
+        )
 
     def _transcribe_with_splitting(self, audio_path: Path) -> TranscriptionTaskResult:
         """使用 VAD 分割音訊並分別轉錄"""

@@ -38,6 +38,8 @@ def get_audio_duration(file_path: Path) -> Optional[float]:
             ],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=30,
         )
         if result.returncode != 0:
@@ -75,6 +77,46 @@ def get_mime_type(file_path: Path) -> Optional[str]:
     return mime
 
 
+def slice_audio(
+    file_path: Path,
+    output_path: Path,
+    start: float = 0.0,
+    end: Optional[float] = None,
+) -> bool:
+    """使用 ffmpeg 切出 [start, end) 區間並輸出為 WAV。
+
+    重新編碼為 PCM 以取得取樣點級精度（stream copy 只能切在封包邊界），
+    end=None 表示切到檔尾。
+    """
+    cmd = ["ffmpeg", "-y", "-i", str(file_path), "-ss", f"{start:.3f}"]
+    if end is not None:
+        cmd += ["-t", f"{end - start:.3f}"]
+    cmd.append(str(output_path))
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=300,
+        )
+        if result.returncode != 0:
+            logger.error(
+                f"ffmpeg 切割失敗 ({file_path.name}): {result.stderr.strip()[-200:]}")
+            return False
+        return True
+    except FileNotFoundError:
+        logger.error("ffmpeg 未安裝或不在 PATH 中")
+        return False
+    except subprocess.TimeoutExpired:
+        logger.error(f"ffmpeg 切割逾時 ({file_path.name})")
+        return False
+    except Exception as e:
+        logger.error(f"音訊切割時發生未知錯誤 ({file_path.name}): {e}")
+        return False
+
+
 def convert_to_wav(file_path: Path, output_dir: Path) -> Optional[Path]:
     """
     使用 ffmpeg 將音訊檔案轉換為 WAV 格式。
@@ -95,6 +137,8 @@ def convert_to_wav(file_path: Path, output_dir: Path) -> Optional[Path]:
             ],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=120,
         )
         if result.returncode != 0:

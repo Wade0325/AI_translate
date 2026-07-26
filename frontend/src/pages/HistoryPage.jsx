@@ -98,6 +98,7 @@ export default function HistoryPage() {
         FAILED: "red",
         PROCESSING: "blue",
         PENDING: "default",
+        CANCELLED: "default",
     }
 
     const statusLabels = {
@@ -105,6 +106,7 @@ export default function HistoryPage() {
         FAILED: "失敗",
         PROCESSING: "處理中",
         PENDING: "等待中",
+        CANCELLED: "已取消",
     }
 
     const columns = [
@@ -319,6 +321,7 @@ export default function HistoryPage() {
                             { value: "COMPLETED", label: "完成" },
                             { value: "FAILED", label: "失敗" },
                             { value: "PROCESSING", label: "處理中" },
+                            { value: "CANCELLED", label: "已取消" },
                         ]}
                     />
                     <Select

@@ -69,9 +69,15 @@ class Settings(BaseSettings):
     # Batch / Flex 推論的費用折扣率（0.5 表示原價 50%）
     batch_cost_discount: float = 0.5
     flex_cost_discount: float = 0.5
-    # 語音佔比 >= 此閾值（預設 0.8）時跳過 VAD 預處理，直接用原檔轉錄；
-    # 空白超過 20%（語音佔比 < 80%）才執行 VAD 靜音移除
-    vad_speech_ratio_skip_threshold: float = 0.80
+    # 語音佔比 >= 此閾值（預設 0.9）時跳過 VAD 預處理，直接用原檔轉錄；
+    # 空白超過 10%（語音佔比 < 90%）才執行 VAD 靜音移除
+    vad_speech_ratio_skip_threshold: float = 0.90
+    # VAD 前處理後（或跳過 VAD 時的原檔）仍超過此時長（秒）的音檔，
+    # 轉錄前先在最接近中點的靜音處對半切，遞迴直到每段低於閾值；0 = 停用
+    long_audio_split_threshold_seconds: float = 900.0
+    # 單檔紀錄卡在 PROCESSING 超過此時數即視為孤兒（worker 中斷後不會回寫狀態），
+    # 後端啟動時標記為 FAILED；需大於最長的合理轉錄時間（本地模型長檔可達數小時）
+    stale_processing_max_age_hours: int = 12
 
     model_config = SettingsConfigDict(
         env_file=ENV_FILE_PATH if ENV_FILE_PATH else None,

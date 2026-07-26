@@ -33,8 +33,8 @@ def _parse_lrc(lrc_text: str) -> List[_ParsedLine]:
         return parsed_lines
 
     for line in lrc_text.strip().split('\n'):
-        # 匹配 [mm:ss.xx] 或 [mm:ss.xxx] 格式
-        match = re.match(r'\[(\d{2}):(\d{2})\.(\d{2,3})\](.*)', line)
+        # 匹配 [mm:ss.xx] 或 [mm:ss.xxx] 格式（分鐘允許 3 位數，支援 >99 分鐘的音檔）
+        match = re.match(r'\[(\d{2,3}):(\d{2})\.(\d{2,3})\](.*)', line)
         if match:
             minutes, seconds, ms_str, text_content = match.groups()
             time_in_seconds = int(

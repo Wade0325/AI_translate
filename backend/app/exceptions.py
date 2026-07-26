@@ -14,3 +14,7 @@ class GeminiTransientError(AppError):
 
 class GeminiPermanentError(AppError):
     """Gemini API 永久性錯誤（API key 無效、prompt 被阻擋、quota 永久耗盡）。不應重試。"""
+
+
+class TranscriptionCancelledError(AppError):
+    """使用者取消轉錄任務。task.py 據此把任務標記為 CANCELLED 而非 FAILED。"""

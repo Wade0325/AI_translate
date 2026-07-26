@@ -9,7 +9,9 @@ from app.api import vad
 from app.websocket.manager import manager as websocket_manager
 
 from fastapi.middleware.cors import CORSMiddleware
-from app.database.session import init_db
+from app.core.config import get_settings
+from app.database.session import init_db, SessionLocal
+from app.repositories.transcription_log_repository import TranscriptionLogRepository
 from app.utils.logger import setup_logger
 
 # 建立 logger
@@ -23,6 +25,16 @@ async def lifespan(app: FastAPI):
 
     # 初始化資料庫
     init_db()
+
+    # 清掃孤兒紀錄：worker 中途被終止時，單檔任務會留下永遠 PROCESSING 的紀錄
+    try:
+        with SessionLocal() as db:
+            swept = TranscriptionLogRepository().mark_stale_processing_failed(
+                db, get_settings().stale_processing_max_age_hours)
+        if swept:
+            logger.info(f"啟動清掃：{swept} 筆逾時 PROCESSING 紀錄已標記為 FAILED")
+    except Exception as e:
+        logger.warning(f"啟動清掃逾時 PROCESSING 紀錄失敗: {e}")
 
     # 啟動 WebSocket 的 Redis 監聯器（可重連、可乾淨關閉）
     websocket_manager.start()
