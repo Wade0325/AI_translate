@@ -1,6 +1,7 @@
+import warnings
+
 import soundfile as sf
 import numpy as np
-import torchaudio
 from pathlib import Path
 from typing import List, Dict, Optional
 
@@ -34,10 +35,9 @@ def extract_speech_segments(request: VADProcessRequest, vad_service=None) -> Spe
     logger.info(f"開始提取有聲片段 (音量閾值模式): {Path(request.audio_path).name}")
 
     try:
-        # 讀取音訊
+        # 讀取音訊（呼叫端保證已轉為 WAV，見 preprocess.run_vad_extraction）
         logger.info("正在讀取音訊檔案...")
-        waveform, original_sr = torchaudio.load(request.audio_path)
-        audio_data = waveform.numpy().T if waveform.shape[0] > 1 else waveform.squeeze(0).numpy()
+        audio_data, original_sr = sf.read(request.audio_path, dtype="float32")
         
         # 計算總長度
         num_frames = audio_data.shape[0] if audio_data.ndim > 1 else len(audio_data)
@@ -194,10 +194,13 @@ def split_audio_on_silence(request: AudioSplitRequest, vad_service) -> AudioSpli
         model, utils = vad_service.get_model_and_utils()
         get_speech_timestamps, _, read_audio, _, _ = utils
 
-        # 讀取音訊（使用 torchaudio 支援 M4A 等格式）
-        wav = read_audio(request.audio_path, sampling_rate=SAMPLING_RATE)
-        waveform, original_sr = torchaudio.load(request.audio_path)
-        audio_data = waveform.numpy().T if waveform.shape[0] > 1 else waveform.squeeze(0).numpy()
+        # 讀取音訊（呼叫端保證已轉為 WAV）
+        # silero 的 read_audio 內部使用 torchaudio 已棄用的 I/O API（load / sox_effects，
+        # 依安裝來源而異），僅在此局部抑制其棄用警告
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            wav = read_audio(request.audio_path, sampling_rate=SAMPLING_RATE)
+        audio_data, original_sr = sf.read(request.audio_path, dtype="float32")
         total_duration = len(audio_data) / original_sr if audio_data.ndim == 1 else audio_data.shape[0] / original_sr
 
         # 檢測語音片段
