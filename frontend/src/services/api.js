@@ -1,8 +1,5 @@
 /**
- * 統一的後端 API 客戶端。
- *
- * 之前各 page / context 自己用 fetch + 散落的 baseURL，現在全部集中在這裡，
- * 維持單一錯誤格式並讓 endpoint 變更時只改一處。
+ * 統一的後端 API 客戶端：集中 baseURL 與錯誤格式，endpoint 變更時只改此檔。
  */
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api/v1';
@@ -84,6 +81,10 @@ export const api = {
     },
     stats() {
       return request('/history/stats');
+    },
+    /** Dashboard / Billing 用量彙總：每日、各模型、計費表 */
+    usage({ days = 180 } = {}) {
+      return request(`/history/usage?days=${days}`);
     },
     delete(taskUuid) {
       return request(`/history/${taskUuid}`, { method: 'DELETE' });
