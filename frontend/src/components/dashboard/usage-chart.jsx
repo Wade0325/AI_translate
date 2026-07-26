@@ -9,15 +9,16 @@ import {
     ResponsiveContainer,
 } from "recharts"
 import RechartsTooltipBox from "@/components/charts/RechartsTooltipBox"
+import { localDateKey, formatTokensTick } from "@/utils/formatters"
 
-// 後端 daily 的 date 為 UTC 日期字串（func.date on UTC timestamp），這裡同樣以 UTC 取日期對齊
+// 後端 daily 的 date 是伺服器本地日期字串，以本地日期產生 key 對齊（見 localDateKey 說明）
 function lastSevenDays(daily) {
     const byDate = new Map(daily.map((d) => [d.date, d]))
     const result = []
     for (let i = 6; i >= 0; i--) {
         const d = new Date()
-        d.setUTCDate(d.getUTCDate() - i)
-        const key = d.toISOString().slice(0, 10)
+        d.setDate(d.getDate() - i)
+        const key = localDateKey(d)
         const row = byDate.get(key)
         result.push({
             day: key.slice(5),
@@ -72,7 +73,7 @@ export function UsageChart({ daily = [] }) {
                             fontSize={12}
                             tickLine={false}
                             axisLine={false}
-                            tickFormatter={(value) => `${(value / 1000).toFixed(0)}k`}
+                            tickFormatter={formatTokensTick}
                         />
                         <Tooltip content={<CustomTooltip />} cursor={{ fill: "rgba(42, 42, 72, 0.5)" }} />
                         <Bar

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react"
-import { Card, Typography, Tabs, Table, Row, Col } from "antd"
+import { Card, Typography, Tabs, Table, Row, Col, message } from "antd"
 import {
     BarChart,
     Bar,
@@ -22,11 +22,15 @@ import {
 import RechartsTooltipBox from "@/components/charts/RechartsTooltipBox"
 import { StatCard } from "@/components/StatCard"
 import { api } from "@/services/api"
+import { localDateKey, formatTokensTick } from "@/utils/formatters"
 
 const { Text } = Typography
 
-// 後端 daily 的 date 為 UTC 日期字串，月份切齊也用 UTC
-const currentMonthKey = () => new Date().toISOString().slice(0, 7)
+// 6 個日曆月最長 184 天，190 天留緩衝，避免最舊月份的頭幾天被截掉
+const USAGE_WINDOW_DAYS = 190
+
+// 後端 daily 的 date 是伺服器本地日期字串，月份切齊也用本地時間（見 localDateKey 說明）
+const monthKeyOf = (date) => localDateKey(date).slice(0, 7)
 
 function sumUsage(rows) {
     return rows.reduce(
@@ -40,9 +44,9 @@ function sumUsage(rows) {
 }
 
 /** 當月 1 日～今日逐日補 0，讓圖表 x 軸連續 */
-function buildDailyChartData(daily, monthKey) {
+function buildDailyChartData(daily, monthKey, now) {
     const byDate = new Map(daily.map((d) => [d.date, d]))
-    const today = new Date().getUTCDate()
+    const today = now.getDate()
     return Array.from({ length: today }, (_, i) => {
         const key = `${monthKey}-${String(i + 1).padStart(2, "0")}`
         const row = byDate.get(key)
@@ -56,14 +60,13 @@ function buildDailyChartData(daily, monthKey) {
 }
 
 /** 最近 6 個月（含當月）逐月彙總，無資料的月份補 0 */
-function buildMonthlyChartData(daily) {
-    const now = new Date()
+function buildMonthlyChartData(daily, now) {
     const months = []
     for (let i = 5; i >= 0; i--) {
-        const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i, 1))
+        const d = new Date(now.getFullYear(), now.getMonth() - i, 1)
         months.push({
-            key: d.toISOString().slice(0, 7),
-            label: d.toLocaleString("en", { month: "short", timeZone: "UTC" }),
+            key: monthKeyOf(d),
+            label: d.toLocaleString("en", { month: "short" }),
         })
     }
     return months.map((m) => {
@@ -98,18 +101,23 @@ export default function BillingPage() {
     const [usage, setUsage] = useState({ daily: [], by_model: [], pricing: [] })
 
     useEffect(() => {
-        api.history.usage({ days: 183 })
+        api.history.usage({ days: USAGE_WINDOW_DAYS })
             .then(setUsage)
-            .catch((err) => console.error("載入用量資料失敗:", err))
+            .catch((err) => {
+                console.error("載入用量資料失敗:", err)
+                message.error("載入用量資料失敗，頁面顯示的數字可能不完整")
+            })
     }, [])
 
-    const monthKey = currentMonthKey()
-    const monthLabel = new Date().toLocaleString("en", { month: "long", year: "numeric", timeZone: "UTC" })
+    // 同一個 now 供本頁所有日期推導使用，避免跨午夜時月份/日期不一致
+    const now = new Date()
+    const monthKey = monthKeyOf(now)
+    const monthLabel = now.toLocaleString("en", { month: "long", year: "numeric" })
     const month = sumUsage(usage.daily.filter((d) => d.date.startsWith(monthKey)))
     const avgCostPerFile = month.files > 0 ? month.cost / month.files : 0
 
-    const dailyData = buildDailyChartData(usage.daily, monthKey)
-    const monthlyData = buildMonthlyChartData(usage.daily)
+    const dailyData = buildDailyChartData(usage.daily, monthKey, now)
+    const monthlyData = buildMonthlyChartData(usage.daily, now)
 
     const totalModelTokens = usage.by_model.reduce((sum, m) => sum + m.tokens, 0)
 
@@ -130,7 +138,7 @@ export default function BillingPage() {
                                 </defs>
                                 <CartesianGrid strokeDasharray="3 3" stroke="#2a2a48" vertical={false} />
                                 <XAxis dataKey="day" stroke="#8888a8" fontSize={12} tickLine={false} axisLine={false} />
-                                <YAxis stroke="#8888a8" fontSize={12} tickLine={false} axisLine={false} tickFormatter={(v) => `${(v / 1000).toFixed(0)}k`} />
+                                <YAxis stroke="#8888a8" fontSize={12} tickLine={false} axisLine={false} tickFormatter={formatTokensTick} />
                                 <Tooltip content={<CustomTooltip />} />
                                 <Area type="monotone" dataKey="tokens" stroke="#2dd4a8" fill="url(#tokenGradient)" strokeWidth={2} />
                             </AreaChart>
@@ -149,7 +157,7 @@ export default function BillingPage() {
                             <BarChart data={monthlyData} barSize={40}>
                                 <CartesianGrid strokeDasharray="3 3" stroke="#2a2a48" vertical={false} />
                                 <XAxis dataKey="month" stroke="#8888a8" fontSize={12} tickLine={false} axisLine={false} />
-                                <YAxis stroke="#8888a8" fontSize={12} tickLine={false} axisLine={false} tickFormatter={(v) => v >= 1000000 ? `${(v / 1000000).toFixed(1)}M` : `${(v / 1000).toFixed(0)}k`} />
+                                <YAxis stroke="#8888a8" fontSize={12} tickLine={false} axisLine={false} tickFormatter={formatTokensTick} />
                                 <Tooltip content={<CustomTooltip />} />
                                 <Bar dataKey="tokens" fill="#2dd4a8" radius={[4, 4, 0, 0]} />
                             </BarChart>

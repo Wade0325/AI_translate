@@ -90,7 +90,7 @@ export function RecentTranscriptions({ items = [] }) {
                                         {item.cost != null ? `$${item.cost.toFixed(4)}` : "—"}
                                     </Text>
                                     <Text style={{ fontSize: 12, color: '#8888a8' }}>
-                                        {item.total_tokens ? `${item.total_tokens.toLocaleString()} tokens` : "—"}
+                                        {item.total_tokens != null ? `${item.total_tokens.toLocaleString()} tokens` : "—"}
                                     </Text>
                                 </div>
                             </div>
