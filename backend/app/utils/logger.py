@@ -25,7 +25,6 @@ def setup_logger(name: str = None) -> logging.Logger:
 
     logger.setLevel(logging.INFO)
 
-    # 建立 console handler
     handler = logging.StreamHandler(sys.stdout)
 
     # 自訂 formatter 以實現路徑顯示和對齊

@@ -91,7 +91,6 @@ def transcribe_media_task(self, task_params_dict: dict):
 
         update_status("檔案處理與分析...")
 
-        # 取得音訊時長
         audio_duration_seconds = get_audio_duration(local_path) or 0.0
         if audio_duration_seconds > 0:
             logger.info(f"Audio file info for task {task_uuid}:")

@@ -146,5 +146,5 @@ class ConnectionManager:
         logger.info("ConnectionManager shutdown complete")
 
 
-# 建立一個單例 manager
+# 單例 manager
 manager = ConnectionManager()
