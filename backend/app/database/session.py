@@ -1,4 +1,7 @@
-from sqlalchemy import create_engine, select, text, inspect as sa_inspect
+from pathlib import Path
+
+from sqlalchemy import create_engine, event, select, text, inspect as sa_inspect
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import sessionmaker
 from .models import Base, ModelConfiguration
 from app.core.config import get_settings
@@ -8,12 +11,39 @@ logger = setup_logger(__name__)
 
 settings = get_settings()
 
-engine = create_engine(
-    settings.sync_database_url,
-    pool_size=settings.db_pool_size,
-    max_overflow=settings.db_max_overflow,
-    pool_pre_ping=True,  # 自動檢測斷線
-)
+
+def _create_engine(url: str):
+    if url.startswith("sqlite"):
+        # SQLite（standalone 模式）：QueuePool 參數不適用；
+        # check_same_thread=False 允許 API 與 worker 執行緒共用連線池
+        db_path = make_url(url).database
+        if db_path and db_path != ":memory:":
+            Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+        sqlite_engine = create_engine(
+            url,
+            connect_args={"check_same_thread": False, "timeout": 30},
+        )
+
+        @event.listens_for(sqlite_engine, "connect")
+        def _set_sqlite_pragmas(dbapi_connection, _record):
+            # WAL 讓讀寫不互斥；busy_timeout 讓併發寫入等待而非立即失敗
+            cursor = dbapi_connection.cursor()
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA busy_timeout=30000")
+            cursor.execute("PRAGMA synchronous=NORMAL")
+            cursor.close()
+
+        return sqlite_engine
+
+    return create_engine(
+        url,
+        pool_size=settings.db_pool_size,
+        max_overflow=settings.db_max_overflow,
+        pool_pre_ping=True,  # 自動檢測斷線
+    )
+
+
+engine = _create_engine(settings.sync_database_url)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 

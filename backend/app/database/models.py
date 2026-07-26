@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime
 
 from sqlalchemy import (
     Boolean,
@@ -10,7 +11,6 @@ from sqlalchemy import (
     String,
     Text,
     UUID,
-    func,
 )
 from sqlalchemy.orm import declarative_base
 
@@ -25,7 +25,9 @@ class ModelConfiguration(Base):
     api_keys = Column(Text)
     model = Column(String)
     prompt = Column(Text)
-    last_updated = Column(DateTime, default=func.now(), onupdate=func.now())
+    # 以 Python 端本地時間為準（而非 DB func.now()）：Postgres 容器與 SQLite 的
+    # CURRENT_TIMESTAMP 時區行為不同，統一在應用層產生，查詢端才能一致用 datetime.now() 比較
+    last_updated = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 
 class BatchJob(Base):
@@ -43,8 +45,8 @@ class BatchJob(Base):
     results_json = Column(Text, nullable=True)           # {file_uid: result_dict} — 完成後存入的結果
     celery_task_id = Column(String, nullable=True, index=True)  # Celery task ID
     file_count = Column(Integer, nullable=True)
-    created_at = Column(DateTime, default=func.now())
-    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 
 class TranscriptionLog(Base):
@@ -53,7 +55,7 @@ class TranscriptionLog(Base):
 
     task_uuid = Column(UUID(as_uuid=True),
                        primary_key=True, default=uuid.uuid4)
-    request_timestamp = Column(DateTime, default=func.now(), index=True)
+    request_timestamp = Column(DateTime, default=datetime.now, index=True)
     status = Column(String, index=True)
     original_filename = Column(String)
     audio_duration_seconds = Column(Float, nullable=True)
