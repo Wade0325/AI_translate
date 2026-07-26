@@ -382,6 +382,7 @@ export default function TranscribePage() {
                     <CostEstimator
                         fileCount={fileList.filter((f) => ["waiting", "error", "cancelled"].includes(f.status)).length}
                         totalSizeMB={totalSizeMB}
+                        model={model}
                         isSubmitting={isProcessing}
                         onSubmit={handleStartTranscription}
                     />

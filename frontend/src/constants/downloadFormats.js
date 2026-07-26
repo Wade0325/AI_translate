@@ -16,11 +16,14 @@ export const downloadFormatsLong = downloadFormats.map((item) => ({
   label: `${item.label} 格式`,
 }));
 
-/** Result 頁的完整格式清單（含 JSON 與英文描述），name 供組合語句用。 */
+/**
+ * Result 頁的完整格式清單（含英文描述），name 供組合語句用。
+ * key 必須是後端 SubtitleFormats 實際產出的格式（lrc/srt/vtt/txt），
+ * 列出後端沒有的格式會讓使用者下載到空內容。
+ */
 export const downloadFormatsDetailed = [
   { key: 'srt', name: 'SRT', label: 'SRT (Subtitles)', desc: 'SubRip format with timestamps' },
   { key: 'vtt', name: 'VTT', label: 'VTT (WebVTT)', desc: 'Web Video Text Tracks' },
   { key: 'txt', name: 'TXT', label: 'TXT (Plain Text)', desc: 'Plain text without timestamps' },
-  { key: 'json', name: 'JSON', label: 'JSON (Structured)', desc: 'Structured data with metadata' },
   { key: 'lrc', name: 'LRC', label: 'LRC (Lyrics)', desc: 'Lyrics format' },
 ];

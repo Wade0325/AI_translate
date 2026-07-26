@@ -1,18 +1,37 @@
+import { useEffect, useState } from "react"
 import { FileAudio, Clock, Zap, Sparkles, ArrowRight } from "lucide-react"
 import { Typography, Button, Tooltip } from "antd"
 import { LoadingOutlined } from "@ant-design/icons"
+import { api } from "@/services/api"
 
 const { Text } = Typography
+
+// 計費表載入前/查無模型時的後備單價（對應後端 MODEL_PRICES 的 default，每百萬 token 混合價）
+const FALLBACK_RATE_PER_M = 1.45
+
+// 轉錄以音訊輸入為主、文字輸出為輔，粗估「70% 音訊輸入 + 30% 輸出」的每百萬 token 混合單價
+const blendedRatePerM = (price) => price.input_audio * 0.7 + price.output_text * 0.3
 
 export function CostEstimator({
     fileCount,
     totalSizeMB,
+    model,
     isSubmitting,
     onSubmit,
 }) {
+    // 價格以後端 MODEL_PRICES 為準（經 /history/usage 的 pricing 取得），避免前端寫死過時價格
+    const [pricing, setPricing] = useState(null)
+    useEffect(() => {
+        api.history.usage({ days: 1 })
+            .then((res) => setPricing(res.pricing))
+            .catch(() => { }) // 拿不到計費表時使用後備單價
+    }, [])
+
     const estimatedMinutes = totalSizeMB * 1
     const estimatedTokens = Math.round(estimatedMinutes * 800)
-    const estimatedCost = estimatedTokens * 0.000015
+    const price = pricing?.find((p) => p.model === model)
+    const ratePerM = price ? blendedRatePerM(price) : FALLBACK_RATE_PER_M
+    const estimatedCost = (estimatedTokens / 1_000_000) * ratePerM
     const estimatedProcessingTime = Math.max(1, Math.round(estimatedMinutes * 0.3))
 
     return (

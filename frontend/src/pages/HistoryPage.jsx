@@ -279,7 +279,14 @@ export default function HistoryPage() {
                         placeholder="搜尋檔案名稱..."
                         prefix={<SearchOutlined style={{ color: "#8888a8" }} />}
                         value={searchKeyword}
-                        onChange={(e) => setSearchKeyword(e.target.value)}
+                        onChange={(e) => {
+                            const value = e.target.value
+                            setSearchKeyword(value)
+                            // 按 allowClear 的 × 或刪到空字串時立即還原列表（輸入中不逐字查詢）
+                            if (value === "" && searchKeyword !== "") {
+                                fetchHistory(1, pagination.pageSize, { keyword: "" })
+                            }
+                        }}
                         onPressEnter={handleSearch}
                         style={{ flex: 1, minWidth: 200 }}
                         allowClear
@@ -314,10 +321,15 @@ export default function HistoryPage() {
                     <Button
                         icon={<ReloadOutlined />}
                         onClick={() => {
+                            // 篩選有值時，setState 會觸發 [statusFilter, modeFilter] effect 重新查詢；
+                            // 只有兩者皆空（effect 不會觸發）才需要自己補一次查詢，避免重複請求競態
+                            const filtersActive = statusFilter !== null || modeFilter !== null
                             setSearchKeyword("")
                             setStatusFilter(null)
                             setModeFilter(null)
-                            fetchHistory(1, pagination.pageSize, { keyword: "", status: null, mode: null })
+                            if (!filtersActive) {
+                                fetchHistory(1, pagination.pageSize, { keyword: "" })
+                            }
                             fetchStats()
                         }}
                     >

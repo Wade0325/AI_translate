@@ -57,6 +57,10 @@ function applyFileResult(file, data) {
     next.cost = data.result?.cost;
     next.input_cost = data.result?.input_cost;
     next.output_cost = data.result?.output_cost;
+    // Result 頁顯示用：時長、模型與實際使用的來源語言
+    next.audioDurationSec = data.result?.audio_duration_seconds;
+    next.model = data.result?.model ?? file.model;
+    next.sourceLanguage = data.result?.source_language;
   } else if (data.status_code === 'FAILED') {
     next.status = 'error';
     next.percent = 100;
@@ -229,7 +233,7 @@ export function useUploadQueue({ fileList, setFileList, socketManager, onBatchSu
             filename: f.serverFilename,
             original_filename: f.name,
             file_uid: f.uid,
-            // per-file 設定（後端若支援會優先使用）
+            // per-file 設定，後端優先於下方批次層級 fallback 使用
             source_lang: f.language || defaults.sourceLang,
             target_lang: f.targetLang || null,
             prompt: f.prompt ?? prompt,

@@ -36,7 +36,7 @@ export default function ResultPage() {
             files: completedFiles.map(f => ({
                 id: f.uid,
                 name: f.name,
-                language: f.language || "Unknown",
+                language: f.language || f.sourceLanguage || "Unknown",
                 model: f.model || "Unknown",
                 totalTokens: f.tokens_used || 0,
                 cost: f.cost || 0,

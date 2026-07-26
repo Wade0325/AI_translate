@@ -1,6 +1,4 @@
-import { Card, Typography } from "antd"
-
-const { Text } = Typography
+import { Card } from "antd"
 
 /** 統計卡片：Dashboard / History / Billing 共用同一外觀。 */
 export function StatCard({ title, value, subtitle, icon: Icon, iconColor, bgColor, valueColor = "#e8e8e8" }) {
