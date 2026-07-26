@@ -27,7 +27,8 @@
 
 ### 🎯 核心能力
 
-- **🤖 高品質 AI 轉錄**：整合 Google Gemini 多模態模型，支援 `gemini-2.5-flash` / `gemini-2.5-pro` 等。
+- **🤖 高品質 AI 轉錄**：整合 Google Gemini 多模態模型，支援 `gemini-3.5-flash` / `gemini-2.5-flash` 等。
+- **🖥️ 本地模型轉錄**：VibeVoice-ASR 說話者分離 + Qwen3-ASR 轉錄（主機 GPU 執行，零 API 費用；以 `local_worker.bat` 啟動）。
 - **🗣️ 智能 VAD 切片**：使用 Silero VAD 自動移除靜默段落，提升精度並節省 Token。
 - **⏱️ 毫秒級時間戳**：輸出帶 `[mm:ss.xxx]` 精確時間戳的逐字稿。
 - **📦 多格式匯出**：LRC、SRT、VTT、TXT 一鍵下載；批量任務支援 ZIP 打包。
@@ -187,8 +188,8 @@ AI_translate/
 │   │   ├── celery/          # 單檔 / 批次轉錄任務
 │   │   ├── core/            # 設定、預設 Prompt（單一真實來源）
 │   │   ├── database/        # ORM 模型、自動遷移
-│   │   ├── provider/google/ # Gemini API 客戶端
-│   │   ├── services/        # vad / transcription / converter / calculator / translator
+│   │   ├── provider/        # google（Gemini）與 local（VibeVoice + Qwen3-ASR）客戶端
+│   │   ├── services/        # vad / transcription / converter / calculator
 │   │   └── websocket/       # ConnectionManager + Redis 監聽器
 │   └── main.py
 ├── frontend/                # React 19 + Vite 6
