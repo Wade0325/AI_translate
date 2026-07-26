@@ -19,7 +19,7 @@ import {
     FileAudio,
     CreditCard,
 } from "lucide-react"
-import RechartsTooltipBox from "@/components/charts/RechartsTooltipBox"
+import { UsageTooltip } from "@/components/charts/RechartsTooltipBox"
 import { StatCard } from "@/components/StatCard"
 import { api } from "@/services/api"
 import { localDateKey, formatTokensTick } from "@/utils/formatters"
@@ -75,21 +75,6 @@ function buildMonthlyChartData(daily, now) {
     })
 }
 
-function CustomTooltip({ active, payload, label }) {
-    if (!active || !payload?.length) return null
-    const row = payload[0].payload
-    return (
-        <RechartsTooltipBox label={label}>
-            <div style={{ fontSize: 12, color: '#8888a8' }}>
-                Tokens: {row.tokens.toLocaleString()} · Files: {row.files}
-            </div>
-            <div style={{ fontSize: 12, color: '#2dd4a8' }}>
-                Cost: ${row.cost.toFixed(4)}
-            </div>
-        </RechartsTooltipBox>
-    )
-}
-
 const pricingColumns = [
     { title: 'Model', dataIndex: 'model', key: 'model', render: (v) => <Text strong style={{ color: '#e8e8e8' }}>{v}</Text> },
     { title: 'Input Text (per 1M)', dataIndex: 'input_text', key: 'input_text', render: (v) => <Text code style={{ color: '#8888a8' }}>${v.toFixed(2)}</Text> },
@@ -139,7 +124,7 @@ export default function BillingPage() {
                                 <CartesianGrid strokeDasharray="3 3" stroke="#2a2a48" vertical={false} />
                                 <XAxis dataKey="day" stroke="#8888a8" fontSize={12} tickLine={false} axisLine={false} />
                                 <YAxis stroke="#8888a8" fontSize={12} tickLine={false} axisLine={false} tickFormatter={formatTokensTick} />
-                                <Tooltip content={<CustomTooltip />} />
+                                <Tooltip content={<UsageTooltip />} />
                                 <Area type="monotone" dataKey="tokens" stroke="#2dd4a8" fill="url(#tokenGradient)" strokeWidth={2} />
                             </AreaChart>
                         </ResponsiveContainer>
@@ -158,7 +143,7 @@ export default function BillingPage() {
                                 <CartesianGrid strokeDasharray="3 3" stroke="#2a2a48" vertical={false} />
                                 <XAxis dataKey="month" stroke="#8888a8" fontSize={12} tickLine={false} axisLine={false} />
                                 <YAxis stroke="#8888a8" fontSize={12} tickLine={false} axisLine={false} tickFormatter={formatTokensTick} />
-                                <Tooltip content={<CustomTooltip />} />
+                                <Tooltip content={<UsageTooltip />} />
                                 <Bar dataKey="tokens" fill="#2dd4a8" radius={[4, 4, 0, 0]} />
                             </BarChart>
                         </ResponsiveContainer>
@@ -177,7 +162,7 @@ export default function BillingPage() {
                                 <CartesianGrid strokeDasharray="3 3" stroke="#2a2a48" vertical={false} />
                                 <XAxis dataKey="month" stroke="#8888a8" fontSize={12} tickLine={false} axisLine={false} />
                                 <YAxis stroke="#8888a8" fontSize={12} tickLine={false} axisLine={false} tickFormatter={(v) => `$${v}`} />
-                                <Tooltip content={<CustomTooltip />} />
+                                <Tooltip content={<UsageTooltip />} />
                                 <Line type="monotone" dataKey="cost" stroke="#2dd4a8" strokeWidth={2} dot={{ fill: "#2dd4a8", r: 4 }} />
                             </LineChart>
                         </ResponsiveContainer>

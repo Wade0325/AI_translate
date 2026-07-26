@@ -18,9 +18,8 @@ export function formatDuration(seconds) {
   if (!seconds) return '0:00';
   const h = Math.floor(seconds / 3600);
   const m = Math.floor((seconds % 3600) / 60);
-  const s = Math.floor(seconds % 60);
-  const ms = `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
-  return h > 0 ? `${h}:${ms}` : `${m}:${s.toString().padStart(2, '0')}`;
+  const ss = String(Math.floor(seconds % 60)).padStart(2, '0');
+  return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${ss}` : `${m}:${ss}`;
 }
 
 /** ISO/timestamp → zh-TW MM/DD HH:mm；解析失敗時原樣回傳。 */

@@ -1,3 +1,19 @@
+/** Dashboard / Billing 用量圖共用的 Tooltip：Tokens · Files 與 Cost 兩行。 */
+export function UsageTooltip({ active, payload, label }) {
+  if (!active || !payload?.length) return null;
+  const row = payload[0].payload;
+  return (
+    <RechartsTooltipBox label={label}>
+      <div style={{ fontSize: 12, color: '#8888a8' }}>
+        Tokens: {row.tokens.toLocaleString()} · Files: {row.files}
+      </div>
+      <div style={{ fontSize: 12, color: '#2dd4a8' }}>
+        Cost: ${row.cost.toFixed(4)}
+      </div>
+    </RechartsTooltipBox>
+  );
+}
+
 /** 深色佈景下共用的 Recharts Tooltip 容器；各圖表自行提供內容，外觀統一於此。 */
 export default function RechartsTooltipBox({ label, children, style }) {
   return (

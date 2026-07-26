@@ -1,4 +1,3 @@
-import { useState } from "react"
 import { Button, Tag, Dropdown, Typography } from "antd"
 import {
     FileAudio,
@@ -8,45 +7,23 @@ import {
     Coins,
     Languages,
     Users,
-    Eye,
-    Copy,
-    Check,
 } from "lucide-react"
 import { downloadFormatsDetailed } from "@/constants/downloadFormats"
 import { formatDuration } from "@/utils/formatters"
 
 const { Text } = Typography
 
+// Result 頁只會收到 completed 檔案（ResultPage 已過濾）
+const COMPLETED_STYLE = {
+    bg: 'rgba(45, 212, 168, 0.1)',
+    iconColor: '#2dd4a8',
+    borderColor: 'rgba(45, 212, 168, 0.3)',
+    text: '#2dd4a8',
+}
+
 export function ResultFileCard({ file, onDownload }) {
-    const [expanded, setExpanded] = useState(false)
-    const [copiedId, setCopiedId] = useState(null)
-
     const fData = file._raw || file
-    const segments = fData.result?.json?.segments || []
-
-    const handleCopy = (id, text) => {
-        navigator.clipboard.writeText(text)
-        setCopiedId(id)
-        setTimeout(() => setCopiedId(null), 1500)
-    }
-
-    const handleCopyAll = () => {
-        const fullText = segments
-            .map((s) => `[${formatDuration(s.start)}] ${s.speaker || "Speaker"}: ${s.text}`)
-            .join("\n")
-        navigator.clipboard.writeText(fullText)
-        setCopiedId("all")
-        setTimeout(() => setCopiedId(null), 1500)
-    }
-
-    const statusColors = {
-        completed: { bg: 'rgba(45, 212, 168, 0.1)', iconColor: '#2dd4a8', borderColor: 'rgba(45, 212, 168, 0.3)', text: '#2dd4a8' },
-        failed: { bg: 'rgba(224, 82, 82, 0.1)', iconColor: '#e05252', borderColor: 'rgba(224, 82, 82, 0.3)', text: '#e05252' },
-        processing: { bg: 'rgba(212, 167, 45, 0.1)', iconColor: '#d4a72d', borderColor: 'rgba(212, 167, 45, 0.3)', text: '#d4a72d' },
-    }
-
-    // Default to completed styling since this page only shows completed
-    const sc = statusColors[fData.status] || statusColors.completed
+    const sc = COMPLETED_STYLE
 
     const downloadMenuItems = [
         { key: 'header', type: 'group', label: <Text style={{ color: '#8888a8', fontSize: 12 }}>Choose format</Text> },
@@ -124,17 +101,6 @@ export function ResultFileCard({ file, onDownload }) {
                 </div>
 
                 <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
-                    <Button
-                        type="text"
-                        size="small"
-                        icon={<Eye size={14} />}
-                        onClick={() => setExpanded(!expanded)}
-                        style={{ color: expanded ? '#2dd4a8' : '#8888a8' }}
-                        disabled={segments.length === 0}
-                    >
-                        {expanded ? "Hide" : "View"}
-                    </Button>
-
                     <Dropdown
                         menu={{
                             items: downloadMenuItems,
@@ -152,74 +118,6 @@ export function ResultFileCard({ file, onDownload }) {
                     </Dropdown>
                 </div>
             </div>
-
-            {/* Expanded: transcript viewer */}
-            {expanded && segments.length > 0 && (
-                <div style={{ borderTop: '1px solid #3a3a5c' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 12px', background: 'rgba(42, 42, 72, 0.2)' }}>
-                        <Text style={{ fontSize: 12, color: '#8888a8' }}>
-                            {segments.length} segments
-                        </Text>
-                        <Button
-                            type="text"
-                            size="small"
-                            icon={copiedId === "all" ? <Check size={12} color="#2dd4a8" /> : <Copy size={12} />}
-                            onClick={handleCopyAll}
-                            style={{ fontSize: 12 }}
-                        >
-                            {copiedId === "all" ? "Copied!" : "Copy All"}
-                        </Button>
-                    </div>
-
-                    <div style={{ maxHeight: 384, overflowY: 'auto' }}>
-                        {segments.map((seg, idx) => (
-                            <div
-                                key={idx}
-                                style={{
-                                    display: 'flex',
-                                    gap: 12,
-                                    padding: '10px 12px',
-                                    borderBottom: '1px solid rgba(58, 58, 92, 0.5)',
-                                    transition: 'background 0.2s',
-                                }}
-                                onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(42, 42, 72, 0.2)' }}
-                                onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}
-                            >
-                                <span style={{
-                                    flexShrink: 0,
-                                    borderRadius: 4,
-                                    background: 'rgba(42, 42, 72, 0.6)',
-                                    padding: '2px 6px',
-                                    fontFamily: 'monospace',
-                                    fontSize: 11,
-                                    color: '#8888a8',
-                                    height: 'fit-content',
-                                    marginTop: 2,
-                                }}>
-                                    {formatDuration(seg.start || 0)}
-                                </span>
-
-                                <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
-                                    <span style={{ fontSize: 12, fontWeight: 500, color: '#2dd4a8', width: 'fit-content' }}>
-                                        {seg.speaker ? `Speaker ${seg.speaker}` : "Speaker"}
-                                    </span>
-                                    <p style={{ fontSize: 13, lineHeight: 1.6, color: 'rgba(232, 232, 232, 0.9)', margin: 0 }}>{seg.text}</p>
-                                </div>
-
-                                <Button
-                                    type="text"
-                                    size="small"
-                                    icon={copiedId === idx ? <Check size={12} color="#2dd4a8" /> : <Copy size={12} />}
-                                    onClick={() => handleCopy(idx, `[${formatDuration(seg.start || 0)}] ${seg.speaker || "Speaker"}: ${seg.text}`)}
-                                    style={{ flexShrink: 0, opacity: 0.5 }}
-                                    onMouseEnter={(e) => { e.currentTarget.style.opacity = '1' }}
-                                    onMouseLeave={(e) => { e.currentTarget.style.opacity = '0.5' }}
-                                />
-                            </div>
-                        ))}
-                    </div>
-                </div>
-            )}
         </div>
     )
 }

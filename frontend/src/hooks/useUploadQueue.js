@@ -33,7 +33,6 @@ function buildSinglePayload({ serverFilename, file, provider, model, apiKey, pro
     model,
     api_keys: apiKey,
     source_lang: file.language || defaults.sourceLang,
-    target_lang: file.targetLang || null,
     prompt: file.prompt ?? prompt,
     original_text: file.original_text || null,
     multi_speaker: file.isMultiSpeaker ?? defaults.multiSpeaker,
@@ -235,7 +234,6 @@ export function useUploadQueue({ fileList, setFileList, socketManager, onBatchSu
             file_uid: f.uid,
             // per-file 設定，後端優先於下方批次層級 fallback 使用
             source_lang: f.language || defaults.sourceLang,
-            target_lang: f.targetLang || null,
             prompt: f.prompt ?? prompt,
             multi_speaker: f.isMultiSpeaker ?? defaults.multiSpeaker,
           })),
@@ -244,7 +242,6 @@ export function useUploadQueue({ fileList, setFileList, socketManager, onBatchSu
           api_keys: apiKey,
           // 整個批次的 fallback 值
           source_lang: defaults.sourceLang,
-          target_lang: null,
           prompt,
           multi_speaker: defaults.multiSpeaker,
           session_id: sessionId,

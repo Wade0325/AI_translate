@@ -55,7 +55,7 @@ export default function TranscribePage() {
     const [vadResult, setVadResult] = useState(null)
     const fileInputRef = useRef(null)
 
-    const currentProvider = findProviderForModel(model) || "Google"
+    const currentProvider = findProviderForModel(model)
 
     const [globalConfig, setGlobalConfig] = useState({
         language: targetLang || "zh-TW",

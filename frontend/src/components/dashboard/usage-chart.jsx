@@ -8,7 +8,7 @@ import {
     Tooltip,
     ResponsiveContainer,
 } from "recharts"
-import RechartsTooltipBox from "@/components/charts/RechartsTooltipBox"
+import { UsageTooltip } from "@/components/charts/RechartsTooltipBox"
 import { localDateKey, formatTokensTick } from "@/utils/formatters"
 
 // 後端 daily 的 date 是伺服器本地日期字串，以本地日期產生 key 對齊（見 localDateKey 說明）
@@ -28,21 +28,6 @@ function lastSevenDays(daily) {
         })
     }
     return result
-}
-
-function CustomTooltip({ active, payload, label }) {
-    if (!active || !payload?.length) return null
-    const row = payload[0].payload
-    return (
-        <RechartsTooltipBox label={label}>
-            <div style={{ fontSize: 12, color: '#8888a8' }}>
-                Tokens: {row.tokens.toLocaleString()} · Files: {row.files}
-            </div>
-            <div style={{ fontSize: 12, color: '#2dd4a8' }}>
-                Cost: ${row.cost.toFixed(4)}
-            </div>
-        </RechartsTooltipBox>
-    )
 }
 
 export function UsageChart({ daily = [] }) {
@@ -75,7 +60,7 @@ export function UsageChart({ daily = [] }) {
                             axisLine={false}
                             tickFormatter={formatTokensTick}
                         />
-                        <Tooltip content={<CustomTooltip />} cursor={{ fill: "rgba(42, 42, 72, 0.5)" }} />
+                        <Tooltip content={<UsageTooltip />} cursor={{ fill: "rgba(42, 42, 72, 0.5)" }} />
                         <Bar
                             dataKey="tokens"
                             fill="#2dd4a8"

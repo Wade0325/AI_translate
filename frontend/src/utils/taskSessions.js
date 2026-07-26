@@ -141,11 +141,3 @@ export function sessionHasProcessing(session) {
       : isSingleProcessing(item.task)
   )
 }
-
-export function sessionHasCompleted(session) {
-  return session.items.some((item) =>
-    item.kind === "batch"
-      ? isBatchCompleted(item.task)
-      : isSingleCompleted(item.task)
-  )
-}

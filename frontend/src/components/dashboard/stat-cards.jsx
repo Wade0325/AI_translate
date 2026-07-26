@@ -7,17 +7,20 @@ import {
 } from "lucide-react"
 import { StatCard } from "@/components/StatCard"
 
+// /history/stats 尚未載入時的空值（與 HistoryStatsResponse 同形）
+const EMPTY_STATS = {
+    total_tasks: 0,
+    completed_tasks: 0,
+    failed_tasks: 0,
+    success_rate: 0,
+    total_tokens: 0,
+    total_cost: 0,
+    total_audio_duration_seconds: 0,
+    avg_processing_time_seconds: 0,
+}
+
 export function StatCards({ stats }) {
-    const s = stats || {
-        total_tasks: 0,
-        completed_tasks: 0,
-        failed_tasks: 0,
-        success_rate: 0,
-        total_tokens: 0,
-        total_cost: 0,
-        total_audio_duration_seconds: 0,
-        avg_processing_time_seconds: 0,
-    }
+    const s = stats || EMPTY_STATS
 
     const cards = [
         {

@@ -151,5 +151,3 @@ export const WS_URLS = {
   transcription: (id) => `${DEFAULT_WS_BASE}/${id}`,
   batch: (id) => `${DEFAULT_WS_BATCH_BASE}/${id}`,
 };
-
-export { BASE_URL as API_BASE_URL };
