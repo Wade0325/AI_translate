@@ -1,4 +1,4 @@
-import React, { useState, createContext, useContext, useCallback } from 'react';
+import { useState, createContext, useContext, useCallback } from 'react';
 import { message } from 'antd';
 import { modelOptions } from '../constants/modelConfig';
 import { api, ApiError } from '../services/api';
@@ -15,26 +15,22 @@ export const useModelManager = () => {
 };
 
 const ModelManagerProvider = ({ children }) => {
-    // Modal 相關狀態
     const [isModalOpen, setIsModalOpen] = useState(false);
     const [editingProvider, setEditingProvider] = useState('');
     const [apiKeys, setApiKeys] = useState(['']);
     const [selectedModel, setSelectedModel] = useState(undefined);
     const [providerConfigs, setProviderConfigs] = useState({});
 
-    // 編輯參數 Modal 相關狀態
     const [isParamsModalOpen, setIsParamsModalOpen] = useState(false);
     const [editingParamsProvider, setEditingParamsProvider] = useState('');
     const [promptText, setPromptText] = useState('');
 
-    // 先查看使用端是否儲存過轉錄設定，如果沒有則從後端獲取
+    // 設定查找順序：記憶體快取 → localStorage → 後端 API（避免每次都打後端）
     const getProviderConfig = useCallback(async (provider) => {
-        // 優先從記憶體快取獲取
         if (providerConfigs[provider]) {
             return providerConfigs[provider];
         }
 
-        // 其次從 localStorage 獲取
         try {
             const storedConfigStr = localStorage.getItem(`providerConfig_${provider}`);
             if (storedConfigStr) {
@@ -46,7 +42,6 @@ const ModelManagerProvider = ({ children }) => {
             console.error('從 localStorage 讀取設定失敗:', e);
         }
 
-        // 最後從後端 API 獲取
         try {
             const data = await api.settings.getProvider(provider);
             if (data) {
@@ -66,7 +61,6 @@ const ModelManagerProvider = ({ children }) => {
         }
     }, [providerConfigs]);
 
-    // 統一的資料儲存函式
     const saveProviderConfig = useCallback(async (provider, partialConfig) => {
         message.loading({ content: `正在保存 ${provider} 的設定...`, key: 'saveConfig' });
 
@@ -133,7 +127,7 @@ const ModelManagerProvider = ({ children }) => {
         setIsModalOpen(false);
     };
 
-    // 從後端 API 取得預設 Prompt (Single Source of Truth)
+    // 未存過 prompt 時改抓後端預設範本（prompt 的 single source of truth 在後端）
     const handleEditProviderParams = useCallback(async (provider) => {
         setEditingParamsProvider(provider);
         const config = await getProviderConfig(provider);

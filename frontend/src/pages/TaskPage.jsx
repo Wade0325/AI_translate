@@ -142,7 +142,11 @@ export default function TaskPage() {
     const toggleExpand = (batchId) => {
         setExpandedIds(prev => {
             const next = new Set(prev)
-            next.has(batchId) ? next.delete(batchId) : next.add(batchId)
+            if (next.has(batchId)) {
+                next.delete(batchId)
+            } else {
+                next.add(batchId)
+            }
             return next
         })
     }

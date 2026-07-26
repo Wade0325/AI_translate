@@ -2,6 +2,7 @@ import { useCallback } from 'react';
 import { message } from 'antd';
 import { api, WS_URLS } from '../services/api';
 import { registerTranscribeSession } from '../utils/transcribeSessions';
+import { randomId } from '../utils/id';
 
 /**
  * 封裝「上傳檔案 → 開啟 WebSocket → 接收後端推送」的完整流程。
@@ -16,13 +17,13 @@ import { registerTranscribeSession } from '../utils/transcribeSessions';
  *   - startBatch({ provider, model, apiKey, prompt, defaults }):
  *       所有檔案共用一條 batch WS（Gemini Batch API，50% 折扣）
  *
- * defaults 物件包含全域 fallback：source_lang / target_lang / multi_speaker /
- * service_tier；當檔案本身沒指定 per-file 設定時會用 defaults 補上。
+ * defaults 物件包含全域 fallback：source_lang / multi_speaker / service_tier；
+ * 當檔案本身沒指定 per-file 設定時會用 defaults 補上。
  */
 
-function makeSessionId() {
-  return `session-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
-}
+const isRestartable = (f) =>
+  (f.status === 'waiting' || f.status === 'error' || f.status === 'cancelled') &&
+  !!f.originFileObj;
 
 function buildSinglePayload({ serverFilename, file, provider, model, apiKey, prompt, defaults, sessionId }) {
   return {
@@ -32,10 +33,10 @@ function buildSinglePayload({ serverFilename, file, provider, model, apiKey, pro
     model,
     api_keys: apiKey,
     source_lang: file.language || defaults.sourceLang,
-    target_lang: file.targetLang || defaults.targetLang || null,
+    target_lang: file.targetLang || null,
     prompt: file.prompt ?? prompt,
     original_text: file.original_text || null,
-    multi_speaker: file.multiSpeaker ?? defaults.multiSpeaker,
+    multi_speaker: file.isMultiSpeaker ?? defaults.multiSpeaker,
     service_tier: defaults.serviceTier,
     session_id: sessionId,
   };
@@ -74,7 +75,6 @@ export function useUploadQueue({ fileList, setFileList, socketManager, onBatchSu
     );
   }, [setFileList]);
 
-  // 收到單檔 WS 訊息時更新對應 file 的 state
   const handleSingleMessage = useCallback((event) => {
     let data;
     try {
@@ -89,37 +89,47 @@ export function useUploadQueue({ fileList, setFileList, socketManager, onBatchSu
     );
   }, [setFileList]);
 
-  // 一般模式：每個 file uid 一條 WebSocket
-  const startRegular = useCallback(async ({ provider, model, apiKey, prompt, defaults }) => {
-    const restartable = (f) =>
-      f.status === 'waiting' || f.status === 'error' || f.status === 'cancelled';
-    const candidates = fileList.filter((f) => restartable(f) && f.originFileObj);
-
-    if (candidates.length === 0) {
-      return { skipped: true };
-    }
-
-    const sessionId = makeSessionId();
+  // 建立 session 並把候選檔案標記為 processing；記下 provider 與模式供取消端點使用
+  const beginSession = useCallback((candidates, provider, transcribeMode) => {
+    const sessionId = randomId('session');
     registerTranscribeSession({
       sessionId,
       fileUids: candidates.map((f) => f.uid),
     });
 
-    // 全部標記成 processing；記下 provider 與模式供取消端點使用
+    const candidateUids = new Set(candidates.map((f) => f.uid));
     setFileList((current) =>
       current.map((f) =>
-        candidates.find((p) => p.uid === f.uid)
+        candidateUids.has(f.uid)
           ? {
               ...f,
               status: 'processing',
               statusText: '正在上傳檔案...',
               sessionId,
               provider,
-              transcribeMode: 'single',
+              transcribeMode,
             }
           : f
       )
     );
+    return sessionId;
+  }, [setFileList]);
+
+  const uploadFile = useCallback(async (file) => {
+    const formData = new FormData();
+    formData.append('file', file.originFileObj);
+    const { filename } = await api.upload(formData);
+    return filename;
+  }, []);
+
+  // 一般模式：每個 file uid 一條 WebSocket
+  const startRegular = useCallback(async ({ provider, model, apiKey, prompt, defaults }) => {
+    const candidates = fileList.filter(isRestartable);
+    if (candidates.length === 0) {
+      return { skipped: true };
+    }
+
+    const sessionId = beginSession(candidates, provider, 'single');
 
     const openTranscriptionSocket = (file, serverFilename) => {
       socketManager.openSocket(file.uid, WS_URLS.transcription(file.uid), {
@@ -153,9 +163,7 @@ export function useUploadQueue({ fileList, setFileList, socketManager, onBatchSu
     // 先 upload 拿到伺服器檔名再開 WS
     for (const file of candidates) {
       try {
-        const formData = new FormData();
-        formData.append('file', file.originFileObj);
-        const { filename: serverFilename } = await api.upload(formData);
+        const serverFilename = await uploadFile(file);
         openTranscriptionSocket(file, serverFilename);
       } catch (error) {
         console.error(`上傳檔案 ${file.name} 失敗:`, error);
@@ -168,48 +176,21 @@ export function useUploadQueue({ fileList, setFileList, socketManager, onBatchSu
     }
 
     return { skipped: false };
-  }, [fileList, setFileList, updateFile, socketManager, handleSingleMessage]);
+  }, [fileList, updateFile, socketManager, handleSingleMessage, beginSession, uploadFile]);
 
   // 批次模式：所有檔案共用一條 batch WebSocket
   const startBatch = useCallback(async ({ provider, model, apiKey, prompt, defaults }) => {
-    const candidates = fileList.filter(
-      (f) =>
-        (f.status === 'waiting' || f.status === 'error' || f.status === 'cancelled') &&
-        f.originFileObj
-    );
-
+    const candidates = fileList.filter(isRestartable);
     if (candidates.length === 0) {
       return { skipped: true, reason: 'no-files' };
     }
 
-    const sessionId = makeSessionId();
-    registerTranscribeSession({
-      sessionId,
-      fileUids: candidates.map((f) => f.uid),
-    });
+    const sessionId = beginSession(candidates, provider, 'batch');
 
-    setFileList((current) =>
-      current.map((f) =>
-        candidates.find((p) => p.uid === f.uid)
-          ? {
-              ...f,
-              status: 'processing',
-              statusText: '正在上傳檔案...',
-              sessionId,
-              provider,
-              transcribeMode: 'batch',
-            }
-          : f
-      )
-    );
-
-    // 依序上傳所有檔案
     const uploaded = [];
     for (const file of candidates) {
       try {
-        const formData = new FormData();
-        formData.append('file', file.originFileObj);
-        const { filename: serverFilename } = await api.upload(formData);
+        const serverFilename = await uploadFile(file);
         uploaded.push({ ...file, serverFilename });
         updateFile(file.uid, {
           statusText: '檔案已上傳，等待批次處理...',
@@ -230,7 +211,7 @@ export function useUploadQueue({ fileList, setFileList, socketManager, onBatchSu
       return { skipped: true, reason: 'all-upload-failed' };
     }
 
-    const batchId = `batch-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
+    const batchId = randomId('batch');
     const uploadedUidSet = new Set(uploaded.map((f) => f.uid));
 
     socketManager.openSocket(batchId, WS_URLS.batch(batchId), {
@@ -250,16 +231,16 @@ export function useUploadQueue({ fileList, setFileList, socketManager, onBatchSu
             file_uid: f.uid,
             // per-file 設定（後端若支援會優先使用）
             source_lang: f.language || defaults.sourceLang,
-            target_lang: f.targetLang || defaults.targetLang || null,
+            target_lang: f.targetLang || null,
             prompt: f.prompt ?? prompt,
-            multi_speaker: f.multiSpeaker ?? defaults.multiSpeaker,
+            multi_speaker: f.isMultiSpeaker ?? defaults.multiSpeaker,
           })),
           provider,
           model,
           api_keys: apiKey,
           // 整個批次的 fallback 值
           source_lang: defaults.sourceLang,
-          target_lang: defaults.targetLang || null,
+          target_lang: null,
           prompt,
           multi_speaker: defaults.multiSpeaker,
           session_id: sessionId,
@@ -294,7 +275,6 @@ export function useUploadQueue({ fileList, setFileList, socketManager, onBatchSu
           return;
         }
 
-        // 個別檔案的進度更新
         if (data.file_uid) {
           setFileList((current) =>
             current.map((f) => (f.uid === data.file_uid ? applyFileResult(f, data) : f))
@@ -323,7 +303,7 @@ export function useUploadQueue({ fileList, setFileList, socketManager, onBatchSu
     });
 
     return { skipped: false, batchId };
-  }, [fileList, setFileList, updateFile, socketManager, onBatchSubmitted]);
+  }, [fileList, setFileList, updateFile, socketManager, onBatchSubmitted, beginSession, uploadFile]);
 
   return { startRegular, startBatch };
 }

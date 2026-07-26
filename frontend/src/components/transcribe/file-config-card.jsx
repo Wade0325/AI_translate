@@ -1,6 +1,5 @@
 import { useState } from "react"
 import {
-    FileAudio,
     X,
     Settings2,
     Languages,
@@ -18,7 +17,7 @@ import {
     Scissors,
     Ban,
 } from "lucide-react"
-import { Button, Select, Switch, Slider, Tag, Typography, Input, Dropdown, Spin, Space, Tooltip, Popconfirm } from "antd"
+import { Button, Select, Switch, Slider, Tag, Typography, Input, Dropdown, Spin, Tooltip, Popconfirm } from "antd"
 import { LoadingOutlined } from "@ant-design/icons"
 import { languages, formatLang } from "@/constants/languages"
 import { downloadFormats } from "@/constants/downloadFormats"
@@ -108,7 +107,6 @@ export function FileConfigCard({
             overflow: "hidden",
             transition: "border-color 0.2s",
         }}>
-            {/* Collapsed header row */}
             <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 12px" }}>
                 <div style={{
                     width: 32,
@@ -170,7 +168,6 @@ export function FileConfigCard({
                                 {tag.label}
                             </Tag>
                         ))}
-                        {/* Token/Cost stats for completed files */}
                         {isCompleted && config.tokens_used > 0 && (
                             <Text style={{ fontSize: 10, color: "#2dd4a8", marginLeft: 4 }}>
                                 {config.tokens_used?.toLocaleString()} tokens · ${config.cost?.toFixed(4)}
@@ -179,9 +176,7 @@ export function FileConfigCard({
                     </div>
                 </div>
 
-                {/* Action buttons */}
                 <div style={{ display: "flex", alignItems: "center", gap: 2, flexShrink: 0 }}>
-                    {/* Preview */}
                     {isCompleted && onPreview && (
                         <Tooltip title="預覽">
                             <Button
@@ -193,7 +188,6 @@ export function FileConfigCard({
                             />
                         </Tooltip>
                     )}
-                    {/* Download */}
                     {isCompleted && onDownload && (
                         <Dropdown
                             menu={{
@@ -259,7 +253,6 @@ export function FileConfigCard({
                             </Tooltip>
                         </Popconfirm>
                     )}
-                    {/* Reprocess */}
                     {!readOnly && (isCompleted || isError || isCancelled) && onReprocess && (
                         <Tooltip title="重新處理">
                             <Button
@@ -286,7 +279,6 @@ export function FileConfigCard({
                             }}
                         />
                     )}
-                    {/* Remove */}
                     {!readOnly && (
                         <Button
                             type="text"
@@ -321,7 +313,6 @@ export function FileConfigCard({
                     </div>
 
                     <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: 12 }}>
-                        {/* Language */}
                         <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
                             <Text style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, color: "#8888a8" }}>
                                 <Languages size={12} /> Language
@@ -335,7 +326,6 @@ export function FileConfigCard({
                             />
                         </div>
 
-                        {/* Multi-Speaker */}
                         <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
                             <Text style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, color: "#8888a8" }}>
                                 <Users size={12} /> Speakers
@@ -364,7 +354,6 @@ export function FileConfigCard({
                             </div>
                         </div>
 
-                        {/* Timestamps */}
                         <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
                             <Text style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, color: "#8888a8" }}>
                                 <Clock size={12} /> Timestamps
@@ -379,7 +368,6 @@ export function FileConfigCard({
                         </div>
                     </div>
 
-                    {/* Custom Prompt */}
                     <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 12 }}>
                         <Text style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, color: "#8888a8" }}>
                             <MessageSquareText size={12} />

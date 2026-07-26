@@ -19,7 +19,7 @@ createRoot(document.getElementById('root')).render(
                     colorBorderSecondary: '#2a2a48',
                     colorText: '#e8e8e8',
                     colorTextSecondary: '#8888a8',
-                    colorTextTertiary: '#6868888',
+                    colorTextTertiary: '#686888',
                     colorError: '#e05252',
                     colorWarning: '#d4a72d',
                     colorSuccess: '#2dd480',

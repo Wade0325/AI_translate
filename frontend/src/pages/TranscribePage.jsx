@@ -9,16 +9,11 @@ import { useTranscription } from "@/context/TranscriptionContext"
 import { useModelManager } from "@/components/ModelManager"
 import { modelOptions, findProviderForModel } from "@/constants/modelConfig"
 import { api } from "@/services/api"
-import {
-    FileTextOutlined,
-    DownloadOutlined,
-    EyeOutlined,
-    CloseOutlined,
-} from "@ant-design/icons"
-import { AlertCircle } from "lucide-react"
+import { DownloadOutlined } from "@ant-design/icons"
 import { downloadFormatsLong } from "@/constants/downloadFormats"
+import { randomId } from "@/utils/id"
 
-const { Text, Title } = Typography
+const { Text } = Typography
 const { TextArea } = Input
 
 const PAGE_SIZE = 5
@@ -29,8 +24,6 @@ export default function TranscribePage() {
         setFileList,
         targetLang,
         setTargetLang,
-        targetTranslateLang,
-        setTargetTranslateLang,
         model,
         setModel,
         isProcessing,
@@ -38,7 +31,6 @@ export default function TranscribePage() {
         setProcessingMode,
         multiSpeaker,
         setMultiSpeaker,
-        handleUploadChange,
         handleStartTranscription,
         downloadFile,
         downloadAllFiles,
@@ -54,7 +46,6 @@ export default function TranscribePage() {
 
     const { handleEditProvider, handleEditProviderParams, handleTestProvider } = useModelManager()
 
-    // Local UI state
     const [currentPage, setCurrentPage] = useState(1)
     const [isTextModalVisible, setIsTextModalVisible] = useState(false)
     const [textModalContent, setTextModalContent] = useState("")
@@ -66,7 +57,6 @@ export default function TranscribePage() {
 
     const currentProvider = findProviderForModel(model) || "Google"
 
-    // Global config for GlobalDefaults component
     const [globalConfig, setGlobalConfig] = useState({
         language: targetLang || "zh-TW",
         isMultiSpeaker: multiSpeaker,
@@ -75,7 +65,6 @@ export default function TranscribePage() {
         includeTimestamps: true,
     })
 
-    // Sync global config changes to TranscriptionContext
     const handleGlobalConfigChange = (newConfig) => {
         setGlobalConfig(newConfig)
         if (newConfig.language !== targetLang) setTargetLang(newConfig.language)
@@ -84,7 +73,7 @@ export default function TranscribePage() {
 
     const handleFilesAdded = (files) => {
         const newFiles = files.map((file) => ({
-            uid: `file-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+            uid: randomId("file"),
             name: file.name,
             size: file.size,
             originFileObj: file,
@@ -92,8 +81,7 @@ export default function TranscribePage() {
             percent: 0,
             statusText: "等待處理",
         }))
-        const updatedList = [...fileList, ...newFiles]
-        setFileList(updatedList)
+        setFileList((prev) => [...prev, ...newFiles])
     }
 
     const handleAttachText = (fileUid) => {
@@ -216,11 +204,8 @@ export default function TranscribePage() {
     const totalTokens = completedFiles.reduce((sum, f) => sum + (f.tokens_used || 0), 0)
     const totalCost = completedFiles.reduce((sum, f) => sum + (f.cost || 0), 0)
 
-    const downloadMenuItems = downloadFormatsLong
-
     return (
         <div style={{ display: "flex", flexDirection: "column", gap: 16, padding: 24 }}>
-            {/* 服務商 / 模型 / 批次模式 控制列 */}
             <Card
                 size="small"
                 style={{ border: "1px solid #3a3a5c" }}
@@ -246,13 +231,11 @@ export default function TranscribePage() {
                                 fontSize: 12,
                             }}
                         >
-                            {Object.entries(modelOptions).map(([provider, models]) =>
-                                models.map((m) => (
-                                    <option key={m.value} value={m.value}>
-                                        {m.label}
-                                    </option>
-                                ))
-                            )}
+                            {Object.values(modelOptions).flat().map((m) => (
+                                <option key={m.value} value={m.value}>
+                                    {m.label}
+                                </option>
+                            ))}
                         </select>
                     </div>
                     <div style={{ height: 32, width: 1, background: "#3a3a5c" }} />
@@ -297,7 +280,6 @@ export default function TranscribePage() {
                 </div>
             </Card>
 
-            {/* Global Defaults */}
             <GlobalDefaults
                 config={globalConfig}
                 onChange={handleGlobalConfigChange}
@@ -305,10 +287,8 @@ export default function TranscribePage() {
                 fileCount={fileList.length}
             />
 
-            {/* Upload Zone */}
             <UploadZone hasFiles={fileList.length > 0} onFilesAdded={handleFilesAdded} />
 
-            {/* File List Header */}
             {fileList.length > 0 && (
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                     <Text style={{ fontSize: 13, color: "#8888a8" }}>
@@ -323,7 +303,7 @@ export default function TranscribePage() {
                         {completedFiles.length > 0 && (
                             <Dropdown
                                 menu={{
-                                    items: downloadMenuItems,
+                                    items: downloadFormatsLong,
                                     onClick: ({ key }) => downloadAllFiles(key),
                                 }}
                             >
@@ -346,7 +326,6 @@ export default function TranscribePage() {
                 </div>
             )}
 
-            {/* File Cards */}
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                 {paginatedFiles.map((file) => (
                     <FileConfigCard
@@ -361,7 +340,6 @@ export default function TranscribePage() {
                             prompt: file.prompt ?? globalConfig.prompt,
                             includeTimestamps: file.includeTimestamps ?? globalConfig.includeTimestamps,
                             hasOverride: file.hasOverride || false,
-                            // Transcription state
                             status: file.status,
                             statusText: file.statusText,
                             percent: file.percent,
@@ -386,7 +364,6 @@ export default function TranscribePage() {
                 ))}
             </div>
 
-            {/* Pagination */}
             {fileList.length > PAGE_SIZE && (
                 <div style={{ display: "flex", justifyContent: "center" }}>
                     <Pagination
@@ -400,7 +377,6 @@ export default function TranscribePage() {
                 </div>
             )}
 
-            {/* Cost Estimator & Submit */}
             {fileList.length > 0 && (
                 <Card size="small" style={{ border: "1px solid #3a3a5c" }} styles={{ body: { padding: "12px 16px" } }}>
                     <CostEstimator
@@ -412,7 +388,6 @@ export default function TranscribePage() {
                 </Card>
             )}
 
-            {/* Preview Modal */}
             <Modal
                 title={previewTitle}
                 open={isPreviewModalVisible}
@@ -436,7 +411,6 @@ export default function TranscribePage() {
                 </pre>
             </Modal>
 
-            {/* Text Attachment Modal */}
             <Modal
                 title="附加原始文本"
                 open={isTextModalVisible}
@@ -454,14 +428,12 @@ export default function TranscribePage() {
                 />
             </Modal>
 
-            {/* VAD Test Result Modal */}
             <VadTestModal
                 open={vadModalOpen}
                 result={vadResult}
                 onClose={() => setVadModalOpen(false)}
             />
 
-            {/* Hidden file input for text attachment from file */}
             <input
                 ref={fileInputRef}
                 type="file"

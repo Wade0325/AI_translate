@@ -1,8 +1,5 @@
 /**
- * 共用語言選項（給 Select / Tag / formatLang 使用）。
- *
- * 抽自原 `components/transcribe/file-config-card.jsx` 內的私有常數，
- * 任何元件想呈現語言選項時都應該 import 此檔。
+ * 共用語言選項（給 Select / Tag / formatLang 使用）；避免各元件各自維護一份。
  */
 
 export const languages = [

@@ -112,7 +112,7 @@ export default function TaskCard({
                             </Text>
                         )}
                     </div>
-                    <Text style={{ fontSize: 11, color: "#6868888" }} ellipsis>
+                    <Text style={{ fontSize: 11, color: "#686888" }} ellipsis>
                         ID: {task.batch_id.slice(0, 20)}...
                     </Text>
                 </div>

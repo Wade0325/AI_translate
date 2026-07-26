@@ -11,6 +11,8 @@ import { FileAudio, Coins, Clock, TrendingUp } from "lucide-react"
 import { api } from "../services/api"
 import { downloadFormats } from "../constants/downloadFormats"
 import { downloadBlob, renameExtension } from "../utils/download"
+import { StatCard } from "../components/StatCard"
+import { STATUS_META } from "../constants/taskStatus"
 
 const { Text } = Typography
 
@@ -23,22 +25,21 @@ export default function HistoryPage() {
     const [modeFilter, setModeFilter] = useState(null)
     const [stats, setStats] = useState({ total_tasks: 0, completed_tasks: 0, failed_tasks: 0, total_cost: 0, total_tokens: 0 })
 
-    const fetchHistory = useCallback(async (page = 1, pageSize = 10) => {
+    const fetchHistory = useCallback(async (page = 1, pageSize = 10, overrides = {}) => {
         setLoading(true)
+        const keyword = "keyword" in overrides ? overrides.keyword : searchKeyword
+        const status = "status" in overrides ? overrides.status : statusFilter
+        const mode = "mode" in overrides ? overrides.mode : modeFilter
         try {
             const data = await api.history.list({
                 page,
                 pageSize,
-                keyword: searchKeyword || undefined,
-                status: statusFilter || undefined,
-                mode: modeFilter || undefined,
+                keyword: keyword || undefined,
+                status: status || undefined,
+                mode: mode || undefined,
             })
-            setHistoryData(data.items || data.data || data || [])
-            setPagination({
-                current: page,
-                pageSize,
-                total: data.total || data.items?.length || 0,
-            })
+            setHistoryData(data.items || [])
+            setPagination({ current: page, pageSize, total: data.total || 0 })
         } catch (error) {
             console.error("Error fetching history:", error)
             setHistoryData([])
@@ -57,9 +58,14 @@ export default function HistoryPage() {
     }, [])
 
     useEffect(() => {
-        fetchHistory(1, pagination.pageSize)
         fetchStats()
-    }, [fetchHistory, fetchStats, pagination.pageSize])
+    }, [fetchStats])
+
+    // 下拉篩選改變時自動查詢；關鍵字只在按下搜尋 / Enter 時查詢，避免逐字打 API
+    useEffect(() => {
+        fetchHistory(1, pagination.pageSize)
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [statusFilter, modeFilter])
 
     const handleDelete = async (taskUuid) => {
         try {
@@ -93,22 +99,6 @@ export default function HistoryPage() {
         }
     }
 
-    const statusColors = {
-        COMPLETED: "green",
-        FAILED: "red",
-        PROCESSING: "blue",
-        PENDING: "default",
-        CANCELLED: "default",
-    }
-
-    const statusLabels = {
-        COMPLETED: "完成",
-        FAILED: "失敗",
-        PROCESSING: "處理中",
-        PENDING: "等待中",
-        CANCELLED: "已取消",
-    }
-
     const columns = [
         {
             title: "檔案名稱",
@@ -128,8 +118,8 @@ export default function HistoryPage() {
             key: "status",
             width: 100,
             render: (v) => (
-                <Tag color={statusColors[v] || "default"}>
-                    {statusLabels[v] || v || "—"}
+                <Tag color={STATUS_META[v]?.color || "default"}>
+                    {STATUS_META[v]?.label || v || "—"}
                 </Tag>
             ),
         },
@@ -242,64 +232,47 @@ export default function HistoryPage() {
 
     return (
         <div style={{ display: "flex", flexDirection: "column", gap: 24, padding: 24 }}>
-            {/* Stats Cards */}
             <Row gutter={[16, 16]}>
                 <Col xs={24} sm={12} lg={6}>
-                    <Card size="small" style={{ border: "1px solid #3a3a5c" }} styles={{ body: { padding: 20 } }}>
-                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-                            <div>
-                                <div style={{ color: "#8888a8", fontSize: 13, marginBottom: 8 }}>總任務數</div>
-                                <div style={{ fontSize: 24, fontWeight: 700, color: "#e8e8e8" }}>{stats.total_tasks}</div>
-                            </div>
-                            <div style={{ width: 36, height: 36, borderRadius: 8, background: "rgba(45, 212, 168, 0.1)", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                                <FileAudio size={16} color="#2dd4a8" />
-                            </div>
-                        </div>
-                    </Card>
+                    <StatCard
+                        title="總任務數"
+                        value={stats.total_tasks}
+                        icon={FileAudio}
+                        iconColor="#2dd4a8"
+                        bgColor="rgba(45, 212, 168, 0.1)"
+                    />
                 </Col>
                 <Col xs={24} sm={12} lg={6}>
-                    <Card size="small" style={{ border: "1px solid #3a3a5c" }} styles={{ body: { padding: 20 } }}>
-                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-                            <div>
-                                <div style={{ color: "#8888a8", fontSize: 13, marginBottom: 8 }}>成功率</div>
-                                <div style={{ fontSize: 24, fontWeight: 700, color: "#e8e8e8" }}>{successRate}%</div>
-                                <div style={{ color: "#8888a8", fontSize: 12, marginTop: 4 }}>{stats.completed_tasks} 完成 / {stats.failed_tasks} 失敗</div>
-                            </div>
-                            <div style={{ width: 36, height: 36, borderRadius: 8, background: "rgba(71, 184, 212, 0.1)", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                                <TrendingUp size={16} color="#47b8d4" />
-                            </div>
-                        </div>
-                    </Card>
+                    <StatCard
+                        title="成功率"
+                        value={`${successRate}%`}
+                        subtitle={`${stats.completed_tasks} 完成 / ${stats.failed_tasks} 失敗`}
+                        icon={TrendingUp}
+                        iconColor="#47b8d4"
+                        bgColor="rgba(71, 184, 212, 0.1)"
+                    />
                 </Col>
                 <Col xs={24} sm={12} lg={6}>
-                    <Card size="small" style={{ border: "1px solid #3a3a5c" }} styles={{ body: { padding: 20 } }}>
-                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-                            <div>
-                                <div style={{ color: "#8888a8", fontSize: 13, marginBottom: 8 }}>總 Tokens</div>
-                                <div style={{ fontSize: 24, fontWeight: 700, color: "#e8e8e8" }}>{(stats.total_tokens || 0).toLocaleString()}</div>
-                            </div>
-                            <div style={{ width: 36, height: 36, borderRadius: 8, background: "rgba(212, 167, 45, 0.1)", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                                <Clock size={16} color="#d4a72d" />
-                            </div>
-                        </div>
-                    </Card>
+                    <StatCard
+                        title="總 Tokens"
+                        value={(stats.total_tokens || 0).toLocaleString()}
+                        icon={Clock}
+                        iconColor="#d4a72d"
+                        bgColor="rgba(212, 167, 45, 0.1)"
+                    />
                 </Col>
                 <Col xs={24} sm={12} lg={6}>
-                    <Card size="small" style={{ border: "1px solid #3a3a5c" }} styles={{ body: { padding: 20 } }}>
-                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-                            <div>
-                                <div style={{ color: "#8888a8", fontSize: 13, marginBottom: 8 }}>總費用</div>
-                                <div style={{ fontSize: 24, fontWeight: 700, color: "#2dd4a8" }}>${(stats.total_cost || 0).toFixed(4)}</div>
-                            </div>
-                            <div style={{ width: 36, height: 36, borderRadius: 8, background: "rgba(139, 92, 246, 0.1)", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                                <Coins size={16} color="#8b5cf6" />
-                            </div>
-                        </div>
-                    </Card>
+                    <StatCard
+                        title="總費用"
+                        value={`$${(stats.total_cost || 0).toFixed(4)}`}
+                        valueColor="#2dd4a8"
+                        icon={Coins}
+                        iconColor="#8b5cf6"
+                        bgColor="rgba(139, 92, 246, 0.1)"
+                    />
                 </Col>
             </Row>
 
-            {/* Search & Filters */}
             <Card size="small" style={{ border: "1px solid #3a3a5c" }} styles={{ body: { padding: "12px 16px" } }}>
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
                     <Input
@@ -344,7 +317,7 @@ export default function HistoryPage() {
                             setSearchKeyword("")
                             setStatusFilter(null)
                             setModeFilter(null)
-                            fetchHistory(1, pagination.pageSize)
+                            fetchHistory(1, pagination.pageSize, { keyword: "", status: null, mode: null })
                             fetchStats()
                         }}
                     >
@@ -353,12 +326,11 @@ export default function HistoryPage() {
                 </div>
             </Card>
 
-            {/* History Table */}
             <Card style={{ border: "1px solid #3a3a5c" }} styles={{ body: { padding: 0 } }}>
                 <Table
                     columns={columns}
                     dataSource={historyData}
-                    rowKey={(record) => record.task_uuid || record.id || Math.random()}
+                    rowKey={(record) => record.task_uuid || record.id}
                     loading={loading}
                     pagination={{
                         current: pagination.current,

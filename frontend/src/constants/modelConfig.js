@@ -10,7 +10,6 @@ export const modelOptions = {
     ]
 };
 
-// 輔助函式：根據模型名稱尋找其服務商
 export const findProviderForModel = (model) => {
     if (!model) return null;
     for (const provider in modelOptions) {
@@ -18,5 +17,5 @@ export const findProviderForModel = (model) => {
             return provider;
         }
     }
-    return 'Google'; // 預設返回
+    return null;
 };

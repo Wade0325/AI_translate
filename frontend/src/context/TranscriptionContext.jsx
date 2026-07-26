@@ -1,4 +1,4 @@
-import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { message } from 'antd';
 import { modelOptions, findProviderForModel } from '../constants/modelConfig';
 import { useModelManager } from '../components/ModelManager';
@@ -20,7 +20,6 @@ export const useTranscription = () => {
 export const TranscriptionProvider = ({ children }) => {
   const [fileList, setFileList] = useState([]);
   const [targetLang, setTargetLang] = useState('zh-TW');
-  const [targetTranslateLang, setTargetTranslateLang] = useState(null);
   const [model, setModel] = useState(modelOptions.Google[0].value);
   const [isProcessing, setIsProcessing] = useState(false);
   // 'standard' | 'flex' | 'batch'
@@ -79,7 +78,7 @@ export const TranscriptionProvider = ({ children }) => {
     return () => clearInterval(id);
   }, [hasBatchPending]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // isProcessing 自動切換
+  // 所有 processing 檔案結束後自動解除 isProcessing 並總結結果
   const hasStartedProcessing = useRef(false);
   useEffect(() => {
     const stillProcessing = fileList.some((f) => f.status === 'processing');
@@ -116,16 +115,6 @@ export const TranscriptionProvider = ({ children }) => {
     setIsPreviewModalVisible(false);
     setPreviewContent('');
     setPreviewTitle('');
-  }, []);
-
-  const handleUploadChange = useCallback(({ fileList: newFileList }) => {
-    const updatedList = newFileList.map((f) => ({
-      ...f,
-      status: f.status || 'waiting',
-      percent: f.percent === undefined ? 0 : f.percent,
-      statusText: '等待處理',
-    }));
-    setFileList(updatedList);
   }, []);
 
   const handleReprocess = useCallback((uidToReprocess) => {
@@ -192,7 +181,6 @@ export const TranscriptionProvider = ({ children }) => {
     }
   }, [fileList]);
 
-  // 啟動轉錄：解析 provider/apiKey/prompt 後分派給 hook
   const handleStartTranscription = useCallback(async () => {
     const provider = findProviderForModel(model);
     if (!provider) {
@@ -215,7 +203,6 @@ export const TranscriptionProvider = ({ children }) => {
 
     const defaults = {
       sourceLang: targetLang,
-      targetLang: targetTranslateLang,
       multiSpeaker,
       serviceTier: processingMode === 'flex' ? 'flex' : null,
     };
@@ -233,7 +220,6 @@ export const TranscriptionProvider = ({ children }) => {
     model,
     getProviderConfig,
     targetLang,
-    targetTranslateLang,
     multiSpeaker,
     processingMode,
     useBatchMode,
@@ -246,17 +232,13 @@ export const TranscriptionProvider = ({ children }) => {
     setFileList,
     targetLang,
     setTargetLang,
-    targetTranslateLang,
-    setTargetTranslateLang,
     model,
     setModel,
     isProcessing,
-    useBatchMode,
     processingMode,
     setProcessingMode,
     multiSpeaker,
     setMultiSpeaker,
-    handleUploadChange,
     handleStartTranscription,
     downloadFile,
     downloadAllFiles,

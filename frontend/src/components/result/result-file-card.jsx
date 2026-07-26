@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { Button, Tag, Dropdown, Typography, Space } from "antd"
+import { Button, Tag, Dropdown, Typography } from "antd"
 import {
     FileAudio,
     ChevronDown,
@@ -12,34 +12,16 @@ import {
     Copy,
     Check,
 } from "lucide-react"
+import { downloadFormatsDetailed } from "@/constants/downloadFormats"
+import { formatDuration } from "@/utils/formatters"
 
 const { Text } = Typography
-
-const DOWNLOAD_FORMATS = [
-    { label: "SRT (Subtitles)", ext: "srt", desc: "SubRip format with timestamps" },
-    { label: "VTT (WebVTT)", ext: "vtt", desc: "Web Video Text Tracks" },
-    { label: "TXT (Plain Text)", ext: "txt", desc: "Plain text without timestamps" },
-    { label: "JSON (Structured)", ext: "json", desc: "Structured data with metadata" },
-    { label: "LRC (Lyrics)", ext: "lrc", desc: "Lyrics format" },
-]
-
-function formatTime(seconds) {
-    if (!seconds) return "0:00"
-    const h = Math.floor(seconds / 3600)
-    const m = Math.floor((seconds % 3600) / 60)
-    const s = Math.floor(seconds % 60)
-    if (h > 0) return `${h}:${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`
-    return `${m}:${s.toString().padStart(2, "0")}`
-}
 
 export function ResultFileCard({ file, onDownload }) {
     const [expanded, setExpanded] = useState(false)
     const [copiedId, setCopiedId] = useState(null)
 
-    // Ensure we are working with the _raw file data passed from ResultPage
     const fData = file._raw || file
-
-    // Extract segments if available
     const segments = fData.result?.json?.segments || []
 
     const handleCopy = (id, text) => {
@@ -50,7 +32,7 @@ export function ResultFileCard({ file, onDownload }) {
 
     const handleCopyAll = () => {
         const fullText = segments
-            .map((s) => `[${formatTime(s.start)}] ${s.speaker || "Speaker"}: ${s.text}`)
+            .map((s) => `[${formatDuration(s.start)}] ${s.speaker || "Speaker"}: ${s.text}`)
             .join("\n")
         navigator.clipboard.writeText(fullText)
         setCopiedId("all")
@@ -69,8 +51,8 @@ export function ResultFileCard({ file, onDownload }) {
     const downloadMenuItems = [
         { key: 'header', type: 'group', label: <Text style={{ color: '#8888a8', fontSize: 12 }}>Choose format</Text> },
         { type: 'divider' },
-        ...DOWNLOAD_FORMATS.map((fmt) => ({
-            key: fmt.ext,
+        ...downloadFormatsDetailed.map((fmt) => ({
+            key: fmt.key,
             label: (
                 <div>
                     <div style={{ fontSize: 13, fontWeight: 500 }}>{fmt.label}</div>
@@ -113,7 +95,7 @@ export function ResultFileCard({ file, onDownload }) {
                     <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px 16px' }}>
                         <StatChip icon={Languages} label={file.language || "Unknown"} />
                         <StatChip icon={Users} label={`${fData.speakerCount || 1} speaker(s)`} />
-                        <StatChip icon={Clock} label={formatTime(file.audioDurationSec || 0)} />
+                        <StatChip icon={Clock} label={formatDuration(file.audioDurationSec || 0)} />
                         {fData.cost !== undefined && <StatChip icon={Coins} label={`$${fData.cost.toFixed(4)}`} highlight />}
                     </div>
 
@@ -214,7 +196,7 @@ export function ResultFileCard({ file, onDownload }) {
                                     height: 'fit-content',
                                     marginTop: 2,
                                 }}>
-                                    {formatTime(seg.start || 0)}
+                                    {formatDuration(seg.start || 0)}
                                 </span>
 
                                 <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
@@ -228,7 +210,7 @@ export function ResultFileCard({ file, onDownload }) {
                                     type="text"
                                     size="small"
                                     icon={copiedId === idx ? <Check size={12} color="#2dd4a8" /> : <Copy size={12} />}
-                                    onClick={() => handleCopy(idx, `[${formatTime(seg.start || 0)}] ${seg.speaker || "Speaker"}: ${seg.text}`)}
+                                    onClick={() => handleCopy(idx, `[${formatDuration(seg.start || 0)}] ${seg.speaker || "Speaker"}: ${seg.text}`)}
                                     style={{ flexShrink: 0, opacity: 0.5 }}
                                     onMouseEnter={(e) => { e.currentTarget.style.opacity = '1' }}
                                     onMouseLeave={(e) => { e.currentTarget.style.opacity = '0.5' }}

@@ -13,6 +13,16 @@ export function formatElapsed(seconds) {
   return `${Math.floor(h / 24)} 天前`;
 }
 
+/** 秒數 → 「H:MM:SS」或「M:SS」。 */
+export function formatDuration(seconds) {
+  if (!seconds) return '0:00';
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = Math.floor(seconds % 60);
+  const ms = `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+  return h > 0 ? `${h}:${ms}` : `${m}:${s.toString().padStart(2, '0')}`;
+}
+
 /** ISO/timestamp → zh-TW MM/DD HH:mm；解析失敗時原樣回傳。 */
 export function formatDateTime(dateStr) {
   if (!dateStr) return '';

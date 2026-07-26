@@ -44,7 +44,7 @@ export function UploadZone({ hasFiles, onFilesAdded }) {
         [onFilesAdded]
     )
 
-    // Compact mode: just a button to add more
+    // 已有檔案時縮成單顆按鈕，避免佔版面
     if (hasFiles) {
         return (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -79,7 +79,6 @@ export function UploadZone({ hasFiles, onFilesAdded }) {
         )
     }
 
-    // Full upload zone
     return (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             <Dragger
@@ -87,11 +86,11 @@ export function UploadZone({ hasFiles, onFilesAdded }) {
                 accept="audio/*"
                 showUploadList={false}
                 beforeUpload={(file, fileList) => {
-                    // Only handle on the last file to avoid multiple calls
+                    // antd 對每個檔案都呼叫一次 beforeUpload，只在最後一個檔案時處理整批
                     if (file === fileList[fileList.length - 1]) {
-                        handleFiles(fileList.map(f => f))
+                        handleFiles(fileList)
                     }
-                    return false // Prevent auto upload
+                    return false // 阻止 antd 自動上傳
                 }}
                 style={{
                     background: 'transparent',

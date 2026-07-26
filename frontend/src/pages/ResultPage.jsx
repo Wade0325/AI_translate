@@ -1,17 +1,13 @@
 import { useTranscription } from "@/context/TranscriptionContext"
 import { ResultBatchGroup } from "@/components/result/result-batch-group"
 import { Cpu, Coins, FileAudio, Clock } from "lucide-react"
-import { Typography, Tag, Empty } from "antd"
-
-const { Title, Text } = Typography
-
-// ── Summary computation ──────────────────────────────────────
+import { Tag, Empty } from "antd"
 
 function computeSummary(groups) {
     let totalFiles = 0
     let totalTokens = 0
     let totalCost = 0
-    let totalDurationSec = 0 // Note: Original frontend might not provide duration, we'll estimate or default to 0 if not present
+    let totalDurationSec = 0
 
     for (const g of groups) {
         for (const f of g.files) {
@@ -29,16 +25,11 @@ function computeSummary(groups) {
     return { totalFiles, totalTokens, totalCost, totalDuration }
 }
 
-// ── Page ─────────────────────────────────────────────────────
-
 export default function ResultPage() {
-    const { fileList, downloadFile } = useTranscription()
+    const { fileList } = useTranscription()
 
-    // Filter only completed files
     const completedFiles = fileList.filter(f => f.status === 'completed')
 
-    // Group files for the ResultBatchGroup component
-    // If the original context doesn't have batch grouping per say, we'll put them in a "Recent Session" group
     const groups = completedFiles.length > 0 ? [
         {
             group: "Recent Transcriptions",
@@ -50,7 +41,6 @@ export default function ResultPage() {
                 totalTokens: f.tokens_used || 0,
                 cost: f.cost || 0,
                 audioDurationSec: f.audioDurationSec || 0,
-                // We'll pass the full file object to handle downloads or viewing later
                 _raw: f
             }))
         }
@@ -67,7 +57,6 @@ export default function ResultPage() {
                 />
             ) : (
                 <>
-                    {/* Summary pills */}
                     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
                         <SummaryPill icon={FileAudio} label={`${summary.totalFiles} files`} />
                         <SummaryPill icon={Clock} label={summary.totalDuration} />
@@ -75,7 +64,6 @@ export default function ResultPage() {
                         <SummaryPill icon={Coins} label={`$${summary.totalCost.toFixed(4)}`} highlight />
                     </div>
 
-                    {/* Batch groups */}
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 32 }}>
                         {groups.map((group) => (
                             <ResultBatchGroup

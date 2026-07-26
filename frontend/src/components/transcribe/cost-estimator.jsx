@@ -36,7 +36,7 @@ export function CostEstimator({
                         <Text style={{ fontSize: 12, color: '#c8c8d8' }}>
                             {fileCount} <span style={{ color: '#8888a8' }}>files</span>
                         </Text>
-                        <Text style={{ fontSize: 11, color: '#6868888' }}>·</Text>
+                        <Text style={{ fontSize: 11, color: '#686888' }}>·</Text>
                         <Text style={{ fontSize: 12, color: '#c8c8d8' }}>{totalSizeMB.toFixed(1)} MB</Text>
                     </span>
                 </Tooltip>
@@ -75,7 +75,7 @@ export function CostEstimator({
                     <Text style={{ fontSize: 15, fontWeight: 600, color: '#2dd4a8' }}>
                         ${estimatedCost.toFixed(4)}
                     </Text>
-                    <Text style={{ fontSize: 11, color: '#6868888' }}>est.</Text>
+                    <Text style={{ fontSize: 11, color: '#686888' }}>est.</Text>
                 </span>
             </div>
 

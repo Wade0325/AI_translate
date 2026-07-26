@@ -1,44 +1,43 @@
 import { useState, useEffect } from "react"
-import { Card, Button, Input, Select, Switch, Typography, Row, Col, Spin, message, Space, Popconfirm, Divider } from "antd"
-import { Key, Globe, Bell, Save, Trash2, Edit } from "lucide-react"
+import { Card, Button, Input, Select, Switch, Typography, Row, Col, Spin, Divider } from "antd"
+import { Key, Bell, Save, Trash2 } from "lucide-react"
 import { useModelManager } from "../components/ModelManager"
 import { modelOptions } from "../constants/modelConfig"
 
-const { Title, Text } = Typography
+const { Text } = Typography
 const { TextArea } = Input
 
 export default function SettingsPage() {
     const { getProviderConfig, saveProviderConfig, handleTestProvider } = useModelManager()
 
-    // We'll manage settings locally before saving
     const [providerForms, setProviderForms] = useState({})
     const [loading, setLoading] = useState(true)
 
-    // Load configs for all providers on mount
     useEffect(() => {
         const loadConfigs = async () => {
             setLoading(true)
-            const forms = {}
-            for (const provider of Object.keys(modelOptions)) {
-                try {
-                    const config = await getProviderConfig(provider)
-                    forms[provider] = {
-                        apiKeys: config?.apiKeys?.length > 0 ? config.apiKeys : [""],
-                        model: config?.model || modelOptions[provider][0].value,
-                        prompt: config?.prompt || "",
-                        isDirty: false
+            const entries = await Promise.all(
+                Object.keys(modelOptions).map(async (provider) => {
+                    try {
+                        const config = await getProviderConfig(provider)
+                        return [provider, {
+                            apiKeys: config?.apiKeys?.length > 0 ? config.apiKeys : [""],
+                            model: config?.model || modelOptions[provider][0].value,
+                            prompt: config?.prompt || "",
+                            isDirty: false
+                        }]
+                    } catch (err) {
+                        console.error(`Failed to load config for ${provider}:`, err)
+                        return [provider, {
+                            apiKeys: [""],
+                            model: modelOptions[provider][0].value,
+                            prompt: "",
+                            isDirty: false
+                        }]
                     }
-                } catch (err) {
-                    console.error(`Failed to load config for ${provider}:`, err)
-                    forms[provider] = {
-                        apiKeys: [""],
-                        model: modelOptions[provider][0].value,
-                        prompt: "",
-                        isDirty: false
-                    }
-                }
-            }
-            setProviderForms(forms)
+                })
+            )
+            setProviderForms(Object.fromEntries(entries))
             setLoading(false)
         }
         loadConfigs()
@@ -84,7 +83,6 @@ export default function SettingsPage() {
     return (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 24, padding: 24 }}>
             <Row gutter={[24, 24]}>
-                {/* Provider Configurations */}
                 {Object.keys(modelOptions).map(provider => (
                     <Col xs={24} lg={12} key={provider}>
                         <Card
@@ -105,7 +103,6 @@ export default function SettingsPage() {
                             }}
                         >
                             <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-                                {/* API Keys */}
                                 <div>
                                     <Text style={{ color: '#e8e8e8', fontSize: 13, display: 'block', marginBottom: 6 }}>API Keys (Try from top to bottom)</Text>
                                     {providerForms[provider].apiKeys.map((key, idx) => (
@@ -141,7 +138,6 @@ export default function SettingsPage() {
                                     </Button>
                                 </div>
 
-                                {/* Default Model */}
                                 <div>
                                     <Text style={{ color: '#e8e8e8', fontSize: 13, display: 'block', marginBottom: 6 }}>Default Model</Text>
                                     <Select
@@ -152,7 +148,6 @@ export default function SettingsPage() {
                                     />
                                 </div>
 
-                                {/* System Prompt Template */}
                                 <div>
                                     <Text style={{ color: '#e8e8e8', fontSize: 13, display: 'block', marginBottom: 6 }}>Global Prompt Template</Text>
                                     <TextArea
@@ -165,7 +160,6 @@ export default function SettingsPage() {
 
                                 <Divider style={{ borderColor: '#3a3a5c', margin: '4px 0' }} />
 
-                                {/* Actions */}
                                 <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
                                     <Button onClick={() => handleTestProvider(provider)}>
                                         Test Connection
@@ -184,7 +178,6 @@ export default function SettingsPage() {
                     </Col>
                 ))}
 
-                {/* Notifications Placeholder (UI Only) */}
                 <Col xs={24} lg={12}>
                     <Card
                         title={

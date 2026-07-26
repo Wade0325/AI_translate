@@ -2,32 +2,22 @@ import { Button, Typography, Space, Dropdown } from "antd"
 import { Download, ChevronDown, Calendar, Cpu, Coins } from "lucide-react"
 import { ResultFileCard } from "./result-file-card"
 import { useTranscription } from "@/context/TranscriptionContext"
+import { downloadFormatsDetailed } from "@/constants/downloadFormats"
 
 const { Text } = Typography
-
-const BATCH_FORMATS = [
-    { label: "SRT (All files)", ext: "srt" },
-    { label: "VTT (All files)", ext: "vtt" },
-    { label: "TXT (All files)", ext: "txt" },
-    { label: "JSON (All files)", ext: "json" },
-    { label: "LRC (All files)", ext: "lrc" },
-]
 
 export function ResultBatchGroup({ label, files }) {
     const { downloadFile, downloadAllFiles } = useTranscription()
 
-    // files here is the array of mapped files from ResultPage
     const totalTokens = files.reduce((sum, f) => sum + f.totalTokens, 0)
     const totalCost = files.reduce((sum, f) => sum + f.cost, 0)
-    // they are all "completed" from the page filter
-    const completedCount = files.length
 
     const menuItems = [
         { key: 'header', label: <Text style={{ color: '#8888a8', fontSize: 12 }}>Download {files.length} files as</Text>, type: 'group' },
         { type: 'divider' },
-        ...BATCH_FORMATS.map((fmt) => ({
-            key: fmt.ext,
-            label: fmt.label,
+        ...downloadFormatsDetailed.map((fmt) => ({
+            key: fmt.key,
+            label: `${fmt.name} (All files)`,
             icon: <Download size={14} />,
         })),
     ]
@@ -42,7 +32,7 @@ export function ResultBatchGroup({ label, files }) {
                         <Text strong style={{ fontSize: 13, color: '#e8e8e8' }}>{label}</Text>
                     </div>
                     <Text style={{ fontSize: 12, color: '#8888a8' }}>
-                        {completedCount}/{files.length} completed
+                        {files.length} completed
                     </Text>
                     <Space size={12} style={{ marginLeft: 8 }}>
                         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 12, color: '#8888a8' }}>

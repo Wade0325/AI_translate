@@ -67,7 +67,6 @@ export function useTranscriptionSocket() {
       autoReconnect = false,
     } = handlers;
 
-    // 同 id 重複呼叫 → 先關閉舊連線
     if (slotsRef.current[id]) {
       closeSocket(id);
     }

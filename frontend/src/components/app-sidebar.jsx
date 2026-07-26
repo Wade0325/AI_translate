@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect } from "react"
+import { useRef, useCallback, useEffect } from "react"
 import { Link, useLocation } from "react-router-dom"
 import {
     LayoutDashboard,
@@ -136,7 +136,7 @@ export function AppSidebar({ collapsed, onCollapse, sidebarWidth = 240, onSideba
             <div style={{ flex: 1, overflow: 'auto', paddingTop: 8 }}>
                 <div style={{ padding: collapsed ? '4px 0' : '4px 12px 4px 20px' }}>
                     {!collapsed && (
-                        <Text style={{ color: '#6868888', fontSize: 10, textTransform: 'uppercase', letterSpacing: 1 }}>
+                        <Text style={{ color: '#686888', fontSize: 10, textTransform: 'uppercase', letterSpacing: 1 }}>
                             Main
                         </Text>
                     )}
@@ -151,7 +151,7 @@ export function AppSidebar({ collapsed, onCollapse, sidebarWidth = 240, onSideba
 
                 <div style={{ padding: collapsed ? '12px 0 4px' : '12px 12px 4px 20px' }}>
                     {!collapsed && (
-                        <Text style={{ color: '#6868888', fontSize: 10, textTransform: 'uppercase', letterSpacing: 1 }}>
+                        <Text style={{ color: '#686888', fontSize: 10, textTransform: 'uppercase', letterSpacing: 1 }}>
                             System
                         </Text>
                     )}

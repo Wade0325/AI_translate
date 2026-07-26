@@ -1,5 +1,3 @@
-import React from 'react';
-
 /** 深色佈景下共用的 Recharts Tooltip 容器；各圖表自行提供內容，外觀統一於此。 */
 export default function RechartsTooltipBox({ label, children, style }) {
   return (
