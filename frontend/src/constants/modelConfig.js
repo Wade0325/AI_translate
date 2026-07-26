@@ -8,12 +8,6 @@ export const modelOptions = {
     Local: [
         { value: 'vibevoice-qwen3-asr', label: 'VibeVoice + Qwen3-ASR（本地）' }
     ]
-    // Anthropic: [
-    //   { value: 'claude-3-opus-20240229', label: 'claude-3-opus-20240229' }
-    // ],
-    // OpenAI: [
-    //   { value: 'gpt-4-turbo', label: 'gpt-4-turbo' }
-    // ]
 };
 
 // 輔助函式：根據模型名稱尋找其服務商

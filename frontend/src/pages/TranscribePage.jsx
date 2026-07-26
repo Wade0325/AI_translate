@@ -10,13 +10,12 @@ import { useModelManager } from "@/components/ModelManager"
 import { modelOptions, findProviderForModel } from "@/constants/modelConfig"
 import { api } from "@/services/api"
 import {
-    LinkOutlined,
     FileTextOutlined,
     DownloadOutlined,
     EyeOutlined,
     CloseOutlined,
 } from "@ant-design/icons"
-import { AlertCircle, Youtube } from "lucide-react"
+import { AlertCircle } from "lucide-react"
 import { downloadFormatsLong } from "@/constants/downloadFormats"
 
 const { Text, Title } = Typography
@@ -57,7 +56,6 @@ export default function TranscribePage() {
 
     // Local UI state
     const [currentPage, setCurrentPage] = useState(1)
-    const [youtubeUrl, setYoutubeUrl] = useState("")
     const [isTextModalVisible, setIsTextModalVisible] = useState(false)
     const [textModalContent, setTextModalContent] = useState("")
     const [textModalFileUid, setTextModalFileUid] = useState(null)
@@ -96,26 +94,6 @@ export default function TranscribePage() {
         }))
         const updatedList = [...fileList, ...newFiles]
         setFileList(updatedList)
-    }
-
-    const handleAddYoutubeUrl = () => {
-        const url = youtubeUrl.trim()
-        if (!url) return
-        if (!url.includes("youtube.com") && !url.includes("youtu.be")) {
-            message.error("請輸入有效的 YouTube 連結")
-            return
-        }
-        const newFile = {
-            uid: `yt-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-            name: url,
-            size: 0,
-            status: "waiting",
-            percent: 0,
-            statusText: "等待處理（YouTube）",
-        }
-        setFileList([...fileList, newFile])
-        setYoutubeUrl("")
-        message.success("YouTube 連結已加入佇列")
     }
 
     const handleAttachText = (fileUid) => {
@@ -330,21 +308,6 @@ export default function TranscribePage() {
             {/* Upload Zone */}
             <UploadZone hasFiles={fileList.length > 0} onFilesAdded={handleFilesAdded} />
 
-            {/* YouTube URL */}
-            <div style={{ display: "flex", gap: 8 }}>
-                <Input
-                    placeholder="YouTube 連結 (例: https://www.youtube.com/watch?v=...)"
-                    value={youtubeUrl}
-                    onChange={(e) => setYoutubeUrl(e.target.value)}
-                    onPressEnter={handleAddYoutubeUrl}
-                    prefix={<Youtube size={14} color="#8888a8" />}
-                    style={{ flex: 1 }}
-                />
-                <Button icon={<LinkOutlined />} onClick={handleAddYoutubeUrl} disabled={!youtubeUrl.trim()}>
-                    加入
-                </Button>
-            </div>
-
             {/* File List Header */}
             {fileList.length > 0 && (
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -391,7 +354,7 @@ export default function TranscribePage() {
                         config={{
                             id: file.uid,
                             name: file.name,
-                            size: file.size ? `${(file.size / (1024 * 1024)).toFixed(1)} MB` : "YouTube",
+                            size: file.size ? `${(file.size / (1024 * 1024)).toFixed(1)} MB` : "",
                             language: file.language || globalConfig.language,
                             isMultiSpeaker: file.isMultiSpeaker ?? globalConfig.isMultiSpeaker,
                             speakerCount: file.speakerCount ?? globalConfig.speakerCount,

@@ -27,7 +27,6 @@ export const TranscriptionProvider = ({ children }) => {
   const [processingMode, setProcessingMode] = useState('batch');
   const [multiSpeaker, setMultiSpeaker] = useState(false);
 
-  // 相容舊 API
   const useBatchMode = processingMode === 'batch';
 
   const [isPreviewModalVisible, setIsPreviewModalVisible] = useState(false);
@@ -228,13 +227,7 @@ export const TranscriptionProvider = ({ children }) => {
 
     if (result?.skipped) {
       setIsProcessing(false);
-      if (result.reason === 'no-files' || result.skipped) {
-        message.warning(
-          useBatchMode
-            ? '沒有等待處理的新檔案！（批次模式不支援 YouTube 連結）'
-            : '沒有等待處理的新檔案！'
-        );
-      }
+      message.warning('沒有等待處理的新檔案！');
     }
   }, [
     model,

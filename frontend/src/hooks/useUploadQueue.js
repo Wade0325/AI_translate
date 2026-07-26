@@ -89,30 +89,26 @@ export function useUploadQueue({ fileList, setFileList, socketManager, onBatchSu
     );
   }, [setFileList]);
 
-  // 一般模式（單檔/YouTube）：每個 file uid 一條 WebSocket
+  // 一般模式：每個 file uid 一條 WebSocket
   const startRegular = useCallback(async ({ provider, model, apiKey, prompt, defaults }) => {
     const restartable = (f) =>
       f.status === 'waiting' || f.status === 'error' || f.status === 'cancelled';
     const candidates = fileList.filter((f) => restartable(f) && f.originFileObj);
-    const youtubeUrls = fileList.filter(
-      (f) => restartable(f) && !f.originFileObj && f.name.includes('youtube')
-    );
 
-    if (candidates.length === 0 && youtubeUrls.length === 0) {
+    if (candidates.length === 0) {
       return { skipped: true };
     }
 
     const sessionId = makeSessionId();
-    const startTargets = [...candidates, ...youtubeUrls];
     registerTranscribeSession({
       sessionId,
-      fileUids: startTargets.map((f) => f.uid),
+      fileUids: candidates.map((f) => f.uid),
     });
 
     // 全部標記成 processing；記下 provider 與模式供取消端點使用
     setFileList((current) =>
       current.map((f) =>
-        startTargets.find((p) => p.uid === f.uid)
+        candidates.find((p) => p.uid === f.uid)
           ? {
               ...f,
               status: 'processing',
@@ -154,7 +150,7 @@ export function useUploadQueue({ fileList, setFileList, socketManager, onBatchSu
       });
     };
 
-    // 一般檔案：先 upload 拿到伺服器檔名再開 WS
+    // 先 upload 拿到伺服器檔名再開 WS
     for (const file of candidates) {
       try {
         const formData = new FormData();
@@ -170,9 +166,6 @@ export function useUploadQueue({ fileList, setFileList, socketManager, onBatchSu
         });
       }
     }
-
-    // YouTube：直接開 WS，後端會處理下載
-    youtubeUrls.forEach((file) => openTranscriptionSocket(file, file.name));
 
     return { skipped: false };
   }, [fileList, setFileList, updateFile, socketManager, handleSingleMessage]);
