@@ -34,7 +34,7 @@ DOWNLOAD_MIME_TYPES = {
 }
 
 
-def _log_to_response(log: TranscriptionLog, db: Session) -> HistoryLogResponse:
+def _log_to_response(log: TranscriptionLog) -> HistoryLogResponse:
     return HistoryLogResponse(
         task_uuid=str(log.task_uuid),
         # isoformat（'T' 分隔）才能被所有瀏覽器的 new Date() 解析；str() 的空格分隔在 Safari 會變 Invalid Date
@@ -43,17 +43,12 @@ def _log_to_response(log: TranscriptionLog, db: Session) -> HistoryLogResponse:
         status=log.status,
         original_filename=log.original_filename,
         audio_duration_seconds=log.audio_duration_seconds,
-        processing_time_seconds=log.processing_time_seconds,
         model_used=log.model_used,
-        provider=log.provider,
         source_language=log.source_language,
-        target_language=log.target_language,
         total_tokens=log.total_tokens,
         cost=log.cost,
         error_message=log.error_message,
         is_batch=log.is_batch,
-        batch_id=log.batch_id,
-        has_transcript=history_repo.has_transcript(db, log),
         session_id=log.session_id,
         file_uid=log.file_uid,
         service_tier_used=log.service_tier_used,
@@ -116,7 +111,7 @@ def get_active_single_tasks(
     批次任務不包含在此（已由 GET /api/v1/batch/tasks 提供）。
     """
     logs = history_repo.get_active_single_tasks(db, recent_hours=hours)
-    return [_log_to_response(log, db) for log in logs]
+    return [_log_to_response(log) for log in logs]
 
 
 @router.get("", response_model=HistoryListResponse)
@@ -138,7 +133,7 @@ def get_history(
         keyword=keyword,
     )
 
-    items = [_log_to_response(log, db) for log in logs]
+    items = [_log_to_response(log) for log in logs]
     total_pages = math.ceil(total / page_size) if total > 0 else 1
 
     return HistoryListResponse(
@@ -156,7 +151,7 @@ def get_history_detail(task_uuid: str, db: Session = Depends(get_db)):
     log = history_repo.get_log_by_uuid(db, task_uuid)
     if not log:
         raise HTTPException(status_code=404, detail="找不到此任務紀錄")
-    return _log_to_response(log, db)
+    return _log_to_response(log)
 
 
 @router.get("/{task_uuid}/download/{fmt}")

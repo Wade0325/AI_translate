@@ -1,6 +1,6 @@
 import uuid
 from pydantic import BaseModel, Field
-from typing import List, Dict, Optional, Any
+from typing import Dict, Optional, Any
 
 
 class TranscriptionTaskResult(BaseModel):
@@ -19,16 +19,13 @@ class TranscriptionTaskResult(BaseModel):
 
 class TranscriptionResponse(BaseModel):
     """
-    完整轉錄服務的回應模型
+    完整轉錄結果（WS 推送與 BatchJob.results_json 儲存的 payload）。
+    僅保留前端實際消費的欄位；細部費用/耗時另存於 transcription_logs。
     """
     task_uuid: uuid.UUID = Field(..., description="此次轉錄任務的唯一標識符")
     transcripts: Dict[str, Any] = Field(..., description="各種格式的轉錄結果")
     tokens_used: int = Field(..., description="使用的 token 總數")
     cost: float = Field(..., description="轉錄費用")
-    input_cost: float = Field(0.0, description="輸入費用")
-    output_cost: float = Field(0.0, description="輸出費用")
     model: str = Field(..., description="使用的模型名稱")
     source_language: str = Field(..., description="來源語言")
-    processing_time_seconds: float = Field(..., description="處理時間（秒）")
     audio_duration_seconds: float = Field(..., description="音訊總時長（秒）")
-    cost_breakdown: Optional[List[Dict]] = Field(None, description="費用明細")

@@ -74,7 +74,7 @@ async def upload_file(
         saved_filename = temp_file_path.name
         logger.info(f"臨時檔案已保存: {temp_file_path}")
 
-        return {"filename": saved_filename, "message": "檔案上傳成功"}
+        return {"filename": saved_filename}
 
     except HTTPException:
         raise

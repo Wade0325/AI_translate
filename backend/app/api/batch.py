@@ -20,8 +20,6 @@ from app.utils.logger import setup_logger
 from app.websocket.manager import manager
 from app.schemas.schemas import (
     WebSocketBatchRequest,
-    PendingBatchFile,
-    PendingBatchResponse,
     RecoverBatchRequest,
     RecoverFileResult,
     RecoverBatchResponse,
@@ -89,7 +87,8 @@ def get_batch_tasks(db: Session = Depends(get_db)):
 
         elapsed = None
         if job.created_at:
-            elapsed = (datetime.utcnow() - job.created_at).total_seconds()
+            # created_at 由 DB func.now() 以本地時區寫入，需用 now() 對齊（utcnow 會差 8 小時）
+            elapsed = (datetime.now() - job.created_at).total_seconds()
 
         is_alive = None
         if job.status in ("UPLOADING", "POLLING", "RECOVERING"):
@@ -105,8 +104,7 @@ def get_batch_tasks(db: Session = Depends(get_db)):
             status=job.status,
             file_count=job.file_count or len(files),
             is_alive=is_alive,
-            created_at=str(job.created_at) if job.created_at else None,
-            updated_at=str(job.updated_at) if job.updated_at else None,
+            created_at=job.created_at.isoformat() if job.created_at else None,
             elapsed_seconds=elapsed,
             files=files,
             session_id=job.session_id or job.batch_id,
@@ -124,30 +122,6 @@ def dismiss_batch_task(batch_id: str, db: Session = Depends(get_db)):
 
 
 # ==================== Recovery REST Endpoints ====================
-
-@router.get("/pending", response_model=list[PendingBatchResponse])
-def get_pending_batches(db: Session = Depends(get_db)):
-    """查詢未完成或尚未取回結果的批次任務"""
-    jobs = batch_repo.get_pending_jobs(db)
-    results = []
-    for job in jobs:
-        files = []
-        if job.file_mapping_json:
-            mapping = json.loads(job.file_mapping_json)
-            for idx in sorted(mapping.keys(), key=int):
-                entry = mapping[idx]
-                files.append(PendingBatchFile(
-                    file_uid=entry["file_uid"],
-                    original_filename=entry["original_filename"],
-                ))
-        results.append(PendingBatchResponse(
-            batch_id=job.batch_id,
-            status=job.status,
-            created_at=str(job.created_at) if job.created_at else "",
-            files=files,
-        ))
-    return results
-
 
 @router.post("/{batch_id}/recover", response_model=RecoverBatchResponse)
 def recover_batch(batch_id: str, body: RecoverBatchRequest, db: Session = Depends(get_db)):

@@ -22,7 +22,6 @@ class TestUploadSuccess:
         data = response.json()
         assert "filename" in data
         assert data["filename"].endswith(".mp3")
-        assert data["message"] == "檔案上傳成功"
 
     def test_upload_valid_mp4(self, client: TestClient, tmp_path):
         """上傳有效的 MP4 影片應回傳 200"""

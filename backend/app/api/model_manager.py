@@ -35,9 +35,7 @@ async def save_model_setting(
             prompt=config.prompt
         )
         await run_in_threadpool(repo.save, db, config_to_save)
-        return {
-            "data_received": config.model_dump(by_alias=True)
-        }
+        return {"success": True}
     except Exception as e:
         message = f"保存模型設定時發生意外錯誤:'{config.provider}'. Error: {e}"
         logger.error(message)
@@ -86,8 +84,6 @@ async def test_model_interface(
         return ProviderTestResponse(
             success=True,
             message="本地模型（VibeVoice + Qwen3-ASR）無需連線測試。",
-            testedInterface=request_data.provider,
-            details="local",
         )
     if not request_data.api_keys:
         raise HTTPException(status_code=400, detail="未提供 API 金鑰進行測試。")
@@ -104,15 +100,11 @@ async def test_model_interface(
                 return ProviderTestResponse(
                     success=True,
                     message="Gemini API (Google) 測試成功。",
-                    details=test_result.message,
-                    testedInterface=request_data.provider
                 )
             else:
                 return ProviderTestResponse(
                     success=False,
                     message=test_result.message or "測試失敗，但未提供具體原因。",
-                    details="",  # 保持為空，前端只顯示 message
-                    testedInterface=request_data.provider
                 )
 
         except Exception as e:
@@ -121,10 +113,8 @@ async def test_model_interface(
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail={
-                    "status": "Error",
                     "message": "測試 Gemini 時發生伺服器內部錯誤。",
                     "details": str(e),
-                    "testedInterface": request_data.provider
                 }
             )
 
@@ -132,8 +122,6 @@ async def test_model_interface(
         return ProviderTestResponse(
             success=False,
             message=f"API類型 '{request_data.provider}' 的測試邏輯尚未實現。",
-            testedInterface=request_data.provider,
-            details="NotImplemented",
         )
 
 

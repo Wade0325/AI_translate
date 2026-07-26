@@ -15,7 +15,7 @@ from fastapi.testclient import TestClient
 
 class TestSaveModelSetting:
     def test_create_new_setting(self, client: TestClient):
-        """建立新的模型設定應回傳 200 及 data_received"""
+        """建立新的模型設定應回傳 200 且 success=True"""
         payload = {
             "provider": "TestProviderCreate",
             "apiKeys": ["key1", "key2"],
@@ -24,10 +24,7 @@ class TestSaveModelSetting:
         }
         response = client.post("/api/v1/setting/models", json=payload)
         assert response.status_code == 200
-        data = response.json()
-        assert "data_received" in data
-        assert data["data_received"]["provider"] == "TestProviderCreate"
-        assert data["data_received"]["apiKeys"] == ["key1", "key2"]
+        assert response.json()["success"] is True
 
     def test_create_setting_without_prompt(self, client: TestClient):
         """不提供 prompt（選填）應成功"""
@@ -38,8 +35,7 @@ class TestSaveModelSetting:
         }
         response = client.post("/api/v1/setting/models", json=payload)
         assert response.status_code == 200
-        data = response.json()
-        assert data["data_received"]["prompt"] is None
+        assert response.json()["success"] is True
 
     def test_create_setting_empty_api_keys(self, client: TestClient):
         """空的 apiKeys 列表應被接受"""
@@ -50,7 +46,7 @@ class TestSaveModelSetting:
         }
         response = client.post("/api/v1/setting/models", json=payload)
         assert response.status_code == 200
-        assert response.json()["data_received"]["apiKeys"] == []
+        assert response.json()["success"] is True
 
     def test_update_existing_setting(self, client: TestClient):
         """更新已存在的設定應覆蓋舊值"""

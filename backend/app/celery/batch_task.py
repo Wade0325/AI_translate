@@ -207,8 +207,6 @@ def _process_single_result(
     )
 
     batch_cost = metrics.cost * BATCH_COST_DISCOUNT
-    batch_input_cost = metrics.input_cost * BATCH_COST_DISCOUNT
-    batch_output_cost = metrics.output_cost * BATCH_COST_DISCOUNT
 
     if not log_repo.update_log(db, file_task_uuid, {
         "status": "COMPLETED",
@@ -229,14 +227,10 @@ def _process_single_result(
         transcripts=final_transcripts,
         tokens_used=metrics.total_tokens,
         cost=batch_cost,
-        input_cost=batch_input_cost,
-        output_cost=batch_output_cost,
         model=task_params.model,
         # 恢復路徑的 file_item 是 SimpleNamespace，不一定帶 per-file 欄位，故用 getattr
         source_language=getattr(file_item, "source_lang", None) or task_params.source_lang,
-        processing_time_seconds=processing_time_seconds,
         audio_duration_seconds=audio_duration,
-        cost_breakdown=metrics.breakdown,
     )
 
     result_dict = file_response.model_dump()

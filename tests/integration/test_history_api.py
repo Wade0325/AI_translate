@@ -294,12 +294,6 @@ class TestHistoryDownload:
         response = client.get(f"/api/v1/history/{log.task_uuid}/download/xyz")
         assert response.status_code == 400
 
-    def test_list_includes_has_transcript(self, client: TestClient, db_session: Session):
-        _create_log(db_session, status="COMPLETED", lrc_content=self._SAMPLE_LRC)
-        response = client.get("/api/v1/history")
-        assert response.status_code == 200
-        assert any(item.get("has_transcript") for item in response.json()["items"])
-
 
 # ─── 用量彙總 API ─────────────────────────────────────────────────────────────
 

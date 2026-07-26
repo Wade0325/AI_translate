@@ -165,9 +165,6 @@ class HistoryRepository:
 
         return lrc
 
-    def has_transcript(self, db: Session, log: TranscriptionLog) -> bool:
-        return bool(self.resolve_lrc_content(db, log, backfill=False))
-
     def get_usage(self, db: Session, days: int = 180) -> dict:
         """彙總最近 days 天內 COMPLETED 任務的每日與各模型用量，供 Dashboard / Billing 使用。"""
         from sqlalchemy import func

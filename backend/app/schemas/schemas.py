@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import List, Optional, Dict
+from typing import List, Optional
 from pydantic import ConfigDict
 
 
@@ -50,8 +50,6 @@ class ProviderTestResponse(BaseModel):
     """用於測試模型介面連接的回應體。"""
     success: bool
     message: str
-    details: Optional[str] = None
-    testedInterface: str
 
 
 class WebSocketTranscriptionRequest(BaseModel):
@@ -96,20 +94,6 @@ class WebSocketBatchRequest(BaseModel):
 
 # ==================== Batch Recovery ====================
 
-class PendingBatchFile(BaseModel):
-    """恢復流程中的檔案項目"""
-    file_uid: str
-    original_filename: str
-
-
-class PendingBatchResponse(BaseModel):
-    """GET /batch/pending 的回應"""
-    batch_id: str
-    status: str
-    created_at: str
-    files: List[PendingBatchFile]
-
-
 class RecoverBatchRequest(BaseModel):
     """POST /batch/{batch_id}/recover 的請求"""
     api_keys: Optional[str] = None
@@ -121,7 +105,6 @@ class RecoverFileResult(BaseModel):
     original_filename: str
     status: str  # "COMPLETED" or "FAILED"
     result: Optional[dict] = None
-    error: Optional[str] = None
 
 
 class RecoverBatchResponse(BaseModel):
@@ -145,7 +128,6 @@ class BatchTaskResponse(BaseModel):
     file_count: int
     is_alive: Optional[bool] = None
     created_at: Optional[str] = None
-    updated_at: Optional[str] = None
     elapsed_seconds: Optional[float] = None
     files: List[BatchTaskFile]
     session_id: Optional[str] = None
@@ -154,24 +136,19 @@ class BatchTaskResponse(BaseModel):
 # ==================== History ====================
 
 class HistoryLogResponse(BaseModel):
-    """歷史紀錄中的單筆任務回應"""
+    """歷史紀錄中的單筆任務回應（只含前端實際顯示/分組會用到的欄位）"""
     task_uuid: str
     request_timestamp: Optional[str] = None
     completed_at: Optional[str] = None
     status: Optional[str] = None
     original_filename: Optional[str] = None
     audio_duration_seconds: Optional[float] = None
-    processing_time_seconds: Optional[float] = None
     model_used: Optional[str] = None
-    provider: Optional[str] = None
     source_language: Optional[str] = None
-    target_language: Optional[str] = None
     total_tokens: Optional[int] = None
     cost: Optional[float] = None
     error_message: Optional[str] = None
     is_batch: Optional[bool] = None
-    batch_id: Optional[str] = None
-    has_transcript: bool = False
     session_id: Optional[str] = None
     file_uid: Optional[str] = None
     service_tier_used: Optional[str] = None

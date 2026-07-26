@@ -75,8 +75,8 @@ const ModelManagerProvider = ({ children }) => {
         };
 
         try {
-            const result = await api.settings.saveProvider(payload);
-            const updatedConfig = result.data_received || payload;
+            await api.settings.saveProvider(payload);
+            const updatedConfig = payload;
 
             try {
                 localStorage.setItem(`providerConfig_${provider}`, JSON.stringify(updatedConfig));

@@ -54,8 +54,6 @@ function applyFileResult(file, data) {
     next.result = data.result?.transcripts;
     next.tokens_used = data.result?.tokens_used;
     next.cost = data.result?.cost;
-    next.input_cost = data.result?.input_cost;
-    next.output_cost = data.result?.output_cost;
     // Result 頁顯示用：時長、模型與實際使用的來源語言
     next.audioDurationSec = data.result?.audio_duration_seconds;
     next.model = data.result?.model ?? file.model;

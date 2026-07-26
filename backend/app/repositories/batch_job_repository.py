@@ -37,17 +37,6 @@ class BatchJobRepository:
             return job
         return None
 
-    def get_pending_jobs(self, db: Session) -> List[BatchJob]:
-        """
-        查詢需要恢復的任務：
-        - UPLOADING / POLLING：任務尚未完成
-        - COMPLETED：任務已完成但前端尚未取回結果
-        - RECOVERING：恢復任務正在進行中
-        """
-        return db.query(BatchJob).filter(
-            BatchJob.status.in_(["UPLOADING", "POLLING", "COMPLETED", "RECOVERING"])
-        ).all()
-
     def get_job(self, db: Session, batch_id: str) -> Optional[BatchJob]:
         """
         依 batch_id 查詢單筆記錄。
@@ -60,7 +49,7 @@ class BatchJobRepository:
         - 所有進行中/待取回的任務（UPLOADING/POLLING/COMPLETED/RECOVERING）
         - 24 小時內已取回的任務（RETRIEVED），供用戶確認和下載
         """
-        cutoff = datetime.utcnow() - timedelta(hours=24)
+        cutoff = datetime.now() - timedelta(hours=24)  # created_at/updated_at 為 DB 本地時間
         return (
             db.query(BatchJob)
             .filter(
@@ -81,7 +70,7 @@ class BatchJobRepository:
         將已完成超過 24 小時的批次標記為 RETRIEVED。
         回傳受影響的筆數。
         """
-        cutoff = datetime.utcnow() - timedelta(hours=24)
+        cutoff = datetime.now() - timedelta(hours=24)  # created_at/updated_at 為 DB 本地時間
         count = db.query(BatchJob).filter(
             BatchJob.status == "COMPLETED",
             BatchJob.updated_at < cutoff,

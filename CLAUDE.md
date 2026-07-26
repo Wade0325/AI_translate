@@ -82,7 +82,7 @@ Communication pattern: Celery Worker publishes results to Redis Pub/Sub → `Con
 1. Multiple files uploaded, shared `batch_id`
 2. `WS /api/v1/batch/ws/{batch_id}` + `WebSocketBatchRequest`
 3. Celery task `batch_transcribe_task`: create `BatchJob` DB record → upload all files → create Gemini Batch API job → poll until done → process results → store in `results_json` → publish per-file results via Redis
-4. `GET /api/v1/batch/pending` + `POST /api/v1/batch/{batch_id}/recover` for Docker-restart recovery
+4. `GET /api/v1/batch/tasks` + `POST /api/v1/batch/{batch_id}/recover` for Docker-restart recovery
 
 ### Frontend Structure (`frontend/src/`)
 

@@ -108,28 +108,12 @@ class TestProviderRequestSchema:
 
 class TestProviderResponseSchema:
     def test_valid_success_response(self):
-        resp = ProviderTestResponse(
-            success=True,
-            message="連線成功",
-            testedInterface="Google",
-        )
+        resp = ProviderTestResponse(success=True, message="連線成功")
         assert resp.success is True
 
     def test_valid_failure_response(self):
-        resp = ProviderTestResponse(
-            success=False,
-            message="連線失敗",
-            testedInterface="Google",
-        )
+        resp = ProviderTestResponse(success=False, message="連線失敗")
         assert resp.success is False
-
-    def test_details_optional(self):
-        resp = ProviderTestResponse(
-            success=True,
-            message="OK",
-            testedInterface="Google",
-        )
-        assert resp.details is None
 
 
 # ─── ServiceStatus ───────────────────────────────────────────────────────────

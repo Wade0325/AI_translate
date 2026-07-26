@@ -194,14 +194,10 @@ def transcribe_media_task(self, task_params_dict: dict):
         flex_applied = transcription_result.service_tier_used == "flex"
         if flex_applied:
             final_cost = metrics_response.cost * FLEX_COST_DISCOUNT
-            final_input_cost = metrics_response.input_cost * FLEX_COST_DISCOUNT
-            final_output_cost = metrics_response.output_cost * FLEX_COST_DISCOUNT
             logger.info(
                 f"Flex 層級生效，費用套用 {int(FLEX_COST_DISCOUNT * 100)}% 折扣")
         else:
             final_cost = metrics_response.cost
-            final_input_cost = metrics_response.input_cost
-            final_output_cost = metrics_response.output_cost
 
         logger.info(
             f"Metrics calculated. Task ID: {task_uuid}. Cost: ${final_cost:.6f}")
@@ -227,13 +223,9 @@ def transcribe_media_task(self, task_params_dict: dict):
             transcripts=final_transcripts,
             tokens_used=metrics_response.total_tokens,
             cost=final_cost,
-            input_cost=final_input_cost,
-            output_cost=final_output_cost,
             model=task_params.model,
             source_language=task_params.source_lang,
-            processing_time_seconds=metrics_response.processing_time_seconds,
             audio_duration_seconds=metrics_response.audio_duration_seconds,
-            cost_breakdown=metrics_response.breakdown
         )
 
         final_response_dict = final_response.model_dump()
