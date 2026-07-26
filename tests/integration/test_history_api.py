@@ -299,3 +299,51 @@ class TestHistoryDownload:
         response = client.get("/api/v1/history")
         assert response.status_code == 200
         assert any(item.get("has_transcript") for item in response.json()["items"])
+
+
+# ─── 用量彙總 API ─────────────────────────────────────────────────────────────
+
+class TestHistoryUsage:
+    def test_usage_returns_200_with_structure(self, client: TestClient):
+        response = client.get("/api/v1/history/usage")
+        assert response.status_code == 200
+        data = response.json()
+        assert isinstance(data["daily"], list)
+        assert isinstance(data["by_model"], list)
+        assert isinstance(data["pricing"], list)
+
+    def test_usage_aggregates_completed_by_model(self, client: TestClient, db_session: Session):
+        model = "usage-test-model-alpha"
+        _create_log(db_session, model_used=model, total_tokens=1000, cost=0.1)
+        _create_log(db_session, model_used=model, total_tokens=2000, cost=0.2)
+        # FAILED 不應計入
+        _create_log(db_session, model_used=model, status="FAILED",
+                    total_tokens=9999, cost=9.9)
+
+        data = client.get("/api/v1/history/usage").json()
+        entry = next(m for m in data["by_model"] if m["model"] == model)
+        assert entry["tokens"] == 3000
+        assert entry["files"] == 2
+        assert abs(entry["cost"] - 0.3) < 1e-6
+
+    def test_usage_daily_has_expected_fields(self, client: TestClient, db_session: Session):
+        _create_log(db_session, model_used="usage-test-model-daily",
+                    total_tokens=500, cost=0.05)
+        data = client.get("/api/v1/history/usage").json()
+        assert len(data["daily"]) > 0
+        for entry in data["daily"]:
+            assert set(entry.keys()) == {"date", "tokens", "cost", "files"}
+
+    def test_usage_pricing_from_model_prices(self, client: TestClient):
+        data = client.get("/api/v1/history/usage").json()
+        models = [p["model"] for p in data["pricing"]]
+        assert "gemini-2.5-flash" in models
+        assert "default" not in models
+        for p in data["pricing"]:
+            assert p["input_text"] > 0
+            assert p["input_audio"] > 0
+            assert p["output_text"] > 0
+
+    def test_usage_invalid_days_returns_422(self, client: TestClient):
+        assert client.get("/api/v1/history/usage?days=0").status_code == 422
+        assert client.get("/api/v1/history/usage?days=999").status_code == 422

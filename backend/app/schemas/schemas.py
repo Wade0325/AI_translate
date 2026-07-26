@@ -194,3 +194,34 @@ class HistoryStatsResponse(BaseModel):
     total_tokens: int
     total_audio_duration_seconds: float
     avg_processing_time_seconds: float
+
+
+class DailyUsage(BaseModel):
+    """單日用量彙總（僅 COMPLETED 任務）"""
+    date: str
+    tokens: int
+    cost: float
+    files: int
+
+
+class ModelUsage(BaseModel):
+    """單一模型的用量彙總（僅 COMPLETED 任務）"""
+    model: str
+    tokens: int
+    cost: float
+    files: int
+
+
+class ModelPriceInfo(BaseModel):
+    """模型計費資訊（每百萬 token，美元）"""
+    model: str
+    input_text: float
+    input_audio: float
+    output_text: float
+
+
+class HistoryUsageResponse(BaseModel):
+    """GET /history/usage 的回應，供 Dashboard / Billing 頁使用"""
+    daily: List[DailyUsage]
+    by_model: List[ModelUsage]
+    pricing: List[ModelPriceInfo]

@@ -14,7 +14,9 @@ from app.schemas.schemas import (
     HistoryLogResponse,
     HistoryListResponse,
     HistoryStatsResponse,
+    HistoryUsageResponse,
 )
+from app.services.calculator.flows import MODEL_PRICES
 from app.services.converter.service import convert_from_lrc
 from app.utils.logger import setup_logger
 
@@ -75,6 +77,29 @@ def get_history_stats(db: Session = Depends(get_db)):
     """取得歷史紀錄統計總覽"""
     stats = history_repo.get_stats(db)
     return HistoryStatsResponse(**stats)
+
+
+@router.get("/usage", response_model=HistoryUsageResponse)
+def get_history_usage(
+    days: int = Query(180, ge=1, le=366, description="彙總最近多少天的用量"),
+    db: Session = Depends(get_db),
+):
+    """
+    Dashboard / Billing 頁的用量彙總：每日與各模型的 tokens / 費用 / 檔案數，
+    並附上模型計費表（來源為後端 MODEL_PRICES，避免前端寫死過時價格）。
+    """
+    usage = history_repo.get_usage(db, days=days)
+    pricing = [
+        {
+            "model": name,
+            "input_text": price.input_text,
+            "input_audio": price.input_audio,
+            "output_text": price.output_text,
+        }
+        for name, price in MODEL_PRICES.items()
+        if name != "default"
+    ]
+    return HistoryUsageResponse(**usage, pricing=pricing)
 
 
 @router.get("/active", response_model=list[HistoryLogResponse])

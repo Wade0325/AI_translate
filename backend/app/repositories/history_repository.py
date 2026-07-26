@@ -167,6 +167,62 @@ class HistoryRepository:
     def has_transcript(self, db: Session, log: TranscriptionLog) -> bool:
         return bool(self.resolve_lrc_content(db, log, backfill=False))
 
+    def get_usage(self, db: Session, days: int = 180) -> dict:
+        """彙總最近 days 天內 COMPLETED 任務的每日與各模型用量，供 Dashboard / Billing 使用。"""
+        from sqlalchemy import func
+
+        since = datetime.utcnow() - timedelta(days=days)
+        day = func.date(TranscriptionLog.request_timestamp)
+
+        daily_rows = (
+            db.query(
+                day.label("date"),
+                func.sum(TranscriptionLog.total_tokens),
+                func.sum(TranscriptionLog.cost),
+                func.count(TranscriptionLog.task_uuid),
+            )
+            .filter(TranscriptionLog.status == "COMPLETED")
+            .filter(TranscriptionLog.request_timestamp >= since)
+            .group_by(day)
+            .order_by(day)
+            .all()
+        )
+
+        model_rows = (
+            db.query(
+                TranscriptionLog.model_used,
+                func.sum(TranscriptionLog.total_tokens),
+                func.sum(TranscriptionLog.cost),
+                func.count(TranscriptionLog.task_uuid),
+            )
+            .filter(TranscriptionLog.status == "COMPLETED")
+            .filter(TranscriptionLog.request_timestamp >= since)
+            .group_by(TranscriptionLog.model_used)
+            .order_by(desc(func.sum(TranscriptionLog.total_tokens)))
+            .all()
+        )
+
+        return {
+            "daily": [
+                {
+                    "date": str(row[0]),
+                    "tokens": int(row[1] or 0),
+                    "cost": round(float(row[2] or 0.0), 6),
+                    "files": row[3],
+                }
+                for row in daily_rows
+            ],
+            "by_model": [
+                {
+                    "model": row[0] or "unknown",
+                    "tokens": int(row[1] or 0),
+                    "cost": round(float(row[2] or 0.0), 6),
+                    "files": row[3],
+                }
+                for row in model_rows
+            ],
+        }
+
     def get_stats(self, db: Session) -> dict:
         """取得統計總覽。"""
         from sqlalchemy import func
