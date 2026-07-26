@@ -96,7 +96,8 @@ class HistoryRepository:
         排除批次任務 (is_batch=True)，避免與 BatchJob 區段重複。
         以發起時間倒序排列。
         """
-        cutoff = datetime.utcnow() - timedelta(hours=recent_hours)
+        # request_timestamp 為 DB 本地時間（func.now()），cutoff 需用本地時間對齊
+        cutoff = datetime.now() - timedelta(hours=recent_hours)
         return (
             db.query(TranscriptionLog)
             .filter(TranscriptionLog.is_batch.is_(False))
@@ -171,7 +172,9 @@ class HistoryRepository:
         """彙總最近 days 天內 COMPLETED 任務的每日與各模型用量，供 Dashboard / Billing 使用。"""
         from sqlalchemy import func
 
-        since = datetime.utcnow() - timedelta(days=days)
+        # request_timestamp 由 DB 端 func.now() 寫入（容器本地時區，見 docker-compose 的 TZ），
+        # 因此窗口計算與 func.date() 分桶都必須用本地時間，不能用 utcnow()。
+        since = datetime.now() - timedelta(days=days)
         day = func.date(TranscriptionLog.request_timestamp)
 
         daily_rows = (

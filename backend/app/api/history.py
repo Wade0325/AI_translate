@@ -37,8 +37,9 @@ DOWNLOAD_MIME_TYPES = {
 def _log_to_response(log: TranscriptionLog, db: Session) -> HistoryLogResponse:
     return HistoryLogResponse(
         task_uuid=str(log.task_uuid),
-        request_timestamp=str(log.request_timestamp) if log.request_timestamp else None,
-        completed_at=str(log.completed_at) if log.completed_at else None,
+        # isoformat（'T' 分隔）才能被所有瀏覽器的 new Date() 解析；str() 的空格分隔在 Safari 會變 Invalid Date
+        request_timestamp=log.request_timestamp.isoformat() if log.request_timestamp else None,
+        completed_at=log.completed_at.isoformat() if log.completed_at else None,
         status=log.status,
         original_filename=log.original_filename,
         audio_duration_seconds=log.audio_duration_seconds,
