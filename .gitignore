@@ -210,6 +210,13 @@ backend/*.db
 /vad_artifacts/
 /backend/app/celery/results/
 
+# VAD standalone pipeline audio (tests/vad_pipeline.py)
+/tests/audio_input/
+/tests/audio_output/
+
+# Local model cache (tests/diarization_pipeline.py, HF_HOME)
+/models/
+
 # Test - Fake Gemini mock server
 backend/fake_gemini/
 tests/test_fake_server.py
