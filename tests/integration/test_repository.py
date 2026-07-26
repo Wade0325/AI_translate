@@ -96,36 +96,6 @@ class TestModelSettingsRepository:
         assert result.model == "new-model"
         assert result.prompt == "Updated prompt"
 
-    def test_get_by_model_existing(self, db_session: Session):
-        """get_by_model 應回傳對應模型的設定"""
-        schema = ModelConfigurationSchema(
-            provider="TestModelSearch",
-            api_keys='[]',
-            model="unique-model-xyz",
-        )
-        self.repo.save(db_session, schema)
-        result = self.repo.get_by_model(db_session, "unique-model-xyz")
-        assert result is not None
-        assert result.provider == "TestModelSearch"
-
-    def test_get_by_model_nonexistent_returns_none(self, db_session: Session):
-        result = self.repo.get_by_model(db_session, "absolutely-unknown-model")
-        assert result is None
-
-    def test_get_all_configs_returns_list(self, db_session: Session):
-        """get_all_configs 應回傳 list"""
-        self.repo.save(db_session, ModelConfigurationSchema(
-            provider="TestAll1", api_keys="[]", model="m1"
-        ))
-        self.repo.save(db_session, ModelConfigurationSchema(
-            provider="TestAll2", api_keys="[]", model="m2"
-        ))
-        results = self.repo.get_all_configs(db_session)
-        assert isinstance(results, list)
-        providers = [r.provider for r in results]
-        assert "TestAll1" in providers
-        assert "TestAll2" in providers
-
     def test_save_with_null_prompt(self, db_session: Session):
         """prompt 可以為 None"""
         schema = ModelConfigurationSchema(

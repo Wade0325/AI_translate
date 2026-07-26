@@ -78,7 +78,7 @@ def run_vad_extraction(
             audio_path=str(wav_path),
             output_dir=str(temp_dir),
         )
-        extraction = extract_speech_segments(request, vad_service)
+        extraction = extract_speech_segments(request)
     except Exception as e:
         logger.warning(f"VAD 前處理：提取語音段失敗 ({audio_path.name}): {e}")
         return VadPreprocessResult(success=False, cleanup_files=cleanup_files)

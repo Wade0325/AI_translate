@@ -1,7 +1,7 @@
-from typing import Dict, List, Optional
-from .models import ModelPrice, PriceCalculationRequest, PriceCalculationResponse, CalculationItem
+from typing import Dict
+from .models import ModelPrice, PriceCalculationRequest, PriceCalculationResponse
 
-# 模型價格設定（每百萬 token）
+# 模型價格設定（每百萬 token）；不在表內的模型套用 default
 MODEL_PRICES: Dict[str, ModelPrice] = {
     "gemini-3.5-flash": ModelPrice(
         input_text=1.50,
@@ -12,11 +12,6 @@ MODEL_PRICES: Dict[str, ModelPrice] = {
         input_text=0.30,
         input_audio=1.00,
         output_text=2.50
-    ),
-    "gemini-1.5-pro-latest": ModelPrice(
-        input_text=1.25,  # 假設價格，請根據官方文件更新
-        input_audio=2.50,  # 假設價格
-        output_text=10.00  # 假設價格
     ),
     "default": ModelPrice(
         input_text=0.30,

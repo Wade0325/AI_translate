@@ -41,14 +41,6 @@ class Settings(BaseSettings):
 
         return f"postgresql://{self.postgres_user}:{self.postgres_password}@{self.postgres_server}:{self.postgres_port}/{self.postgres_db}"
 
-    @property
-    def async_database_url(self) -> str:
-        url = self.sync_database_url
-        if url.startswith("postgresql://"):
-            return url.replace("postgresql://", "postgresql+asyncpg://")
-        return url
-
-
     # Redis
     redis_host: str = "localhost"
     redis_port: int = 6379

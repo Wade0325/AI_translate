@@ -5,11 +5,11 @@ from pathlib import Path
 import json
 from datetime import datetime
 
-
 from app.celery.celery import celery_app
 from app.celery.models import BatchTranscriptionTaskParams
 from app.celery.notifier import publish_status
 from app.core.config import get_settings
+from app.core.default_prompt import build_prompt
 from app.database.session import SessionLocal
 from app.exceptions import GeminiTransientError
 from app.provider.google.gemini import (
@@ -130,7 +130,6 @@ def _process_single_result(
     inline_response,
     file_item,
     task_params,
-    client,
     file_task_uuid: str,
     audio_duration: float,
     start_time: float,
@@ -139,7 +138,7 @@ def _process_single_result(
     update_fn,
     vad_segments=None,
 ):
-    """處理批次中單一檔案的結果：轉換格式、翻譯、計算費用"""
+    """處理批次中單一檔案的結果：時間戳重映射、格式轉換、計費、寫 DB。"""
     file_uid = file_item.file_uid
 
     if not inline_response.response:
@@ -180,17 +179,13 @@ def _process_single_result(
     )
 
     final_lrc_text = raw_lrc_text
-
-    # --- VAD 時間戳重映射 ---
     if vad_segments:
         final_lrc_text = remap_lrc_timestamps(final_lrc_text, vad_segments)
         logger.info(f"檔案 {file_item.original_filename}: 時間戳已重映射回原始時間軸")
 
-    # --- 格式轉換 ---
     transcripts_model = convert_from_lrc(final_lrc_text)
     final_transcripts = transcripts_model.model_dump() if transcripts_model else {}
 
-    # --- 費用計算 (含 Batch 50% 折扣) ---
     processing_time_seconds = time.time() - start_time
     items = []
     if total_tokens > 0:
@@ -202,7 +197,6 @@ def _process_single_result(
                 content_type="audio",
             )
         )
-
 
     calculator = CalculatorService()
     metrics = calculator.calculate_metrics(
@@ -216,7 +210,6 @@ def _process_single_result(
     batch_input_cost = metrics.input_cost * BATCH_COST_DISCOUNT
     batch_output_cost = metrics.output_cost * BATCH_COST_DISCOUNT
 
-    # --- 更新資料庫 ---
     if not log_repo.update_log(db, file_task_uuid, {
         "status": "COMPLETED",
         "audio_duration_seconds": audio_duration,
@@ -231,7 +224,6 @@ def _process_single_result(
             f"無法更新 transcription_log: task_uuid={file_task_uuid} "
             f"file={file_item.original_filename}")
 
-    # --- 回傳結果 ---
     file_response = TranscriptionResponse(
         task_uuid=file_task_uuid,
         transcripts=final_transcripts,
@@ -291,19 +283,15 @@ def batch_transcribe_task(self, task_params_dict: dict):
     start_time = time.time()
 
     try:
-        # --- 驗證 Provider ---
         if task_params.provider.lower() != "google":
             raise ValueError(
                 f"Provider '{task_params.provider}' is not supported. Only 'google' is allowed."
             )
 
-        # --- 初始化 Gemini Client ---
         client = GeminiClient(task_params.api_keys).client
         if not client:
             raise ValueError("Failed to initialize Gemini Client. Check API key.")
 
-        from app.core.default_prompt import build_prompt
-        # 取得提示詞
         prompt = build_prompt(
             source_lang=task_params.source_lang,
             target_lang=task_params.target_lang,
@@ -325,11 +313,10 @@ def batch_transcribe_task(self, task_params_dict: dict):
         batch_repo.update_job(db, batch_id, {
             "celery_task_id": task_uuid,
             "file_count": len(task_params.files),
-            "completed_file_count": 0,
             "session_id": session_id,
         })
 
-        # --- 1. 取得音訊時長 & 建立資料庫日誌 ---
+        # --- 取得音訊時長 & 建立資料庫日誌 ---
         file_durations = {}
         file_log_uuids = {}
 
@@ -354,10 +341,10 @@ def batch_transcribe_task(self, task_params_dict: dict):
                 "file_uid": file_item.file_uid,
             })
 
-        # --- 2. VAD 前處理 + 上傳所有檔案至 Gemini ---
+        # --- VAD 前處理 + 上傳所有檔案至 Gemini ---
         file_gemini_mapping = {}
         file_vad_segments = {}   # {file_uid: segments_list or None}
-        vad_cleanup_files = []   # 需要清理的 VAD 暫存檔案
+        vad_cleanup_files = []
 
         for i, file_item in enumerate(task_params.files):
             update_status(
@@ -366,7 +353,6 @@ def batch_transcribe_task(self, task_params_dict: dict):
             )
             local_path = Path(file_item.file_path)
 
-            # VAD 前處理
             upload_path, segments, cleanup = _vad_preprocess_file(
                 local_path, local_path.parent,
                 file_uid=file_item.file_uid,
@@ -396,7 +382,7 @@ def batch_transcribe_task(self, task_params_dict: dict):
             update_status("所有檔案上傳失敗，批次任務終止", status_code="BATCH_COMPLETED")
             return
 
-        # --- 3. 建立 Gemini Batch 任務 ---
+        # --- 建立 Gemini Batch 任務 ---
         update_status(f"建立 Gemini 批次任務 ({len(file_gemini_mapping)} 個檔案)...")
 
         ordered_indices = sorted(file_gemini_mapping.keys())
@@ -438,8 +424,7 @@ def batch_transcribe_task(self, task_params_dict: dict):
             status_code="BATCH_SUBMITTED",
         )
 
-        # --- 4. 輪詢等待完成 ---
-        poll_count = 0
+        # --- 輪詢等待完成 ---
         poll_interval = 10
 
         while True:
@@ -449,7 +434,6 @@ def batch_transcribe_task(self, task_params_dict: dict):
             if state_name in BATCH_COMPLETED_STATES:
                 break
 
-            poll_count += 1
             elapsed = int(time.time() - start_time)
             update_status(f"Gemini 批次處理中... (已等待 {elapsed} 秒, 狀態: {state_name})")
 
@@ -459,7 +443,6 @@ def batch_transcribe_task(self, task_params_dict: dict):
         state_name = get_batch_job_state_name(batch_job)
         logger.info(f"批次任務結束，狀態: {state_name}")
 
-        # --- 處理非成功狀態 ---
         if state_name != "JOB_STATE_SUCCEEDED":
             error_msg = f"批次任務失敗，狀態: {state_name}"
             logger.error(error_msg)
@@ -475,7 +458,7 @@ def batch_transcribe_task(self, task_params_dict: dict):
             update_status(error_msg, status_code="BATCH_COMPLETED")
             return
 
-        # --- 5. 逐一處理結果 ---
+        # --- 逐一處理結果 ---
         update_status("批次任務完成，正在處理結果...")
 
         # 包裝 update_status 以捕獲各檔案結果（供恢復時使用）
@@ -512,7 +495,6 @@ def batch_transcribe_task(self, task_params_dict: dict):
                         inline_response=inline_response,
                         file_item=file_item,
                         task_params=task_params,
-                        client=client,
                         file_task_uuid=file_task_uuid,
                         audio_duration=audio_duration,
                         start_time=start_time,
@@ -611,27 +593,24 @@ def process_gemini_batch_results(batch_id: str, api_key: str, db, batch_repo, lo
         job = batch_repo.get_job(db, batch_id)
         if not job:
             logger.error(f"恢復任務找不到 batch_id: {batch_id}")
-            return
+            return {"status": "ERROR", "files": []}
 
         if not job.gemini_job_name:
             logger.error(f"恢復任務 {batch_id} 沒有 gemini_job_name")
             batch_repo.update_job(db, batch_id, {"status": "POLLING"})
             return {"status": "POLLING", "files": []}
 
-        # 發布狀態更新
         def update_status(status_text, status_code="PROCESSING", result_data=None, file_uid=None):
             _publish_batch_status(batch_id, "", status_text, status_code, result_data, file_uid)
 
         update_status("正在從 Gemini 恢復批次任務結果...")
 
-        # 初始化客戶端
         client = GeminiClient(api_key).client
         if not client:
             update_status("API Key 無效", status_code="BATCH_COMPLETED")
             batch_repo.update_job(db, batch_id, {"status": "POLLING"})
             return {"status": "POLLING", "files": []}
 
-        # 查詢 Gemini 批次任務
         try:
             batch_job = poll_batch_job_status(client, job.gemini_job_name)
         except Exception as e:
@@ -656,7 +635,6 @@ def process_gemini_batch_results(batch_id: str, api_key: str, db, batch_repo, lo
 
         logger.info(f"恢復任務 {batch_id}: 任務成功，開始處理結果...")
 
-        # 解析映射
         file_mapping = json.loads(job.file_mapping_json) if job.file_mapping_json else {}
         file_durations = json.loads(job.file_durations_json) if job.file_durations_json else {}
         file_log_uuids = json.loads(job.file_log_uuids_json) if job.file_log_uuids_json else {}
@@ -703,7 +681,6 @@ def process_gemini_batch_results(batch_id: str, api_key: str, db, batch_repo, lo
                         inline_response=inline_response,
                         file_item=file_item,
                         task_params=task_params,
-                        client=client,
                         file_task_uuid=file_log_uuids.get(file_uid, ""),
                         audio_duration=file_durations.get(file_uid, 0.0),
                         start_time=start_time,
@@ -716,7 +693,6 @@ def process_gemini_batch_results(batch_id: str, api_key: str, db, batch_repo, lo
                     logger.error(f"恢復檔案 {original_filename} 失敗: {e}", exc_info=True)
                     update_status(f"恢復失敗: {e}", status_code="FAILED", file_uid=file_uid)
 
-        # 存入結果
         batch_repo.update_job(db, batch_id, {
             "status": "COMPLETED",
             "results_json": json.dumps(captured_results, default=str, ensure_ascii=False),

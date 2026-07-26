@@ -43,7 +43,6 @@ class BatchJob(Base):
     results_json = Column(Text, nullable=True)           # {file_uid: result_dict} — 完成後存入的結果
     celery_task_id = Column(String, nullable=True, index=True)  # Celery task ID
     file_count = Column(Integer, nullable=True)
-    completed_file_count = Column(Integer, default=0, nullable=True)
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
 
@@ -64,7 +63,6 @@ class TranscriptionLog(Base):
     total_tokens = Column(Integer, nullable=True)
     cost = Column(Float, nullable=True)
     error_message = Column(Text, nullable=True)
-    user_id = Column(String, nullable=True)
     is_batch = Column(Boolean, default=False, nullable=True)
     # batch_id 參照 batch_jobs.batch_id，但允許 NULL（非批次任務）
     batch_id = Column(

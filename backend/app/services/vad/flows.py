@@ -24,44 +24,34 @@ def _convert_segments_to_pydantic(segments: List[Dict[str, float]]) -> List[Spee
     return [SpeechSegment(start=seg['start'], end=seg['end']) for seg in segments]
 
 
-def extract_speech_segments(request: VADProcessRequest, vad_service=None) -> SpeechExtractionResult:
-    """
-    使用音量閾值提取有聲片段並建立純語音檔案 (針對 ASMR 優化)
-
-    Args:
-        request: VAD 處理請求
-        vad_service: (現在不需依賴 VAD 模型，但為保持向下相容保留參數)
-    """
+def extract_speech_segments(request: VADProcessRequest) -> SpeechExtractionResult:
+    """以 RMS 音量閾值提取有聲片段並拼接成純語音檔（針對 ASMR 優化，不需 VAD 模型）。"""
     logger.info(f"開始提取有聲片段 (音量閾值模式): {Path(request.audio_path).name}")
 
     try:
-        # 讀取音訊（呼叫端保證已轉為 WAV，見 preprocess.run_vad_extraction）
-        logger.info("正在讀取音訊檔案...")
+        # 呼叫端保證已轉為 WAV，見 preprocess.run_vad_extraction
         audio_data, original_sr = sf.read(request.audio_path, dtype="float32")
-        
-        # 計算總長度
+
         num_frames = audio_data.shape[0] if audio_data.ndim > 1 else len(audio_data)
         total_duration = num_frames / original_sr
-        
-        # 檢測有聲片段 (RMS based) 
+
         logger.info("正在分析音量以檢測有聲片段...")
-        # 轉成單聲道計算能量
         mono_data = audio_data.mean(axis=1) if audio_data.ndim > 1 else audio_data
-        
+
         # 50ms 窗口計算 RMS
         frame_length_s = 0.05
         frame_length = int(frame_length_s * original_sr)
-        
+
         if len(mono_data) < frame_length:
             return SpeechExtractionResult(success=False, total_duration=total_duration)
-            
+
         pad_len = frame_length - (len(mono_data) % frame_length)
         if pad_len != frame_length:
             mono_data = np.pad(mono_data, (0, pad_len))
-            
+
         frames = mono_data.reshape(-1, frame_length)
-        rms = np.sqrt(np.mean(frames**2, axis=1) + 1e-10) # 避免計算結果等於 0
-        
+        rms = np.sqrt(np.mean(frames**2, axis=1) + 1e-10)  # +1e-10 避免 sqrt(0)
+
         # 相對音量閾值：以最大音量為基準 (-45dB 或是絕對最小值)
         max_rms = np.max(rms)
         if max_rms < 1e-4:
@@ -87,11 +77,10 @@ def extract_speech_segments(request: VADProcessRequest, vad_service=None) -> Spe
                     is_speech[i-current_silence:i] = True
                 current_silence = 0
         
-        # 產生時間戳
         speech_timestamps = []
         is_in_speech = False
         start_frame = 0
-        
+
         for i, speech_flag in enumerate(is_speech):
             if speech_flag and not is_in_speech:
                 start_frame = i
@@ -133,7 +122,6 @@ def extract_speech_segments(request: VADProcessRequest, vad_service=None) -> Spe
                 total_duration=total_duration
             )
 
-        # 收集所有有聲片段
         speech_segments = []
         for ts in speech_timestamps:
             start_sample = max(0, int(ts['start'] * original_sr))
@@ -143,10 +131,8 @@ def extract_speech_segments(request: VADProcessRequest, vad_service=None) -> Spe
             if len(segment_data) > 0:
                 speech_segments.append(segment_data)
 
-        # 拼接所有語音片段
         concatenated_audio = np.concatenate(speech_segments)
 
-        # 儲存純語音檔案
         output_path = Path(request.output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
 
@@ -156,11 +142,10 @@ def extract_speech_segments(request: VADProcessRequest, vad_service=None) -> Spe
         sf.write(str(output_file), concatenated_audio, original_sr)
         logger.info(f"純有聲檔案已儲存: {output_file}")
 
-        # 計算統計資訊
         segments = _convert_segments_to_pydantic(speech_timestamps)
         total_speech_duration = sum(seg.duration for seg in segments)
 
-        logger.info(f"有聲段提取完成:")
+        logger.info("有聲段提取完成:")
         logger.info(f"  - 有聲片段數: {len(segments):>6}")
         logger.info(f"  - 總有聲時長: {total_speech_duration:>6.2f} 秒")
         logger.info(
@@ -180,30 +165,21 @@ def extract_speech_segments(request: VADProcessRequest, vad_service=None) -> Spe
 
 
 def split_audio_on_silence(request: AudioSplitRequest, vad_service) -> AudioSplitResult:
-    """
-    在靜音處分割音訊檔案
-
-    Args:
-        request: 音訊分割請求
-        vad_service: VADService 實例，用於取得模型
-    """
+    """用 Silero VAD 找出最接近中點的靜音間隙，將音訊分割為兩個 wav。"""
     logger.info(f"開始分割音訊: {Path(request.audio_path).name}")
 
     try:
-        # 從 service 取得模型和工具
         model, utils = vad_service.get_model_and_utils()
         get_speech_timestamps, _, read_audio, _, _ = utils
 
-        # 讀取音訊（呼叫端保證已轉為 WAV）
-        # silero 的 read_audio 內部使用 torchaudio 已棄用的 I/O API（load / sox_effects，
-        # 依安裝來源而異），僅在此局部抑制其棄用警告
+        # 呼叫端保證已轉為 WAV。silero 的 read_audio 內部使用 torchaudio
+        # 已棄用的 I/O API（load / sox_effects，依安裝來源而異），僅在此局部抑制棄用警告
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", UserWarning)
             wav = read_audio(request.audio_path, sampling_rate=SAMPLING_RATE)
         audio_data, original_sr = sf.read(request.audio_path, dtype="float32")
         total_duration = len(audio_data) / original_sr if audio_data.ndim == 1 else audio_data.shape[0] / original_sr
 
-        # 檢測語音片段
         speech_timestamps = get_speech_timestamps(
             wav, model, sampling_rate=SAMPLING_RATE, return_seconds=True)
 
@@ -213,7 +189,7 @@ def split_audio_on_silence(request: AudioSplitRequest, vad_service) -> AudioSpli
                 error_message="未檢測到語音片段"
             )
 
-        # 尋找最佳分割點（與原邏輯相同）
+        # 在所有夠長的靜音間隙中，挑最接近音檔中點者作為分割點
         best_split_point = None
         max_silence_duration = 0
 
@@ -238,12 +214,10 @@ def split_audio_on_silence(request: AudioSplitRequest, vad_service) -> AudioSpli
             logger.info(
                 f"找到分割點: {best_split_point:.2f}秒（靜音時長: {max_silence_duration:.2f}秒）")
 
-        # 分割音訊
         split_sample = int(best_split_point * original_sr)
         part1_data = audio_data[:split_sample]
         part2_data = audio_data[split_sample:]
 
-        # 儲存分割後的檔案
         output_path = Path(request.output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
 
@@ -254,7 +228,7 @@ def split_audio_on_silence(request: AudioSplitRequest, vad_service) -> AudioSpli
         sf.write(str(part1_file), part1_data, original_sr)
         sf.write(str(part2_file), part2_data, original_sr)
 
-        logger.info(f"音訊分割完成:")
+        logger.info("音訊分割完成:")
         logger.info(
             f"  - Part 1: {part1_file.name} ({best_split_point:>6.2f}秒)")
         logger.info(

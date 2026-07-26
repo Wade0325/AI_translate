@@ -6,11 +6,7 @@ from app.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
 
-# 取得集中管理的設定
 settings = get_settings()
-
-# --- Database Setup ---
-logger.info("Creating database engine...")
 
 engine = create_engine(
     settings.sync_database_url,
@@ -72,14 +68,12 @@ def init_db():
 
     db = SessionLocal()
     try:
-        # 檢查是否有任何記錄
+        # 空資料庫時預先建立支援的 provider 設定列（save 為 upsert，此處僅為方便）
         result = db.execute(select(ModelConfiguration).limit(1)).first()
         if result is None:
-            # 插入預設的 'Google', 'Anthropic', 'OpenAI' 記錄
-            default_providers = ['Google', 'Anthropic', 'OpenAI']
+            default_providers = ['Google', 'Local']
             for provider in default_providers:
-                default_config = ModelConfiguration(provider=provider)
-                db.add(default_config)
+                db.add(ModelConfiguration(provider=provider))
             db.commit()
             logger.info(
                 f"Inserted default records {default_providers} into 'model_configurations' table."
