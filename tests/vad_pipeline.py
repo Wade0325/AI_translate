@@ -4,7 +4,7 @@
 結果輸出到 tests/audio_output/{檔名}/，方便試聽比較（尚未做方法選擇機制）：
   speech_only_vad.wav      VAD（RMS 音量閾值）靜音移除結果
   segments_vad.json        VAD 各語音片段在原始音檔上的起訖時間（分:秒.小數）
-  speech_only_ffmpeg.wav   ffmpeg silencedetect 靜音移除結果（參數沿用根目錄 test.py）
+  speech_only_ffmpeg.wav   ffmpeg silencedetect 靜音移除結果
   segments_ffmpeg.json     ffmpeg 各語音片段起訖時間
   report.json              兩種方法的統計摘要（語音佔比、正式流程是否會採用等）
   part1.wav/part2.wav      （--split 時）VAD 靜音分割結果
@@ -12,7 +12,7 @@
 VAD 路徑走的程式碼與正式轉錄完全相同：
   convert_to_wav（ffmpeg 16k 單聲道）→ run_vad_extraction（RMS 靜音移除）
   --split 時再跑 split_audio_on_silence（Silero VAD，首次執行會下載模型）
-ffmpeg 路徑：silencedetect 找靜音 → 依區間切割拼接（邏輯移植自 test.py）。
+ffmpeg 路徑：silencedetect 找靜音 → 依區間切割拼接。
 
 用法（repo 根目錄，用 backend/.venv 的 Python）：
   backend\\.venv\\Scripts\\python.exe tests\\vad_pipeline.py             # 全部檔案
@@ -44,7 +44,7 @@ from app.utils.audio import AUDIO_MIME_MAP, convert_to_wav, get_audio_duration  
 INPUT_DIR = REPO_ROOT / "tests" / "audio_input"
 OUTPUT_DIR = REPO_ROOT / "tests" / "audio_output"
 
-# ffmpeg silencedetect 切割參數（沿用根目錄 test.py 的設定）
+# ffmpeg silencedetect 切割參數（早期離線批次腳本實測值）
 FFMPEG_NOISE_DB = "-45dB"   # 低於此音量視為靜音
 FFMPEG_MIN_SILENCE = 0.9    # 靜音至少持續秒數才切
 FFMPEG_MERGE_GAP = 0.7      # 相鄰片段間隔小於此秒數則合併

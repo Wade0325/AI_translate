@@ -12,20 +12,9 @@ _vad_utils = None
 
 
 class VADService:
-    """
-    VAD (Voice Activity Detection) 服務的統一對外接口
-    負責模型管理、語音檢測、提取和分割等功能
-    """
-
-    def __init__(self):
-        """
-        初始化 VAD 服務，延遲載入模型
-        """
-        logger.info("初始化 VADService...")
-        logger.info("VADService 初始化完成（模型將在首次使用時載入）")
+    """Silero VAD 模型的管理與靜音分割入口；模型於首次使用時才載入。"""
 
     def _load_model_if_needed(self):
-        """需要時才載入模型"""
         global _vad_model, _vad_utils
 
         if _vad_model is None:
@@ -43,10 +32,6 @@ class VADService:
                 raise
 
     def get_model_and_utils(self):
-        """
-        取得 VAD 模型和工具函數
-        供 flows.py 使用
-        """
         self._load_model_if_needed()
         return _vad_model, _vad_utils
 
@@ -56,13 +41,8 @@ class VADService:
         output_dir: str,
         min_silence_duration: float = 1.0
     ) -> Tuple[Optional[str], Optional[str], Optional[float]]:
-        """
-        在靜音處分割音訊檔案為兩部分
-        """
+        """在靜音處將音訊分割為兩部分，回傳 (part1, part2, 分割點秒數)；失敗回傳 (None, None, None)。"""
         logger.info(f"VADService: 開始分割音訊 - {audio_path}")
-
-        # 確保模型已載入
-        self._load_model_if_needed()
 
         request = AudioSplitRequest(
             audio_path=audio_path,
@@ -84,26 +64,18 @@ _vad_service_instance = None
 
 
 def get_vad_service() -> VADService:
-    """
-    取得 VAD 服務實例
-    """
     global _vad_service_instance
 
     if _vad_service_instance is None:
-        logger.info("建立 VADService 實例")
         _vad_service_instance = VADService()
-        logger.info("VAD 服務已準備就緒")
 
     return _vad_service_instance
 
 
 def initialize_vad_service() -> Optional[VADService]:
-    """
-    在應用程式啟動時初始化 VAD 服務
-    """
+    """應用啟動時預熱：建立服務並主動載入模型，失敗回傳 None 改為延遲載入。"""
     try:
         service = get_vad_service()
-        # 主動觸發模型載入
         service._load_model_if_needed()
         return service
     except Exception as e:

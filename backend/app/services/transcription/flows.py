@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 from typing import List, Dict, Optional
 
@@ -88,7 +89,6 @@ def remap_lrc_timestamps(lrc_text: str, segments: List[Dict[str, float]]) -> str
             original_start_time = segments[segment_index]['start']
             remapped_time = original_start_time + time_in_segment
 
-            # 格式化回 LRC 時間戳
             minutes = int(remapped_time // 60)
             seconds = int(remapped_time % 60)
             milliseconds = int(
@@ -100,8 +100,7 @@ def remap_lrc_timestamps(lrc_text: str, segments: List[Dict[str, float]]) -> str
 
 
 def _adjust_lrc_timestamps(lrc_text: str, offset_seconds: float) -> str:
-    """一個本地輔助函式，用於校正 LRC 時間戳。"""
-    import re
+    """將 LRC 每行時間戳整體平移 offset_seconds 秒。"""
     if offset_seconds == 0:
         return lrc_text
     adjusted_lines = []
@@ -320,12 +319,10 @@ class TranscriptionTask:
                     audio_path, self.source_lang, self.status_callback,
                     cancel_check=self.cancel_check)
             else:
-                # 上傳檔案到 Gemini
                 gemini_file = upload_file_to_gemini(
                     audio_path, self.client, self.status_callback)
                 self.gemini_cleanup_list.append(gemini_file)
 
-                # 執行轉錄
                 if self.status_callback:
                     self.status_callback("AI模型處理中...")
 
@@ -451,7 +448,6 @@ class TranscriptionTask:
         if wav_path != audio_path:
             self.local_cleanup_list.append(wav_path)
 
-        # 使用 VAD 尋找靜音點並分割
         segments = self._split_audio_file(wav_path)
 
         if not segments or len(segments) < 2:
@@ -462,7 +458,6 @@ class TranscriptionTask:
                 total_tokens=0
             )
 
-        # 轉錄所有片段
         results = []
         total_input_tokens = 0
         total_output_tokens = 0
@@ -483,11 +478,8 @@ class TranscriptionTask:
                     total_tokens=total_tokens
                 )
 
-            # 調整時間戳並收集結果
-            adjusted_text = self._adjust_timestamps(
-                segment_result.text,
-                segment.start_time
-            )
+            adjusted_text = _adjust_lrc_timestamps(
+                segment_result.text, segment.start_time)
             results.append(adjusted_text)
             total_input_tokens += segment_result.input_tokens
             total_output_tokens += segment_result.output_tokens
@@ -495,7 +487,6 @@ class TranscriptionTask:
             if segment_result.service_tier_used != "flex":
                 all_flex = False
 
-        # 合併所有結果
         combined_text = "\n".join(results)
 
         final_tier = "flex" if (self.service_tier == "flex" and all_flex) else "standard"
@@ -520,7 +511,6 @@ class TranscriptionTask:
             if not (part1_path and part2_path and split_point is not None):
                 return []
 
-            # 建立片段資訊
             segments = [
                 AudioSegment(
                     path=Path(part1_path),
@@ -534,7 +524,6 @@ class TranscriptionTask:
                 )
             ]
 
-            # 加入清理列表
             for segment in segments:
                 self.local_cleanup_list.append(segment.path)
 
@@ -554,32 +543,22 @@ class TranscriptionTask:
             logger.error(f"分割音訊檔案失敗: {e}")
             return []
 
-    def _adjust_timestamps(self, lrc_text: str, offset_seconds: float) -> str:
-        """調整 LRC 時間戳"""
-        if offset_seconds == 0:
-            return lrc_text
-        return _adjust_lrc_timestamps(lrc_text, offset_seconds)
-
     def cleanup(self):
         """清理所有相關的暫存檔案，包括 Gemini 檔案、本地暫存檔和原始上傳檔案。"""
-        # 清理 Gemini 檔案
         for gemini_file in self.gemini_cleanup_list:
             try:
                 cleanup_gemini_file(self.client, gemini_file)
             except Exception as e:
                 logger.warning(f"清理 Gemini 檔案失敗: {e}")
 
-        # 清理本地檔案 (包含原始檔案)
-        # 將原始檔案加入清理列表，確保它也被處理
-        all_local_files_to_clean = self.local_cleanup_list
+        local_files = set(self.local_cleanup_list)
         if self.original_file:
-            all_local_files_to_clean.append(self.original_file)
+            local_files.add(self.original_file)
 
-        # 使用 set 去除重複路徑
-        for local_file in set(all_local_files_to_clean):
+        for local_file in local_files:
             try:
                 if local_file and local_file.exists():
-                    # 增加檢查，確保只刪除 temp_uploads 目錄下的檔案，防止意外刪除
+                    # 只刪 temp_uploads 目錄下的檔案，防止路徑異常時誤刪其他位置
                     if "temp_uploads" in str(local_file.parent):
                         local_file.unlink()
                         logger.info(f"已清理暫存檔案: {local_file.name}")

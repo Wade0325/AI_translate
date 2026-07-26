@@ -14,16 +14,13 @@ from app.database.session import init_db, SessionLocal
 from app.repositories.transcription_log_repository import TranscriptionLogRepository
 from app.utils.logger import setup_logger
 
-# 建立 logger
 logger = setup_logger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """應用程式生命週期管理"""
     logger.info("正在啟動 AI Voice Transcription API...")
 
-    # 初始化資料庫
     init_db()
 
     # 清掃孤兒紀錄：worker 中途被終止時，單檔任務會留下永遠 PROCESSING 的紀錄
@@ -36,10 +33,10 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"啟動清掃逾時 PROCESSING 紀錄失敗: {e}")
 
-    # 啟動 WebSocket 的 Redis 監聯器（可重連、可乾淨關閉）
+    # 啟動 WebSocket 的 Redis 監聽器（可重連、可乾淨關閉）
     websocket_manager.start()
 
-    # 預先初始化 VAD 服務
+    # 預熱 VAD，避免首個任務才載模型
     try:
         from app.services.vad.service import initialize_vad_service
         vad_service = initialize_vad_service()
@@ -62,7 +59,6 @@ app = FastAPI(title="AI Voice Transcription API",
               version="1.0.0", lifespan=lifespan)
 
 
-# 更新路由設定
 app.include_router(transcription.router, prefix="/api/v1",
                    tags=["Transcription"])
 app.include_router(model_manager.router,

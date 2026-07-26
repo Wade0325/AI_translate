@@ -29,17 +29,13 @@ logger = setup_logger(__name__)
 
 router = APIRouter()
 
-# 取得集中管理的設定
 settings = get_settings()
 TEMP_UPLOADS_DIR = Path(settings.temp_uploads_dir)
 TEMP_UPLOADS_DIR.mkdir(exist_ok=True)
 
 
 def start_celery_task_sync(payload_str: str, file_uid: str) -> None:
-    """
-    一個同步函式，封裝了所有準備和啟動 Celery 任務的邏輯。
-    這個函式將在獨立的執行緒中執行，以避免阻塞事件迴圈。
-    """
+    """解析 WS 請求並派發 Celery 任務；在 threadpool 執行以免阻塞事件迴圈。"""
     request_data = WebSocketTranscriptionRequest.model_validate_json(
         payload_str)
 
@@ -57,7 +53,7 @@ def start_celery_task_sync(payload_str: str, file_uid: str) -> None:
         model=request_data.model,
         api_keys=request_data.api_keys,
         source_lang=request_data.source_lang,
-        target_lang=request_data.target_lang,  # 輸出語言
+        target_lang=request_data.target_lang,
         original_filename=request_data.original_filename,
         client_id=file_uid,
         file_uid=file_uid,

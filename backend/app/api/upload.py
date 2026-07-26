@@ -11,7 +11,6 @@ logger = setup_logger(__name__)
 
 router = APIRouter()
 
-# 取得集中管理的設定
 settings = get_settings()
 TEMP_UPLOADS_DIR = Path(settings.temp_uploads_dir)
 
@@ -55,10 +54,8 @@ async def upload_file(
             status_code=400, detail=f"Unsupported file format: {file.content_type}."
         )
 
-    # 確保 temp_uploads 目錄存在
     TEMP_UPLOADS_DIR.mkdir(exist_ok=True)
 
-    # 使用原始檔名，若有同名檔案則自動加編號
     original_filename = Path(file.filename).name
     temp_file_path = _get_unique_filepath(TEMP_UPLOADS_DIR, original_filename)
 
