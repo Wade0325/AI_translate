@@ -79,15 +79,9 @@ def _extract_actual_service_tier(response) -> Optional[str]:
 
 
 class GeminiClient:
-    """
-    與 Google Gemini API 進行互動的客戶端。
-    """
+    """Gemini SDK client 的薄包裝；金鑰無效時 self.client 為 None。"""
 
     def __init__(self, api_key: str):
-        """
-        初始化客戶端。
-        :param api_key: 您的 Google AI Studio API 金鑰。
-        """
         if not api_key:
             self.client = None
             logger.warning("GeminiClient: 未提供 API 金鑰，客戶端未初始化。")
@@ -101,9 +95,7 @@ class GeminiClient:
             logger.error(f"初始化 GeminiClient 失敗: {e}")
 
     def test_connection(self) -> ServiceStatus:
-        """
-        透過列出可用模型來測試與 Gemini API 的連接。
-        """
+        """透過列出可用模型來測試與 Gemini API 的連接。"""
         if not self.client:
             error_message = "GeminiClient: 客戶端未初始化，無法測試連接。"
             logger.error(error_message)
@@ -120,15 +112,13 @@ class GeminiClient:
 
 
 def upload_file_to_gemini(file_path: Path, client: genai.Client, status_callback=None):
-    """
-    上傳檔案到 Gemini API，返回 gemini_file 物件
-    """
+    """上傳檔案到 Gemini File API 並等待處理完成，回傳 gemini_file 物件。"""
     if not file_path.exists():
         raise ValueError("檔案不存在。")
 
     logger.info(f"正在上傳檔案至 Gemini API: {file_path.name}")
     if status_callback:
-        status_callback(f"上傳檔案至AI模型...")
+        status_callback("上傳檔案至AI模型...")
 
     mime_type = get_mime_type(file_path)
     config = {"display_name": file_path.stem}
@@ -142,12 +132,11 @@ def upload_file_to_gemini(file_path: Path, client: genai.Client, status_callback
     except Exception as e:
         raise _classify_gemini_error(e) from e
 
-    # 等待檔案處理完成
-    processing_dots = 0
+    poll_count = 0
     while gemini_file.state.name == "PROCESSING":
-        processing_dots += 1
-        if processing_dots % 10 == 1:  # 每10個點換行顯示一次
-            logger.info(f"檔案處理中{'.' * (processing_dots % 10)}")
+        poll_count += 1
+        if poll_count % 10 == 1:
+            logger.info("Gemini 檔案處理中...")
         time.sleep(2)
         try:
             gemini_file = client.files.get(name=gemini_file.name)
@@ -299,27 +288,32 @@ def transcribe_with_uploaded_file(
             f"（可能 google-genai SDK < 1.69.0），維持以請求端判定 tier_used={tier_used}"
         )
 
-    # 檢查回應是否被阻擋
-    if not response.candidates:
-        logger.warning("--- Gemini 回應錯誤 ---")
-        logger.warning("警告: Gemini 沒有回傳任何內容。回應可能已被其安全機制阻擋。")
-        error_text = "[[轉錄失敗：Gemini 回應被阻擋]]"
-        try:
-            logger.warning(f"阻擋原因: {response.prompt_feedback.block_reason}")
-            error_text = f"[[轉錄失敗：請求被 Gemini 以 '{response.prompt_feedback.block_reason}' 原因阻擋。]]"
-        except Exception:
-            logger.warning("無法取得明確的阻擋原因。")
-        logger.warning("-----------------------")
-
-    # 從回傳中提取 token 用量
-    # 注意：某些回應（如 thinking 模式、部分阻擋、極短內容）可能讓單一欄位為 None，
-    # 這裡統一防護避免後續 log 格式化或費用計算炸鍋
+    # 某些回應（如 thinking 模式、部分阻擋、極短內容）可能讓單一欄位為 None，
+    # 統一防護避免後續 log 格式化或費用計算炸鍋
     input_tokens = response.usage_metadata.prompt_token_count or 0
     output_tokens = response.usage_metadata.candidates_token_count or 0
     total_tokens = response.usage_metadata.total_token_count or 0
     thoughts_tokens = response.usage_metadata.thoughts_token_count
 
-    logger.info(f"Token 使用統計:")
+    # 被安全機制阻擋的回應沒有 candidates，必須回報失敗，
+    # 否則上層會把空結果當成功寫進 DB
+    if not response.candidates:
+        error_text = "[[轉錄失敗：Gemini 回應被阻擋]]"
+        try:
+            error_text = f"[[轉錄失敗：請求被 Gemini 以 '{response.prompt_feedback.block_reason}' 原因阻擋。]]"
+        except Exception:
+            pass
+        logger.warning(f"Gemini 沒有回傳任何內容: {error_text}")
+        return {
+            "success": False,
+            "text": error_text,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": total_tokens,
+            "service_tier_used": tier_used,
+        }
+
+    logger.info("Token 使用統計:")
     logger.info(
         f"  Input (Prompt) tokens: {input_tokens:>8,}")
     logger.info(

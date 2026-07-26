@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 from typing import Dict, Any, Optional
 from sqlalchemy.orm import Session
 from app.database.models import TranscriptionLog
+from app.utils.identifiers import coerce_uuid
 
 
 class TranscriptionLogRepository:
@@ -12,31 +13,35 @@ class TranscriptionLogRepository:
 
     @staticmethod
     def _coerce_task_uuid(task_uuid) -> Optional[uuid.UUID]:
-        if isinstance(task_uuid, uuid.UUID):
-            return task_uuid
-        try:
-            return uuid.UUID(str(task_uuid))
-        except (ValueError, AttributeError, TypeError):
-            return None
+        return coerce_uuid(task_uuid)
 
     def insert_log(self, db: Session, initial_data: Dict[str, Any]) -> TranscriptionLog:
-        """
-        在資料庫中建立一筆新的轉錄日誌。
+        """建立轉錄日誌；同 task_uuid 已存在時改為覆寫（upsert）。
 
-        :param db: SQLAlchemy Session.
-        :param initial_data: 包含日誌初始資料的字典。
-        :return: 新建立的 TranscriptionLog ORM 物件。
+        Celery 任務被重派（redelivered）時會以相同 task_uuid 重跑，
+        單純 insert 會撞主鍵並讓紀錄永遠卡在 PROCESSING。
         """
         data = dict(initial_data)
         if "task_uuid" in data:
             coerced = self._coerce_task_uuid(data["task_uuid"])
             if coerced is not None:
                 data["task_uuid"] = coerced
-        new_log = TranscriptionLog(**data)
-        db.add(new_log)
+
+        existing = None
+        if data.get("task_uuid") is not None:
+            existing = db.query(TranscriptionLog).filter(
+                TranscriptionLog.task_uuid == data["task_uuid"]).first()
+
+        if existing:
+            for key, value in data.items():
+                setattr(existing, key, value)
+            log = existing
+        else:
+            log = TranscriptionLog(**data)
+            db.add(log)
         db.commit()
-        db.refresh(new_log)
-        return new_log
+        db.refresh(log)
+        return log
 
     def update_log(self, db: Session, task_uuid: uuid.UUID, update_data: Dict[str, Any]) -> Optional[TranscriptionLog]:
         """

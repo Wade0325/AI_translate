@@ -88,7 +88,8 @@ class ConnectionManager:
                         continue
 
                     try:
-                        logger.info(f"從 Redis 收到訊息: {message['data']}")
+                        # 完成訊息帶著整份字幕，只記摘要避免灌爆 log
+                        logger.info(f"從 Redis 收到訊息: {str(message['data'])[:200]}")
                         data = json.loads(message["data"])
                         client_id = data.get("client_id")
                         if client_id:

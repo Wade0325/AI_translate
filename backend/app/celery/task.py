@@ -1,16 +1,14 @@
 import time
 import traceback
 from pathlib import Path
-from typing import Generator
 from datetime import datetime
-
-from sqlalchemy.orm import Session
 
 from app.celery.celery import celery_app
 from app.celery.cancellation import clear_cancel_flag, is_cancel_requested
 from app.celery.models import TranscriptionTaskParams
 from app.celery.notifier import publish_status
 from app.core.config import get_settings
+from app.core.default_prompt import build_prompt
 from app.database.session import SessionLocal
 from app.exceptions import GeminiTransientError, TranscriptionCancelledError
 from app.provider.google.gemini import GeminiClient
@@ -18,28 +16,14 @@ from app.repositories.transcription_log_repository import TranscriptionLogReposi
 from app.services.calculator.service import CalculatorService
 from app.services.calculator.models import CalculationItem
 from app.services.converter.service import convert_from_lrc
-from app.services.transcription.flows import (
-    TranscriptionTask,
-)
+from app.services.transcription.flows import TranscriptionTask
 from app.utils.audio import get_audio_duration
 from app.services.transcription.models import TranscriptionResponse
 from app.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
 
-
-_settings = get_settings()
-# Flex 推論費用折扣
-FLEX_COST_DISCOUNT = _settings.flex_cost_discount
-
-
-def get_db_session() -> Generator[Session, None, None]:
-    """Provide a database session for the Celery task."""
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+FLEX_COST_DISCOUNT = get_settings().flex_cost_discount
 
 
 @celery_app.task(
@@ -50,10 +34,7 @@ def get_db_session() -> Generator[Session, None, None]:
     retry_backoff_max=60,
 )
 def transcribe_media_task(self, task_params_dict: dict):
-    """
-    Celery background task for transcription.
-    This function contains the core logic migrated from the original transcription_flow.
-    """
+    """單檔轉錄 Celery 任務：VAD 前處理 → 轉錄 → 格式轉換 → 計費 → 寫 DB。"""
     task_params = TranscriptionTaskParams.model_validate(task_params_dict)
     task_uuid = self.request.id
     client_id = task_params.client_id
@@ -77,8 +58,7 @@ def transcribe_media_task(self, task_params_dict: dict):
         update_status("任務已取消", status_code="CANCELLED")
         return {"cancelled": True}
 
-    db_generator = get_db_session()
-    db = next(db_generator)
+    db = SessionLocal()
 
     start_time = time.time()
     local_path = Path(task_params.file_path)
@@ -86,7 +66,6 @@ def transcribe_media_task(self, task_params_dict: dict):
     task_manager = None
 
     try:
-        # 建立任務記錄
         initial_log_data = {
             "status": "PROCESSING",
             "original_filename": task_params.original_filename,
@@ -140,9 +119,8 @@ def transcribe_media_task(self, task_params_dict: dict):
 
         update_status("正在初始化模型...")
 
-        # 初始化轉錄任務管理器；依是否提供 original_text 決定 prompt
+        # 有提供逐字稿時改走「對齊」prompt，只補時間戳不重新轉錄
         if task_params.original_text:
-            # 如果有提供文本，我們就建立一個對齊用的 prompt
             user_prompt = f"""
 請你扮演一位專業的逐字稿專家。你的任務是將提供的音檔與以下的完整逐字稿內容進行對齊，並生成一個帶有時間戳的LRC格式檔案。
 
@@ -154,9 +132,6 @@ def transcribe_media_task(self, task_params_dict: dict):
 請仔細聆聽音檔，為這份逐字稿加上精確的時間戳，並以LRC格式輸出。
 """
         else:
-            # 永遠透過 build_prompt 建構最終 prompt：
-            # 以 DB 裡的模板為基底，根據前端選項動態填入 source_lang、speaker_instruction、translate_instruction
-            from app.core.default_prompt import build_prompt
             user_prompt = build_prompt(
                 source_lang=task_params.source_lang,
                 target_lang=task_params.target_lang,
@@ -178,7 +153,6 @@ def transcribe_media_task(self, task_params_dict: dict):
             cancel_check=lambda: is_cancel_requested(file_uid),
         )
 
-        # 執行轉錄（含 VAD 失敗重試）
         logger.info(f"Starting transcription. Task ID : {task_uuid}")
         transcription_result = task_manager.transcribe_audio(local_path)
 
@@ -187,21 +161,17 @@ def transcribe_media_task(self, task_params_dict: dict):
             # 避免被標成 COMPLETED 並產出空字幕
             raise ValueError(f"轉錄失敗: {transcription_result.text}")
 
-        raw_lrc_text = transcription_result.text
+        final_lrc_text = transcription_result.text
         input_tokens = transcription_result.input_tokens
         output_tokens = transcription_result.output_tokens
         total_tokens = transcription_result.total_tokens
         logger.info(
             f"Transcription complete. Task ID: {task_uuid}. Tokens used: {total_tokens:,}")
 
-        final_lrc_text = raw_lrc_text
-
-        # 轉換字幕格式
         update_status("正在轉換字幕格式...")
         transcripts_model = convert_from_lrc(final_lrc_text)
         final_transcripts = transcripts_model.model_dump() if transcripts_model else {}
 
-        # 計算費用
         update_status("正在計算費用...")
         items = []
         if total_tokens > 0:
@@ -211,8 +181,6 @@ def transcribe_media_task(self, task_params_dict: dict):
                 output_tokens=output_tokens,
                 content_type="audio",
             ))
-
-
 
         processing_time_seconds = time.time() - start_time
         calculator = CalculatorService()
@@ -239,7 +207,6 @@ def transcribe_media_task(self, task_params_dict: dict):
         logger.info(
             f"Metrics calculated. Task ID: {task_uuid}. Cost: ${final_cost:.6f}")
 
-        # 更新任務狀態為 COMPLETED
         update_data = {
             "status": "COMPLETED",
             "audio_duration_seconds": metrics_response.audio_duration_seconds,
@@ -278,7 +245,6 @@ def transcribe_media_task(self, task_params_dict: dict):
         update_status("任務完成", status_code="COMPLETED",
                       result_data=final_response_dict)
 
-        # 只需要把最原汁原味的 LRC 文字回傳給 Celery 存進 DB
         return {"raw_lrc_text": final_lrc_text}
 
     except TranscriptionCancelledError:
@@ -306,7 +272,8 @@ def transcribe_media_task(self, task_params_dict: dict):
         logger.error(
             f"Transcription task failed for log ID: {task_uuid}\n{error_message}")
 
-        # 更新日誌為 FAILED
+        # session 可能因失敗的 commit 處於 pending rollback 狀態，先復原才能寫 FAILED
+        db.rollback()
         failure_update_data = {
             "status": "FAILED",
             "error_message": str(e),
@@ -320,11 +287,9 @@ def transcribe_media_task(self, task_params_dict: dict):
         # 任務結束後旗標已無作用，清掉以免影響同一檔案的重跑
         clear_cancel_flag(file_uid)
 
-        # 刪除轉錄完成的檔案
         if task_manager:
             task_manager.cleanup()
             logger.info(
                 f"Temporary files cleaned up for task {task_uuid}.")
 
-        # 確保資料庫 session 被關閉
-        next(db_generator, None)
+        db.close()
