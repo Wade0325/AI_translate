@@ -357,16 +357,23 @@ def create_batch_transcription_job(
     client: genai.Client,
     gemini_files: list,
     model: str,
-    prompt: str,
+    prompts: list,
     display_name: str = "transcription-batch"
 ) -> Any:
     """
     使用 Gemini Batch API 建立批次轉錄任務。
     將多個已上傳的音訊檔案打包為 inline requests 提交，
     享有標準 API 50% 的費用折扣。
+
+    prompts 與 gemini_files 一一對應（支援 per-file prompt 覆寫）。
     """
+    if len(prompts) != len(gemini_files):
+        raise ValueError(
+            f"prompts 數量 ({len(prompts)}) 與 gemini_files 數量 ({len(gemini_files)}) 不一致"
+        )
+
     inline_requests = []
-    for gemini_file in gemini_files:
+    for gemini_file, prompt in zip(gemini_files, prompts):
         request = {
             'contents': [{
                 'parts': [
@@ -382,7 +389,8 @@ def create_batch_transcription_job(
         inline_requests.append(request)
 
     logger.info(f"建立批次任務: {len(inline_requests)} 個請求, 模型: {model}")
-    logger.info(f"Batch prompt fingerprint: {_prompt_fingerprint(prompt)}")
+    unique_fingerprints = {_prompt_fingerprint(p) for p in prompts}
+    logger.info(f"Batch prompt fingerprints ({len(unique_fingerprints)} 種): {sorted(unique_fingerprints)}")
     try:
         batch_job = client.batches.create(
             model=model,

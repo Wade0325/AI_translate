@@ -232,7 +232,8 @@ def _process_single_result(
         input_cost=batch_input_cost,
         output_cost=batch_output_cost,
         model=task_params.model,
-        source_language=task_params.source_lang,
+        # 恢復路徑的 file_item 是 SimpleNamespace，不一定帶 per-file 欄位，故用 getattr
+        source_language=getattr(file_item, "source_lang", None) or task_params.source_lang,
         processing_time_seconds=processing_time_seconds,
         audio_duration_seconds=audio_duration,
         cost_breakdown=metrics.breakdown,
@@ -292,6 +293,17 @@ def batch_transcribe_task(self, task_params_dict: dict):
         if not client:
             raise ValueError("Failed to initialize Gemini Client. Check API key.")
 
+        def prompt_for(file_item) -> str:
+            """組出單一檔案的 prompt：per-file 設定優先，未提供時退回批次層級 fallback。"""
+            per_file_multi = getattr(file_item, "multi_speaker", None)
+            return build_prompt(
+                source_lang=getattr(file_item, "source_lang", None) or task_params.source_lang,
+                target_lang=getattr(file_item, "target_lang", None) or task_params.target_lang,
+                multi_speaker=per_file_multi if per_file_multi is not None else task_params.multi_speaker,
+                template=(getattr(file_item, "prompt", None) or task_params.prompt) or None,
+            )
+
+        # 批次層級的預設 prompt（存入 BatchJob 記錄）；實際送給 Gemini 的是每檔各自的 prompt
         prompt = build_prompt(
             source_lang=task_params.source_lang,
             target_lang=task_params.target_lang,
@@ -331,12 +343,12 @@ def batch_transcribe_task(self, task_params_dict: dict):
                 "status": "PROCESSING",
                 "original_filename": file_item.original_filename,
                 "model_used": task_params.model,
-                "source_language": task_params.source_lang,
+                "source_language": file_item.source_lang or task_params.source_lang,
                 "task_uuid": file_task_uuid,
                 "is_batch": True,
                 "batch_id": batch_id,
                 "provider": task_params.provider,
-                "target_language": task_params.target_lang,
+                "target_language": file_item.target_lang or task_params.target_lang,
                 "session_id": session_id,
                 "file_uid": file_item.file_uid,
             })
@@ -389,12 +401,15 @@ def batch_transcribe_task(self, task_params_dict: dict):
         ordered_gemini_files = [
             file_gemini_mapping[i][1] for i in ordered_indices
         ]
+        ordered_prompts = [
+            prompt_for(file_gemini_mapping[i][0]) for i in ordered_indices
+        ]
 
         batch_job = create_batch_transcription_job(
             client=client,
             gemini_files=ordered_gemini_files,
             model=task_params.model,
-            prompt=prompt,
+            prompts=ordered_prompts,
             display_name=f"transcription-{batch_id[:8]}",
         )
 

@@ -231,6 +231,10 @@ def start_batch_celery_task(payload_str: str, batch_id: str) -> None:
             file_path=str(temp_file_path),
             original_filename=f.original_filename,
             file_uid=f.file_uid,
+            source_lang=f.source_lang,
+            target_lang=f.target_lang,
+            prompt=f.prompt,
+            multi_speaker=f.multi_speaker,
         ))
 
     if not file_items:

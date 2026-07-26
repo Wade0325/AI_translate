@@ -71,10 +71,14 @@ class WebSocketTranscriptionRequest(BaseModel):
 
 
 class BatchFileItem(BaseModel):
-    """批次處理中的單一檔案項目"""
+    """批次處理中的單一檔案項目；per-file 設定為 None 時套用批次層級的 fallback 值"""
     filename: str
     original_filename: str
     file_uid: str
+    source_lang: Optional[str] = None
+    target_lang: Optional[str] = None
+    prompt: Optional[str] = None
+    multi_speaker: Optional[bool] = None
 
 
 class WebSocketBatchRequest(BaseModel):
