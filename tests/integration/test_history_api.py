@@ -340,9 +340,10 @@ class TestHistoryUsage:
         assert "gemini-2.5-flash" in models
         assert "default" not in models
         for p in data["pricing"]:
-            assert p["input_text"] > 0
-            assert p["input_audio"] > 0
-            assert p["output_text"] > 0
+            # 本地模型（如 vibevoice-qwen3-asr）價格為 0，故僅要求非負
+            assert p["input_text"] >= 0
+            assert p["input_audio"] >= 0
+            assert p["output_text"] >= 0
 
     def test_usage_invalid_days_returns_422(self, client: TestClient):
         assert client.get("/api/v1/history/usage?days=0").status_code == 422

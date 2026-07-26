@@ -1,17 +1,36 @@
 from typing import Dict
 from .models import ModelPrice, PriceCalculationRequest, PriceCalculationResponse
 
-# 模型價格設定（每百萬 token）；不在表內的模型套用 default
+# 模型價格設定（每百萬 token）；不在表內的模型套用 default。
+# 注意：此表需涵蓋 frontend/src/constants/modelConfig.js 中所有可選模型，
+# 否則該模型會以 default（flash 級）價格入帳，且不會出現在 Billing 頁的計費表。
 MODEL_PRICES: Dict[str, ModelPrice] = {
     "gemini-3.5-flash": ModelPrice(
         input_text=1.50,
         input_audio=1.50,
         output_text=9.00
     ),
+    # 依 Gemini 3 Pro 級（<=200k prompt）定價；官方調價時請同步更新
+    "gemini-3.1-pro-preview": ModelPrice(
+        input_text=2.00,
+        input_audio=2.00,
+        output_text=12.00
+    ),
+    "gemini-2.5-pro": ModelPrice(
+        input_text=1.25,
+        input_audio=1.25,
+        output_text=10.00
+    ),
     "gemini-2.5-flash": ModelPrice(
         input_text=0.30,
         input_audio=1.00,
         output_text=2.50
+    ),
+    # 本地模型不產生 API 費用
+    "vibevoice-qwen3-asr": ModelPrice(
+        input_text=0.0,
+        input_audio=0.0,
+        output_text=0.0
     ),
     "default": ModelPrice(
         input_text=0.30,
