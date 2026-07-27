@@ -3,7 +3,6 @@ import json
 from contextlib import suppress
 from typing import Dict, Optional
 
-import redis.asyncio as redis
 from fastapi import WebSocket
 
 from app.core.config import get_settings
@@ -56,12 +55,39 @@ class ConnectionManager:
             with suppress(Exception):
                 await websocket.close(code=1011)
 
+    async def local_listener(self):
+        """standalone 模式：消費行程內 local_bus 佇列並轉送至對應 WebSocket。"""
+        from app.runtime import local_bus
+
+        queue: asyncio.Queue = asyncio.Queue()
+        local_bus.bind(asyncio.get_running_loop(), queue)
+        logger.info("已綁定行程內 local_bus 狀態通道。")
+        try:
+            while not self._stopping:
+                try:
+                    data = await asyncio.wait_for(queue.get(), timeout=1.0)
+                except asyncio.TimeoutError:
+                    continue
+
+                try:
+                    # 完成訊息帶著整份字幕，只記摘要避免灌爆 log
+                    logger.info(f"從 local_bus 收到訊息: {str(data)[:200]}")
+                    client_id = data.get("client_id")
+                    if client_id:
+                        await self.send_personal_message(data, client_id)
+                except Exception as e:
+                    logger.error(f"處理 local_bus 訊息時發生錯誤: {e}")
+        finally:
+            local_bus.unbind()
+
     async def redis_listener(self):
-        """訂閱 Redis pub/sub 並轉送至對應 WebSocket。
+        """docker 模式：訂閱 Redis pub/sub 並轉送至對應 WebSocket。
 
         外層 while 確保 Redis 短暫斷線時自動以指數退避重連，
         直到 shutdown() 被呼叫設定 _stopping=True。
         """
+        import redis.asyncio as redis
+
         delay = _RECONNECT_INITIAL_DELAY
         while not self._stopping:
             r = None
@@ -122,11 +148,15 @@ class ConnectionManager:
             delay = min(delay * 2, _RECONNECT_MAX_DELAY)
 
     def start(self) -> asyncio.Task:
-        """由 lifespan 呼叫，啟動背景 listener。"""
+        """由 lifespan 呼叫，啟動背景 listener（依執行模式選擇通道）。"""
         self._stopping = False
         if self._listener_task is None or self._listener_task.done():
-            self._listener_task = asyncio.create_task(self.redis_listener())
-            logger.info("WebSocket Redis 監聽器已在背景啟動。")
+            if settings.is_standalone:
+                coro = self.local_listener()
+            else:
+                coro = self.redis_listener()
+            self._listener_task = asyncio.create_task(coro)
+            logger.info("WebSocket 狀態監聽器已在背景啟動。")
         return self._listener_task
 
     async def shutdown(self):

@@ -1,7 +1,11 @@
-"""Celery 任務統一狀態廣播模組。
+"""任務統一狀態廣播模組。
 
-`task.py` 與 `batch_task.py` 都透過此模組將狀態更新 publish 到 Redis 的
-``transcription_updates`` 頻道，由 `ConnectionManager` 轉發至對應 WebSocket。
+`task.py` 與 `batch_task.py` 都透過此模組將狀態更新送往前端 WebSocket：
+
+- docker 模式：publish 到 Redis 的 ``transcription_updates`` 頻道，
+  由 `ConnectionManager.redis_listener` 轉發
+- standalone 模式：直接丟進行程內 local_bus（asyncio queue），
+  由 `ConnectionManager.local_listener` 消費
 """
 
 from __future__ import annotations
@@ -9,17 +13,28 @@ from __future__ import annotations
 import json
 from typing import Optional
 
-import redis
-
-from app.celery.celery import celery_app
+from app.core.config import get_settings
 from app.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
 
 CHANNEL = "transcription_updates"
 
-# 與 FastAPI 端共用同一 Redis 設定
-_redis_client = redis.from_url(celery_app.conf.broker_url)
+
+if get_settings().is_standalone:
+    from app.runtime.local_bus import publish as _deliver
+else:
+    import redis
+
+    from app.celery.celery import celery_app
+
+    # 與 FastAPI 端共用同一 Redis 設定
+    _redis_client = redis.from_url(celery_app.conf.broker_url)
+
+    def _deliver(message: dict) -> None:
+        _redis_client.publish(
+            CHANNEL, json.dumps(message, default=str, ensure_ascii=False)
+        )
 
 
 def publish_status(
@@ -32,7 +47,7 @@ def publish_status(
     result_data: Optional[dict] = None,
     extra: Optional[dict] = None,
 ) -> None:
-    """向 Redis pub/sub 廣播狀態更新。
+    """廣播狀態更新至前端。
 
     Args:
         client_id: WebSocket 對應的 client_id（單檔轉錄為 file_uid，批次為 batch_id）。
@@ -57,8 +72,6 @@ def publish_status(
         message.update(extra)
 
     try:
-        _redis_client.publish(
-            CHANNEL, json.dumps(message, default=str, ensure_ascii=False)
-        )
+        _deliver(message)
     except Exception as e:
-        logger.error(f"發布狀態更新至 Redis 時失敗: {e}")
+        logger.error(f"發布狀態更新時失敗: {e}")
