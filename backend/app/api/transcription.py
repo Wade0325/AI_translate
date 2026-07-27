@@ -1,5 +1,3 @@
-from pathlib import Path
-
 from fastapi import (
     APIRouter,
     WebSocket,
@@ -13,10 +11,9 @@ from app.celery.cancellation import (
     register_task_id,
     request_cancel,
 )
-from app.celery.celery import celery_app
 from app.celery.notifier import publish_status
-from app.celery.task import transcribe_media_task
 from app.celery.models import TranscriptionTaskParams
+from app.runtime import dispatch
 from app.core.config import get_settings
 from app.database.session import SessionLocal
 from app.repositories.transcription_log_repository import TranscriptionLogRepository
@@ -30,12 +27,12 @@ logger = setup_logger(__name__)
 router = APIRouter()
 
 settings = get_settings()
-TEMP_UPLOADS_DIR = Path(settings.temp_uploads_dir)
-TEMP_UPLOADS_DIR.mkdir(exist_ok=True)
+TEMP_UPLOADS_DIR = settings.temp_uploads_path
+TEMP_UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def start_celery_task_sync(payload_str: str, file_uid: str) -> None:
-    """解析 WS 請求並派發 Celery 任務；在 threadpool 執行以免阻塞事件迴圈。"""
+def start_transcription_task_sync(payload_str: str, file_uid: str) -> None:
+    """解析 WS 請求並派發轉錄任務；在 threadpool 執行以免阻塞事件迴圈。"""
     request_data = WebSocketTranscriptionRequest.model_validate_json(
         payload_str)
 
@@ -63,15 +60,15 @@ def start_celery_task_sync(payload_str: str, file_uid: str) -> None:
         session_id=request_data.session_id,
     )
 
-    # local provider 路由到專用佇列，由主機端 GPU worker（local_worker.bat）消化
+    # local provider 路由到專用佇列：docker 模式由主機端 GPU worker
+    # （local_worker.bat）消化，standalone 模式對應序列化的 GPU 執行緒池
     queue = "local_asr" if task_params.provider.lower() == "local" else "celery"
     # 清掉上一次執行殘留的取消旗標（例如被 revoke 掉、沒機會自行清理的任務），
     # 否則同一檔案重跑會被誤取消
     clear_cancel_flag(file_uid)
-    async_result = transcribe_media_task.apply_async(
-        args=[task_params.model_dump()], queue=queue)
-    register_task_id(file_uid, async_result.id)
-    logger.info(f"已為 file_uid: {file_uid} 啟動 Celery 轉錄任務（queue={queue}）。")
+    task_id = dispatch.submit_transcription(task_params.model_dump(), queue)
+    register_task_id(file_uid, task_id)
+    logger.info(f"已為 file_uid: {file_uid} 啟動轉錄任務（queue={queue}）。")
 
 
 @router.post("/transcription/{file_uid}/cancel", name="Cancel Transcription")
@@ -93,7 +90,7 @@ def cancel_transcription(file_uid: str, provider: str = ""):
     # local worker 是 solo pool，不支援 terminate；送 terminate=True 會在
     # worker 端拋 NotImplementedError，因此僅對非 local 任務終止執行中行程
     terminate = provider.lower() != "local"
-    celery_app.control.revoke(task_id, terminate=terminate)
+    dispatch.revoke_task(task_id, terminate=terminate)
 
     # 被 revoke/terminate 掉的任務不會再回報狀態：仍在 PROCESSING 的紀錄由此補寫。
     # local 執行中的任務會走 task.py 的 CANCELLED 分支自行更新，此處條件式更新不衝突。
@@ -124,7 +121,7 @@ async def websocket_endpoint(
     try:
         payload_str = await websocket.receive_text()
 
-        await run_in_threadpool(start_celery_task_sync, payload_str=payload_str, file_uid=file_uid)
+        await run_in_threadpool(start_transcription_task_sync, payload_str=payload_str, file_uid=file_uid)
 
         # 保持連線開啟以接收來自客戶端的訊息
         while True:

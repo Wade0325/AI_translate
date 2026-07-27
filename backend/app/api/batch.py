@@ -1,5 +1,4 @@
 from datetime import datetime
-from pathlib import Path
 import json
 
 from fastapi import (
@@ -11,8 +10,8 @@ from fastapi import (
 )
 from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session
-from app.celery.batch_task import batch_transcribe_task, batch_recover_task
 from app.celery.models import BatchTranscriptionTaskParams, BatchFileItemParams
+from app.runtime import dispatch
 from app.core.config import get_settings
 from app.database.session import get_db
 from app.repositories.batch_job_repository import BatchJobRepository
@@ -32,38 +31,13 @@ logger = setup_logger(__name__)
 router = APIRouter()
 
 settings = get_settings()
-TEMP_UPLOADS_DIR = Path(settings.temp_uploads_dir)
-TEMP_UPLOADS_DIR.mkdir(exist_ok=True)
+TEMP_UPLOADS_DIR = settings.temp_uploads_path
+TEMP_UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
 batch_repo = BatchJobRepository()
 
 
 # ==================== Task Page Endpoints ====================
-
-def _check_celery_task_alive(celery_task_id: str) -> bool | None:
-    """
-    檢查 Celery 任務是否仍在執行。
-    回傳 True=執行中, False=已結束/已死, None=無法判斷。
-    """
-    if not celery_task_id:
-        return None
-    try:
-        from celery.result import AsyncResult
-        from app.celery.celery import celery_app
-        result = AsyncResult(celery_task_id, app=celery_app)
-        # STARTED = 正在執行 (需要 task_track_started=True)
-        # PENDING = 尚未開始 或 worker 已死 或 結果已過期
-        # SUCCESS/FAILURE/REVOKED = 已結束
-        if result.state == "STARTED":
-            return True
-        if result.state in ("SUCCESS", "FAILURE", "REVOKED"):
-            return False
-        # PENDING: 無法確定，但如果任務在 DB 中已存在一段時間，很可能已死
-        return None
-    except Exception as e:
-        logger.warning(f"檢查 Celery 任務狀態失敗 ({celery_task_id}): {e}")
-        return None
-
 
 @router.get("/tasks", response_model=list[BatchTaskResponse])
 def get_batch_tasks(db: Session = Depends(get_db)):
@@ -87,12 +61,13 @@ def get_batch_tasks(db: Session = Depends(get_db)):
 
         elapsed = None
         if job.created_at:
-            # created_at 由 DB func.now() 以本地時區寫入，需用 now() 對齊（utcnow 會差 8 小時）
+            # created_at 以應用層本地時間寫入（models.py 的 datetime.now default），
+            # 需用 now() 對齊（utcnow 會差 8 小時）
             elapsed = (datetime.now() - job.created_at).total_seconds()
 
         is_alive = None
         if job.status in ("UPLOADING", "POLLING", "RECOVERING"):
-            alive = _check_celery_task_alive(job.celery_task_id)
+            alive = dispatch.task_is_alive(job.celery_task_id)
             if alive is not None:
                 is_alive = alive
             elif elapsed and elapsed > 300:
@@ -175,11 +150,11 @@ def recover_batch(batch_id: str, body: RecoverBatchRequest, db: Session = Depend
             detail="Gemini 批次任務尚在處理中，需要 API Key 才能查詢狀態",
         )
 
-    logger.info(f"恢復批次 {batch_id}: 派送 Celery task 從 Gemini 取得結果 (當前狀態={job.status})")
+    logger.info(f"恢復批次 {batch_id}: 派送背景任務從 Gemini 取得結果 (當前狀態={job.status})")
 
-    # 派送 Celery task 非同步處理。結果稍後透過 WebSocket / pending API 通知前端
+    # 派送背景任務非同步處理。結果稍後透過 WebSocket / pending API 通知前端
     batch_repo.update_job(db, batch_id, {"status": "RECOVERING"})
-    batch_recover_task.delay(batch_id, api_key)
+    dispatch.submit_recover(batch_id, api_key)
 
     # 立刻回傳空結果；前端應透過 WebSocket 或重新查詢 /pending 取得最新狀態
     return RecoverBatchResponse(batch_id=batch_id, files=[])
@@ -187,9 +162,9 @@ def recover_batch(batch_id: str, body: RecoverBatchRequest, db: Session = Depend
 
 # ==================== Original Endpoints ====================
 
-def start_batch_celery_task(payload_str: str, batch_id: str) -> None:
+def start_batch_task_sync(payload_str: str, batch_id: str) -> None:
     """
-    同步函式：解析批次請求並啟動 Celery 批次轉錄任務。
+    同步函式：解析批次請求並派發批次轉錄任務。
     在獨立執行緒中執行以避免阻塞事件迴圈。
     """
     request_data = WebSocketBatchRequest.model_validate_json(payload_str)
@@ -229,8 +204,8 @@ def start_batch_celery_task(payload_str: str, batch_id: str) -> None:
         session_id=request_data.session_id or batch_id,
     )
 
-    batch_transcribe_task.delay(task_params.model_dump())
-    logger.info(f"已為 batch_id: {batch_id} 啟動 Celery 批次轉錄任務 ({len(file_items)} 個檔案)。")
+    dispatch.submit_batch(task_params.model_dump())
+    logger.info(f"已為 batch_id: {batch_id} 啟動批次轉錄任務 ({len(file_items)} 個檔案)。")
 
 
 @router.websocket("/ws/{batch_id}", name="WebSocket Batch Transcription")
@@ -254,7 +229,7 @@ async def batch_websocket_endpoint(
         payload_str = await websocket.receive_text()
 
         await run_in_threadpool(
-            start_batch_celery_task, payload_str=payload_str, batch_id=batch_id
+            start_batch_task_sync, payload_str=payload_str, batch_id=batch_id
         )
 
         while True:
