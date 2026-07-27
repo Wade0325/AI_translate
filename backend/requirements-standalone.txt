@@ -1,0 +1,33 @@
+# standalone（Windows 免安裝包）模式的完整依賴 — 鎖定為實測可用版本。
+#
+# 此檔是「首次啟動佈建清單」（AI_Translate.exe 以隨包 uv 安裝到
+# runtime\Lib\site-packages）與 build_release.ps1 的單一事實來源。
+# 相對 requirements.txt：排除 celery / redis / gevent / psycopg2-binary
+# （單機模式用行程內執行緒 + asyncio queue + SQLite 取代），
+# 加入 Local ASR（VibeVoice + Qwen3-ASR）所需的 torch cu128 全套。
+
+--extra-index-url https://download.pytorch.org/whl/cu128
+
+# Web 核心
+fastapi==0.115.12
+uvicorn[standard]==0.34.2
+pydantic==2.11.4
+pydantic-settings==2.12.0
+python-multipart==0.0.20
+SQLAlchemy==2.0.31
+
+# Gemini API
+google-genai==2.6.0
+
+# 音訊 / VAD
+soundfile==0.12.1
+silero-vad==5.1.2
+
+# Local ASR（VibeVoice 分離 + Qwen3-ASR 轉錄 + ForcedAligner 對齊）
+torch==2.8.0+cu128
+torchaudio==2.8.0+cu128
+transformers==5.13.0
+accelerate==1.14.0
+bitsandbytes==0.49.2
+librosa==0.11.0
+huggingface_hub==1.23.0

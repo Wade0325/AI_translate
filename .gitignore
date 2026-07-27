@@ -43,6 +43,10 @@ celerybeat.pid
 /backend/vad_artifacts/
 /backend/app/celery/results/
 
+# standalone 模式的可寫資料目錄與發布包建置產物
+/data/
+/build/
+
 # 獨立測試 pipeline 的音檔（tests/vad_pipeline.py、tests/diarization_pipeline.py）
 /tests/audio_input/
 /tests/audio_output/

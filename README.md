@@ -50,6 +50,28 @@
 
 ## 🚀 快速開始
 
+兩種安裝方式，擇一即可：
+
+| 方式 | 適合對象 | 需要什麼 |
+|------|---------|---------|
+| **A. Windows 免安裝版**（下載 zip） | 一般使用者 | 什麼都不用裝，解壓雙擊即用 |
+| **B. Docker 部署**（clone 專案） | 開發者 / 伺服器部署 | Docker Desktop |
+
+### 方式 A — Windows 免安裝版（推薦一般使用者）
+
+1. 到 [**Releases**](https://github.com/Wade0325/AI_translate/releases) 下載最新的 `AI_Translate-vX.Y.Z-win64.zip`
+2. 解壓到任意位置（建議路徑不含中文與空白）
+3. 雙擊 **`AI_Translate.exe`**
+   - 首次啟動會自動下載執行環境（約 3.5 GB，含 PyTorch），中斷可續傳
+   - 就緒後自動開啟瀏覽器；關閉黑色視窗即停止程式
+4. 在 **⚙️ Settings** 頁填入 [Gemini API Key](https://aistudio.google.com/apikey) 即可轉錄
+5. 要用 **Local 本機 GPU 轉錄**（零 API 費用，需 NVIDIA GPU）：在 Settings 頁的
+   Local Models 卡片下載模型權重（約 25 GB，總磁碟需求約 35 GB）
+
+> 所有資料（資料庫、模型權重）都在解壓資料夾的 `data\` 內；升級新版時把舊版 `data\` 複製過來即可保留紀錄。
+
+### 方式 B — Docker 部署（開發者）
+
 只需要 **Docker Desktop**——Postgres / Redis / FFmpeg 全都在容器內，不必自行安裝。
 
 ```bash
@@ -229,6 +251,26 @@ pytest tests/ -v
 ```
 
 > 從專案根目錄執行。`pytest.ini` 已設定 `pythonpath = backend`，測試可直接 `from app.api import ...` 匯入；測試自帶 SQLite in-memory 與 mock，不需 Postgres/Redis。
+
+### 建置 Windows 免安裝發布包
+
+```powershell
+.\build_release.ps1 -Version v1.2.3
+```
+
+產出 `build\AI_Translate-v1.2.3-win64.zip`（約 150 MB —— Python 依賴不進 zip，
+由使用者首次啟動時以隨包 `uv` 依 `backend/requirements-standalone.txt` 自動下載）。
+推 `v*` tag 時 GitHub Actions（`.github/workflows/release.yml`）會自動建置並發布 Release。
+
+單機模式的程式碼開關是 `APP_MODE=standalone` 環境變數：SQLite + 行程內執行緒
++ asyncio queue 取代 Postgres / Redis / Celery，同一份程式碼與 Docker 模式並存。
+開發時可直接用 venv 驗證，不需打包：
+
+```powershell
+$env:APP_MODE='standalone'
+cd backend
+.\.venv\Scripts\python.exe -m uvicorn main:app --port 8000
+```
 
 ---
 

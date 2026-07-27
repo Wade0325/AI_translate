@@ -24,6 +24,24 @@ via the `dc.bat` helper (wraps `docker compose`, auto-checks Docker Desktop + `.
 - Celery has **no** auto-reload — run `.\dc.bat restart celery-worker` after editing task code.
 - **Local ASR worker** (provider `Local`, VibeVoice + Qwen3-ASR): runs on the **host GPU**, not in Docker — start with `local_worker.bat` (uses `backend/.venv`, consumes the `local_asr` queue via host-published Redis port).
 
+### Run standalone mode (no Docker — basis of the Windows portable release)
+
+```powershell
+$env:APP_MODE='standalone'; cd backend; .\.venv\Scripts\python.exe -m uvicorn main:app --port 8000
+```
+
+`APP_MODE=standalone` swaps infrastructure in-process: SQLite (in `data/app.db`) replaces Postgres,
+`app/runtime/` ThreadPoolExecutors replace Celery workers, and an asyncio queue (`app/runtime/local_bus.py`)
+replaces Redis Pub/Sub. FastAPI also serves `frontend/dist` (SPA fallback) so Vite/Node isn't needed.
+Default mode is `docker` — compose never sets `APP_MODE`, so Docker behavior is unchanged.
+Standalone reads `.env` only from the data dir (`AIT_DATA_DIR`), never `backend/.env`.
+
+Release packaging: `.\build_release.ps1 -Version vX.Y.Z` → `build\AI_Translate-*-win64.zip`
+(small zip; deps are installed on the user's first launch by bundled `uv` per
+`backend/requirements-standalone.txt`). Launcher source: `tools/launcher.cs`
+(compiled with the built-in .NET Framework `csc.exe` — C# 5 syntax only).
+Tag push `v*` triggers `.github/workflows/release.yml` to build + publish the Release.
+
 ### Tests
 
 ```bash
@@ -97,6 +115,11 @@ Communication pattern: Celery Worker publishes results to Redis Pub/Sub → `Con
 
 | Decision | Detail |
 |----------|--------|
+| Dual run modes | `APP_MODE=docker` (default) vs `standalone`; mode branches live in `config.py`, `session.py`, `notifier.py`, `cancellation.py`, `manager.py`, `runtime/dispatch.py` — interfaces stay identical, implementations swap |
+| Task bodies | Framework-free in `app/tasks/{transcribe_core,batch_core}.py`; `app/celery/task.py` & `batch_task.py` are thin Celery shims (task names unchanged on the broker) |
+| Standalone executor | `app/runtime/executor.py`: `local_asr` pool =1 (mirrors solo GPU worker), `celery` pool =N (mirrors gevent); retry wrapper mirrors `autoretry_for` backoff |
+| Timestamps | `models.py` defaults use Python `datetime.now` (not `func.now()`) — local-time semantics identical on Postgres (TZ=Asia/Taipei) and SQLite (whose CURRENT_TIMESTAMP is UTC and would be 8h off) |
+| ffmpeg lookup | `app/utils/binaries.py` — PATH by default; `AIT_FFMPEG_DIR` points to bundled binaries in standalone |
 | Prompt source of truth | `backend/app/core/default_prompt.py` — edit here, not in frontend constants |
 | DB migration | `session.py:_migrate_add_missing_columns()` auto-alters tables; no Alembic |
 | Celery pool | Docker worker uses `gevent` (prefork unsupported on Windows); host GPU worker uses `--pool=solo -c 1` |
