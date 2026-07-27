@@ -131,6 +131,16 @@ export const api = {
       });
     },
   },
+  localModels: {
+    /** standalone 模式的本機模型權重狀態（GPU、各 repo 下載進度） */
+    status() {
+      return request('/setting/local-models/status');
+    },
+    /** 啟動（或續傳）權重下載 */
+    download() {
+      return request('/setting/local-models/download', { method: 'POST' });
+    },
+  },
   settings: {
     getProvider(provider) {
       return request(`/setting/models/${provider}`);

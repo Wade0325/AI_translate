@@ -1,8 +1,9 @@
-import { useState, useEffect } from "react"
-import { Card, Button, Input, Select, Switch, Typography, Row, Col, Spin, Divider } from "antd"
-import { Key, Bell, Save, Trash2 } from "lucide-react"
+import { useState, useEffect, useCallback } from "react"
+import { Card, Button, Input, Select, Switch, Typography, Row, Col, Spin, Divider, Progress, Alert } from "antd"
+import { Key, Bell, Save, Trash2, Cpu, Download, CheckCircle2 } from "lucide-react"
 import { useModelManager } from "../components/ModelManager"
 import { modelOptions } from "../constants/modelConfig"
+import { api } from "../services/api"
 
 const { Text } = Typography
 const { TextArea } = Input
@@ -178,6 +179,8 @@ export default function SettingsPage() {
                     </Col>
                 ))}
 
+                <LocalModelsCard />
+
                 <Col xs={24} lg={12}>
                     <Card
                         title={
@@ -199,6 +202,122 @@ export default function SettingsPage() {
 
             </Row>
         </div>
+    )
+}
+
+/**
+ * 單機（standalone）模式的本機模型權重管理卡片。
+ * Docker 模式下 status.standalone 為 false，整張卡不渲染。
+ */
+function LocalModelsCard() {
+    const [status, setStatus] = useState(null)
+    const [starting, setStarting] = useState(false)
+    const [startError, setStartError] = useState(null)
+
+    const refresh = useCallback(async () => {
+        try {
+            setStatus(await api.localModels.status())
+        } catch {
+            /* 後端未支援此端點（舊版）時整卡隱藏 */
+        }
+    }, [])
+
+    useEffect(() => { refresh() }, [refresh])
+
+    // 下載進行中每 2 秒輪詢進度
+    const downloading = status?.download?.state === 'downloading'
+    useEffect(() => {
+        if (!downloading) return
+        const timer = setInterval(refresh, 2000)
+        return () => clearInterval(timer)
+    }, [downloading, refresh])
+
+    if (!status?.standalone) return null
+
+    const dl = status.download
+    const handleDownload = async () => {
+        setStarting(true)
+        setStartError(null)
+        try {
+            await api.localModels.download()
+            await refresh()
+        } catch (err) {
+            setStartError(err.message)
+        } finally {
+            setStarting(false)
+        }
+    }
+
+    return (
+        <Col xs={24} lg={12}>
+            <Card
+                title={
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <Cpu size={16} color="#2dd4a8" />
+                        <span style={{ color: '#e8e8e8' }}>Local Models (本機 GPU 模型)</span>
+                    </div>
+                }
+                style={{ border: '1px solid #3a3a5c', height: '100%' }}
+            >
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                    <Text style={{ color: status.gpu_available ? '#2dd4a8' : '#d46a2d', fontSize: 13 }}>
+                        {status.gpu_available
+                            ? `GPU: ${status.gpu_name}`
+                            : '未偵測到 NVIDIA GPU — Local 轉錄不可用（Gemini 不受影響）'}
+                    </Text>
+
+                    {status.models.map(m => (
+                        <div key={m.repo_id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <Text style={{ color: '#8888a8', fontSize: 12, fontFamily: 'monospace' }}>{m.repo_id}</Text>
+                            {m.downloaded
+                                ? <CheckCircle2 size={14} color="#2dd4a8" />
+                                : <Text style={{ color: '#d4a72d', fontSize: 12 }}>未下載</Text>}
+                        </div>
+                    ))}
+
+                    {downloading && (
+                        <div>
+                            <Text style={{ color: '#e8e8e8', fontSize: 12, display: 'block', marginBottom: 4 }}>
+                                下載中 ({dl.repo_index}/{dl.repo_count}): {dl.current_repo}
+                            </Text>
+                            <Progress
+                                percent={dl.progress_pct ?? 0}
+                                status="active"
+                                strokeColor="#2dd4a8"
+                            />
+                        </div>
+                    )}
+
+                    {dl.state === 'failed' && (
+                        <Alert
+                            type="error"
+                            showIcon
+                            message="下載中斷"
+                            description={`${dl.error || '未知錯誤'} — 已下載部分會保留，重新下載即續傳。`}
+                        />
+                    )}
+                    {startError && (
+                        <Alert type="error" showIcon message={startError} />
+                    )}
+
+                    {!status.all_downloaded && !downloading && (
+                        <Button
+                            type="primary"
+                            icon={<Download size={16} />}
+                            loading={starting}
+                            onClick={handleDownload}
+                            disabled={!status.gpu_available}
+                        >
+                            {dl.state === 'failed' ? '重試下載' : '下載模型權重 (~25 GB)'}
+                        </Button>
+                    )}
+
+                    <Text style={{ color: '#8888a8', fontSize: 12 }}>
+                        權重存放於 {status.hf_home}；首次使用 Local provider 前需完成下載。
+                    </Text>
+                </div>
+            </Card>
+        </Col>
     )
 }
 
