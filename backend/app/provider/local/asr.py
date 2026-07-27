@@ -26,7 +26,12 @@ import warnings
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
-os.environ.setdefault("HF_HOME", r"D:\AI_translate\models\hf_cache")
+# HF_HOME 由 weights 模組（權重單一事實來源）於 import 時設定
+from app.provider.local.weights import (  # noqa: F401 — re-export 供既有引用
+    ALIGNER_MODEL_ID,
+    ASR_MODEL_ID,
+    DIARIZATION_MODEL_ID,
+)
 # 權重載入進度條的每次刷新在 Celery 日誌都是一行 WARNING，關閉
 os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
 # transformers 只留 error。被消音的提示皆已逐一確認無害：
@@ -40,6 +45,7 @@ os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
 import soundfile as sf
 
 from app.exceptions import TranscriptionCancelledError
+from app.utils.binaries import ffmpeg_bin
 from app.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -51,9 +57,6 @@ logging.getLogger("accelerate.big_modeling").setLevel(logging.ERROR)
 warnings.filterwarnings(
     "ignore", category=FutureWarning, message=r".*acoustic_tokenizer_chunk_size.*")
 
-DIARIZATION_MODEL_ID = "microsoft/VibeVoice-ASR-HF"
-ASR_MODEL_ID = "Qwen/Qwen3-ASR-1.7B-hf"
-ALIGNER_MODEL_ID = "Qwen/Qwen3-ForcedAligner-0.6B-hf"
 DIARIZATION_SAMPLE_RATE = 24000
 
 # 字幕斷行：句尾標點切行；單行超過上限秒數時在讀點處再切
@@ -140,7 +143,7 @@ def _to_mono_24k(audio_path: Path) -> Path:
     """轉成 VibeVoice 要求的 mono 24kHz wav 暫存檔。"""
     output = audio_path.parent / f"{audio_path.stem}_diar24k.wav"
     result = subprocess.run(
-        ["ffmpeg", "-y", "-i", str(audio_path),
+        [ffmpeg_bin(), "-y", "-i", str(audio_path),
          "-ac", "1", "-ar", str(DIARIZATION_SAMPLE_RATE), str(output)],
         capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300,
     )

@@ -12,7 +12,7 @@ logger = setup_logger(__name__)
 router = APIRouter()
 
 settings = get_settings()
-TEMP_UPLOADS_DIR = Path(settings.temp_uploads_dir)
+TEMP_UPLOADS_DIR = settings.temp_uploads_path
 
 SUPPORTED_MIME_TYPES = {
     "audio/wav", "audio/x-wav", "audio/wave", "audio/mpeg", "audio/mp3",
@@ -54,7 +54,7 @@ async def upload_file(
             status_code=400, detail=f"Unsupported file format: {file.content_type}."
         )
 
-    TEMP_UPLOADS_DIR.mkdir(exist_ok=True)
+    TEMP_UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
     original_filename = Path(file.filename).name
     temp_file_path = _get_unique_filepath(TEMP_UPLOADS_DIR, original_filename)

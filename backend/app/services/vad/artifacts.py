@@ -35,7 +35,7 @@ def _artifact_run_dir(
     if not settings.vad_keep_artifacts and not force:
         return None
 
-    base = Path(settings.vad_artifacts_dir)
+    base = settings.vad_artifacts_path
     stem = _sanitize(Path(original_filename).stem)
     short_id = re.sub(r"[^a-zA-Z0-9]", "", task_id)[:12] or "task"
     run_dir = base / f"{stem}_{short_id}"

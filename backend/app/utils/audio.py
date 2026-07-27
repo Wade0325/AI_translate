@@ -4,6 +4,7 @@ import mimetypes
 from pathlib import Path
 from typing import Optional
 
+from app.utils.binaries import ffmpeg_bin, ffprobe_bin
 from app.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -30,7 +31,7 @@ def get_audio_duration(file_path: Path) -> Optional[float]:
     try:
         result = subprocess.run(
             [
-                "ffprobe",
+                ffprobe_bin(),
                 "-v", "quiet",
                 "-print_format", "json",
                 "-show_format",
@@ -88,7 +89,7 @@ def slice_audio(
     重新編碼為 PCM 以取得取樣點級精度（stream copy 只能切在封包邊界），
     end=None 表示切到檔尾。
     """
-    cmd = ["ffmpeg", "-y", "-i", str(file_path), "-ss", f"{start:.3f}"]
+    cmd = [ffmpeg_bin(), "-y", "-i", str(file_path), "-ss", f"{start:.3f}"]
     if end is not None:
         cmd += ["-t", f"{end - start:.3f}"]
     cmd.append(str(output_path))
@@ -129,7 +130,7 @@ def convert_to_wav(file_path: Path, output_dir: Path) -> Optional[Path]:
     try:
         result = subprocess.run(
             [
-                "ffmpeg", "-y",
+                ffmpeg_bin(), "-y",
                 "-i", str(file_path),
                 "-ar", "16000",
                 "-ac", "1",

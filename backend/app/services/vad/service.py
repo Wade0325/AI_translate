@@ -1,4 +1,3 @@
-import torch
 from typing import Optional, Tuple
 
 from app.utils.logger import setup_logger
@@ -20,11 +19,24 @@ class VADService:
         if _vad_model is None:
             logger.info("正在載入 Silero VAD 模型...")
             try:
-                _vad_model, _vad_utils = torch.hub.load(
-                    repo_or_dir='snakers4/silero-vad',
-                    model='silero_vad',
-                    force_reload=False,
-                    trust_repo=True
+                # 以 pip 套件內建的模型檔載入（權重與 torch.hub 版相同），
+                # 完全離線 — 不再於執行期從 GitHub 下載 snakers4/silero-vad repo
+                from silero_vad import (
+                    VADIterator,
+                    collect_chunks,
+                    get_speech_timestamps,
+                    load_silero_vad,
+                    read_audio,
+                    save_audio,
+                )
+                _vad_model = load_silero_vad()
+                # 維持與 torch.hub 版相同的 utils tuple 順序，呼叫端解包方式不變
+                _vad_utils = (
+                    get_speech_timestamps,
+                    save_audio,
+                    read_audio,
+                    VADIterator,
+                    collect_chunks,
                 )
                 logger.info("VAD 模型載入成功")
             except Exception as e:

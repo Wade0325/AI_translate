@@ -1,5 +1,3 @@
-from pathlib import Path
-
 from fastapi import APIRouter, HTTPException
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
@@ -13,7 +11,7 @@ logger = setup_logger(__name__)
 router = APIRouter()
 
 settings = get_settings()
-TEMP_UPLOADS_DIR = Path(settings.temp_uploads_dir)
+TEMP_UPLOADS_DIR = settings.temp_uploads_path
 
 
 class VadTestRequest(BaseModel):

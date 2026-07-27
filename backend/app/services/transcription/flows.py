@@ -5,6 +5,7 @@ from typing import List, Dict, Optional
 from app.core.config import get_settings
 from app.exceptions import TranscriptionCancelledError
 from app.utils.logger import setup_logger
+from app.utils.paths import is_temp_upload
 from app.utils.audio import (
     get_audio_duration as _ffprobe_duration,
     convert_to_wav,
@@ -559,7 +560,7 @@ class TranscriptionTask:
             try:
                 if local_file and local_file.exists():
                     # 只刪 temp_uploads 目錄下的檔案，防止路徑異常時誤刪其他位置
-                    if "temp_uploads" in str(local_file.parent):
+                    if is_temp_upload(local_file):
                         local_file.unlink()
                         logger.info(f"已清理暫存檔案: {local_file.name}")
                     else:

@@ -12,6 +12,7 @@ from app.services.vad.preprocess import run_vad_extraction
 from app.services.vad.service import get_vad_service
 from app.utils.audio import convert_to_wav, get_audio_duration
 from app.utils.logger import setup_logger
+from app.utils.paths import is_temp_upload
 
 logger = setup_logger(__name__)
 
@@ -19,7 +20,7 @@ logger = setup_logger(__name__)
 def _cleanup_paths(paths: list[Path]) -> None:
     for path in paths:
         try:
-            if path.exists() and "temp_uploads" in str(path):
+            if path.exists() and is_temp_upload(path):
                 path.unlink()
         except Exception as e:
             logger.warning(f"清理 VAD 測試暫存檔失敗 ({path.name}): {e}")
