@@ -65,5 +65,4 @@ tests/test_gemini_integration.py
 .DS_Store
 
 # Claude Code 本機設定與技能（不進版控）
-.claude/settings.local.json
-.claude/skills/
+.claude/
