@@ -31,6 +31,17 @@ from compare_transcripts import GLOSSARY_GOOD, GLOSSARY_SUSPECT, HAN_RE, LATIN_R
 
 import re  # noqa: E402
 
+# 常用字的繁 / 簡對照（逐字一一對應），估計輸出偏繁體還是簡體
+TRAD_CHARS = "這個們說設檔層級錄輸過濾實體還會對應時間問題為從來後裡點頭開關現發與進東車門長書見聽話讓學習給寫將麼樣種經"
+SIMP_CHARS = "这个们说设档层级录输过滤实体还会对应时间问题为从来后里点头开关现发与进东车门长书见听话让学习给写将么样种经"
+_PAIRS = [(t, s) for t, s in zip(TRAD_CHARS, SIMP_CHARS) if t != s]
+
+
+def traditional_ratio(text: str) -> float | None:
+    trad = sum(text.count(t) for t, _ in _PAIRS)
+    simp = sum(text.count(s) for _, s in _PAIRS)
+    return round(trad / (trad + simp), 4) if trad + simp else None
+
 
 def bootstrap_ci(values: np.ndarray, n: int = 4000, seed: int = 0) -> tuple[float, float]:
     rng = np.random.default_rng(seed)
@@ -44,9 +55,15 @@ def main() -> int:
     parser.add_argument("--ref", default="01_original_wav")
     parser.add_argument("--blind-chunks", type=int, default=60)
     parser.add_argument("--packet-size", type=int, default=20)
+    parser.add_argument("--src", default="asr_fixed", help="ROOT 下的結果資料夾（asr_context 等）")
+    parser.add_argument("--no-blind", action="store_true")
+    parser.add_argument("--min-distinct", type=int, default=3, help="盲評候選塊至少要有幾種不同說法")
     args = parser.parse_args()
     root: Path = args.root
-    src = root / "asr_fixed"
+    src = root / args.src
+    if not (src / "chunks.json").exists():
+        (src / "chunks.json").write_text((root / "asr_fixed" / "chunks.json").read_text(encoding="utf-8"),
+                                         encoding="utf-8")
 
     data = {}
     for f in sorted(src.glob("*.json")):
@@ -93,6 +110,7 @@ def main() -> int:
             "cer_vs_ref": round(cer_ref, 4),
             "cer_vs_consensus": round(cer_cons, 4),
             "repeat_runs": repeat_runs(full),
+            "traditional_ratio": traditional_ratio(full),
             "glossary_good": {k: len(re.findall(p, lower)) for k, p in GLOSSARY_GOOD.items()},
             "glossary_suspect": {k: len(re.findall(p, lower)) for k, p in GLOSSARY_SUSPECT.items()},
         }
@@ -108,22 +126,28 @@ def main() -> int:
 
     out_dir = root / "report"
     out_dir.mkdir(exist_ok=True)
-    (out_dir / "asr_fixed_metrics.json").write_text(
+    (out_dir / f"{args.src}_metrics.json").write_text(
         json.dumps({"ref": args.ref, "chunks": n_chunks, "metrics": metrics}, ensure_ascii=False, indent=2),
         encoding="utf-8")
-    (out_dir / "asr_fixed_consensus.txt").write_text("\n".join(consensus_raw), encoding="utf-8")
+    (out_dir / f"{args.src}_consensus.txt").write_text("\n".join(consensus_raw), encoding="utf-8")
+    if args.no_blind:
+        for vid, m in metrics.items():
+            print(f"{vid:22s} conf {m['token_mean_logprob']:+.4f}  cerRef {m['cer_vs_ref']:.4f}  "
+                  f"good {m['glossary_good_total']}  sus {m['glossary_suspect_total']}  "
+                  f"trad {m['traditional_ratio']}  empty {m['empty_chunks']}")
+        return 0
 
     # 盲評題包：分歧大（≥3 種不同說法）且共識長度 ≥ 8 字的塊，時間上均勻抽樣
     chunks_meta = json.loads((src / "chunks.json").read_text(encoding="utf-8"))
     candidates = [i for i in range(n_chunks)
-                  if len({norms[v][i] for v in ids}) >= 3 and len(consensus[i]) >= 8]
+                  if len({norms[v][i] for v in ids}) >= args.min_distinct and len(consensus[i]) >= 8]
     rng = random.Random(17)
     if len(candidates) > args.blind_chunks:
         step = len(candidates) / args.blind_chunks
         picked = [candidates[int(k * step + rng.random() * step)] for k in range(args.blind_chunks)]
     else:
         picked = candidates
-    blind_dir = out_dir / "blind_A"
+    blind_dir = out_dir / ("blind_A" if args.src == "asr_fixed" else f"blind_{args.src}")
     blind_dir.mkdir(exist_ok=True)
     key = {}
     packets: list[list[str]] = [[]]

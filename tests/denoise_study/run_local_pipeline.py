@@ -34,11 +34,24 @@ sys.path.insert(0, str(BACKEND_DIR))
 import soundfile as sf  # noqa: E402
 
 
-def scored_transcribe_segments(asr, wav_path, segments, language, status_callback=None, cancel_check=None):
+ASR_CONTEXT_PRESETS = {
+    # 附加實驗 K3：繁中情境說明 + 領域詞彙放 system prompt，assistant 前綴強制語言
+    "zh_tw_log4j": {
+        "system": ("這是台灣工程師用繁體中文討論 Java 日誌框架 log4j2 的對話，會提到 Logger、Appender、"
+                   "Level（info、debug、warn、error）、Marker、Filter、Layout、ConsoleAppender、RollingFile、"
+                   "設定檔、實作層、呼叫、輸出、過濾、層級。"),
+        "prefix": "language Chinese<asr_text>",
+    },
+}
+
+
+def scored_transcribe_segments(asr, wav_path, segments, language, status_callback=None, cancel_check=None,
+                               context=None):
     """asr._transcribe_segments 的逐行鏡像，額外取出每段生成 token 的 log 機率。
 
     解碼仍是 greedy（generate 只多回傳 scores），文字與正式流程完全相同；
     entry 多出 logprob_sum / n_tokens / min_logprob 供無參考品質評估（ASR 自信度）。
+    context={"system": str, "prefix": str|None} 時改用自訂 system prompt（上下文偏置實驗）。
     """
     import torch
     from transformers import AutoProcessor, Qwen3ASRForConditionalGeneration
@@ -64,17 +77,32 @@ def scored_transcribe_segments(asr, wav_path, segments, language, status_callbac
             if not asr._write_segment_wav(audio_data, sr, start, end, segment_wav):
                 continue
 
-            request_kwargs = {"audio": str(segment_wav)}
-            if language:
-                request_kwargs["language"] = language
-            inputs = processor.apply_transcription_request(**request_kwargs)
+            if context is None:
+                request_kwargs = {"audio": str(segment_wav)}
+                if language:
+                    request_kwargs["language"] = language
+                inputs = processor.apply_transcription_request(**request_kwargs)
+            else:
+                messages = [{"role": "system", "content": [{"type": "text", "text": context["system"]}]},
+                            {"role": "user", "content": [{"type": "audio", "path": str(segment_wav)}]}]
+                inputs = processor.apply_chat_template([messages], tokenize=True, add_generation_prompt=True,
+                                                       return_dict=True)
+                if context.get("prefix"):
+                    prefix_ids = processor.tokenizer(context["prefix"], add_special_tokens=False,
+                                                     return_tensors="pt").input_ids
+                    inputs["input_ids"] = torch.cat([inputs["input_ids"], prefix_ids], dim=1)
+                    inputs["attention_mask"] = torch.cat(
+                        [inputs["attention_mask"], torch.ones_like(prefix_ids)], dim=1)
             inputs = inputs.to(model.device).to(torch.bfloat16)
             with torch.inference_mode():
                 out = model.generate(**inputs, max_new_tokens=512,
                                      output_scores=True, return_dict_in_generate=True)
             generated_ids = out.sequences[:, inputs["input_ids"].shape[1]:]
-            text = processor.decode(
-                generated_ids, return_format="transcription_only")[0].strip()
+            if context is not None and context.get("prefix"):
+                text = processor.decode(generated_ids[0], skip_special_tokens=True).strip()
+            else:
+                text = processor.decode(
+                    generated_ids, return_format="transcription_only")[0].strip()
             logprobs = [float(torch.log_softmax(step[0].float(), dim=-1)[tok])
                         for step, tok in zip(out.scores, generated_ids[0])]
 
@@ -104,6 +132,8 @@ def main() -> int:
     parser.add_argument("--replay-diarization", type=Path,
                         help="重播模式：沿用該結果資料夾的 diarization.json（不跑 VibeVoice、不做對齊），"
                              "只重跑 Qwen3-ASR 取得自信度，並核對文字是否與原結果一致")
+    parser.add_argument("--asr-context", choices=sorted(ASR_CONTEXT_PRESETS),
+                        help="Qwen3-ASR 改用上下文 system prompt（附加實驗；預設同正式流程）")
     args = parser.parse_args()
 
     out_dir: Path = args.out_dir
@@ -132,8 +162,11 @@ def main() -> int:
     orig_diar = asr._run_diarization
     orig_vad = flows.TranscriptionTask._extract_speech_only
 
+    asr_context = ASR_CONTEXT_PRESETS[args.asr_context] if args.asr_context else None
+
     def orig_asr(wav_path, segments, language, status_callback=None, cancel_check=None):
-        return scored_transcribe_segments(asr, wav_path, segments, language, status_callback, cancel_check)
+        return scored_transcribe_segments(asr, wav_path, segments, language, status_callback, cancel_check,
+                                          context=asr_context)
 
     if args.replay_diarization:
         recorded = json.loads((args.replay_diarization / "diarization.json").read_text(encoding="utf-8"))
@@ -219,6 +252,7 @@ def main() -> int:
     run = {
         "input": str(args.audio),
         "vad_audio": str(args.vad_audio) if args.vad_audio else None,
+        "asr_context": args.asr_context,
         "source_lang": args.lang,
         "backend_dir": str(BACKEND_DIR),
         "success": result.success,
