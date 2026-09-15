@@ -1,13 +1,14 @@
 # 實驗 B（6 分鐘片段完整流程）轉錄優先順序
-# 本機 VibeVoice 約每秒音訊 15 秒運算，每個片段約 1 小時以上：先跑能回答關鍵問題的核心 8 個
+# 本機 VibeVoice 約每秒音訊 6 秒以上運算，每個片段約 30–40 分鐘：先跑能回答關鍵問題的核心 8 個
+# 01_original_wav 提前：與 00_original_16k 幾乎同音訊，用來量「分離結果本身的混沌底線」
 00_original_16k
 10_mossformer2_oa50
 05_dfn3
 02_hpf_notch
 13_splitvad_dfn3
+01_original_wav
 11_hpf_dfn3_lim6
 08_mossformer2_48k
-01_original_wav
 # 以下時間允許才跑（實驗 A 已顯示轉錄層面無益或有害）
 12_frcrn_oa50
 06_dfn3_lim12
