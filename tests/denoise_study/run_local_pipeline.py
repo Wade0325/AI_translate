@@ -31,6 +31,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 BACKEND_DIR = Path(os.environ.get("AIT_BACKEND_DIR", REPO_ROOT / "backend"))
 sys.path.insert(0, str(BACKEND_DIR))
 
+import soundfile as sf  # noqa: E402
+
 
 def scored_transcribe_segments(asr, wav_path, segments, language, status_callback=None, cancel_check=None):
     """asr._transcribe_segments 的逐行鏡像，額外取出每段生成 token 的 log 機率。
@@ -113,7 +115,6 @@ def main() -> int:
     logging.getLogger().setLevel(logging.INFO)
     status_log = logging.getLogger("status")
 
-    import soundfile as sf
     import torch
     from app.provider.local import asr
     from app.services.converter.service import convert_from_lrc
