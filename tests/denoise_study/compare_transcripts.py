@@ -92,9 +92,13 @@ def main() -> int:
     for folder in sorted((root / "transcripts").iterdir()):
         lrc = folder / "transcript.lrc"
         if lrc.exists():
+            run = json.loads((folder / "run.json").read_text(encoding="utf-8"))
+            replay = folder / "confidence_replay" / "run.json"
+            if "asr_confidence" not in run and replay.exists():
+                run["asr_confidence"] = json.loads(replay.read_text(encoding="utf-8")).get("asr_confidence")
             variants[folder.name] = {
                 "rows": parse_lrc(lrc),
-                "run": json.loads((folder / "run.json").read_text(encoding="utf-8")),
+                "run": run,
                 "diar": json.loads((folder / "diarization.json").read_text(encoding="utf-8")),
             }
     if not variants:
@@ -143,6 +147,7 @@ def main() -> int:
             "glossary_good": {k: len(re.findall(p, lower)) for k, p in GLOSSARY_GOOD.items()},
             "glossary_suspect": {k: len(re.findall(p, lower)) for k, p in GLOSSARY_SUSPECT.items()},
             "lines_per_speaker": spk_lines,
+            "asr_confidence": v["run"].get("asr_confidence"),
         }
         g = metrics[vid]
         g["glossary_good_total"] = sum(g["glossary_good"].values())

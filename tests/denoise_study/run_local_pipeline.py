@@ -32,6 +32,65 @@ BACKEND_DIR = Path(os.environ.get("AIT_BACKEND_DIR", REPO_ROOT / "backend"))
 sys.path.insert(0, str(BACKEND_DIR))
 
 
+def scored_transcribe_segments(asr, wav_path, segments, language, status_callback=None, cancel_check=None):
+    """asr._transcribe_segments 的逐行鏡像，額外取出每段生成 token 的 log 機率。
+
+    解碼仍是 greedy（generate 只多回傳 scores），文字與正式流程完全相同；
+    entry 多出 logprob_sum / n_tokens / min_logprob 供無參考品質評估（ASR 自信度）。
+    """
+    import torch
+    from transformers import AutoProcessor, Qwen3ASRForConditionalGeneration
+
+    processor = AutoProcessor.from_pretrained(asr.ASR_MODEL_ID)
+    model = Qwen3ASRForConditionalGeneration.from_pretrained(
+        asr.ASR_MODEL_ID, device_map="auto", dtype=torch.bfloat16,
+    )
+    model.eval()
+
+    audio_data, sr = sf.read(str(wav_path), dtype="float32")
+    segment_wav = wav_path.parent / f"{wav_path.stem}_seg.wav"
+    entries: list[dict] = []
+
+    try:
+        total = len(segments)
+        for i, seg in enumerate(segments, 1):
+            asr._raise_if_cancelled(cancel_check)
+            start = float(seg.get("Start", 0.0))
+            end = float(seg.get("End", 0.0))
+            speaker = int(seg.get("Speaker", 0))
+
+            if not asr._write_segment_wav(audio_data, sr, start, end, segment_wav):
+                continue
+
+            request_kwargs = {"audio": str(segment_wav)}
+            if language:
+                request_kwargs["language"] = language
+            inputs = processor.apply_transcription_request(**request_kwargs)
+            inputs = inputs.to(model.device).to(torch.bfloat16)
+            with torch.inference_mode():
+                out = model.generate(**inputs, max_new_tokens=512,
+                                     output_scores=True, return_dict_in_generate=True)
+            generated_ids = out.sequences[:, inputs["input_ids"].shape[1]:]
+            text = processor.decode(
+                generated_ids, return_format="transcription_only")[0].strip()
+            logprobs = [float(torch.log_softmax(step[0].float(), dim=-1)[tok])
+                        for step, tok in zip(out.scores, generated_ids[0])]
+
+            if text:
+                entries.append({
+                    "start": start, "end": end, "speaker": speaker, "text": text,
+                    "logprob_sum": round(sum(logprobs), 4), "n_tokens": len(logprobs),
+                    "min_logprob": round(min(logprobs), 4) if logprobs else None,
+                })
+            if i % 10 == 0 or i == total:
+                asr._notify(status_callback, f"本地模型：Qwen3-ASR 轉錄中 {i}/{total}...")
+    finally:
+        asr._free_model(model, processor)
+        segment_wav.unlink(missing_ok=True)
+
+    return entries
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("audio", type=Path)
@@ -40,6 +99,9 @@ def main() -> int:
     parser.add_argument("--vad-audio", type=Path,
                         help="分流實驗：RMS VAD 靜音判定改在此音檔上做（需與輸入等長同時間軸），"
                              "切出的時間段套回輸入音檔拼接純語音檔")
+    parser.add_argument("--replay-diarization", type=Path,
+                        help="重播模式：沿用該結果資料夾的 diarization.json（不跑 VibeVoice、不做對齊），"
+                             "只重跑 Qwen3-ASR 取得自信度，並核對文字是否與原結果一致")
     args = parser.parse_args()
 
     out_dir: Path = args.out_dir
@@ -67,8 +129,19 @@ def main() -> int:
     vad_info: dict = {}
 
     orig_diar = asr._run_diarization
-    orig_asr = asr._transcribe_segments
     orig_vad = flows.TranscriptionTask._extract_speech_only
+
+    def orig_asr(wav_path, segments, language, status_callback=None, cancel_check=None):
+        return scored_transcribe_segments(asr, wav_path, segments, language, status_callback, cancel_check)
+
+    if args.replay_diarization:
+        recorded = json.loads((args.replay_diarization / "diarization.json").read_text(encoding="utf-8"))
+
+        def orig_diar(wav_path, cancel_check=None):  # noqa: F811 — 重播取代 VibeVoice
+            return recorded[len(diar_calls)]["segments"]
+
+        asr._build_lrc_lines = lambda wav_path, entries, status_callback=None, cancel_check=None: [
+            f"{asr._lrc_timestamp(e['start'])}[S{e['speaker']}] {e['text']}" for e in entries]
 
     if args.vad_audio:
         import numpy as np
@@ -159,6 +232,21 @@ def main() -> int:
         ],
         "asr_entry_count": sum(len(c["entries"]) for c in asr_calls),
     }
+    scored = [e for c in asr_calls for e in c["entries"] if e.get("n_tokens")]
+    if scored:
+        run["asr_confidence"] = {
+            "token_mean_logprob": round(sum(e["logprob_sum"] for e in scored)
+                                        / sum(e["n_tokens"] for e in scored), 4),
+            "segment_mean_logprob": round(sum(e["logprob_sum"] / e["n_tokens"] for e in scored) / len(scored), 4),
+            "low_confidence_segments": sum(1 for e in scored if e["logprob_sum"] / e["n_tokens"] < -0.5),
+        }
+    if args.replay_diarization:
+        before = json.loads((args.replay_diarization / "asr_entries.json").read_text(encoding="utf-8"))
+        old = [e["text"] for c in before for e in c["entries"]]
+        new = [e["text"] for c in asr_calls for e in c["entries"]]
+        run["replay_check"] = {"source": str(args.replay_diarization), "entries_before": len(old),
+                               "entries_after": len(new), "identical_texts": old == new,
+                               "mismatched": sum(1 for a, b in zip(old, new) if a != b)}
 
     (out_dir / "run.json").write_text(json.dumps(run, ensure_ascii=False, indent=2), encoding="utf-8")
     (out_dir / "diarization.json").write_text(

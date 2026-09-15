@@ -1,0 +1,15 @@
+# 實驗 B（6 分鐘片段完整流程）轉錄優先順序
+00_original_16k
+01_original_wav
+11_hpf_dfn3_lim6
+02_hpf_notch
+13_splitvad_dfn3
+06_dfn3_lim12
+10_mossformer2_oa50
+05_dfn3
+08_mossformer2_48k
+03_afftdn
+12_frcrn_oa50
+04_rnnoise_mix50
+07_noisereduce
+09_frcrn_16k
