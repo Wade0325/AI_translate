@@ -1,0 +1,15 @@
+# 轉錄優先順序（每行一個 denoised/ 下的版本 id；執行中可編輯，下一輪生效）
+# 先跑最能回答問題的：取樣率對照 → 研究首推 ω=0.5 → 純濾波 → 分流 VAD → 其餘
+01_original_wav
+11_hpf_dfn3_lim6
+02_hpf_notch
+13_splitvad_dfn3
+06_dfn3_lim12
+10_mossformer2_oa50
+05_dfn3
+08_mossformer2_48k
+03_afftdn
+12_frcrn_oa50
+04_rnnoise_mix50
+07_noisereduce
+09_frcrn_16k
