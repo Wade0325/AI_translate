@@ -21,10 +21,12 @@ import argparse
 import json
 import logging
 import os
+import re
 import shutil
 import sys
 import tempfile
 import time
+from difflib import SequenceMatcher
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -32,6 +34,27 @@ BACKEND_DIR = Path(os.environ.get("AIT_BACKEND_DIR", REPO_ROOT / "backend"))
 sys.path.insert(0, str(BACKEND_DIR))
 
 import soundfile as sf  # noqa: E402
+
+
+_ECHO_MIN_SUBSTR = 20          # 與提示文字的最長共同子串達此字數即視為回音
+_ECHO_MIN_RATIO = 0.6          # 或（文字本身夠長時）共同子串佔該片段文字比例達此值
+# 門檻取 20 字是為了避免誤殺「真的講出一串術語」的句子：實測回音的共同子串都在 50 字以上，
+# 而「Logger、Appender、Level」這類正常說法正規化後只有 19 字
+PROMPT_ECHOES: list = []       # 被丟棄的回音片段（供 run.json 記錄）
+
+
+def _norm_for_echo(text: str) -> str:
+    return re.sub(r"[\s\W_]+", "", text, flags=re.UNICODE).lower()
+
+
+def _is_prompt_echo(text: str, context_system: str) -> bool:
+    norm, ctx = _norm_for_echo(text), _norm_for_echo(context_system)
+    if not norm or not ctx:
+        return False
+    match = SequenceMatcher(None, norm, ctx, autojunk=False).find_longest_match(0, len(norm), 0, len(ctx))
+    if match.size >= _ECHO_MIN_SUBSTR:
+        return True
+    return len(norm) >= 20 and match.size / len(norm) >= _ECHO_MIN_RATIO
 
 
 ASR_CONTEXT_PRESETS = {
@@ -65,6 +88,7 @@ def scored_transcribe_segments(asr, wav_path, segments, language, status_callbac
     audio_data, sr = sf.read(str(wav_path), dtype="float32")
     segment_wav = wav_path.parent / f"{wav_path.stem}_seg.wav"
     entries: list[dict] = []
+    echoes = PROMPT_ECHOES
 
     try:
         total = len(segments)
@@ -103,6 +127,11 @@ def scored_transcribe_segments(asr, wav_path, segments, language, status_callbac
             else:
                 text = processor.decode(
                     generated_ids, return_format="transcription_only")[0].strip()
+            # 上下文提示的副作用：很短（約 1–2 秒）且幾乎沒內容的片段會複誦 system prompt，
+            # 與提示文字有長共同子串就視為回音丟棄（實驗 C 有 76/359 片段中獎）
+            if context is not None and text and _is_prompt_echo(text, context["system"]):
+                echoes.append({"start": start, "end": end, "text": text})
+                text = ""
             logprobs = [float(torch.log_softmax(step[0].float(), dim=-1)[tok])
                         for step, tok in zip(out.scores, generated_ids[0])]
 
@@ -275,6 +304,8 @@ def main() -> int:
             "segment_mean_logprob": round(sum(e["logprob_sum"] / e["n_tokens"] for e in scored) / len(scored), 4),
             "low_confidence_segments": sum(1 for e in scored if e["logprob_sum"] / e["n_tokens"] < -0.5),
         }
+    if PROMPT_ECHOES:
+        run["prompt_echoes_dropped"] = {"count": len(PROMPT_ECHOES), "segments": PROMPT_ECHOES}
     if args.replay_diarization:
         before = json.loads((args.replay_diarization / "asr_entries.json").read_text(encoding="utf-8"))
         old = [e["text"] for c in before for e in c["entries"]]
