@@ -51,6 +51,7 @@ def main() -> int:
     parser.add_argument("root", type=Path)
     parser.add_argument("audio", type=Path)
     parser.add_argument("--only", nargs="*")
+    parser.add_argument("--suffix", default="", help="輸出檔名後綴（換音檔重跑同一設定時用，避免覆蓋）")
     args = parser.parse_args()
     root: Path = args.root
 
@@ -76,6 +77,7 @@ def main() -> int:
         seg_wav = Path(tmp) / "seg.wav"
 
         for name, cfg in configs.items():
+            name = f"{name}{args.suffix}"
             target = out_dir / f"{name}.json"
             if target.exists():
                 print(f"[略過] {name}", flush=True)

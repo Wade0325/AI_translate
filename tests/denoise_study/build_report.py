@@ -128,15 +128,23 @@ def main() -> int:
         tm = load(ex_dir / "report" / "transcript_metrics.json")
         if not tm:
             continue
+        da = load(ex_dir / "report" / "diarization_agreement.json") or {"variants": {}, "ref": "?"}
         parts.append(f"## 附錄 5：實驗 B — 完整 local 流程（{ex_dir.name}）")
+        parts.append(f"「主要說話者佔比」與「輪替次數」看分離是否把聆聽者併進主講者；"
+                     f"「分離一致率」是與 `{da['ref']}` 在同一時間軸上做最佳說話者對應後的一致比例，"
+                     "95% 左右代表沒有差異（兩個幾乎相同的音訊即為 95.1%）。")
         rows = []
         for vid, m in tm["metrics"].items():
+            d = da["variants"].get(vid, {})
+            share = d.get("speaker_share") or {}
             rows.append([vid, m["elapsed_minutes"], "是" if m["silence_removal_used"] else "否",
-                         m["speakers_per_call"], m["diar_segments"], m["lines"], m["han_chars"],
-                         m["coverage_speech_windows"], m["glossary_good_total"], m["glossary_suspect_total"],
+                         f"{max(share.values()):.0%}" if share else None, d.get("turns"),
+                         d.get("agreement_vs_ref"), m["diar_segments"], m["lines"], m["han_chars"],
+                         m["glossary_good_total"], m["glossary_suspect_total"],
                          (m.get("asr_confidence") or {}).get("token_mean_logprob"), m["mean_cer_vs_others"]])
-        parts.append(table(["版本", "耗時(分)", "靜音移除", "說話者數", "分離段數", "行數", "漢字數",
-                            "語音覆蓋率", "正確領域詞", "誤聽詞", "ASR自信度", "與其他版本平均CER"], rows))
+        parts.append(table(["版本", "耗時(分)", "靜音移除", "主要說話者佔比", "輪替次數", "分離一致率",
+                            "分離段數", "行數", "漢字數", "正確領域詞", "誤聽詞", "ASR自信度",
+                            "與其他版本平均CER"], rows))
 
     (root / "README.md").write_text("\n\n".join(parts) + "\n", encoding="utf-8")
     print(root / "README.md")
