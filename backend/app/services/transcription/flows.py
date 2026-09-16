@@ -389,7 +389,14 @@ class TranscriptionTask:
             if not self.vad_service:
                 logger.warning("無 VAD 服務可尋找切割點，長檔不切割直接轉錄")
                 return self._attempt_transcription(audio_path)
-            segments = self._split_audio_file(audio_path)
+            # VAD (soundfile/libsndfile) 不支援 m4a 等壓縮格式，先轉為 wav
+            wav_for_split = convert_to_wav(audio_path, self.temp_dir)
+            if wav_for_split is None:
+                logger.warning("無法轉換 WAV 供切割使用，長檔不切割直接轉錄")
+                return self._attempt_transcription(audio_path)
+            if wav_for_split != audio_path and wav_for_split not in self.local_cleanup_list:
+                self.local_cleanup_list.append(wav_for_split)
+            segments = self._split_audio_file(wav_for_split)
             if len(segments) < 2:
                 logger.warning("長檔切割失敗，不切割直接轉錄")
                 return self._attempt_transcription(audio_path)
