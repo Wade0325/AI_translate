@@ -66,3 +66,6 @@ tests/test_gemini_integration.py
 
 # Claude Code 本機設定與技能（不進版控）
 .claude/
+
+# 研究區（lab/）— 本機實驗，不進版控
+/lab/

@@ -102,15 +102,6 @@ Communication pattern: Celery Worker publishes results to Redis Pub/Sub → `Con
 3. Celery task `batch_transcribe_task`: create `BatchJob` DB record → upload all files → create Gemini Batch API job → poll until done → process results → store in `results_json` → publish per-file results via Redis
 4. `GET /api/v1/batch/tasks` + `POST /api/v1/batch/{batch_id}/recover` for Docker-restart recovery
 
-### Frontend Structure (`frontend/src/`)
-
-- `context/TranscriptionContext.jsx` — Top-level state: file list, transcription control, preview/cancel; delegates to hooks
-- `hooks/useUploadQueue.js` — upload → open WS → dispatch single/batch transcription
-- `hooks/useTranscriptionSocket.js` — low-level WS manager (heartbeat, backoff reconnect)
-- `components/ModelManager.jsx` — `ModelManagerProvider` (wraps `TranscriptionProvider` in App.jsx)
-- `constants/modelConfig.js` — Available model options per provider; add new models here
-- `pages/` (Dashboard/Transcribe/Result/Tasks/History/Billing/Settings) + `components/` + `layouts/`
-
 ### Key Design Decisions
 
 | Decision | Detail |
@@ -134,7 +125,3 @@ Communication pattern: Celery Worker publishes results to Redis Pub/Sub → `Con
 
 1. Add entry to `frontend/src/constants/modelConfig.js` under the appropriate provider
 2. For a new provider: create `backend/app/provider/{provider}/` client module
-
-### pytest Configuration
-
-`pytest.ini` sets `pythonpath = backend`, so tests import from `backend/` directly (e.g., `from app.api import ...`).
