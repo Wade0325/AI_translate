@@ -206,3 +206,36 @@ class HistoryUsageResponse(BaseModel):
     daily: List[DailyUsage]
     by_model: List[ModelUsage]
     pricing: List[ModelPriceInfo]
+
+
+class TranscriptWord(BaseModel):
+    """逐字時間戳（原始音檔時間軸，秒）"""
+    text: Optional[str] = None
+    start: float
+    end: Optional[float] = None
+
+
+class TranscriptSegmentResponse(BaseModel):
+    """一個轉錄片段。text_alt 是另一個模型對同一段的結果，供分歧標示用。"""
+    seg_key: str
+    seq: int
+    start: float
+    end: Optional[float] = None
+    speaker: Optional[str] = None
+    text: Optional[str] = None
+    text_alt: Optional[str] = None
+    source: Optional[str] = None
+    confidence: Optional[float] = None
+    review_state: Optional[str] = None
+    words: Optional[List[TranscriptWord]] = None
+
+
+class TranscriptResponse(BaseModel):
+    """GET /transcripts/{task_uuid} 的回應，供校正介面使用"""
+    task_uuid: str
+    status: Optional[str] = None
+    original_filename: Optional[str] = None
+    audio_duration_seconds: Optional[float] = None
+    audio_available: bool = False
+    segment_count: int = 0
+    segments: List[TranscriptSegmentResponse] = []

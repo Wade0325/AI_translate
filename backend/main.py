@@ -8,6 +8,7 @@ from app.api import transcription
 from app.api import upload
 from app.api import batch
 from app.api import history
+from app.api import transcripts
 from app.api import vad
 from app.websocket.manager import manager as websocket_manager
 
@@ -39,6 +40,13 @@ async def lifespan(app: FastAPI):
             logger.info(f"啟動清掃：{swept} 筆逾時 PROCESSING 紀錄已標記為 FAILED")
     except Exception as e:
         logger.warning(f"啟動清掃逾時 PROCESSING 紀錄失敗: {e}")
+
+    # 清掉超過保留天數的音檔（校正介面用的原音不是永久保存）
+    try:
+        from app.services import audio_store
+        audio_store.purge_expired()
+    except Exception as e:
+        logger.warning(f"清理過期音檔失敗: {e}")
 
     # 啟動 WebSocket 狀態監聽器（docker：Redis pub/sub；standalone：local_bus）
     websocket_manager.start()
@@ -86,6 +94,8 @@ app.include_router(local_models.router,
 app.include_router(upload.router, prefix="/api/v1", tags=["Upload"])
 app.include_router(batch.router, prefix="/api/v1/batch", tags=["Batch Transcription"])
 app.include_router(history.router, prefix="/api/v1/history", tags=["History"])
+app.include_router(transcripts.router, prefix="/api/v1/transcripts",
+                   tags=["Transcripts"])
 app.include_router(vad.router, prefix="/api/v1/vad", tags=["VAD"])
 
 app.add_middleware(

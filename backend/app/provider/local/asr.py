@@ -245,8 +245,12 @@ def _transcribe_segments(
                 generated_ids, return_format="transcription_only")[0].strip()
 
             if text:
-                entries.append(
-                    {"start": start, "end": end, "speaker": speaker, "text": text})
+                entries.append({
+                    "start": start, "end": end, "speaker": speaker, "text": text,
+                    # VibeVoice 分離時本來就會產出文字，留著當第二份假設：
+                    # 與 Qwen 不一致處就是需要人工複查的候選
+                    "text_alt": (seg.get("Content") or "").strip() or None,
+                })
             if i % 10 == 0 or i == total:
                 _notify(status_callback, f"本地模型：Qwen3-ASR 轉錄中 {i}/{total}...")
     finally:
@@ -434,6 +438,35 @@ def _build_lrc_lines(
     return lines
 
 
+def _build_segment_records(entries: List[dict]) -> List[dict]:
+    """把片段整理成上層要持久化的結構（時間軸＝輸入檔，由 flows 負責 remap）。
+
+    ``seg_key`` 是序號而非時間，因為重跑同一個檔案時片段順序穩定、時間可能微幅
+    浮動；以序號為鍵才能覆寫而不是長出重複資料。
+    """
+    records: List[dict] = []
+    for i, e in enumerate(entries):
+        words = [
+            {"text": w.get("text"),
+             "start": e["start"] + w["start_time"],
+             "end": e["start"] + w["end_time"]}
+            for w in (e.get("words") or [])
+            if w.get("start_time") is not None and w.get("end_time") is not None
+        ]
+        records.append({
+            "seg_key": f"{i:04d}",
+            "seq": i,
+            "start": e["start"],
+            "end": e["end"],
+            "speaker": f"S{e['speaker']}",
+            "text": e["text"],
+            "text_alt": e.get("text_alt"),
+            "source": "qwen",
+            "words": words or None,
+        })
+    return records
+
+
 def transcribe_with_local_models(
     audio_path: Path,
     source_lang: Optional[str] = None,
@@ -471,6 +504,7 @@ def transcribe_with_local_models(
             "output_tokens": 0,
             "total_tokens": 0,
             "service_tier_used": "local",
+            "segments": _build_segment_records(entries),
         }
     finally:
         if wav_24k:

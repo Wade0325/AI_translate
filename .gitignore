@@ -41,6 +41,8 @@ celerybeat.pid
 /backend/temp_uploads/
 /vad_artifacts/
 /backend/vad_artifacts/
+/audio_store/
+/backend/audio_store/
 /backend/app/celery/results/
 
 # standalone 模式的可寫資料目錄與發布包建置產物

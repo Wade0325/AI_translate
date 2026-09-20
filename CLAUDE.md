@@ -76,11 +76,12 @@ Communication pattern: Celery Worker publishes results to Redis Pub/Sub → `Con
 - `main.py` — FastAPI app entry, lifespan (init DB, start Redis listener, pre-load VAD)
 - `app/core/config.py` — Pydantic Settings, singleton via `@lru_cache`
 - `app/core/default_prompt.py` — **Single source of truth** for prompt templates (`DEFAULT_PROMPT_TEMPLATE`, `build_prompt()`)
-- `app/api/` — Route handlers: `upload.py`, `transcription.py`, `batch.py`, `model_manager.py`, `history.py`
+- `app/api/` — Route handlers: `upload.py`, `transcription.py`, `batch.py`, `model_manager.py`, `history.py`, `transcripts.py`
 - `app/celery/task.py` — Single-file transcription Celery task
 - `app/celery/batch_task.py` — Batch transcription + recovery Celery tasks
 - `app/database/session.py` — Engine, SessionLocal, `init_db()`, `_migrate_add_missing_columns()` (auto-migration, no Alembic)
-- `app/database/models.py` — SQLAlchemy ORM: `ModelConfiguration`, `TranscriptionLog`, `BatchJob`
+- `app/database/models.py` — SQLAlchemy ORM: `ModelConfiguration`, `TranscriptionLog`, `BatchJob`, `TranscriptSegment`
+- `app/services/audio_store.py` — Retains the source audio after a successful task (playback for the review UI); expired files purged at startup
 - `app/repositories/` — Repository pattern over ORM models
 - `app/services/` — Business logic: `vad/`, `transcription/`, `converter/`, `calculator/`
 - `app/provider/google/gemini.py` — All Gemini API interactions (`GeminiClient` + standalone functions)
@@ -92,7 +93,7 @@ Communication pattern: Celery Worker publishes results to Redis Pub/Sub → `Con
 
 1. `POST /api/v1/upload` → save to `temp_uploads/`
 2. Frontend connects `WS /api/v1/ws/{file_uid}` and sends `WebSocketTranscriptionRequest`
-3. Celery task `transcribe_media_task`: VAD silence removal → upload to Gemini File API → transcribe → remap timestamps → convert LRC→SRT/VTT/TXT → calculate cost → save `TranscriptionLog` → publish to Redis
+3. Celery task `transcribe_media_task`: VAD silence removal → upload to Gemini File API → transcribe → remap timestamps → convert LRC→SRT/VTT/TXT → calculate cost → save `TranscriptionLog` (+ `TranscriptSegment` rows and retained audio when the provider returns segments) → publish to Redis
 4. `ConnectionManager` relays Redis message to frontend WebSocket
 
 ### Batch Transcription Flow
@@ -112,6 +113,9 @@ Communication pattern: Celery Worker publishes results to Redis Pub/Sub → `Con
 | Timestamps | `models.py` defaults use Python `datetime.now` (not `func.now()`) — local-time semantics identical on Postgres (TZ=Asia/Taipei) and SQLite (whose CURRENT_TIMESTAMP is UTC and would be 8h off) |
 | ffmpeg lookup | `app/utils/binaries.py` — PATH by default; `AIT_FFMPEG_DIR` points to bundled binaries in standalone |
 | Prompt source of truth | `backend/app/core/default_prompt.py` — edit here, not in frontend constants |
+| Transcript document | `TranscriptSegment` rows (speaker, word timestamps, second hypothesis `text_alt`) are written alongside `lrc_content`; LRC stays the single truth for downloads. `seg_key` is deterministic, so re-runs overwrite instead of duplicating |
+| Audio retention | `retain_audio` (default on) moves the upload into `audio_store/` when the task ends — success, failure **and** cancel — and records `TranscriptionLog.audio_filename`. Failures keep it because deletion is irreversible, and because `transcribe_core.resolve_input_path()` falls back to the retained copy when a transient-error retry re-runs the task (by then the input is no longer in `temp_uploads`). `audio_retention_days` purge runs in lifespan; path rules mirror `temp_uploads` (cwd in docker, data dir in standalone) |
+| Segment timestamps | Structured segments go through the same two transforms as the LRC — `shift_segments` for the long-audio halving offset, `remap_segments` for the VAD speech-only remap (both in `transcription/flows.py`) |
 | DB migration | `session.py:_migrate_add_missing_columns()` auto-alters tables; no Alembic |
 | Celery pool | Docker worker uses `gevent` (prefork unsupported on Windows); host GPU worker uses `--pool=solo -c 1` |
 | Task queues | Provider `Local` → queue `local_asr` (host worker); everything else → default `celery` queue |

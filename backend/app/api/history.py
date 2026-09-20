@@ -10,6 +10,8 @@ from sqlalchemy.orm import Session
 from app.database.models import TranscriptionLog
 from app.database.session import get_db
 from app.repositories.history_repository import HistoryRepository
+from app.repositories.transcript_segment_repository import TranscriptSegmentRepository
+from app.services import audio_store
 from app.schemas.schemas import (
     HistoryLogResponse,
     HistoryListResponse,
@@ -24,6 +26,7 @@ logger = setup_logger(__name__)
 
 router = APIRouter()
 history_repo = HistoryRepository()
+segment_repo = TranscriptSegmentRepository()
 
 VALID_DOWNLOAD_FORMATS = frozenset({"lrc", "srt", "vtt", "txt"})
 DOWNLOAD_MIME_TYPES = {
@@ -193,8 +196,18 @@ def download_transcript(
 
 @router.delete("/{task_uuid}")
 def delete_history(task_uuid: str, db: Session = Depends(get_db)):
-    """刪除單筆歷史紀錄"""
-    success = history_repo.delete_log(db, task_uuid)
-    if not success:
+    """刪除單筆歷史紀錄，連帶清掉結構化片段與保留的原始音檔。
+
+    SQLite 預設不強制外鍵，所以片段不能只靠 ON DELETE CASCADE，這裡明確刪除。
+    """
+    log = history_repo.get_log_by_uuid(db, task_uuid)
+    if not log:
         raise HTTPException(status_code=404, detail="找不到此任務紀錄")
+
+    audio_filename = log.audio_filename
+    segment_repo.delete_for_task(db, task_uuid)
+    if not history_repo.delete_log(db, task_uuid):
+        raise HTTPException(status_code=404, detail="找不到此任務紀錄")
+    if audio_filename:
+        audio_store.delete(audio_filename)
     return {"success": True, "message": "已刪除此紀錄"}

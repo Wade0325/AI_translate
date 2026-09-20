@@ -58,46 +58,99 @@ def pick_halving_split_point(
     return min(candidates, key=lambda b: abs(b - duration / 2))
 
 
+def speech_time_remapper(segments: List[Dict[str, float]]):
+    """回傳「純語音檔時間 → 原始音檔時間」的轉換函式。
+
+    LRC 與結構化片段共用同一套轉換，兩者的時間軸才不會分岔。
+    """
+    durations = [seg['end'] - seg['start'] for seg in segments]
+    cumulative = [sum(durations[:i]) for i in range(len(durations))]
+
+    def remap(t: float) -> Optional[float]:
+        for i, cum in enumerate(cumulative):
+            if t < cum + durations[i]:
+                return segments[i]['start'] + (t - cum)
+        # 落在總長之後（浮點誤差或模型給出超界時間）→ 夾到最後片段結尾，
+        # 避免整行被丟棄
+        return segments[-1]['end'] if segments else None
+
+    return remap
+
+
 def remap_lrc_timestamps(lrc_text: str, segments: List[Dict[str, float]]) -> str:
     """將 LRC 時間戳從拼接後的時間軸重對應回原始時間軸"""
     parsed_lines = _parse_lrc(lrc_text)
     if not parsed_lines:
         return ""
 
-    segment_durations = [seg['end'] - seg['start'] for seg in segments]
-    cumulative_durations = [sum(segment_durations[:i])
-                            for i in range(len(segment_durations))]
-
+    remap = speech_time_remapper(segments)
     remapped_lrc_lines = []
     for line in parsed_lines:
-        lrc_time = line.time
-        text = line.text
-
-        # 找到 lrc_time 所在的原始片段
-        segment_index = -1
-        for i, cum_dur in enumerate(cumulative_durations):
-            if lrc_time < cum_dur + segment_durations[i]:
-                segment_index = i
-                break
-
-        if segment_index == -1 and segments:
-            # 時間點恰好等於（或浮點誤差略超）總長時夾到最後片段結尾，避免整行被丟棄
-            segment_index = len(segments) - 1
-            lrc_time = cumulative_durations[-1] + segment_durations[-1]
-
-        if segment_index != -1:
-            time_in_segment = lrc_time - cumulative_durations[segment_index]
-            original_start_time = segments[segment_index]['start']
-            remapped_time = original_start_time + time_in_segment
-
-            minutes = int(remapped_time // 60)
-            seconds = int(remapped_time % 60)
-            milliseconds = int(
-                (remapped_time - int(remapped_time)) * 100)  # 保持2位數
-            remapped_lrc_lines.append(
-                f"[{minutes:02d}:{seconds:02d}.{milliseconds:02d}]{text}")
+        remapped_time = remap(line.time)
+        if remapped_time is None:
+            continue
+        minutes = int(remapped_time // 60)
+        seconds = int(remapped_time % 60)
+        centiseconds = int((remapped_time - int(remapped_time)) * 100)  # 保持2位數
+        remapped_lrc_lines.append(
+            f"[{minutes:02d}:{seconds:02d}.{centiseconds:02d}]{line.text}")
 
     return "\n".join(remapped_lrc_lines)
+
+
+def remap_segments(
+    segments: List[Dict], speech_segments: List[Dict[str, float]]
+) -> List[Dict]:
+    """結構化片段的時間軸重對應，與 remap_lrc_timestamps 同一套轉換。"""
+    remap = speech_time_remapper(speech_segments)
+    out: List[Dict] = []
+    for seg in segments:
+        start = remap(seg.get("start", 0.0))
+        if start is None:
+            continue
+        new = dict(seg)
+        new["start"] = start
+        if seg.get("end") is not None:
+            new["end"] = remap(seg["end"])
+        if seg.get("words"):
+            words = []
+            for w in seg["words"]:
+                ws, we = remap(w["start"]), remap(w["end"])
+                if ws is None:
+                    continue
+                words.append({**w, "start": ws, "end": we})
+            new["words"] = words or None
+        out.append(new)
+    return out
+
+
+def shift_segments(
+    segments: List[Dict], offset: float, prefix: Optional[str] = None
+) -> List[Dict]:
+    """片段時間整體平移 offset 秒；prefix 讓不同切段的 seg_key 不相撞。"""
+    out: List[Dict] = []
+    for seg in segments:
+        new = dict(seg)
+        new["start"] = seg.get("start", 0.0) + offset
+        if seg.get("end") is not None:
+            new["end"] = seg["end"] + offset
+        if seg.get("words"):
+            new["words"] = [
+                {**w, "start": w["start"] + offset, "end": w["end"] + offset}
+                for w in seg["words"]
+            ]
+        if prefix:
+            new["seg_key"] = f"{prefix}.{seg.get('seg_key', '')}"
+        out.append(new)
+    return out
+
+
+def order_segments(segments: List[Dict]) -> List[Dict]:
+    """依時間排序並重編 seq；跨切段合併之後 seq 才會連續。"""
+    ordered = sorted(segments, key=lambda s: s.get("start", 0.0))
+    for i, seg in enumerate(ordered):
+        seg["seq"] = i
+    return ordered
 
 
 def _adjust_lrc_timestamps(lrc_text: str, offset_seconds: float) -> str:
@@ -242,6 +295,7 @@ class TranscriptionTask:
                 output_tokens=result.output_tokens,
                 total_tokens=result.total_tokens,
                 service_tier_used=result.service_tier_used,
+                segments=remap_segments(result.segments, speech_segments),
             )
             logger.info("時間戳已重映射回原始時間軸")
 
@@ -339,6 +393,7 @@ class TranscriptionTask:
                 output_tokens=result.get("output_tokens", 0),
                 total_tokens=result.get("total_tokens", 0),
                 service_tier_used=result.get("service_tier_used"),
+                segments=result.get("segments") or [],
             )
         except TranscriptionCancelledError:
             # 取消不是失敗：往上拋給 task.py 標記為 CANCELLED
@@ -433,6 +488,9 @@ class TranscriptionTask:
         tier = (first.service_tier_used
                 if first.service_tier_used == second.service_tier_used
                 else "standard")
+        # 片段與 LRC 走同樣的平移；前後半各自加前綴，避免 seg_key 相撞
+        combined_segments = (shift_segments(first.segments, 0.0, prefix="a")
+                             + shift_segments(second.segments, split_point, prefix="b"))
         return TranscriptionTaskResult(
             success=True,
             text=combined_text,
@@ -440,6 +498,7 @@ class TranscriptionTask:
             output_tokens=first.output_tokens + second.output_tokens,
             total_tokens=first.total_tokens + second.total_tokens,
             service_tier_used=tier,
+            segments=combined_segments,
         )
 
     def _transcribe_with_splitting(self, audio_path: Path) -> TranscriptionTaskResult:
@@ -467,6 +526,7 @@ class TranscriptionTask:
             )
 
         results = []
+        all_segments: List[Dict] = []
         total_input_tokens = 0
         total_output_tokens = 0
         total_tokens = 0
@@ -489,6 +549,8 @@ class TranscriptionTask:
             adjusted_text = _adjust_lrc_timestamps(
                 segment_result.text, segment.start_time)
             results.append(adjusted_text)
+            all_segments.extend(shift_segments(
+                segment_result.segments, segment.start_time, prefix=f"s{i}"))
             total_input_tokens += segment_result.input_tokens
             total_output_tokens += segment_result.output_tokens
             total_tokens += segment_result.total_tokens
@@ -506,6 +568,7 @@ class TranscriptionTask:
             output_tokens=total_output_tokens,
             total_tokens=total_tokens,
             service_tier_used=final_tier,
+            segments=all_segments,
         )
 
     def _split_audio_file(self, audio_path: Path) -> List[AudioSegment]:

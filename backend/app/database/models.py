@@ -11,6 +11,7 @@ from sqlalchemy import (
     String,
     Text,
     UUID,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import declarative_base
 
@@ -82,3 +83,44 @@ class TranscriptionLog(Base):
     session_id = Column(String, nullable=True, index=True)  # 同一次 Start 的任務群組
     # 實際推論層級：standard / flex / batch
     service_tier_used = Column(String, nullable=True)
+    # 保留下來的原始音檔檔名（位於 audio_store 目錄內）。校正介面要能重播原音，
+    # 只存檔名不存完整路徑，資料目錄搬家後仍然有效
+    audio_filename = Column(String, nullable=True)
+
+
+class TranscriptSegment(Base):
+    """轉錄片段 — 校正介面與逐段回傳的持久化單位。
+
+    LRC 仍是下載用的單一真相（``TranscriptionLog.lrc_content``）；這張表存的是
+    可逐段更新、可標記、可回溯的結構化版本：說話者分離給出的每一段各一列。
+
+    ``seg_key`` 是確定性的（切段序號 + 片段序號），所以任務被重派、重跑時是
+    覆寫同一列而不是產生重複資料。``text_alt`` 存另一個模型對同一段的轉錄
+    （local provider 的 VibeVoice 文字），兩者不一致處即是需要人工複查的候選。
+    """
+
+    __tablename__ = 'transcript_segments'
+    __table_args__ = (
+        UniqueConstraint('task_uuid', 'seg_key', name='uq_transcript_segments_key'),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    task_uuid = Column(
+        UUID(as_uuid=True),
+        ForeignKey("transcription_logs.task_uuid", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    seg_key = Column(String, nullable=False)      # 確定性片段 id
+    seq = Column(Integer, nullable=False)         # 時間順序（0 起算）
+    start_sec = Column(Float, nullable=False)     # 原始音檔時間軸
+    end_sec = Column(Float, nullable=True)
+    speaker = Column(String, nullable=True)       # "S0" / "S1"
+    text = Column(Text, nullable=True)            # 主要轉錄結果
+    text_alt = Column(Text, nullable=True)        # 另一模型的轉錄（分歧偵測用）
+    source = Column(String, nullable=True)        # qwen / vibevoice / aligned / edited
+    words_json = Column(Text, nullable=True)      # [{"text","start","end"}]，絕對時間
+    confidence = Column(Float, nullable=True)
+    review_state = Column(String, nullable=True)  # None / flagged / verified
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)

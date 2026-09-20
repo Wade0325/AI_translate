@@ -1,6 +1,6 @@
 import uuid
 from pydantic import BaseModel, Field
-from typing import Dict, Optional, Any
+from typing import Dict, List, Optional, Any
 
 
 class TranscriptionTaskResult(BaseModel):
@@ -14,6 +14,11 @@ class TranscriptionTaskResult(BaseModel):
     total_tokens: int = Field(0, description="使用的 token 總數")
     service_tier_used: Optional[str] = Field(
         None, description="實際採用的 service tier：'flex' 或 'standard'（None 表示 standard）"
+    )
+    segments: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="結構化片段（說話者、逐字時間戳）；時間軸與 text 同步處理。"
+                    "目前只有 local provider 會產生，Gemini 走純 LRC。",
     )
 
 

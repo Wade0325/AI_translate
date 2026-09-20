@@ -18,11 +18,13 @@ from app.core.default_prompt import build_prompt
 from app.database.session import SessionLocal
 from app.exceptions import GeminiTransientError, TranscriptionCancelledError
 from app.provider.google.gemini import GeminiClient
+from app.repositories.transcript_segment_repository import TranscriptSegmentRepository
 from app.repositories.transcription_log_repository import TranscriptionLogRepository
+from app.services import audio_store
 from app.services.calculator.service import CalculatorService
 from app.services.calculator.models import CalculationItem
 from app.services.converter.service import convert_from_lrc
-from app.services.transcription.flows import TranscriptionTask
+from app.services.transcription.flows import TranscriptionTask, order_segments
 from app.utils.audio import get_audio_duration
 from app.services.transcription.models import TranscriptionResponse
 from app.utils.logger import setup_logger
@@ -30,6 +32,23 @@ from app.utils.logger import setup_logger
 logger = setup_logger(__name__)
 
 FLEX_COST_DISCOUNT = get_settings().flex_cost_discount
+
+
+def resolve_input_path(file_path: str, task_uuid) -> Path:
+    """取得輸入音檔路徑；temp_uploads 裡沒有時改用 audio_store 的保留檔。
+
+    暫時性錯誤重試時，上一輪的 finally 已經把檔案搬進 audio_store，
+    沒有這個 fallback 重試必定以「檔案不存在」收場。
+    Celery 重試沿用同一個 task id，所以保留檔名找得到。
+    """
+    path = Path(file_path)
+    if path.exists():
+        return path
+    retained = audio_store.resolve(f"{task_uuid}{path.suffix.lower()}")
+    if retained:
+        logger.info(f"輸入檔已不在 temp_uploads，改用保留的音檔: {retained.name}")
+        return retained
+    return path
 
 
 def run_transcription(task_params_dict: dict, task_uuid: str):
@@ -63,7 +82,7 @@ def run_transcription(task_params_dict: dict, task_uuid: str):
     db = SessionLocal()
 
     start_time = time.time()
-    local_path = Path(task_params.file_path)
+    local_path = resolve_input_path(task_params.file_path, task_uuid)
     log_repo = TranscriptionLogRepository()
     task_manager = None
 
@@ -225,6 +244,18 @@ def run_transcription(task_params_dict: dict, task_uuid: str):
         else:
             logger.info(f"Task status updated to COMPLETED. Task ID: {task_uuid}")
 
+        # 結構化片段：校正介面、逐段回傳與分歧偵測的資料來源。
+        # 寫入失敗不影響任務結果（LRC 已經存進 DB），只記警告
+        if transcription_result.segments:
+            try:
+                segments = order_segments(transcription_result.segments)
+                count = TranscriptSegmentRepository.replace_all(
+                    db, task_uuid, segments)
+                logger.info(f"已寫入 {count} 個轉錄片段 (task={task_uuid})")
+            except Exception as e:
+                db.rollback()
+                logger.warning(f"寫入轉錄片段失敗 (task={task_uuid}): {e}")
+
         final_response = TranscriptionResponse(
             task_uuid=task_uuid,
             transcripts=final_transcripts,
@@ -284,6 +315,16 @@ def run_transcription(task_params_dict: dict, task_uuid: str):
     finally:
         # 任務結束後旗標已無作用，清掉以免影響同一檔案的重跑
         clear_cancel_flag(file_uid)
+
+        # 音檔搬進 audio_store：成功要給校正介面重播，失敗／取消要留給重跑與診斷。
+        # 必須在 cleanup 之前，否則會被當成暫存檔刪掉。
+        # 包在 try 裡：這裡若拋例外會蓋掉真正的失敗原因
+        try:
+            retained = audio_store.retain(local_path, task_uuid)
+            if retained:
+                log_repo.update_log(db, task_uuid, {"audio_filename": retained})
+        except Exception as e:
+            logger.warning(f"保留音檔失敗 (task={task_uuid}): {e}")
 
         if task_manager:
             task_manager.cleanup()

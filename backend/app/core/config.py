@@ -104,6 +104,11 @@ class Settings(BaseSettings):
     vad_keep_artifacts: bool = False
     vad_artifacts_dir: str = "vad_artifacts"
 
+    # 轉錄完成後保留原始音檔（校正介面要能重播原音）；到期後由啟動清掃刪除
+    retain_audio: bool = True
+    audio_store_dir: str = "audio_store"
+    audio_retention_days: int = 30
+
     # Local ASR 模型權重快取（standalone 模式下由 launcher 指向 data/models/hf_cache）
     hf_home: str = r"D:\AI_translate\models\hf_cache"
 
@@ -120,6 +125,14 @@ class Settings(BaseSettings):
         if self.is_standalone:
             return self.data_path / self.vad_artifacts_dir
         return Path(self.vad_artifacts_dir)
+
+    @property
+    def audio_store_path(self) -> Path:
+        # 與 temp_uploads 同樣的規則：docker 用 cwd 相對路徑（容器 worker 與
+        # 主機 GPU worker 都解析到 backend/），standalone 集中到 data 目錄
+        if self.is_standalone:
+            return self.data_path / self.audio_store_dir
+        return Path(self.audio_store_dir)
 
     # Transcription tuning
     # 單檔轉錄的最大可接受時長（秒）；超過此值且轉錄失敗時，會嘗試 VAD 分割重試
