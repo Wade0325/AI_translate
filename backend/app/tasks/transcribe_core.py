@@ -129,9 +129,9 @@ def run_transcription(task_params_dict: dict, task_uuid: str):
                 f"Provider '{task_params.provider}' is not supported. Only 'google' or 'local' is allowed.")
 
         if provider == 'local' and get_settings().is_standalone:
-            # standalone 模式先確認 GPU 與權重齊備，缺什麼直接以明確訊息失敗
+            # standalone 模式先確認 GPU 與所選模型的權重齊備，缺什麼直接以明確訊息失敗
             from app.provider.local.weights import ensure_local_ready
-            ensure_local_ready()
+            ensure_local_ready(task_params.model)
 
         client = None
         if provider == 'google':

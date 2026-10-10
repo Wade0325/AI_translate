@@ -138,8 +138,8 @@ AI_Translate $Version — Windows 免安裝版
 功能需求
 --------
 - Gemini 雲端轉錄：於 Settings 頁填入 Google Gemini API Key 即可使用
-- Local 本機轉錄：需 NVIDIA GPU（建議 16GB VRAM）；
-  首次使用前於 Settings 頁下載模型權重（約 25 GB，總磁碟需求約 35 GB）
+- Local 本機轉錄：需 NVIDIA GPU（16GB VRAM 可一次處理約 70 分鐘，顯存較小時自動切段）；
+  首次使用前於 Settings 頁下載模型權重（預設模型約 3.7 GB；選用模型另需約 21 GB）
 
 資料位置
 --------

@@ -23,7 +23,7 @@ google-genai==2.6.0
 soundfile==0.12.1
 silero-vad==5.1.2
 
-# Local ASR（VibeVoice 分離 + Qwen3-ASR 轉錄 + ForcedAligner 對齊）
+# Local ASR（預設 MOSS-Transcribe-Diarize + ForcedAligner；選用 VibeVoice / Qwen3-ASR）
 torch==2.8.0+cu128
 torchaudio==2.8.0+cu128
 transformers==5.13.0
@@ -31,3 +31,6 @@ accelerate==1.14.0
 bitsandbytes==0.49.2
 librosa==0.11.0
 huggingface_hub==1.23.0
+# MOSS 模型程式碼（不在 PyPI，釘 GitHub commit；權重 revision 釘在 provider/local/weights.py）
+av==18.1.0
+moss-transcribe-diarize @ https://github.com/OpenMOSS/MOSS-Transcribe-Diarize/archive/e3bdd93f8ad58418e04659818efd5fd87a0bc486.zip

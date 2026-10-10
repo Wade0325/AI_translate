@@ -1,17 +1,21 @@
-"""本地模型 provider：VibeVoice-ASR 說話者分離 + Qwen3-ASR 轉錄。
+"""本地模型 provider：說話者分離 + 轉錄 + 強制對齊。
 
 僅在主機端 GPU worker（local_asr 佇列）上執行——flows.py 於 provider == "local"
 分支內才延遲 import 本模組，Docker 容器 worker 不需要 transformers/CUDA 相依。
 
-流程：
-  1. VibeVoice-ASR 對整檔做說話者分離（誰、從幾秒到幾秒）→ 釋放模型
-  2. Qwen3-ASR 依分離片段逐段轉錄（日文精度較高，取代 VibeVoice 附帶文字）→ 釋放模型
-  3. Qwen3-ForcedAligner 把每段文字對回音訊 → 逐詞時間戳 → 依句尾標點重新斷行，
-     時間軸以 ASR 對齊結果為準，說話者標籤繼承所屬分離片段
-  4. 組成 LRC：每行「[mm:ss.xx][S{n}] 文字」，時間軸為輸入檔（上游 flows 負責
+三種模型（frontend modelConfig 的 Local 選項，權重對照見 weights.MODEL_REPOS）：
+  * moss-align（預設）：MOSS-Transcribe-Diarize 一次產生說話者、時間與文字，
+    再由 Qwen3-ForcedAligner 斷行並補逐詞時間戳
+  * moss-qwen3-asr：MOSS 分離後，文字改由 Qwen3-ASR 逐段轉錄（MOSS 文字留作 text_alt）
+  * vibevoice-qwen3-asr（舊版）：VibeVoice-ASR 分離 + Qwen3-ASR 逐段轉錄
+
+共同的後段：
+  1. Qwen3-ForcedAligner 把每段文字對回音訊 → 逐詞時間戳 → 依句尾標點重新斷行，
+     時間軸以對齊結果為準，說話者標籤繼承所屬分離片段
+  2. 組成 LRC：每行「[mm:ss.xx][S{n}] 文字」，時間軸為輸入檔（上游 flows 負責
      remap 回原始檔時間軸）；對齊失敗時退回「一個分離片段一行」
 
-VRAM 策略（16GB 卡）：三個模型依序載入、用完即釋放，不可同時常駐。
+VRAM 策略（16GB 卡）：各模型依序載入、用完即釋放，不可同時常駐。
 """
 
 from __future__ import annotations
@@ -31,6 +35,11 @@ from app.provider.local.weights import (  # noqa: F401 — re-export 供既有�
     ALIGNER_MODEL_ID,
     ASR_MODEL_ID,
     DIARIZATION_MODEL_ID,
+    MOSS_ALIGN,
+    is_moss_model,
+    load_pretrained,
+    normalize_model,
+    notice_if_missing,
 )
 # 權重載入進度條的每次刷新在 Celery 日誌都是一行 WARNING，關閉
 os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
@@ -57,7 +66,8 @@ logging.getLogger("accelerate.big_modeling").setLevel(logging.ERROR)
 warnings.filterwarnings(
     "ignore", category=FutureWarning, message=r".*acoustic_tokenizer_chunk_size.*")
 
-DIARIZATION_SAMPLE_RATE = 24000
+DIARIZATION_SAMPLE_RATE = 24000   # VibeVoice 要求 24 kHz
+MOSS_SAMPLE_RATE = 16000          # MOSS（Whisper 前端）16 kHz；Qwen3-ASR／對齊器會自行重採樣
 
 # 字幕斷行：句尾標點切行；單行超過上限秒數時在讀點處再切
 MAX_LINE_SECONDS = 12.0
@@ -139,20 +149,58 @@ def _lrc_timestamp(seconds: float) -> str:
     return f"[{minutes:02d}:{seconds - minutes * 60:05.2f}]"
 
 
-def _to_mono_24k(audio_path: Path) -> Path:
-    """轉成 VibeVoice 要求的 mono 24kHz wav 暫存檔。"""
-    output = audio_path.parent / f"{audio_path.stem}_diar24k.wav"
+def _to_mono(audio_path: Path, sample_rate: int) -> Path:
+    """轉成分離模型要求取樣率的 mono wav 暫存檔（VibeVoice 24 kHz、MOSS 16 kHz）。"""
+    output = audio_path.parent / f"{audio_path.stem}_mono{sample_rate // 1000}k.wav"
     result = subprocess.run(
         [ffmpeg_bin(), "-y", "-i", str(audio_path),
-         "-ac", "1", "-ar", str(DIARIZATION_SAMPLE_RATE), str(output)],
+         "-ac", "1", "-ar", str(sample_rate), str(output)],
         capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300,
     )
     if result.returncode != 0:
-        raise RuntimeError(f"ffmpeg 轉 24kHz 失敗: {result.stderr.strip()[-200:]}")
+        raise RuntimeError(
+            f"ffmpeg 轉 {sample_rate // 1000}kHz 失敗: {result.stderr.strip()[-200:]}")
     return output
 
 
-def _run_diarization(wav_path: Path, cancel_check=None) -> List[dict]:
+def single_pass_limit_seconds(model: Optional[str]) -> Optional[float]:
+    """此模型一次能處理的最長音檔（秒），供 flows 決定長檔是否對半切。
+
+    MOSS 單次可吃約 90 分鐘，整檔一次分離說話者編號才會一致，回傳依顯卡估算的上限；
+    None 表示沿用全域切段設定（VibeVoice 是依 900 秒切段設計的）。
+    """
+    if is_moss_model(model):
+        from app.provider.local import moss
+        return moss.max_single_pass_seconds()
+    return None
+
+
+def _run_moss(wav_path: Path, cancel_check=None, status_callback=None) -> List[dict]:
+    """MOSS 一次產生說話者、時間與文字，回傳與 VibeVoice 相同結構的片段。"""
+    from app.provider.local import moss
+
+    segments, _ = moss.transcribe(
+        wav_path,
+        stopping_criteria=_make_cancel_stopping_criteria(cancel_check),
+        status_callback=status_callback)
+    # generate 可能被取消旗標中途停下，輸出不完整，必須在使用前中止
+    _raise_if_cancelled(cancel_check)
+    return segments
+
+
+def _entries_from_segments(segments: List[dict]) -> List[dict]:
+    """moss-align：直接採用 MOSS 的文字，不再經 Qwen3-ASR 轉錄（沒有第二份假設）。
+
+    parse_output 已丟棄空文字片段；這裡再擋一次是因為對齊器不能處理空文字。
+    """
+    return [
+        {"start": float(seg["Start"]), "end": float(seg["End"]),
+         "speaker": int(seg.get("Speaker", 0)), "text": seg["Content"], "text_alt": None}
+        for seg in segments if (seg.get("Content") or "").strip()
+    ]
+
+
+def _run_diarization(wav_path: Path, cancel_check=None, status_callback=None) -> List[dict]:
     """VibeVoice-ASR 整檔說話者分離，回傳 [{Start, End, Speaker, ...}]。"""
     import torch
     from transformers import AutoProcessor, VibeVoiceAsrForConditionalGeneration
@@ -161,13 +209,16 @@ def _run_diarization(wav_path: Path, cancel_check=None) -> List[dict]:
     gpu_limit = _gpu_weight_limit(info.duration)
     logger.info(f"音檔 {info.duration:.0f}s，GPU 權重上限 {gpu_limit}")
 
-    processor = AutoProcessor.from_pretrained(DIARIZATION_MODEL_ID)
-    model = VibeVoiceAsrForConditionalGeneration.from_pretrained(
+    notice_if_missing(DIARIZATION_MODEL_ID, "VibeVoice-ASR", status_callback)
+    processor = load_pretrained(DIARIZATION_MODEL_ID, AutoProcessor.from_pretrained)
+    model = load_pretrained(
         DIARIZATION_MODEL_ID,
-        device_map="auto",
-        dtype=torch.bfloat16,
-        max_memory={0: gpu_limit, "cpu": "26GiB"},
-    )
+        lambda path: VibeVoiceAsrForConditionalGeneration.from_pretrained(
+            path,
+            device_map="auto",
+            dtype=torch.bfloat16,
+            max_memory={0: gpu_limit, "cpu": "26GiB"},
+        ))
     model.eval()
 
     try:
@@ -212,10 +263,12 @@ def _transcribe_segments(
     import torch
     from transformers import AutoProcessor, Qwen3ASRForConditionalGeneration
 
-    processor = AutoProcessor.from_pretrained(ASR_MODEL_ID)
-    model = Qwen3ASRForConditionalGeneration.from_pretrained(
-        ASR_MODEL_ID, device_map="auto", dtype=torch.bfloat16,
-    )
+    notice_if_missing(ASR_MODEL_ID, "Qwen3-ASR", status_callback)
+    processor = load_pretrained(ASR_MODEL_ID, AutoProcessor.from_pretrained)
+    model = load_pretrained(
+        ASR_MODEL_ID,
+        lambda path: Qwen3ASRForConditionalGeneration.from_pretrained(
+            path, device_map="auto", dtype=torch.bfloat16))
     model.eval()
 
     audio_data, sr = sf.read(str(wav_path), dtype="float32")
@@ -239,7 +292,9 @@ def _transcribe_segments(
             inputs = processor.apply_transcription_request(**request_kwargs)
             inputs = inputs.to(model.device).to(torch.bfloat16)
             with torch.inference_mode():
-                output_ids = model.generate(**inputs, max_new_tokens=512)
+                # 至少 512；長片段按每秒 16 token 放寬（語速再快約 8 字/秒），避免尾端被截掉
+                output_ids = model.generate(
+                    **inputs, max_new_tokens=max(512, int((end - start) * 16)))
             generated_ids = output_ids[:, inputs["input_ids"].shape[1]:]
             text = processor.decode(
                 generated_ids, return_format="transcription_only")[0].strip()
@@ -247,7 +302,7 @@ def _transcribe_segments(
             if text:
                 entries.append({
                     "start": start, "end": end, "speaker": speaker, "text": text,
-                    # VibeVoice 分離時本來就會產出文字，留著當第二份假設：
+                    # 分離模型（VibeVoice 或 MOSS）本來就會產出文字，留著當第二份假設：
                     # 與 Qwen 不一致處就是需要人工複查的候選
                     "text_alt": (seg.get("Content") or "").strip() or None,
                 })
@@ -280,10 +335,12 @@ def _align_segments(
     import torch
     from transformers import AutoProcessor, Qwen3ASRForTokenClassification
 
-    processor = AutoProcessor.from_pretrained(ALIGNER_MODEL_ID)
-    model = Qwen3ASRForTokenClassification.from_pretrained(
-        ALIGNER_MODEL_ID, device_map="auto", dtype=torch.bfloat16,
-    )
+    notice_if_missing(ALIGNER_MODEL_ID, "Qwen3-ForcedAligner", status_callback)
+    processor = load_pretrained(ALIGNER_MODEL_ID, AutoProcessor.from_pretrained)
+    model = load_pretrained(
+        ALIGNER_MODEL_ID,
+        lambda path: Qwen3ASRForTokenClassification.from_pretrained(
+            path, device_map="auto", dtype=torch.bfloat16))
     model.eval()
 
     audio_data, sr = sf.read(str(wav_path), dtype="float32")
@@ -423,6 +480,8 @@ def _build_lrc_lines(
         raise
     except Exception as e:
         logger.warning(f"強制對齊不可用，全部退回片段時間戳: {e}")
+        # 結果仍可用但少了斷行與逐字時間（例如對齊器首次下載失敗），讓使用者看得到
+        _notify(status_callback, "本地模型：時間軸對齊不可用，改以片段為單位輸出（詳見日誌）")
         return [
             f"{_lrc_timestamp(entry['start'])}[S{entry['speaker']}] {entry['text']}"
             for entry in entries
@@ -438,11 +497,11 @@ def _build_lrc_lines(
     return lines
 
 
-def _build_segment_records(entries: List[dict]) -> List[dict]:
+def _build_segment_records(entries: List[dict], source: str = "qwen") -> List[dict]:
     """把片段整理成上層要持久化的結構（時間軸＝輸入檔，由 flows 負責 remap）。
 
     ``seg_key`` 是序號而非時間，因為重跑同一個檔案時片段順序穩定、時間可能微幅
-    浮動；以序號為鍵才能覆寫而不是長出重複資料。
+    浮動；以序號為鍵才能覆寫而不是長出重複資料。``source`` 記錄主要文字的來源模型。
     """
     records: List[dict] = []
     for i, e in enumerate(entries):
@@ -461,7 +520,7 @@ def _build_segment_records(entries: List[dict]) -> List[dict]:
             "speaker": f"S{e['speaker']}",
             "text": e["text"],
             "text_alt": e.get("text_alt"),
-            "source": "qwen",
+            "source": source,
             "words": words or None,
         })
     return records
@@ -472,30 +531,43 @@ def transcribe_with_local_models(
     source_lang: Optional[str] = None,
     status_callback=None,
     cancel_check: Optional[Callable[[], bool]] = None,
+    model: Optional[str] = None,
 ) -> Dict:
     """對單一音訊檔執行分離＋轉錄，回傳與 Gemini provider 相同合約的 dict。
 
+    model 為前端 Local 選項（見模組說明）；未指定或不認得時用預設的 moss-align。
     cancel_check 回傳 True 時在各檢查點拋出 TranscriptionCancelledError；
     各階段的 finally 會照常釋放模型與暫存檔。
     """
+    model = normalize_model(model)
+    use_moss = is_moss_model(model)
     language = _LANGUAGE_MAP.get((source_lang or "").strip().lower())
-    wav_24k: Optional[Path] = None
+    wav: Optional[Path] = None
 
     try:
         _notify(status_callback, "本地模型：準備音訊...")
-        wav_24k = _to_mono_24k(audio_path)
+        wav = _to_mono(audio_path, MOSS_SAMPLE_RATE if use_moss else DIARIZATION_SAMPLE_RATE)
         _raise_if_cancelled(cancel_check)
 
-        _notify(status_callback, "本地模型：VibeVoice-ASR 說話者分離中（長檔需較久）...")
-        segments = _run_diarization(wav_24k, cancel_check)
+        if use_moss:
+            _notify(status_callback, "本地模型：MOSS 轉錄與說話者分離中...")
+            segments = _run_moss(wav, cancel_check, status_callback)
+        else:
+            _notify(status_callback, "本地模型：VibeVoice-ASR 說話者分離中（長檔需較久）...")
+            segments = _run_diarization(wav, cancel_check, status_callback)
         speakers = {int(s.get("Speaker", 0)) for s in segments}
-        logger.info(f"說話者分離完成: {len(segments)} 段, {len(speakers)} 位說話者")
+        logger.info(f"說話者分離完成: {len(segments)} 段, {len(speakers)} 位說話者 (model={model})")
 
-        _notify(status_callback,
-                f"本地模型：分離完成（{len(speakers)} 位說話者），Qwen3-ASR 轉錄中...")
-        entries = _transcribe_segments(
-            wav_24k, segments, language, status_callback, cancel_check)
-        lines = _build_lrc_lines(wav_24k, entries, status_callback, cancel_check)
+        if model == MOSS_ALIGN:
+            entries = _entries_from_segments(segments)
+            source = "moss"
+        else:
+            _notify(status_callback,
+                    f"本地模型：分離完成（{len(speakers)} 位說話者），Qwen3-ASR 轉錄中...")
+            entries = _transcribe_segments(
+                wav, segments, language, status_callback, cancel_check)
+            source = "qwen"
+        lines = _build_lrc_lines(wav, entries, status_callback, cancel_check)
 
         return {
             "success": bool(lines),
@@ -504,8 +576,8 @@ def transcribe_with_local_models(
             "output_tokens": 0,
             "total_tokens": 0,
             "service_tier_used": "local",
-            "segments": _build_segment_records(entries),
+            "segments": _build_segment_records(entries, source),
         }
     finally:
-        if wav_24k:
-            wav_24k.unlink(missing_ok=True)
+        if wav:
+            wav.unlink(missing_ok=True)

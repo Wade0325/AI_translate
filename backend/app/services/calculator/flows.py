@@ -27,6 +27,16 @@ MODEL_PRICES: Dict[str, ModelPrice] = {
         output_text=2.50
     ),
     # 本地模型不產生 API 費用
+    "moss-align": ModelPrice(
+        input_text=0.0,
+        input_audio=0.0,
+        output_text=0.0
+    ),
+    "moss-qwen3-asr": ModelPrice(
+        input_text=0.0,
+        input_audio=0.0,
+        output_text=0.0
+    ),
     "vibevoice-qwen3-asr": ModelPrice(
         input_text=0.0,
         input_audio=0.0,

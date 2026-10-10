@@ -136,9 +136,10 @@ export const api = {
     status() {
       return request('/setting/local-models/status');
     },
-    /** 啟動（或續傳）權重下載 */
-    download() {
-      return request('/setting/local-models/download', { method: 'POST' });
+    /** 啟動（或續傳）權重下載；model 省略＝預設模型所需，'all'＝含選用模型 */
+    download(model) {
+      const query = model ? `?model=${encodeURIComponent(model)}` : '';
+      return request(`/setting/local-models/download${query}`, { method: 'POST' });
     },
   },
   settings: {

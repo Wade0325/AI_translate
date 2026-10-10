@@ -144,8 +144,13 @@ class Settings(BaseSettings):
     # 空白超過 10%（語音佔比 < 90%）才執行 VAD 靜音移除
     vad_speech_ratio_skip_threshold: float = 0.90
     # VAD 前處理後（或跳過 VAD 時的原檔）仍超過此時長（秒）的音檔，
-    # 轉錄前先在最接近中點的靜音處對半切，遞迴直到每段低於閾值；0 = 停用
+    # 轉錄前先在最接近中點的靜音處對半切，遞迴直到每段低於閾值；0 = 停用。
+    # 適用 Gemini 與 Local 的 vibevoice-qwen3-asr；MOSS 模型改看下一個設定
     long_audio_split_threshold_seconds: float = 900.0
+    # Local 的 MOSS 模型（moss-align / moss-qwen3-asr）的切段門檻：MOSS 單次可吃約
+    # 90 分鐘、整檔一次分離說話者編號才會一致；實際值再依顯卡容量與上下文上限下修
+    # （見 provider/local/moss.py）；0 = 停用切段
+    local_moss_single_pass_max_seconds: float = 4200.0
     # 單檔紀錄卡在 PROCESSING 超過此時數即視為孤兒（worker 中斷後不會回寫狀態），
     # 後端啟動時標記為 FAILED；需大於最長的合理轉錄時間（本地模型長檔可達數小時）
     stale_processing_max_age_hours: int = 12

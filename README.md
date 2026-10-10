@@ -28,7 +28,7 @@
 ### 🎯 核心能力
 
 - **🤖 高品質 AI 轉錄**：整合 Google Gemini 多模態模型，支援 `gemini-3.5-flash` / `gemini-2.5-flash` 等。
-- **🖥️ 本地模型轉錄**：VibeVoice-ASR 說話者分離 + Qwen3-ASR 轉錄（主機 GPU 執行，零 API 費用；以 `local_worker.bat` 啟動）。
+- **🖥️ 本地模型轉錄**：預設 MOSS-Transcribe-Diarize 一次完成說話者分離與轉錄，再由 Qwen3-ForcedAligner 斷行與逐字對時；另可選 MOSS + Qwen3-ASR、舊版 VibeVoice + Qwen3-ASR（主機 GPU 執行，零 API 費用；以 `local_worker.bat` 啟動）。
 - **🗣️ 智能 VAD 切片**：使用 Silero VAD 自動移除靜默段落，提升精度並節省 Token。
 - **⏱️ 毫秒級時間戳**：輸出帶 `[mm:ss.xxx]` 精確時間戳的逐字稿。
 - **📦 多格式匯出**：LRC、SRT、VTT、TXT 一鍵下載；批量任務支援 ZIP 打包。
@@ -66,7 +66,7 @@
    - 就緒後自動開啟瀏覽器；關閉黑色視窗即停止程式
 4. 在 **⚙️ Settings** 頁填入 [Gemini API Key](https://aistudio.google.com/apikey) 即可轉錄
 5. 要用 **Local 本機 GPU 轉錄**（零 API 費用，需 NVIDIA GPU）：在 Settings 頁的
-   Local Models 卡片下載模型權重（約 25 GB，總磁碟需求約 35 GB）
+   Local Models 卡片下載模型權重（預設模型約 3.7 GB；選用模型另需約 21 GB）
 
 > 所有資料（資料庫、模型權重）都在解壓資料夾的 `data\` 內；升級新版時把舊版 `data\` 複製過來即可保留紀錄。
 
@@ -208,7 +208,7 @@ AI_translate/
 │   │   ├── celery/          # 單檔 / 批次轉錄任務
 │   │   ├── core/            # 設定、預設 Prompt（單一真實來源）
 │   │   ├── database/        # ORM 模型、自動遷移
-│   │   ├── provider/        # google（Gemini）與 local（VibeVoice + Qwen3-ASR）客戶端
+│   │   ├── provider/        # google（Gemini）與 local（MOSS／VibeVoice + Qwen3-ASR／ForcedAligner）客戶端
 │   │   ├── services/        # vad / transcription / converter / calculator
 │   │   └── websocket/       # ConnectionManager + Redis 監聽器
 │   └── main.py
@@ -270,6 +270,14 @@ pytest tests/ -v
 $env:APP_MODE='standalone'
 cd backend
 .\.venv\Scripts\python.exe -m uvicorn main:app --port 8000
+```
+
+`backend\.venv` 同時是 Docker 模式主機 GPU worker（`local_worker.bat`）的執行環境，
+依賴與免安裝包相同，以 `backend/requirements-standalone.txt` 為準。升級到預設 MOSS
+模型的既有 venv 至少要補裝：
+
+```powershell
+.\backend\.venv\Scripts\python.exe -m pip install --no-deps av==18.1.0 "moss-transcribe-diarize @ https://github.com/OpenMOSS/MOSS-Transcribe-Diarize/archive/e3bdd93f8ad58418e04659818efd5fd87a0bc486.zip"
 ```
 
 ---

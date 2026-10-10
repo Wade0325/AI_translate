@@ -1,9 +1,10 @@
 """Local ASR 模型權重管理 API（standalone 模式的首次下載與狀態查詢）。
 
-權重約 25 GB，不隨發布包提供；使用者首次要用 Local provider 時由此下載到
-HF_HOME（standalone 模式指向 data/models/hf_cache）。下載在獨立執行緒進行，
-前端以輪詢 status 取得進度；HuggingFace 原生支援斷點續傳，中斷後再 POST
-一次 download 即繼續。
+權重不隨發布包提供；使用者首次要用 Local provider 時由此下載到 HF_HOME
+（standalone 模式指向 data/models/hf_cache）。預設模型 moss-align 只需 MOSS 與對齊器
+（大小見 weights.REPO_SIZE_GB）；「MOSS + Qwen3-ASR」「VibeVoice + Qwen3-ASR」用到的權重屬選用，
+另外以 ``?model=all`` 下載。下載在獨立執行緒進行，前端以輪詢 status 取得進度；
+HuggingFace 原生支援斷點續傳，中斷後再 POST 一次 download 即繼續。
 """
 
 from __future__ import annotations
@@ -11,8 +12,9 @@ from __future__ import annotations
 import shutil
 import threading
 from pathlib import Path
+from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 
 from app.core.config import get_settings
 from app.provider.local import weights
@@ -22,11 +24,12 @@ logger = setup_logger(__name__)
 
 router = APIRouter()
 
-_MIN_FREE_BYTES = 30 * 1024 ** 3
+_FREE_SPACE_MARGIN_GB = 2.0
 
 _lock = threading.Lock()
 _state = {
     "state": "idle",       # idle | downloading | completed | failed
+    "target": None,        # 下載目標：預設模型名稱或 "all"
     "repo_index": 0,
     "repo_count": len(weights.REQUIRED_REPOS),
     "current_repo": None,
@@ -49,33 +52,50 @@ def _make_progress_tqdm():
     return _ProgressTqdm
 
 
-def _download_worker():
-    from huggingface_hub import snapshot_download
+def _download_worker(repos: list[str]):
     try:
         tqdm_cls = _make_progress_tqdm()
-        total = len(weights.REQUIRED_REPOS)
-        for idx, repo in enumerate(weights.REQUIRED_REPOS, start=1):
+        total = len(repos)
+        for idx, repo in enumerate(repos, start=1):
             with _lock:
                 _state.update(
-                    repo_index=idx, current_repo=repo, progress_pct=None)
+                    repo_index=idx, repo_count=total, current_repo=repo, progress_pct=None)
             logger.info(f"下載 Local 模型權重 ({idx}/{total}): {repo}")
-            snapshot_download(repo, tqdm_class=tqdm_cls)
+            weights.download_snapshot(repo, tqdm_class=tqdm_cls)
         with _lock:
             _state.update(state="completed", current_repo=None)
-        logger.info("Local 模型權重全部下載完成")
+        logger.info("Local 模型權重下載完成")
     except Exception as e:
         logger.error(f"Local 模型權重下載失敗: {e}")
         with _lock:
             _state.update(state="failed", error=str(e))
 
 
+def _target_repos(model: Optional[str]) -> tuple[str, ...]:
+    if model is None:
+        return weights.REQUIRED_REPOS
+    if model == "all":
+        return weights.ALL_REPOS
+    if model in weights.MODEL_REPOS:
+        return weights.MODEL_REPOS[model]
+    raise HTTPException(status_code=400, detail=f"不支援的 Local 模型: {model}")
+
+
 @router.get("/local-models/status")
 def local_models_status():
-    """GPU 與權重狀態；下載進行中時同時回報進度。"""
+    """GPU 與權重狀態；下載進行中時同時回報進度。
+
+    ``all_downloaded`` 只看預設模型所需的權重；選用權重以 ``required: false`` 標示。
+    """
     cuda_ok, gpu_name = weights.cuda_status()
     models = [
-        {"repo_id": repo, "downloaded": weights.repo_is_ready(repo)}
-        for repo in weights.REQUIRED_REPOS
+        {
+            "repo_id": repo,
+            "downloaded": weights.repo_is_ready(repo),
+            "required": repo in weights.REQUIRED_REPOS,
+            "used_by": [m for m, repos in weights.MODEL_REPOS.items() if repo in repos],
+        }
+        for repo in weights.ALL_REPOS
     ]
     with _lock:
         download = dict(_state)
@@ -84,38 +104,50 @@ def local_models_status():
         "gpu_available": cuda_ok,
         "gpu_name": gpu_name,
         "hf_home": get_settings().hf_home,
+        "default_model": weights.DEFAULT_LOCAL_MODEL,
+        "required_size_gb": weights.size_gb(weights.REQUIRED_REPOS),
+        "optional_size_gb": weights.size_gb(
+            r for r in weights.ALL_REPOS if r not in weights.REQUIRED_REPOS),
         "models": models,
-        "all_downloaded": all(m["downloaded"] for m in models),
+        "all_downloaded": all(m["downloaded"] for m in models if m["required"]),
+        "optional_downloaded": all(m["downloaded"] for m in models if not m["required"]),
         "download": download,
     }
 
 
 @router.post("/local-models/download")
-def start_local_models_download():
-    """啟動（或續傳）權重下載。已在下載中或已完成時為 no-op。"""
+def start_local_models_download(
+    model: Optional[str] = Query(
+        None, description="省略＝預設模型所需；all＝所有 Local 模型；或指定模型名稱"),
+):
+    """啟動（或續傳）權重下載。已在下載中或目標已齊備時為 no-op。"""
+    repos = _target_repos(model)
+    hf_home = Path(get_settings().hf_home)
+    # 檢查與設定在同一把鎖內：兩個同時的請求不會各自起一條下載執行緒
     with _lock:
         if _state["state"] == "downloading":
             return {"started": False, "reason": "already-downloading"}
 
-    if not weights.missing_repos():
-        with _lock:
+        missing = [r for r in repos if not weights.repo_is_ready(r)]
+        if not missing:
+            # 目標已齊（也可能是其他途徑補齊的）：清掉先前殘留的失敗狀態
             _state.update(state="completed", error=None)
-        return {"started": False, "reason": "already-downloaded"}
+            return {"started": False, "reason": "already-downloaded"}
 
-    hf_home = Path(get_settings().hf_home)
-    hf_home.mkdir(parents=True, exist_ok=True)
-    free = shutil.disk_usage(hf_home).free
-    if free < _MIN_FREE_BYTES:
-        raise HTTPException(
-            status_code=400,
-            detail=f"磁碟空間不足：模型權重約需 30 GB，"
-                   f"目前剩餘 {free / 1024 ** 3:.1f} GB",
-        )
+        hf_home.mkdir(parents=True, exist_ok=True)
+        need_gb = weights.size_gb(missing) + _FREE_SPACE_MARGIN_GB
+        free = shutil.disk_usage(hf_home).free
+        if free < need_gb * 1024 ** 3:
+            raise HTTPException(
+                status_code=400,
+                detail=f"磁碟空間不足：需要約 {need_gb:.0f} GB，"
+                       f"目前剩餘 {free / 1024 ** 3:.1f} GB",
+            )
 
-    with _lock:
         _state.update(
-            state="downloading", error=None,
-            repo_index=0, current_repo=None, progress_pct=None)
+            state="downloading", target=model or weights.DEFAULT_LOCAL_MODEL, error=None,
+            repo_index=0, repo_count=len(missing), current_repo=None, progress_pct=None)
     threading.Thread(
-        target=_download_worker, daemon=True, name="hf-weights-download").start()
-    return {"started": True}
+        target=_download_worker, args=(missing,), daemon=True,
+        name="hf-weights-download").start()
+    return {"started": True, "repos": missing}

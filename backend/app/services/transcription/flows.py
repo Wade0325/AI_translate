@@ -218,6 +218,7 @@ class TranscriptionTask:
         self.gemini_cleanup_list = []
         self.max_duration_seconds = get_settings().transcription_max_duration_seconds
         self.original_file = None
+        self.split_threshold_seconds = self._split_threshold(provider, model)
 
         try:
             self.vad_service = get_vad_service()
@@ -225,6 +226,16 @@ class TranscriptionTask:
         except Exception as e:
             logger.warning(f"無法取得 VAD 服務: {e}")
             self.vad_service = None
+
+    @staticmethod
+    def _split_threshold(provider: str, model: str) -> float:
+        """長檔對半切的門檻（秒）：provider 有自己的單次上限就用它，否則用全域設定。"""
+        if provider == "local":
+            from app.provider.local.asr import single_pass_limit_seconds
+            limit = single_pass_limit_seconds(model)
+            if limit is not None:
+                return limit
+        return LONG_AUDIO_SPLIT_THRESHOLD_SECONDS
 
     def transcribe_audio(self, audio_path: Path) -> TranscriptionTaskResult:
         """
@@ -372,7 +383,7 @@ class TranscriptionTask:
                 from app.provider.local.asr import transcribe_with_local_models
                 result = transcribe_with_local_models(
                     audio_path, self.source_lang, self.status_callback,
-                    cancel_check=self.cancel_check)
+                    cancel_check=self.cancel_check, model=self.model)
             else:
                 gemini_file = upload_file_to_gemini(
                     audio_path, self.client, self.status_callback)
@@ -414,14 +425,14 @@ class TranscriptionTask:
     ) -> TranscriptionTaskResult:
         """時長超過閾值時在最接近中點的靜音處對半切，兩半分別轉錄後合併。
 
-        遞迴呼叫自身，直到每段低於 ``LONG_AUDIO_SPLIT_THRESHOLD_SECONDS``。
+        遞迴呼叫自身，直到每段低於 ``self.split_threshold_seconds``。
         silence_boundaries 是音檔內已知的靜音位置（秒）——VAD 純語音檔
         以片段交界為準；無資訊（跳過 VAD）時改用 VAD 服務在檔案上找。
         注意：local provider 兩半的說話者編號各自獨立（前半的 S0 未必是
-        後半的 S0），多人對話的長檔請自行斟酌。
+        後半的 S0），多人對話的長檔請自行斟酌（MOSS 的門檻較長，多數檔案不會切）。
         """
-        if (LONG_AUDIO_SPLIT_THRESHOLD_SECONDS <= 0
-                or duration <= LONG_AUDIO_SPLIT_THRESHOLD_SECONDS):
+        threshold = self.split_threshold_seconds
+        if threshold <= 0 or duration <= threshold:
             return self._attempt_transcription(audio_path)
 
         if self.cancel_check and self.cancel_check():
