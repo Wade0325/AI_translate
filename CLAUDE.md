@@ -2,6 +2,14 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Workflow
+
+- **Branch per change; never commit straight to `master`.** Use `feat/<topic>`, `fix/<topic>`, `chore/<topic>`. Merge only after the tests pass and `/code-review` comes back clean. Ask before pushing.
+- **Verify before claiming done**: `pytest tests/ -v` (~10 s, no Postgres/Redis needed). A `Stop` hook (`tools/hooks/test_gate.py`) enforces this whenever `.py` files changed, so a red suite blocks the turn from ending.
+- **Protected paths**: `tools/hooks/protect_paths.py` blocks AI writes to `lab/data/eval/*.txt` (hand-transcribed gold — hours of the user's work) and to `.env`. Ask the user to edit those.
+- **Worktrees** (`claude --worktree <name>`) are for parallel or throwaway work, not every change. Only one Docker stack can run at a time (fixed container names, ports 8000/5173) and there is one GPU, so a worktree session verifies with pytest — starting the stack there means stopping the main one. `.worktreeinclude` carries `.env`; `worktree.symlinkDirectories` links `backend/.venv` and `frontend/node_modules`.
+- **Experiments live in `lab/`** (git-ignored research area), never in `backend/`.
+
 ## Commands
 
 ### Run the app (single Docker stack, local Windows)

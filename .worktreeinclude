@@ -1,0 +1,7 @@
+# 新 worktree 是全新 checkout，被 git ignore 的檔案不會跟著過去。
+# 這裡列出要複製進每個 worktree 的檔案（.gitignore 語法，只有「被 ignore 且符合」的才複製）。
+#
+# 只放小檔案：backend/.venv（7 GB）與 frontend/node_modules 走
+# .claude/settings.json 的 worktree.symlinkDirectories 連結過去，不複製。
+# models/hf_cache（24.8 GB）不用處理，config.py 裡是絕對路徑，自動共用。
+.env
