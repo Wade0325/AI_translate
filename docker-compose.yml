@@ -80,7 +80,7 @@ services:
     restart: unless-stopped
 
   frontend:
-    image: node:20-alpine
+    image: node:24-alpine
     container_name: ait-frontend
     working_dir: /app
     ports:
