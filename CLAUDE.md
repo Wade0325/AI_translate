@@ -4,10 +4,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Workflow
 
-- **Branch per change; never commit straight to `master`.** Use `feat/<topic>`, `fix/<topic>`, `chore/<topic>`. Merge only after the tests pass and `/code-review` comes back clean. Ask before pushing.
-- **Verify before claiming done**: `pytest tests/ -v` (~10 s, no Postgres/Redis needed). A `Stop` hook (`tools/hooks/test_gate.py`) enforces this whenever `.py` files changed, so a red suite blocks the turn from ending.
+- **Branch per change; never commit straight to `master`.** Use `feat/<topic>`, `fix/<topic>`, `chore/<topic>`. Merge only after lint and tests pass. Don't run `/code-review`.
+- **Push and open the PR yourself** — no need to ask first. Push the branch, then `gh pr create` against `master`.
+- **Verify before claiming done** (~10 s total, no Postgres/Redis needed):
+  - Python: `ruff check .` + `pytest tests/ -v`
+  - Frontend: `npm run lint` in `frontend/` (ESLint; errors fail, warnings don't)
+
+  A `Stop` hook (`tools/hooks/test_gate.py`) enforces this: `.py` changes run ruff + pytest, `frontend/**/*.js(x)` changes run ESLint, and any red check blocks the turn from ending.
 - **Protected paths**: `tools/hooks/protect_paths.py` blocks AI writes to `lab/data/eval/*.txt` (hand-transcribed gold — hours of the user's work) and to `.env`. Ask the user to edit those.
-- **Worktrees** (`claude --worktree <name>`) are for parallel or throwaway work, not every change. Only one Docker stack can run at a time (fixed container names, ports 8000/5173) and there is one GPU, so a worktree session verifies with pytest — starting the stack there means stopping the main one. `.worktreeinclude` carries `.env`; `worktree.symlinkDirectories` links `backend/.venv` and `frontend/node_modules`.
+- **Worktrees** (`claude --worktree <name>`) are for parallel or throwaway work, not every change. Only one Docker stack can run at a time (fixed container names, ports 8000/5173) and there is one GPU, so a worktree session verifies with lint + pytest — starting the stack there means stopping the main one. `.worktreeinclude` carries `.env`; `worktree.symlinkDirectories` links `backend/.venv` and `frontend/node_modules`.
 - **Experiments live in `lab/`** (git-ignored research area), never in `backend/`.
 
 ## Commands
@@ -50,12 +55,19 @@ Release packaging: `.\build_release.ps1 -Version vX.Y.Z` → `build\AI_Translate
 (compiled with the built-in .NET Framework `csc.exe` — C# 5 syntax only).
 Tag push `v*` triggers `.github/workflows/release.yml` to build + publish the Release.
 
-### Tests
+### Tests & lint
 
 ```bash
 pytest tests/ -v                                        # full suite (from repo root)
 pytest tests/integration/test_model_manager_api.py -v   # single file
+ruff check .                                            # Python lint (rules in ruff.toml)
+ruff check . --fix                                      # apply safe auto-fixes
+cd frontend && npm run lint                             # ESLint (eslint.config.js)
 ```
+
+Tooling setup: `backend\.venv\Scripts\python.exe -m pip install -r backend/requirements-dev.txt`
+(pytest + ruff, pinned; not shipped in Docker or the portable release) and `npm install` in `frontend/`.
+`ruff.toml` selects bug-finding rules only (pyflakes, bugbear, syntax errors) — `ruff format` is not enforced.
 
 `pytest.ini` sets `pythonpath = backend`, so tests import from `backend/` (e.g. `from app.api import ...`).
 The suite is self-contained (SQLite in-memory + mocked torch); it needs no Postgres/Redis.
