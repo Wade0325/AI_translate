@@ -20,9 +20,6 @@ export default defineConfig([
       parserOptions: { ecmaFeatures: { jsx: true } },
     },
     rules: {
-      // ESLint 核心看不到 JSX 引用：`{ icon: Icon }` 再 `<Icon />` 會被誤報，
-      // 所以大寫開頭（元件、常數）一律放行
-      'no-unused-vars': ['error', { varsIgnorePattern: '^[A-Z_]', argsIgnorePattern: '^[A-Z_]' }],
       // 以下兩條是 HMR／效能建議而非 bug：保留可見度，但不擋閘門
       'react-refresh/only-export-components': ['warn', { allowConstantExport: true }],
       'react-hooks/set-state-in-effect': 'warn',
