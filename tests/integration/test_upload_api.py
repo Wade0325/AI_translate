@@ -2,8 +2,6 @@
 整合測試：檔案上傳 API
 測試範圍：POST /api/v1/upload
 """
-import io
-import pytest
 from unittest.mock import patch
 from fastapi.testclient import TestClient
 

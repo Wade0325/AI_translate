@@ -9,7 +9,6 @@ from app.schemas.schemas import (
     ProviderConfigResponse,
     ProviderTestRequest,
     ProviderTestResponse,
-    ModelConfigurationSchema,
     ServiceStatus,
     WebSocketTranscriptionRequest,
     WebSocketBatchRequest,

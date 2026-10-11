@@ -76,7 +76,7 @@ export const TranscriptionProvider = ({ children }) => {
     poll();
     const id = setInterval(poll, 30000);
     return () => clearInterval(id);
-  }, [hasBatchPending]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [hasBatchPending]);
 
   // 所有 processing 檔案結束後自動解除 isProcessing 並總結結果
   const hasStartedProcessing = useRef(false);

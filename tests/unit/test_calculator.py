@@ -2,11 +2,9 @@
 單元測試：費用計算服務
 測試範圍：calculator/flows.py 與 calculator/service.py
 """
-import pytest
 from app.services.calculator.models import (
     CalculationItem,
     PriceCalculationRequest,
-    ModelPrice,
 )
 from app.services.calculator.flows import calculate_price_flow, MODEL_PRICES
 from app.services.calculator.service import CalculatorService

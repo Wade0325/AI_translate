@@ -7,8 +7,6 @@
   DELETE /api/v1/history/{task_uuid}
 """
 import uuid
-import pytest
-from datetime import datetime, timezone
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 

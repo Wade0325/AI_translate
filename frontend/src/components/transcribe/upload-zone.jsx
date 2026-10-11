@@ -1,10 +1,9 @@
 import { useState, useCallback, useRef } from "react"
-import { Upload, Button, Typography, Alert } from "antd"
+import { Upload, Button, Alert } from "antd"
 import { InboxOutlined, PlusOutlined } from "@ant-design/icons"
 import { AlertCircle } from "lucide-react"
 
 const { Dragger } = Upload
-const { Text } = Typography
 
 const ACCEPTED_TYPES = [
     "audio/mpeg",

@@ -3,7 +3,7 @@ import warnings
 import soundfile as sf
 import numpy as np
 from pathlib import Path
-from typing import List, Dict, Optional
+from typing import List, Dict
 
 from app.utils.logger import setup_logger
 from .models import (

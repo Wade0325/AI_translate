@@ -6,7 +6,6 @@
   POST /api/v1/setting/test
   GET  /api/v1/setting/default-prompt
 """
-import pytest
 from unittest.mock import patch, MagicMock
 from fastapi.testclient import TestClient
 

@@ -8,7 +8,7 @@ const MAX_SESSIONS = 80;
 export function registerTranscribeSession({ sessionId, fileUids, startedAt }) {
   if (!sessionId || !fileUids?.length) return;
 
-  let sessions = [];
+  let sessions;
   try {
     sessions = JSON.parse(sessionStorage.getItem(STORAGE_KEY) || '[]');
   } catch {

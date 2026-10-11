@@ -43,7 +43,6 @@ export function FileConfigCard({
     onDownload,
     onReprocess,
     onAttachText,
-    onAttachTextFromFile,
     onVadTest,
     onCancel,
     vadTesting = false,

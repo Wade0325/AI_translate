@@ -1,7 +1,7 @@
 import json
 from fastapi import APIRouter, Body, HTTPException, Depends
 from fastapi.concurrency import run_in_threadpool
-from typing import Optional, List
+from typing import Optional
 from sqlalchemy.orm import Session
 from fastapi import status
 
@@ -39,7 +39,7 @@ async def save_model_setting(
     except Exception as e:
         message = f"保存模型設定時發生意外錯誤:'{config.provider}'. Error: {e}"
         logger.error(message)
-        raise HTTPException(status_code=500, detail=message)
+        raise HTTPException(status_code=500, detail=message) from e
 
 
 @router.get("/models/{provider}", response_model=Optional[ProviderConfigResponse])
@@ -71,7 +71,7 @@ async def get_model_setting(
     except Exception as e:
         message = f"Failed to retrieve model setting for '{provider}'. Error: {e}"
         logger.error(message)
-        raise HTTPException(status_code=500, detail=message)
+        raise HTTPException(status_code=500, detail=message) from e
 
 
 @router.post("/test", response_model=ProviderTestResponse)
@@ -116,7 +116,7 @@ async def test_model_interface(
                     "message": "測試 Gemini 時發生伺服器內部錯誤。",
                     "details": str(e),
                 }
-            )
+            ) from e
 
     else:
         return ProviderTestResponse(

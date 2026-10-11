@@ -122,7 +122,7 @@ def recover_batch(batch_id: str, body: RecoverBatchRequest, db: Session = Depend
         file_results = []
         for file_uid, result_data in stored_results.items():
             original_filename = file_uid
-            for idx, entry in file_mapping.items():
+            for entry in file_mapping.values():
                 if entry.get("file_uid") == file_uid:
                     original_filename = entry.get("original_filename", file_uid)
                     break
