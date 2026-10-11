@@ -6,11 +6,10 @@
 使用 SQLite in-memory 資料庫，透過 db_session fixture 確保每個測試後回滾。
 """
 import uuid
-import pytest
 from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
 
-from app.database.models import TranscriptionLog, ModelConfiguration
+from app.database.models import TranscriptionLog
 from app.repositories.model_manager_repository import ModelSettingsRepository
 from app.repositories.history_repository import HistoryRepository
 from app.schemas.schemas import ModelConfigurationSchema
@@ -247,7 +246,7 @@ class TestHistoryRepository:
         import time
         log1 = _create_transcription_log(db_session, original_filename="old.mp3")
         time.sleep(0.01)
-        log2 = _create_transcription_log(db_session, original_filename="new.mp3")
+        _create_transcription_log(db_session, original_filename="new.mp3")
 
         logs, _ = self.repo.get_logs_paginated(db_session, keyword="old.mp3")
         # 確認回傳結果中包含正確的紀錄

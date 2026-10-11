@@ -1,5 +1,5 @@
 import re
-from typing import List, Optional
+from typing import List
 
 from app.utils.logger import setup_logger
 from .models import SubtitleFormats

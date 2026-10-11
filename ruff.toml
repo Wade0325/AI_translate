@@ -1,0 +1,15 @@
+# Ruff：Python lint 閘門（backend/、tests/、tools/）。lab/ 與 .claude/ 已在 .gitignore，自動略過。
+#
+# 只抓 bug，不管風格：select 明確列出，ruff 升級時預設規則變動也不影響結果。
+# 不跑 `ruff format --check`——現有程式碼有 67 個檔案會被重排，等要統一格式時再開。
+target-version = "py311"
+
+[lint]
+select = [
+    "E4", "E7", "E9",  # pycodestyle 中會出錯的部分：import 位置、語句、語法錯誤
+    "F",               # pyflakes：未定義名稱、未使用 import／變數
+    "B",               # bugbear：可變預設值、迴圈閉包、except 內 raise 未鏈結
+]
+ignore = [
+    "B008",  # FastAPI 的 Depends()/Body() 寫在預設參數是官方慣用法
+]

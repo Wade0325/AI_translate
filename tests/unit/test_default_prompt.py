@@ -2,12 +2,9 @@
 單元測試：Prompt 模板組裝邏輯
 測試範圍：core/default_prompt.py
 """
-import pytest
 from app.core.default_prompt import (
     build_prompt,
     DEFAULT_PROMPT_TEMPLATE,
-    SPEAKER_INSTRUCTION,
-    TRANSLATE_INSTRUCTION,
     LANG_MAP,
 )
 
@@ -24,7 +21,7 @@ class TestLangMap:
         assert "en-US" in LANG_MAP
 
     def test_lang_map_values_are_nonempty_strings(self):
-        for code, name in LANG_MAP.items():
+        for name in LANG_MAP.values():
             assert isinstance(name, str) and len(name) > 0
 
 

@@ -48,7 +48,7 @@ class CalculatorService:
 
         response = calculate_price_flow(request)
 
-        logger.info(f"計算完成")
+        logger.info("計算完成")
         logger.info(f"輸出費用: {response.cost:.6f}")
         logger.info(f"輸出總 Tokens: {response.total_tokens}")
         if response.processing_time_seconds is not None:

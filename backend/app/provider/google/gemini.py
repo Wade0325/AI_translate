@@ -268,8 +268,8 @@ def transcribe_with_uploaded_file(
     if actual_tier:
         if service_tier == "flex" and actual_tier == "flex":
             logger.info(
-                f"[FLEX VERIFIED] Gemini 回應 header x-gemini-service-tier=flex"
-                f"（已確認使用 Flex API，享 50% 折扣）"
+                "[FLEX VERIFIED] Gemini 回應 header x-gemini-service-tier=flex"
+                "（已確認使用 Flex API，享 50% 折扣）"
             )
         elif service_tier == "flex" and actual_tier != "flex":
             logger.warning(
@@ -373,7 +373,7 @@ def create_batch_transcription_job(
         )
 
     inline_requests = []
-    for gemini_file, prompt in zip(gemini_files, prompts):
+    for gemini_file, prompt in zip(gemini_files, prompts, strict=True):
         request = {
             'contents': [{
                 'parts': [

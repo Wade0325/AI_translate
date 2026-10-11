@@ -2,7 +2,6 @@
 單元測試：LRC 字幕格式轉換服務
 測試範圍：converter/service.py 中的所有公開與私有函式
 """
-import pytest
 from app.services.converter.service import (
     convert_from_lrc,
     _seconds_to_timestamp,

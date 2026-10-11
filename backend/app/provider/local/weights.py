@@ -150,7 +150,7 @@ def load_pretrained(repo_id: str, loader: Callable[[str], T]) -> T:
             repaired = download_snapshot(repo_id)
         except Exception as e:
             logger.warning(f"{repo_id} 補齊失敗: {e}")
-            raise first
+            raise first from e
         return loader(repaired)
 
 

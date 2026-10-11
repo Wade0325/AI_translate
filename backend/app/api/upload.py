@@ -81,6 +81,6 @@ async def upload_file(
     except Exception as e:
         logger.error(f"保存檔案失敗: {e}")
         raise HTTPException(
-            status_code=500, detail=f"Could not save file: {e}")
+            status_code=500, detail=f"Could not save file: {e}") from e
     finally:
         await file.close()

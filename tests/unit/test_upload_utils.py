@@ -2,7 +2,6 @@
 單元測試：上傳工具函數
 測試範圍：api/upload.py 中的 _get_unique_filepath 與 SUPPORTED_MIME_TYPES
 """
-import pytest
 from pathlib import Path
 from app.api.upload import _get_unique_filepath, SUPPORTED_MIME_TYPES
 

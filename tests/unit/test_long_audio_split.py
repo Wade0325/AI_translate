@@ -1,5 +1,4 @@
 """長檔切半（VAD 之後在中點靜音處對半切）的純函式測試。"""
-import pytest
 
 from app.services.transcription.flows import (
     pick_halving_split_point,

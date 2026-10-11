@@ -1,0 +1,4 @@
+# 開發與驗證工具（測試、lint）；不進 Docker image，也不進 portable 版。
+# 安裝：backend\.venv\Scripts\python.exe -m pip install -r backend/requirements-dev.txt
+pytest==9.0.3
+ruff==0.17.0
