@@ -22,8 +22,9 @@ class _StubSettings:
 
 @pytest.fixture
 def store(tmp_path, monkeypatch):
-    """把 audio_store 指向 tmp_path，並用假設定避開 .env 影響。"""
+    """把 audio_store 指向 tmp_path、temp_uploads 指向 tmp_path/uploads，並用假設定避開 .env 影響。"""
     settings = _StubSettings()
+    settings.temp_uploads_path = tmp_path / "uploads"
     monkeypatch.setattr(audio_store, "store_path", lambda: tmp_path)
     monkeypatch.setattr(audio_store, "get_settings", lambda: settings)
     return settings
@@ -60,6 +61,44 @@ class TestRetain:
 
     def test_missing_source_returns_none(self, store, tmp_path):
         assert audio_store.retain(tmp_path / "gone.m4a", TASK_UUID) is None
+
+
+class TestRetainSourceGuard:
+    """retain() 只搬 temp_uploads 內的檔案；其他來源一律不動。"""
+
+    @pytest.fixture
+    def outside(self, tmp_path):
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        path = elsewhere / "secret.m4a"
+        path.write_bytes(b"not-an-upload")
+        return path
+
+    @pytest.fixture
+    def warnings(self, monkeypatch):
+        messages = []
+        monkeypatch.setattr(audio_store.logger, "warning", messages.append)
+        return messages
+
+    def test_refuses_file_outside_temp_uploads(self, store, outside, tmp_path, warnings):
+        assert audio_store.retain(outside, TASK_UUID) is None
+        assert outside.read_bytes() == b"not-an-upload"
+        assert not (tmp_path / f"{TASK_UUID}.m4a").exists()
+        assert any("temp_uploads" in m for m in warnings)
+
+    def test_refuses_dotdot_escape_from_temp_uploads(self, store, upload, outside, tmp_path):
+        """字面上以 temp_uploads 開頭、實際落在外面的路徑也不能搬。"""
+        sneaky = upload.parent / ".." / "elsewhere" / outside.name
+        assert audio_store.retain(sneaky, TASK_UUID) is None
+        assert outside.exists()
+        assert not (tmp_path / f"{TASK_UUID}.m4a").exists()
+
+    def test_retry_with_retained_file_still_works(self, store, upload, tmp_path, warnings):
+        """重試時來源本身就是 audio_store 裡的保留檔：照舊回傳檔名，不警告。"""
+        name = audio_store.retain(upload, TASK_UUID)
+        assert audio_store.retain(tmp_path / name, TASK_UUID) == name
+        assert (tmp_path / name).read_bytes() == b"audio-bytes"
+        assert warnings == []
 
 
 class TestResolveInputPath:

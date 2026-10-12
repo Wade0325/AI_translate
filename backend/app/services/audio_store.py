@@ -9,6 +9,9 @@
 
 搬移而非複製：同一份音檔不會同時存在兩個地方，cleanup 也不會再看到它。
 保留期限由 ``audio_retention_days`` 控制，啟動時清掃一次。
+
+只搬 temp_uploads 裡的上傳檔（以及重試時已經在 audio_store 的保留檔），
+來源路徑異常時寧可不保留，也不能把任意檔案搬走。
 """
 
 from __future__ import annotations
@@ -20,6 +23,7 @@ from typing import Optional
 
 from app.core.config import get_settings
 from app.utils.logger import setup_logger
+from app.utils.paths import is_within
 
 logger = setup_logger(__name__)
 
@@ -43,6 +47,10 @@ def retain(source: Path, task_uuid) -> Optional[str]:
         dest = dest_dir / f"{task_uuid}{source.suffix.lower()}"
         if source.resolve() == dest.resolve():
             return dest.name  # 重試時輸入本身就是保留檔，不用再搬
+        in_store = source.resolve().parent == dest_dir.resolve()
+        if not in_store and not is_within(source, settings.temp_uploads_path):
+            logger.warning(f"音檔保留略過：來源不在 temp_uploads 內，不搬移 {source}")
+            return None
         shutil.move(str(source), str(dest))
         logger.info(f"已保留原始音檔: {dest.name}")
         return dest.name
