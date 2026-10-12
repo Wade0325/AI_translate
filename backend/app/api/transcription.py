@@ -17,6 +17,7 @@ from app.runtime import dispatch
 from app.core.config import get_settings
 from app.database.session import SessionLocal
 from app.repositories.transcription_log_repository import TranscriptionLogRepository
+from app.services.api_keys import resolve_api_key
 from app.utils.logger import setup_logger
 from app.utils.paths import UnsafeUploadFilenameError, resolve_upload_path
 from app.websocket.manager import manager
@@ -49,11 +50,15 @@ def start_transcription_task_sync(payload_str: str, file_uid: str) -> None:
         logger.error(f"檔案不存在: {request_data.filename}")
         return
 
+    # 前端不再送明文金鑰：缺少或只帶遮罩值時改用資料庫裡的金鑰
+    with SessionLocal() as db:
+        api_key = resolve_api_key(db, request_data.provider, request_data.api_keys)
+
     task_params = TranscriptionTaskParams(
         file_path=server_file_path,
         provider=request_data.provider,
         model=request_data.model,
-        api_keys=request_data.api_keys,
+        api_keys=api_key,
         source_lang=request_data.source_lang,
         target_lang=request_data.target_lang,
         original_filename=request_data.original_filename,

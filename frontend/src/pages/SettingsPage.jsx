@@ -59,16 +59,18 @@ export default function SettingsPage() {
         const form = providerForms[provider]
         const validApiKeys = form.apiKeys.filter(k => k.trim() !== "")
 
-        const success = await saveProviderConfig(provider, {
+        const saved = await saveProviderConfig(provider, {
             apiKeys: validApiKeys,
             model: form.model,
             prompt: form.prompt
         })
 
-        if (success) {
+        if (saved) {
+            // 表單改顯示後端回傳的遮罩值，剛輸入的明文金鑰不留在畫面狀態裡
+            const savedKeys = saved.apiKeys ?? []
             setProviderForms(prev => ({
                 ...prev,
-                [provider]: { ...form, isDirty: false, apiKeys: validApiKeys.length > 0 ? validApiKeys : [""] }
+                [provider]: { ...form, isDirty: false, apiKeys: savedKeys.length > 0 ? savedKeys : [""] }
             }))
         }
     }

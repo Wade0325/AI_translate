@@ -189,10 +189,11 @@ export const TranscriptionProvider = ({ children }) => {
     }
 
     const config = await getProviderConfig(provider);
-    const apiKey = config?.apiKeys?.[0];
+    // 設定裡只有遮罩後的金鑰：這裡只確認已設定，實際金鑰由後端從資料庫取用、不隨任務送出
+    const hasApiKey = Boolean(config?.apiKeys?.[0]);
     const prompt = config?.prompt;
     const isLocalProvider = provider.toLowerCase() === 'local';
-    if (!apiKey && !isLocalProvider) {
+    if (!hasApiKey && !isLocalProvider) {
       message.error(`請先在模型管理中為 ${provider} 設定 API 金鑰。`);
       return;
     }
@@ -210,7 +211,7 @@ export const TranscriptionProvider = ({ children }) => {
     setIsProcessing(true);
 
     const runner = useBatchMode ? startBatch : startRegular;
-    const result = await runner({ provider, model, apiKey: apiKey || '', prompt, defaults });
+    const result = await runner({ provider, model, prompt, defaults });
 
     if (result?.skipped) {
       setIsProcessing(false);
