@@ -142,7 +142,9 @@ Communication pattern: Celery Worker publishes results to Redis Pub/Sub → `Con
 | Redelivery safety | `visibility_timeout=12h` in `celery.py`; `insert_log` is an upsert so redelivered tasks re-run cleanly |
 | VAD lazy-load | Silero VAD loads on first use, pre-warmed at startup via lifespan |
 | Batch/Flex cost discount | `BATCH_COST_DISCOUNT` / `FLEX_COST_DISCOUNT` = 0.5, configurable via Settings env |
-| API keys storage | Stored as JSON string in `model_configurations.api_keys` column |
+| API keys storage | Stored as JSON string in `model_configurations.api_keys` column. Plaintext never leaves the backend (`app/services/api_keys.py`): settings GET returns masked values, a save that sends masked/blank values keeps the stored keys, and WS dispatch / batch recover / Test Connection resolve the key from the DB. The frontend keeps no keys in localStorage and sends none with tasks |
+| Upload filenames | Endpoints taking a server filename (single/batch WS, VAD test) go through `utils/paths.py:resolve_upload_path()` — plain names inside `temp_uploads` only; it returns the unresolved `base / name` so docker keeps the cwd-relative path the host GPU worker relies on. `audio_store.retain()` only moves files from `temp_uploads` (or its own retained copy) |
+| Origin policy | CORS allows only `CORS_ALLOWED_ORIGINS` (default Vite dev server `localhost:5173` / `127.0.0.1:5173`). `websocket/origin.py` middleware rejects WS handshakes (1008) whose `Origin` is neither same-origin nor in that list — the Vite proxy rewrites `Host` but not `Origin`, so LAN access via `http://<ip>:5173` needs that origin added |
 | `google-genai` version | ≥1.64.0 for Batch API inline requests; ≥1.69.0 for Flex `service_tier` |
 
 ### Adding a New AI Model
