@@ -16,6 +16,7 @@ from app.core.config import get_settings
 from app.database.session import get_db
 from app.repositories.batch_job_repository import BatchJobRepository
 from app.utils.logger import setup_logger
+from app.utils.paths import UnsafeUploadFilenameError, resolve_upload_path
 from app.websocket.manager import manager
 from app.schemas.schemas import (
     WebSocketBatchRequest,
@@ -162,16 +163,30 @@ def recover_batch(batch_id: str, body: RecoverBatchRequest, db: Session = Depend
 
 # ==================== Original Endpoints ====================
 
-def start_batch_task_sync(payload_str: str, batch_id: str) -> None:
+def start_batch_task_sync(payload_str: str, batch_id: str) -> list[dict]:
     """
     同步函式：解析批次請求並派發批次轉錄任務。
     在獨立執行緒中執行以避免阻塞事件迴圈。
+
+    檔名不合法（不是 temp_uploads 內的單純檔名）的檔案不派發，其餘照常；
+    回傳被拒檔案的 FAILED 訊息，由 WS 端點送回前端。
     """
     request_data = WebSocketBatchRequest.model_validate_json(payload_str)
 
     file_items = []
+    rejected = []
     for f in request_data.files:
-        temp_file_path = TEMP_UPLOADS_DIR / f.filename
+        try:
+            temp_file_path = resolve_upload_path(f.filename, TEMP_UPLOADS_DIR)
+        except UnsafeUploadFilenameError as e:
+            logger.warning(f"批次任務拒絕不合法的上傳檔名 (file_uid: {f.file_uid}): {f.filename!r}")
+            rejected.append({
+                "client_id": batch_id,
+                "file_uid": f.file_uid,
+                "status_code": "FAILED",
+                "status_text": str(e),
+            })
+            continue
         if not temp_file_path.is_file():
             logger.error(f"批次任務檔案不存在: {f.filename}")
             continue
@@ -188,7 +203,7 @@ def start_batch_task_sync(payload_str: str, batch_id: str) -> None:
 
     if not file_items:
         logger.error(f"批次任務 {batch_id} 沒有有效的檔案，取消任務")
-        return
+        return rejected
 
     task_params = BatchTranscriptionTaskParams(
         files=file_items,
@@ -206,6 +221,7 @@ def start_batch_task_sync(payload_str: str, batch_id: str) -> None:
 
     dispatch.submit_batch(task_params.model_dump())
     logger.info(f"已為 batch_id: {batch_id} 啟動批次轉錄任務 ({len(file_items)} 個檔案)。")
+    return rejected
 
 
 @router.websocket("/ws/{batch_id}", name="WebSocket Batch Transcription")
@@ -228,9 +244,11 @@ async def batch_websocket_endpoint(
     try:
         payload_str = await websocket.receive_text()
 
-        await run_in_threadpool(
+        rejected = await run_in_threadpool(
             start_batch_task_sync, payload_str=payload_str, batch_id=batch_id
         )
+        for message in rejected:
+            await websocket.send_json(message)
 
         while True:
             await websocket.receive_text()

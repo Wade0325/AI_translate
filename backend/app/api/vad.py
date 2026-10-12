@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field
 from app.core.config import get_settings
 from app.services.vad.test import run_vad_test
 from app.utils.logger import setup_logger
+from app.utils.paths import UnsafeUploadFilenameError, resolve_upload_path
 
 logger = setup_logger(__name__)
 
@@ -28,7 +29,11 @@ async def vad_test(body: VadTestRequest):
 
     回傳語音佔比、片段時間戳、分割點，並將 wav 產物保存至 vad_artifacts/。
     """
-    file_path = TEMP_UPLOADS_DIR / body.filename
+    try:
+        file_path = resolve_upload_path(body.filename, TEMP_UPLOADS_DIR)
+    except UnsafeUploadFilenameError as e:
+        logger.warning(f"VAD 測試拒絕不合法的上傳檔名: {body.filename!r}")
+        raise HTTPException(status_code=400, detail=str(e)) from e
     if not file_path.is_file():
         raise HTTPException(status_code=404, detail=f"找不到檔案: {body.filename}")
 

@@ -18,6 +18,7 @@ from app.core.config import get_settings
 from app.database.session import SessionLocal
 from app.repositories.transcription_log_repository import TranscriptionLogRepository
 from app.utils.logger import setup_logger
+from app.utils.paths import UnsafeUploadFilenameError, resolve_upload_path
 from app.websocket.manager import manager
 from app.schemas.schemas import WebSocketTranscriptionRequest
 
@@ -32,11 +33,15 @@ TEMP_UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def start_transcription_task_sync(payload_str: str, file_uid: str) -> None:
-    """解析 WS 請求並派發轉錄任務；在 threadpool 執行以免阻塞事件迴圈。"""
+    """解析 WS 請求並派發轉錄任務；在 threadpool 執行以免阻塞事件迴圈。
+
+    Raises:
+        UnsafeUploadFilenameError: filename 不是 temp_uploads 內的單純檔名。
+    """
     request_data = WebSocketTranscriptionRequest.model_validate_json(
         payload_str)
 
-    temp_file_path = TEMP_UPLOADS_DIR / request_data.filename
+    temp_file_path = resolve_upload_path(request_data.filename, TEMP_UPLOADS_DIR)
 
     if temp_file_path.is_file():
         server_file_path = str(temp_file_path)
@@ -121,7 +126,19 @@ async def websocket_endpoint(
     try:
         payload_str = await websocket.receive_text()
 
-        await run_in_threadpool(start_transcription_task_sync, payload_str=payload_str, file_uid=file_uid)
+        try:
+            await run_in_threadpool(start_transcription_task_sync, payload_str=payload_str, file_uid=file_uid)
+        except UnsafeUploadFilenameError as e:
+            logger.warning(f"拒絕不合法的上傳檔名 (file_uid: {file_uid}): {e.filename!r}")
+            await websocket.send_json({
+                "client_id": file_uid,
+                "file_uid": file_uid,
+                "status_code": "FAILED",
+                "status_text": str(e),
+            })
+            manager.disconnect(file_uid)
+            await websocket.close(code=1008)
+            return
 
         # 保持連線開啟以接收來自客戶端的訊息
         while True:
