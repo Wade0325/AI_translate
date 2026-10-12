@@ -98,9 +98,12 @@ app.include_router(transcripts.router, prefix="/api/v1/transcripts",
                    tags=["Transcripts"])
 app.include_router(vad.router, prefix="/api/v1/vad", tags=["VAD"])
 
+# 只放行設定中的來源（預設為開發用的 Vite dev server），不再用 * 搭配 credentials。
+# docker 開發模式前端經 Vite proxy 呼叫 /api、standalone 由本服務同源提供，
+# 對瀏覽器而言都是同源請求，不靠 CORS；清單只影響真正跨來源的呼叫
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=get_settings().cors_origins,
     allow_credentials=True,
     allow_methods=["DELETE", "GET", "POST", "PUT"],
     allow_headers=["*"],

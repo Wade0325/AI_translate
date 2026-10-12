@@ -10,7 +10,7 @@ from app.core.config import Settings
 def _clean_env(monkeypatch):
     """隔離宿主環境變數，測試只看 init kwargs。"""
     for var in ("APP_MODE", "DATABASE_URL", "AIT_DATA_DIR",
-                "AIT_STATIC_DIR", "AIT_FFMPEG_DIR"):
+                "AIT_STATIC_DIR", "AIT_FFMPEG_DIR", "CORS_ALLOWED_ORIGINS"):
         monkeypatch.delenv(var, raising=False)
 
 
@@ -44,3 +44,27 @@ def test_standalone_static_dir_override():
     s = Settings(_env_file=None, app_mode="standalone",
                  static_dir="X:/pkg/frontend/dist")
     assert s.static_path == Path("X:/pkg/frontend/dist")
+
+
+def test_cors_origins_default_to_vite_dev_server():
+    """預設只放行開發用的 Vite dev server；standalone 同源不需要 CORS。"""
+    s = Settings(_env_file=None)
+    assert s.cors_origins == ["http://localhost:5173", "http://127.0.0.1:5173"]
+
+
+def test_cors_origins_from_env_comma_separated(monkeypatch):
+    monkeypatch.setenv("CORS_ALLOWED_ORIGINS",
+                       " http://192.168.1.10:5173 , https://Example.test/ ,")
+    s = Settings(_env_file=None)
+    assert s.cors_origins == ["http://192.168.1.10:5173", "https://example.test"]
+
+
+def test_cors_origins_ignore_wildcard(monkeypatch):
+    """萬用字元會讓任何網站都能跨站呼叫，設定了也不採用。"""
+    monkeypatch.setenv("CORS_ALLOWED_ORIGINS", "*,http://localhost:5173")
+    assert Settings(_env_file=None).cors_origins == ["http://localhost:5173"]
+
+
+def test_cors_origins_can_be_emptied(monkeypatch):
+    monkeypatch.setenv("CORS_ALLOWED_ORIGINS", "")
+    assert Settings(_env_file=None).cors_origins == []
