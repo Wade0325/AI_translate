@@ -9,6 +9,8 @@
 from unittest.mock import patch, MagicMock
 from fastapi.testclient import TestClient
 
+from app.services.api_keys import mask_api_key
+
 
 # ─── 儲存模型設定 ─────────────────────────────────────────────────────────────
 
@@ -67,7 +69,8 @@ class TestSaveModelSetting:
         assert get_resp.status_code == 200
         data = get_resp.json()
         assert data["model"] == "new-model"
-        assert data["apiKeys"] == ["new_key1", "new_key2"]
+        # GET 只回遮罩值（明文金鑰不離開後端）
+        assert data["apiKeys"] == [mask_api_key("new_key1"), mask_api_key("new_key2")]
         assert data["prompt"] == "New prompt"
 
     def test_missing_provider_returns_422(self, client: TestClient):
@@ -105,7 +108,7 @@ class TestGetModelSetting:
         assert response.status_code == 200
         data = response.json()
         assert data["provider"] == provider
-        assert data["apiKeys"] == ["my_key"]
+        assert data["apiKeys"] == [mask_api_key("my_key")]
         assert data["model"] == "my-model"
         assert data["prompt"] == "My prompt"
 
@@ -128,7 +131,7 @@ class TestGetModelSetting:
         resp = client.get(f"/api/v1/setting/models/{provider}")
         data = resp.json()
         assert data["provider"] == provider
-        assert data["apiKeys"] == ["rt_key"]
+        assert data["apiKeys"] == [mask_api_key("rt_key")]
 
     def test_api_keys_deserialized_as_list(self, client: TestClient):
         """API keys 應以 list 形式回傳（JSON deserialize 後）"""

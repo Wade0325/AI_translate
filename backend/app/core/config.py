@@ -109,6 +109,20 @@ class Settings(BaseSettings):
     audio_store_dir: str = "audio_store"
     audio_retention_days: int = 30
 
+    # 允許跨來源呼叫 API 的前端來源（逗號分隔，例如 http://192.168.1.10:5173）。
+    # 同一份清單也用於 WebSocket 的 Origin 檢查。預設只含開發用的 Vite dev server；
+    # standalone 模式前端由 FastAPI 同源提供，不需要另外設定。不支援萬用字元 *
+    cors_allowed_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
+
+    @property
+    def cors_origins(self) -> list[str]:
+        origins = []
+        for item in self.cors_allowed_origins.split(","):
+            origin = item.strip().rstrip("/").lower()
+            if origin and origin != "*":
+                origins.append(origin)
+        return origins
+
     # Local ASR 模型權重快取（standalone 模式下由 launcher 指向 data/models/hf_cache）
     hf_home: str = r"D:\AI_translate\models\hf_cache"
 

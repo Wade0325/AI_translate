@@ -2,8 +2,7 @@ import { useState, useEffect, useCallback, useRef, useMemo } from "react"
 import { Card, Button, Typography, message, Empty, Spin, Popconfirm } from "antd"
 import { Archive } from "lucide-react"
 import { ReloadOutlined, LoadingOutlined } from "@ant-design/icons"
-import { useModelManager } from "@/components/ModelManager"
-import { api, ApiError } from "../services/api"
+import { api } from "../services/api"
 import { downloadBlob, renameExtension } from "../utils/download"
 import TaskCard from "@/components/task/TaskCard"
 import SingleTaskRow from "@/components/task/SingleTaskRow"
@@ -27,7 +26,6 @@ export default function TaskPage() {
     const [expandedIds, setExpandedIds] = useState(new Set())
     const [taskResults, setTaskResults] = useState({})
     const pollIntervalRef = useRef(null)
-    const { getProviderConfig } = useModelManager()
 
     const fetchTasks = useCallback(async () => {
         try {
@@ -52,22 +50,8 @@ export default function TaskPage() {
     const retrieveResults = async (batchId) => {
         setRetrievingIds(prev => new Set(prev).add(batchId))
         try {
-            let result
-            try {
-                result = await api.batch.recover(batchId, {})
-            } catch (err) {
-                if (err instanceof ApiError && err.status === 400) {
-                    const config = await getProviderConfig("Google")
-                    const apiKey = config?.apiKeys?.[0]
-                    if (!apiKey) {
-                        message.error("請先在 Settings 中設定 Google API 金鑰")
-                        return
-                    }
-                    result = await api.batch.recover(batchId, { api_keys: apiKey })
-                } else {
-                    throw err
-                }
-            }
+            // 金鑰由後端從資料庫取用；尚未設定時後端回 400 並提示先到 Settings 設定
+            const result = await api.batch.recover(batchId, {})
 
             if (result.files && result.files.length > 0) {
                 setTaskResults(prev => ({ ...prev, [batchId]: result }))

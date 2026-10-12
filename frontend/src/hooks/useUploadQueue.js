@@ -12,10 +12,12 @@ import { randomId } from '../utils/id';
  *   - socketManager：來自 useTranscriptionSocket()
  *
  * 回傳兩個高階函式：
- *   - startRegular({ provider, model, apiKey, prompt, defaults }):
+ *   - startRegular({ provider, model, prompt, defaults }):
  *       每個檔案各自一條 WS；單檔轉錄／Flex／Standard 模式
- *   - startBatch({ provider, model, apiKey, prompt, defaults }):
+ *   - startBatch({ provider, model, prompt, defaults }):
  *       所有檔案共用一條 batch WS（Gemini Batch API，50% 折扣）
+ *
+ * 請求不帶 API 金鑰：後端從資料庫取用，明文金鑰不經過瀏覽器。
  *
  * defaults 物件包含全域 fallback：source_lang / multi_speaker / service_tier；
  * 當檔案本身沒指定 per-file 設定時會用 defaults 補上。
@@ -25,13 +27,12 @@ const isRestartable = (f) =>
   (f.status === 'waiting' || f.status === 'error' || f.status === 'cancelled') &&
   !!f.originFileObj;
 
-function buildSinglePayload({ serverFilename, file, provider, model, apiKey, prompt, defaults, sessionId }) {
+function buildSinglePayload({ serverFilename, file, provider, model, prompt, defaults, sessionId }) {
   return {
     filename: serverFilename,
     original_filename: file.name,
     provider,
     model,
-    api_keys: apiKey,
     source_lang: file.language || defaults.sourceLang,
     prompt: file.prompt ?? prompt,
     original_text: file.original_text || null,
@@ -124,7 +125,7 @@ export function useUploadQueue({ fileList, setFileList, socketManager, onBatchSu
   }, []);
 
   // 一般模式：每個 file uid 一條 WebSocket
-  const startRegular = useCallback(async ({ provider, model, apiKey, prompt, defaults }) => {
+  const startRegular = useCallback(async ({ provider, model, prompt, defaults }) => {
     const candidates = fileList.filter(isRestartable);
     if (candidates.length === 0) {
       return { skipped: true };
@@ -141,7 +142,6 @@ export function useUploadQueue({ fileList, setFileList, socketManager, onBatchSu
             file,
             provider,
             model,
-            apiKey,
             prompt,
             defaults,
             sessionId,
@@ -180,7 +180,7 @@ export function useUploadQueue({ fileList, setFileList, socketManager, onBatchSu
   }, [fileList, updateFile, socketManager, handleSingleMessage, beginSession, uploadFile]);
 
   // 批次模式：所有檔案共用一條 batch WebSocket
-  const startBatch = useCallback(async ({ provider, model, apiKey, prompt, defaults }) => {
+  const startBatch = useCallback(async ({ provider, model, prompt, defaults }) => {
     const candidates = fileList.filter(isRestartable);
     if (candidates.length === 0) {
       return { skipped: true, reason: 'no-files' };
@@ -237,7 +237,6 @@ export function useUploadQueue({ fileList, setFileList, socketManager, onBatchSu
           })),
           provider,
           model,
-          api_keys: apiKey,
           // 整個批次的 fallback 值
           source_lang: defaults.sourceLang,
           prompt,

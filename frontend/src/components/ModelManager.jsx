@@ -1,4 +1,4 @@
-import { useState, createContext, useContext, useCallback } from 'react';
+import { useState, createContext, useContext, useCallback, useEffect } from 'react';
 import { message } from 'antd';
 import { modelOptions } from '../constants/modelConfig';
 import { api, ApiError } from '../services/api';
@@ -6,6 +6,20 @@ import ApiKeyModal from './model-manager/ApiKeyModal';
 import PromptModal from './model-manager/PromptModal';
 
 const ModelManagerContext = createContext(null);
+
+// 舊版把含明文金鑰的設定快取在 localStorage（providerConfig_<provider>），載入時清掉
+const LEGACY_CONFIG_PREFIX = 'providerConfig_';
+
+function purgeLegacyStoredConfigs() {
+    try {
+        Object.keys(localStorage)
+            .filter((key) => key.startsWith(LEGACY_CONFIG_PREFIX))
+            .forEach((key) => localStorage.removeItem(key));
+    } catch (e) {
+        console.error('清除舊版 localStorage 設定失敗:', e);
+    }
+}
+
 export const useModelManager = () => {
     const context = useContext(ModelManagerContext);
     if (!context) {
@@ -25,32 +39,22 @@ const ModelManagerProvider = ({ children }) => {
     const [editingParamsProvider, setEditingParamsProvider] = useState('');
     const [promptText, setPromptText] = useState('');
 
-    // 設定查找順序：記憶體快取 → localStorage → 後端 API（避免每次都打後端）
+    useEffect(() => {
+        purgeLegacyStoredConfigs();
+    }, []);
+
+    // 設定查找順序：記憶體快取 → 後端 API（避免每次都打後端）。
+    // 後端只回遮罩後的金鑰（前後 4 碼），前端不保存明文；任務與 Test Connection
+    // 需要的金鑰由後端從資料庫取用
     const getProviderConfig = useCallback(async (provider) => {
         if (providerConfigs[provider]) {
             return providerConfigs[provider];
         }
 
         try {
-            const storedConfigStr = localStorage.getItem(`providerConfig_${provider}`);
-            if (storedConfigStr) {
-                const storedConfig = JSON.parse(storedConfigStr);
-                setProviderConfigs(prev => ({ ...prev, [provider]: storedConfig }));
-                return storedConfig;
-            }
-        } catch (e) {
-            console.error('從 localStorage 讀取設定失敗:', e);
-        }
-
-        try {
             const data = await api.settings.getProvider(provider);
             if (data) {
                 setProviderConfigs(prev => ({ ...prev, [provider]: data }));
-                try {
-                    localStorage.setItem(`providerConfig_${provider}`, JSON.stringify(data));
-                } catch (e) {
-                    console.error('寫入 localStorage 失敗:', e);
-                }
                 return data;
             }
             return null;
@@ -66,6 +70,7 @@ const ModelManagerProvider = ({ children }) => {
 
         const latestConfig = await getProviderConfig(provider) || {};
 
+        // 沒改到的金鑰會以遮罩值送回，後端會保留資料庫中原有的金鑰
         const payload = {
             ...latestConfig,
             ...partialConfig,
@@ -76,18 +81,6 @@ const ModelManagerProvider = ({ children }) => {
 
         try {
             await api.settings.saveProvider(payload);
-            const updatedConfig = payload;
-
-            try {
-                localStorage.setItem(`providerConfig_${provider}`, JSON.stringify(updatedConfig));
-            } catch (e) {
-                console.error('寫入 localStorage 失敗:', e);
-                message.warning('設定已保存到伺服器，但本地儲存失敗。');
-            }
-
-            setProviderConfigs(prev => ({ ...prev, [provider]: updatedConfig }));
-            message.success({ content: '設定保存成功！', key: 'saveConfig' });
-            return true;
         } catch (error) {
             const detail = error instanceof ApiError
                 ? `後端保存失敗: ${error.message}`
@@ -95,6 +88,26 @@ const ModelManagerProvider = ({ children }) => {
             message.error({ content: detail, key: 'saveConfig' });
             return false;
         }
+
+        // 重新讀回後端的遮罩版本：剛輸入的明文金鑰不留在前端狀態裡
+        let savedConfig = null;
+        try {
+            savedConfig = await api.settings.getProvider(provider);
+        } catch (e) {
+            console.error(`重新讀取 ${provider} 設定失敗:`, e);
+        }
+        setProviderConfigs(prev => {
+            const next = { ...prev };
+            if (savedConfig) {
+                next[provider] = savedConfig;
+            } else {
+                delete next[provider];
+            }
+            return next;
+        });
+        message.success({ content: '設定保存成功！', key: 'saveConfig' });
+        // 回傳遮罩後的設定（讀回失敗時回傳 true），失敗時回傳 false
+        return savedConfig || true;
     }, [getProviderConfig]);
 
     const handleEditProvider = useCallback(async (provider) => {
@@ -161,6 +174,7 @@ const ModelManagerProvider = ({ children }) => {
         message.loading({ content: `正在測試 ${provider} API...`, key: 'testInterface' });
 
         const config = await getProviderConfig(provider);
+        // 這裡是遮罩值，只用來確認已設定金鑰；後端會換回資料庫中的實際金鑰再測試
         const apiKeysToTest = config?.apiKeys?.filter(key => key) || [];
 
         if (apiKeysToTest.length === 0) {

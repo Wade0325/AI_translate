@@ -9,6 +9,12 @@ from app.schemas.schemas import ProviderConfigRequest, ProviderConfigResponse, M
 from app.database.session import get_db
 from app.repositories.model_manager_repository import ModelSettingsRepository
 from app.provider.google.gemini import GeminiClient
+from app.services.api_keys import (
+    mask_api_key,
+    merge_api_keys,
+    parse_stored_api_keys,
+    resolve_api_keys,
+)
 from app.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -27,7 +33,11 @@ async def save_model_setting(
 ):
     logger.info(f"收到模型設定請求:'{config.provider}'")
     try:
-        api_keys = json.dumps(config.api_keys, ensure_ascii=False)
+        # 前端拿到的是遮罩值：送回遮罩值或空值時保留資料庫中原有的金鑰
+        existing = await run_in_threadpool(repo.get_by_name, db, config.provider)
+        stored_keys = parse_stored_api_keys(existing.api_keys) if existing else []
+        api_keys = json.dumps(merge_api_keys(config.api_keys, stored_keys),
+                              ensure_ascii=False)
         config_to_save = ModelConfigurationSchema(
             provider=config.provider,
             api_keys=api_keys,
@@ -52,13 +62,9 @@ async def get_model_setting(
         db_orm_config = await run_in_threadpool(repo.get_by_name, db, provider)
 
         if db_orm_config:
-            api_keys_list = []
-            if db_orm_config.api_keys:
-                try:
-                    api_keys_list = json.loads(db_orm_config.api_keys)
-                except json.JSONDecodeError as je:
-                    logger.warning(
-                        f"Error decoding provider for '{provider}': {je}. Returning with empty API keys.")
+            # 只回遮罩值：明文金鑰不離開後端
+            api_keys_list = [mask_api_key(k)
+                             for k in parse_stored_api_keys(db_orm_config.api_keys)]
 
             return ProviderConfigResponse(
                 provider=db_orm_config.provider,
@@ -76,7 +82,8 @@ async def get_model_setting(
 
 @router.post("/test", response_model=ProviderTestResponse)
 async def test_model_interface(
-    request_data: ProviderTestRequest = Body(...)
+    request_data: ProviderTestRequest = Body(...),
+    db: Session = Depends(get_db),
 ):
     logger.info(
         f"收到測試API請求: Interface Name - '{request_data.provider}', API Keys count: {len(request_data.api_keys)}")
@@ -85,11 +92,14 @@ async def test_model_interface(
             success=True,
             message="本地模型（VibeVoice + Qwen3-ASR）無需連線測試。",
         )
-    if not request_data.api_keys:
+    # 前端送的是遮罩值（或不送）：從資料庫取回實際金鑰
+    api_keys = await run_in_threadpool(
+        resolve_api_keys, db, request_data.provider, request_data.api_keys)
+    if not api_keys:
         raise HTTPException(status_code=400, detail="未提供 API 金鑰進行測試。")
 
     # Gemini 通常使用單一 API Key。我們將使用列表中的第一個。
-    api_key_to_test = request_data.api_keys[0]
+    api_key_to_test = api_keys[0]
 
     if "google" in request_data.provider.lower():
         try:

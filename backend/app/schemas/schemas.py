@@ -58,7 +58,7 @@ class WebSocketTranscriptionRequest(BaseModel):
     original_filename: str
     provider: str
     model: str
-    api_keys: str
+    api_keys: str = ""  # 可省略：前端不送明文金鑰，後端改用資料庫裡的金鑰
     source_lang: str
     target_lang: Optional[str] = None
     prompt: Optional[str] = None
@@ -84,7 +84,7 @@ class WebSocketBatchRequest(BaseModel):
     files: List[BatchFileItem]
     provider: str
     model: str
-    api_keys: str
+    api_keys: str = ""  # 可省略：前端不送明文金鑰，後端改用資料庫裡的金鑰
     source_lang: str
     target_lang: Optional[str] = None
     prompt: Optional[str] = None
@@ -95,7 +95,7 @@ class WebSocketBatchRequest(BaseModel):
 # ==================== Batch Recovery ====================
 
 class RecoverBatchRequest(BaseModel):
-    """POST /batch/{batch_id}/recover 的請求"""
+    """POST /batch/{batch_id}/recover 的請求；api_keys 省略時後端改用資料庫裡的金鑰"""
     api_keys: Optional[str] = None
 
 
