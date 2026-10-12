@@ -1,7 +1,7 @@
 <div align="center">
   <h1>🎙️ AI Voice Transcription</h1>
   <p><strong>AI 驅動的語音轉錄與字幕生成工具</strong></p>
-  <p>上傳音訊／視頻 → 自動偵測語音 → 由 Gemini 轉錄並輸出多格式字幕</p>
+  <p>給 Windows 個人使用者的語音轉錄工具：把日文與中文音檔轉成帶說話者標記與時間戳的字幕和逐字稿，預設在本機 GPU 上執行，沒有合適顯卡時可改用 Gemini。</p>
 
   ![Python](https://img.shields.io/badge/Python-3.11-blue?logo=python&logoColor=white)
   ![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688?logo=fastapi&logoColor=white)
@@ -284,7 +284,7 @@ cd backend
 
 ## 📝 授權
 
-本專案採用 MIT License。
+本專案採用 [Apache License 2.0](LICENSE)，理由見 [ADR 0006](docs/adr/0006-license-apache-2.md)。
 
 ---
 
