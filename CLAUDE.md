@@ -1,6 +1,11 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+AI_translate 是給 Windows 個人使用者的語音轉錄工具：把日文與中文音檔轉成帶說話者標記與時間戳的字幕和逐字稿，預設在本機 GPU 上執行，沒有合適顯卡時可改用 Gemini。
+
+這是準備公開發布給一般使用者的正式產品（v0.1 公開測試版之前）：程式要可維護、要有測試；使用者的音檔與隱私優先於便利。
+
+- **用語**：碰到去靜音、切點、說話者標記、接續這類領域用語，或不確定某個詞指的是什麼時，先讀 `GLOSSARY.md`。
+- **決策**：要改變預設引擎、官方支援語言、發布形式、遙測、授權或校正資料的保存方式之前，先讀 `docs/adr/` 裡對應的決策。
 
 ## Workflow
 
