@@ -11,6 +11,7 @@ from app.api import history
 from app.api import transcripts
 from app.api import vad
 from app.websocket.manager import manager as websocket_manager
+from app.websocket.origin import WebSocketOriginMiddleware
 
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import get_settings
@@ -108,6 +109,9 @@ app.add_middleware(
     allow_methods=["DELETE", "GET", "POST", "PUT"],
     allow_headers=["*"],
 )
+# WebSocket 不受 CORS 保護：握手時 Origin 必須同源或在同一份允許清單內
+app.add_middleware(WebSocketOriginMiddleware,
+                   allowed_origins=get_settings().cors_origins)
 
 
 class _SPAStaticFiles(StaticFiles):
