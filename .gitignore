@@ -16,7 +16,8 @@ backend/.venv/
 
 # 環境變數與本機設定
 .env
-backend/.env
+.env.*
+!.env.example
 backend/config.json
 backend/setting.json
 backend/*.db
@@ -26,8 +27,6 @@ frontend/node_modules/
 frontend/dist/
 frontend/build/
 frontend/coverage/
-frontend/.env.local
-frontend/.env.*.local
 frontend/npm-debug.log*
 frontend/yarn-debug.log*
 frontend/yarn-error.log*

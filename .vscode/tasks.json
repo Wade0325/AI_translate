@@ -37,9 +37,9 @@
       "presentation": { "reveal": "always", "panel": "dedicated" }
     },
     {
-      "label": "🧪 Tests (pytest)",
+      "label": "🧪 Checks (ruff + pytest + ESLint)",
       "type": "shell",
-      "command": "backend\\.venv\\Scripts\\python.exe -m pytest tests/ -v",
+      "command": "backend\\.venv\\Scripts\\python.exe tools/check.py",
       "options": {
         "cwd": "${workspaceFolder}",
         "shell": { "executable": "cmd.exe", "args": ["/c"] }

@@ -1,0 +1,226 @@
+# CI：PR、push 到 main、每週排程，以及發版前（release.yml 以 workflow_call 呼叫）執行。
+#
+# 最底下的 `check` 是 ruleset 唯一要求的檢查：不准改名，其他 job 也不准取這個名字。
+# 新增 job 時，要加進 `check` 的 needs；`check` 逐一確認每個 needs 的結果，全部 success
+# 才綠燈（只改文件時，四個重的 job 可以是 skipped）。
+#
+# 要跑哪些檢查定義在 tools/check.py：這裡的 job 只呼叫它，不另寫 ruff、pytest、ESLint 的指令。
+# 不要加 on.paths：被路徑過濾掉的 PR 等不到 `check`，會一直卡在等待中；
+# 只改文件時的跳過，由 `changes` job 判斷。
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 3 * * 1" # 每週一 03:17 UTC：抓上游套件與 runner 映像造成的漂移
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  # 同一個 ref 有新的執行時，取消舊的。release.yml 呼叫時 ref 是 tag，不會和 main 的執行互相取消
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    # PR 改動的檔案（含改名前的舊路徑）全在 docs/ 底下或是根目錄的 *.md 時，輸出 docs_only=true，
+    # 四個重的 job 跳過。只有 PR 才判斷：push、排程與 release.yml 呼叫時一律跑全套
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read # 列出 PR 改動的檔案
+    outputs:
+      docs_only: ${{ steps.classify.outputs.docs_only }}
+    steps:
+      - name: 判斷是否只改文件
+        id: classify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" != "pull_request" ]; then
+            echo "事件是 $EVENT_NAME，不是 PR：跑全套"
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # 每個檔案一行：路徑，以及改名前的舊路徑（沒有改名時是空字串）
+          files="$RUNNER_TEMP/pr-files.tsv"
+          gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/files?per_page=100" \
+            --jq '.[] | [.filename, (.previous_filename // "")] | @tsv' > "$files"
+          count=$(wc -l < "$files")
+          echo "PR 改動 $count 個檔案"
+          # 這個 API 最多列 3000 個檔案；達到上限時清單可能不完整，不採信
+          if [ "$count" -eq 0 ] || [ "$count" -ge 3000 ]; then
+            echo "檔案清單是空的或達到 API 上限：跑全套"
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          docs_only=true
+          while IFS=$'\t' read -r path old_path; do
+            for p in "$path" "$old_path"; do
+              [ -n "$p" ] || continue
+              case "$p" in
+                docs/*) ;;
+                */*) docs_only=false; echo "不是文件：$p" ;;
+                *.md) ;;
+                *) docs_only=false; echo "不是文件：$p" ;;
+              esac
+            done
+          done < "$files"
+          echo "docs_only=$docs_only"
+          echo "docs_only=$docs_only" >> "$GITHUB_OUTPUT"
+
+  python:
+    name: python (${{ matrix.os }})
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-2025]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    env:
+      # 只設 PYTHONIOENCODING，讓輸出中文時不出錯；刻意不設 PYTHONUTF8：Windows 腿要和
+      # 使用者的環境一樣用系統碼頁，才抓得到 open() 沒指定 encoding 的 bug
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+          # Python 3.11 附的 pip 24.0 用系統碼頁讀 requirements 檔，Windows 上遇到中文註解就
+          # 解碼失敗；新版 pip 預設用 UTF-8
+          pip-version: "26.2.1"
+          cache: pip
+          cache-dependency-path: |
+            backend/requirements-base.txt
+            backend/requirements-dev.txt
+      - name: 安裝依賴（base 與 dev，不裝 torch 系列）
+        run: python -m pip install -r backend/requirements-base.txt -r backend/requirements-dev.txt
+      - name: ruff 與 pytest
+        run: python tools/check.py ruff pytest
+
+  frontend:
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: frontend/.nvmrc
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: 安裝依賴
+        working-directory: frontend
+        run: npm ci
+      - name: ESLint
+        run: python3 tools/check.py eslint
+      - name: 建置
+        working-directory: frontend
+        run: npm run build
+
+  docker:
+    # Docker 模式只要求在 CI 裡保持可用（ADR 0004）：compose 設定、只裝 base 的後端映像，
+    # 以及完整依賴（base 加 ml）能否解析。ml 層不在 CI 安裝，由使用者在本機重建確認
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: compose 設定
+        run: |
+          # 每個服務都讀 .env；CI 沒有這個檔，從範本產生
+          cp .env.example .env
+          docker compose config --quiet
+      - name: 建置後端映像（只裝 base）
+        run: docker compose build --build-arg INSTALL_ML=false backend-service
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+      - name: 安裝 uv
+        run: python -m pip install uv==0.12.23
+      - name: 解析完整依賴（只解析、不安裝）
+        env:
+          UV_CACHE_DIR: ${{ runner.temp }}/uv-cache
+        run: |
+          set -euo pipefail
+          # 目標平台與映像一致：Linux x86_64、Python 3.11
+          uv pip compile backend/requirements.txt \
+            --python-version 3.11 --python-platform x86_64-unknown-linux-gnu \
+            --no-header --output-file "$RUNNER_TEMP/requirements-resolved.txt"
+          grep -E '^(torch|torchaudio|silero-vad|numpy)==' "$RUNNER_TEMP/requirements-resolved.txt"
+          # 解析只抓套件的中繼資料，快取應該只有幾十 MB；torch 的 wheel 一個就好幾百 MB
+          cache_mb=$(du -sm "$UV_CACHE_DIR" | cut -f1)
+          echo "uv 快取：${cache_mb} MB"
+          if [ "$cache_mb" -gt 200 ]; then
+            echo "::error::uv 快取 ${cache_mb} MB，解析時下載了 wheel"
+            exit 1
+          fi
+
+  workflows:
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+      - name: 安裝 zizmor
+        run: python -m pip install zizmor==1.30.1
+      - name: zizmor
+        env:
+          GH_TOKEN: ${{ github.token }} # 線上稽核（impostor-commit 等）要查 action 的 repo
+        run: zizmor .
+
+  check:
+    if: always()
+    needs: [changes, python, frontend, docker, workflows]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: 逐一確認每個 job 的結果
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          docs_only=$(jq -r '.changes.outputs.docs_only // "false"' <<< "$NEEDS")
+          echo "docs_only=$docs_only"
+          failed=0
+          for job in $(jq -r 'keys[]' <<< "$NEEDS"); do
+            result=$(jq -r --arg job "$job" '.[$job].result' <<< "$NEEDS")
+            # 只接受 success；只改文件時，changes 以外的 job 也可以是 skipped
+            if [ "$result" = "success" ]; then
+              echo "通過：$job"
+            elif [ "$result" = "skipped" ] && [ "$job" != "changes" ] && [ "$docs_only" = "true" ]; then
+              echo "通過：$job（只改文件，跳過）"
+            else
+              echo "::error::$job 的結果是 $result"
+              failed=1
+            fi
+          done
+          exit "$failed"
