@@ -158,6 +158,11 @@ class TestShellWriteActions:
         r"Get-ChildItem lab\data\eval | Remove-Item",
         r"Get-ChildItem lab\data\eval -Filter *.txt | ForEach-Object { Remove-Item $_.FullName }",
         r"Remove-Item -Recurse -Force (Join-Path $PWD 'lab\data\eval')",
+        r"(Get-ChildItem lab\data\eval) | Remove-Item",
+        r"Remove-Item -Path:lab\data\eval\a.txt",                 # -Param:值 的寫法
+        r"Copy-Item C:\tmp\a.txt -Dest lab\data\eval\a.txt",     # 參數名稱的縮寫
+        r"Remove-Item lab\runs\a, lab\data\eval\b",              # 陣列
+        r"Invoke-Expression 'Remove-Item lab\data\eval\a.txt'",
         "bash -c 'rm -rf lab/data/eval'",
     ])
     def test_powershell_blocks(self, run_hook, command):
@@ -257,6 +262,35 @@ class TestReadOnlyCommands:
     ], ids=_id)
     def test_text_mentioning_protected_paths_is_allowed(self, run_hook, payload):
         assert_allowed(run_hook(payload))
+
+    @pytest.mark.parametrize("payload", [
+        bash("python -m pytest tests/ -q 2>&1 | tail -3"),
+        bash("npm ci --prefix frontend > /dev/null 2>&1"),
+        bash("rm -rf node_modules dist build"),
+        bash("find . -name __pycache__ -exec rm -rf {} +"),
+        bash("git add -A && git status --short"),
+        powershell(r'& "C:\Program Files\GitHub CLI\gh.exe" pr create --title "保護 lab/data/eval" '
+                   r"--body-file $env:TEMP\body.md"),
+        powershell("Remove-Item Env:PYTHONIOENCODING -ErrorAction SilentlyContinue"),
+        powershell(r"Set-Content -Path $env:TEMP\x.txt -Value 'lab/data/eval'"),
+        powershell(r"Get-Content lab\data\eval\rec17.tsv | ForEach-Object { $_ -replace 'a','b' } "
+                   r"| Set-Content $env:TEMP\fixed.tsv"),
+        powershell(r"Copy-Item -Recurse lab\data\eval D:\backup\eval"),
+        powershell(r"Set-Content out.txt -Value (Get-Content lab\data\eval\rec17.tsv)"),
+        powershell(r"Get-ChildItem lab\data\eval | ForEach-Object { Copy-Item $_.FullName $env:TEMP; "
+                   r"Remove-Item $env:TEMP\stale.txt }"),
+    ], ids=_id)
+    def test_everyday_commands_are_allowed(self, run_hook, payload):
+        assert_allowed(run_hook(payload))
+
+    @pytest.mark.parametrize("tool", [bash, powershell])
+    @pytest.mark.parametrize("command", [
+        "echo 'unterminated", 'echo "unterminated', "echo trailing \\", "echo $", ")", "}}}",
+        "((((", "<<", "cat <<", ">", "2>&1", "@'",
+    ])
+    def test_odd_input_does_not_crash(self, run_hook, tool, command):
+        """hook 自己出錯時會擋下，所以切詞器碰到不完整的命令也不能出錯。"""
+        assert_allowed(run_hook(tool(command)))
 
 
 class TestProtectedScope:
