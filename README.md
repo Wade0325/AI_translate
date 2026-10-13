@@ -246,11 +246,12 @@ export const modelOptions = {
 
 ### 執行測試
 
-```bash
-pytest tests/ -v
+```powershell
+backend\.venv\Scripts\python.exe tools/check.py           # 依序跑 ruff → pytest → ESLint
+backend\.venv\Scripts\python.exe tools/check.py pytest    # 只跑指定的項目
 ```
 
-> 從專案根目錄執行。`pytest.ini` 已設定 `pythonpath = backend`，測試可直接 `from app.api import ...` 匯入；測試自帶 SQLite in-memory 與 mock，不需 Postgres/Redis。
+> `tools/check.py` 是唯一的檢查清單，CI 跑的也是它。Python 的檢查要先安裝 `backend/requirements-dev.txt`，ESLint 要先在 `frontend/` 執行 `npm ci`。`pytest.ini` 已設定 `pythonpath = backend`，測試可直接 `from app.api import ...` 匯入；測試自帶 SQLite in-memory 與 mock，不需 Postgres/Redis。
 
 ### 建置 Windows 免安裝發布包
 
@@ -260,7 +261,7 @@ pytest tests/ -v
 
 產出 `build\AI_Translate-v1.2.3-win64.zip`（約 150 MB —— Python 依賴不進 zip，
 由使用者首次啟動時以隨包 `uv` 依 `backend/requirements-standalone.txt` 自動下載）。
-推 `v*` tag 時 GitHub Actions（`.github/workflows/release.yml`）會自動建置並發布 Release。
+推 `v*` tag 時 GitHub Actions（`.github/workflows/release.yml`）會先跑一次完整的 CI，通過後自動建置並發布 Release。
 
 單機模式的程式碼開關是 `APP_MODE=standalone` 環境變數：SQLite + 行程內執行緒
 + asyncio queue 取代 Postgres / Redis / Celery，同一份程式碼與 Docker 模式並存。
