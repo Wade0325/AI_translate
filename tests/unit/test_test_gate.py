@@ -64,21 +64,43 @@ def same(a: Path | str, b: Path | str) -> bool:
 
 
 def run_hook(monkeypatch, capsys, payload: dict) -> tuple[int, str]:
+    """回傳結束碼與 stdout：擋不擋由 stdout 的 JSON 決定，結束碼兩種情況都是 0。"""
     monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(payload)))
     code = gate.main()
-    return code, capsys.readouterr().err
+    return code, capsys.readouterr().out
+
+
+def blocked(code: int, out: str) -> str:
+    """斷言回合被擋下，回傳給 Claude 的 reason。
+
+    官方 hooks 文件：用 JSON 控制時 exit 0，stdout 只能有這個物件；Stop hook 的
+    ``decision: "block"`` 一定要帶 ``reason``。json.loads 讀的是整個 stdout，多一個字就失敗。
+    """
+    assert code == 0
+    decision = json.loads(out)
+    assert set(decision) == {"decision", "reason"}
+    assert decision["decision"] == "block"
+    assert isinstance(decision["reason"], str) and decision["reason"].strip()
+    return decision["reason"]
+
+
+def allowed(code: int, out: str) -> bool:
+    """回合可以結束：exit 0，stdout 沒有任何決定。"""
+    return code == 0 and out == ""
 
 
 class FakeRun:
-    """取代 _run：記下每項檢查的名稱、指令與工作目錄；failing 為真時一律回報紅燈。"""
+    """取代 _run：記下每項檢查的名稱、指令與工作目錄；failing 為真時一律回報紅燈，
+    輸出的尾段是 output。"""
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, list[str], Path]] = []
         self.failing = False
+        self.output = "模擬的紅燈"
 
     def __call__(self, name: str, cmd: list[str], cwd: Path) -> str | None:
         self.calls.append((name, cmd, Path(cwd)))
-        return f"[{name}] 失敗：\n模擬的紅燈" if self.failing else None
+        return f"[{name}] 失敗：\n{self.output}" if self.failing else None
 
     @property
     def names(self) -> list[str]:
@@ -178,9 +200,9 @@ def test_without_any_default_branch_everything_is_checked(tmp_path):
 
 
 def test_a_clean_master_needs_no_checks(repo, monkeypatch, capsys, checks_run):
-    code, _ = run_hook(monkeypatch, capsys, {"cwd": str(repo)})
+    code, out = run_hook(monkeypatch, capsys, {"cwd": str(repo)})
 
-    assert code == 0
+    assert allowed(code, out)
     assert checks_run.calls == []
 
 
@@ -190,20 +212,20 @@ def test_red_keeps_the_baseline_and_green_moves_it(repo, monkeypatch, capsys, ch
     commit(repo, "b.py")
 
     checks_run.failing = True
-    code, _ = run_hook(monkeypatch, capsys, {"cwd": str(repo)})
-    assert code == 2
+    code, out = run_hook(monkeypatch, capsys, {"cwd": str(repo)})
+    blocked(code, out)
 
     # 紅燈沒有更新狀態檔：b.py 仍然要檢查
     checks_run.failing = False
     checks_run.calls.clear()
-    code, _ = run_hook(monkeypatch, capsys, {"cwd": str(repo)})
-    assert code == 0
+    code, out = run_hook(monkeypatch, capsys, {"cwd": str(repo)})
+    assert allowed(code, out)
     assert checks_run.names == ["ruff", "pytest"]
 
     # 綠燈記下了 HEAD：沒有新的改動，就不必再跑
     checks_run.calls.clear()
-    code, _ = run_hook(monkeypatch, capsys, {"cwd": str(repo)})
-    assert code == 0
+    code, out = run_hook(monkeypatch, capsys, {"cwd": str(repo)})
+    assert allowed(code, out)
     assert checks_run.calls == []
 
 
@@ -212,9 +234,9 @@ def test_green_is_recorded_in_the_worktrees_own_git_dir(repo, tmp_path, monkeypa
     wt = add_worktree(repo, tmp_path)
     commit(wt, "w.py")
 
-    code, _ = run_hook(monkeypatch, capsys, {"cwd": str(wt)})
+    code, out = run_hook(monkeypatch, capsys, {"cwd": str(wt)})
 
-    assert code == 0
+    assert allowed(code, out)
     state = Path(git(wt, "rev-parse", "--absolute-git-dir")) / gate.STATE_FILE
     assert state.read_text(encoding="utf-8").strip() == git(wt, "rev-parse", "HEAD")
     main_state = Path(git(repo, "rev-parse", "--absolute-git-dir")) / gate.STATE_FILE
@@ -229,9 +251,9 @@ def test_stop_hook_active_does_not_let_a_red_turn_end(repo, monkeypatch, capsys,
     write(repo, "b.py")
     checks_run.failing = True
 
-    code, _ = run_hook(monkeypatch, capsys, {"cwd": str(repo), "stop_hook_active": True})
+    code, out = run_hook(monkeypatch, capsys, {"cwd": str(repo), "stop_hook_active": True})
 
-    assert code == 2
+    blocked(code, out)
 
 
 # ── 阻擋訊息 ───────────────────────────────────────────────────────────────
@@ -245,17 +267,52 @@ def red_turn(repo, monkeypatch, capsys, checks_run) -> tuple[int, str]:
 
 
 def test_block_message_opens_with_the_hook_scripts_own_path(repo, monkeypatch, capsys, checks_run):
-    code, err = red_turn(repo, monkeypatch, capsys, checks_run)
+    code, out = red_turn(repo, monkeypatch, capsys, checks_run)
 
-    assert code == 2
-    assert str(HOOK) in err.splitlines()[0]
+    assert str(HOOK) in blocked(code, out).splitlines()[0]
 
 
 def test_block_message_says_what_to_do_when_red_is_unrelated(repo, monkeypatch, capsys, checks_run):
-    code, err = red_turn(repo, monkeypatch, capsys, checks_run)
+    code, out = red_turn(repo, monkeypatch, capsys, checks_run)
 
-    assert code == 2
-    assert UNRELATED_RED in err
+    assert UNRELATED_RED in blocked(code, out)
+
+
+# ── #59：Claude Code 把「exit 2、stdout 空白、stderr 說找不到檔案」當成不阻擋 ────
+
+
+def test_a_red_check_that_mentions_a_missing_file_still_blocks(repo, monkeypatch, capsys, checks_run):
+    """pytest 紅燈的尾段常有 FileNotFoundError。只寫 stderr、exit 2 的話，Claude Code 會當成
+    non-blocking error，回合照樣結束；擋下要走 stdout 的 JSON。"""
+    fake_venv(repo)
+    write(repo, "b.py")
+    checks_run.failing = True
+    checks_run.output = (
+        "FAILED tests/unit/test_srt.py::test_reads_fixture - "
+        "FileNotFoundError: [Errno 2] No such file or directory: 'fixture.srt'"
+    )
+
+    code, out = run_hook(monkeypatch, capsys, {"cwd": str(repo)})
+
+    assert "No such file or directory: 'fixture.srt'" in blocked(code, out)
+
+
+def test_missing_cwd_and_project_dir_block_through_stdout(tmp_path):
+    """cwd 與 CLAUDE_PROJECT_DIR 都不存在時，git 的訊息是 ``cannot change to '…': No such
+    file or directory``，同樣會被當成不阻擋。用子程序跑真正的腳本：stdout 是系統碼頁
+    （例如 cp936）時，JSON 也不能壞掉，壞掉的 JSON 在 exit 0 時一樣放行。"""
+    env = {**os.environ, "CLAUDE_PROJECT_DIR": str(tmp_path / "gone-project")}
+    env.pop("PYTHONIOENCODING", None)
+    env.pop("PYTHONUTF8", None)
+    payload = json.dumps({"cwd": str(tmp_path / "gone-cwd")})
+
+    result = subprocess.run(
+        [sys.executable, str(HOOK)], input=payload.encode("utf-8"), capture_output=True, env=env,
+    )
+
+    reason = blocked(result.returncode, result.stdout.decode("utf-8"))
+    assert "CLAUDE_PROJECT_DIR" in reason
+    assert "No such file or directory" in reason
 
 
 # ── H5：以 repo 根目錄為基準 ───────────────────────────────────────────────
@@ -265,9 +322,9 @@ def test_checks_run_from_the_repo_root_when_cwd_is_a_subdirectory(repo, monkeypa
     fake_venv(repo)
     write(repo, "b.py")
 
-    code, _ = run_hook(monkeypatch, capsys, {"cwd": str(repo / "backend")})
+    code, out = run_hook(monkeypatch, capsys, {"cwd": str(repo / "backend")})
 
-    assert code == 0
+    assert allowed(code, out)
     assert checks_run.names == ["ruff", "pytest"]
     assert all(same(cwd, repo) for _, _, cwd in checks_run.calls)
 
@@ -281,9 +338,9 @@ def test_cwd_outside_any_repo_falls_back_to_claude_project_dir(
     outside.mkdir()
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(repo))
 
-    code, _ = run_hook(monkeypatch, capsys, {"cwd": str(outside)})
+    code, out = run_hook(monkeypatch, capsys, {"cwd": str(outside)})
 
-    assert code == 0
+    assert allowed(code, out)
     assert checks_run.names == ["ruff", "pytest"]
     assert all(same(cwd, repo) for _, _, cwd in checks_run.calls)
 
@@ -293,10 +350,9 @@ def test_blocks_when_neither_cwd_nor_project_dir_is_in_a_repo(tmp_path, monkeypa
     outside.mkdir()
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path / "gone"))
 
-    code, err = run_hook(monkeypatch, capsys, {"cwd": str(outside)})
+    code, out = run_hook(monkeypatch, capsys, {"cwd": str(outside)})
 
-    assert code == 2
-    assert "CLAUDE_PROJECT_DIR" in err
+    assert "CLAUDE_PROJECT_DIR" in blocked(code, out)
 
 
 # ── H4：故障時擋下，不放行 ─────────────────────────────────────────────────
@@ -308,26 +364,25 @@ def test_an_unexpected_exception_blocks(repo, monkeypatch, capsys):
 
     monkeypatch.setattr(gate, "_changed_paths", broken)
 
-    code, err = run_hook(monkeypatch, capsys, {"cwd": str(repo)})
+    code, out = run_hook(monkeypatch, capsys, {"cwd": str(repo)})
 
-    assert code == 2
-    assert "模擬 hook 內部的錯誤" in err
+    assert "模擬 hook 內部的錯誤" in blocked(code, out)
 
 
 def test_an_unreadable_payload_blocks(monkeypatch, capsys):
     monkeypatch.setattr(sys, "stdin", io.StringIO("不是 JSON"))
 
-    assert gate.main() == 2
-    assert capsys.readouterr().err
+    code = gate.main()
+
+    blocked(code, capsys.readouterr().out)
 
 
 def test_a_failing_git_command_blocks(repo, monkeypatch, capsys):
     (repo / ".git" / "index").write_bytes(b"not an index")
 
-    code, err = run_hook(monkeypatch, capsys, {"cwd": str(repo)})
+    code, out = run_hook(monkeypatch, capsys, {"cwd": str(repo)})
 
-    assert code == 2
-    assert "git status" in err
+    assert "git status" in blocked(code, out)
 
 
 def test_the_payload_is_read_as_utf8(repo, monkeypatch):
@@ -349,7 +404,9 @@ def test_the_payload_is_read_as_utf8(repo, monkeypatch):
         [sys.executable, str(HOOK)], input=payload.encode("utf-8"), capture_output=True,
     )
 
-    assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
+    assert allowed(result.returncode, result.stdout.decode("utf-8", "replace")), (
+        result.stdout.decode("utf-8", "replace")
+    )
 
 
 # ── H4：Python 檢查用的直譯器 ──────────────────────────────────────────────
@@ -380,20 +437,19 @@ def test_the_repos_own_venv_comes_before_the_main_checkouts(repo, tmp_path):
 def test_no_venv_anywhere_blocks_with_a_fix(repo, monkeypatch, capsys):
     write(repo, "b.py")
 
-    code, err = run_hook(monkeypatch, capsys, {"cwd": str(repo)})
+    code, out = run_hook(monkeypatch, capsys, {"cwd": str(repo)})
 
-    assert code == 2
-    assert "-m venv" in err
-    assert "requirements-dev.txt" in err
+    reason = blocked(code, out)
+    assert "-m venv" in reason
+    assert "requirements-dev.txt" in reason
 
 
 def test_no_eslint_in_node_modules_blocks_with_a_fix(repo, monkeypatch, capsys):
     write(repo, "frontend/src/App.jsx", "export default 1\n")
 
-    code, err = run_hook(monkeypatch, capsys, {"cwd": str(repo)})
+    code, out = run_hook(monkeypatch, capsys, {"cwd": str(repo)})
 
-    assert code == 2
-    assert "npm ci" in err
+    assert "npm ci" in blocked(code, out)
 
 
 def test_a_venv_missing_the_tool_says_how_to_install_it(tmp_path):
@@ -475,9 +531,9 @@ def test_a_check_added_to_tools_check_runs_in_the_hook(repo, monkeypatch, capsys
     with_extra_check(monkeypatch, ("extra-tool", "--strict"), lambda path: path.endswith(".py"))
     write(repo, "b.py")
 
-    code, _ = run_hook(monkeypatch, capsys, {"cwd": str(repo)})
+    code, out = run_hook(monkeypatch, capsys, {"cwd": str(repo)})
 
-    assert code == 0
+    assert allowed(code, out)
     assert checks_run.names == ["ruff", "pytest", "extra"]
     assert checks_run.calls[-1][1] == ["extra-tool", "--strict"]
     assert same(checks_run.calls[-1][2], repo)
@@ -490,8 +546,7 @@ def test_blocks_when_tools_check_cannot_be_loaded(repo, tmp_path, monkeypatch, c
     monkeypatch.setattr(gate, "CHECK_SCRIPT", tmp_path / "no-such-check.py")
     gate._tools_check.cache_clear()
 
-    code, err = run_hook(monkeypatch, capsys, {"cwd": str(repo)})
+    code, out = run_hook(monkeypatch, capsys, {"cwd": str(repo)})
     gate._tools_check.cache_clear()
 
-    assert code == 2
-    assert "no-such-check.py" in err
+    assert "no-such-check.py" in blocked(code, out)
