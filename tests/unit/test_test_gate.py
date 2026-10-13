@@ -330,6 +330,28 @@ def test_a_failing_git_command_blocks(repo, monkeypatch, capsys):
     assert "git status" in err
 
 
+def test_the_payload_is_read_as_utf8(repo, monkeypatch):
+    """Claude Code 以 UTF-8 送出 JSON，裡面有 last_assistant_message 這類中文。照系統碼頁
+    （例如 cp936）解讀時，中文後面的反斜線會被當成雙位元組字的一半吃掉，JSON 就壞了；
+    讀不到輸入會擋下，所以這裡讀錯就是每個回合都被擋。"""
+    monkeypatch.delenv("PYTHONIOENCODING", raising=False)
+    monkeypatch.delenv("PYTHONUTF8", raising=False)
+    payload = json.dumps(
+        {
+            "cwd": str(repo),
+            "transcript_path": "C:\\Users\\王小明\\.claude\\projects\\session.jsonl",
+            "last_assistant_message": '完成。"好"',
+        },
+        ensure_ascii=False,
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(HOOK)], input=payload.encode("utf-8"), capture_output=True,
+    )
+
+    assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
+
+
 # ── H4：Python 檢查用的直譯器 ──────────────────────────────────────────────
 
 
