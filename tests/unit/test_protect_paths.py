@@ -11,6 +11,7 @@ import ast
 import importlib.util
 import io
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -331,3 +332,14 @@ class TestScriptContract:
             [sys.executable, str(HOOK)], input=b"not json", capture_output=True, timeout=60,
         )
         assert result.returncode == 2
+
+    @pytest.mark.parametrize("target, expected", [("/tmp/x.txt", 0), ("lab/data/eval/a.txt", 2)])
+    def test_reads_utf8_payload_whatever_the_console_encoding(self, target, expected):
+        """Claude Code 送的是 UTF-8。系統碼頁是 936 時，stdin 預設以 GBK 解碼，
+        這段中文會讓 JSON 解析失敗：舊版因此放行，只改成「讀不到就擋」又會誤擋無害的命令。"""
+        payload = json.dumps(bash(f'echo "擋下寫入：說明 標準答案" > {target}'), ensure_ascii=False)
+        result = subprocess.run(
+            [sys.executable, str(HOOK)], input=payload.encode("utf-8"), capture_output=True,
+            env=dict(os.environ, PYTHONIOENCODING="gbk"), timeout=60,
+        )
+        assert result.returncode == expected, result.stderr.decode("utf-8", "replace")
