@@ -88,3 +88,38 @@ def test_unknown_check_name_is_rejected(check):
     with pytest.raises(SystemExit) as exc:
         check.main(["no-such-check"])
     assert exc.value.code == 2
+
+
+# ── Stop hook 也從這裡取清單與路徑規則（#29） ──────────────────────────────────
+
+
+def test_checks_can_target_another_root_and_interpreter(check, tmp_path):
+    """Stop hook 對 worktree、用 venv 的直譯器跑同一份清單。"""
+    by_name = {c.name: c for c in check.checks(tmp_path, "venv-python")}
+    assert list(by_name) == ["ruff", "pytest", "eslint"]
+    for name in ("ruff", "pytest"):
+        assert by_name[name].cmd[0] == "venv-python"
+        assert by_name[name].cwd == tmp_path
+        assert by_name[name].uses_python
+    assert by_name["eslint"].cwd == tmp_path / "frontend"
+    assert not by_name["eslint"].uses_python
+
+
+def test_select_asks_each_check_which_paths_it_covers(check, monkeypatch, tmp_path):
+    """「哪些路徑觸發哪些檢查」只寫在各項檢查的 runs_for；select 照清單的順序挑。"""
+    fakes = (
+        check.Check("a", (sys.executable, "-c", "pass"), tmp_path, runs_for=lambda p: p.endswith(".a")),
+        check.Check("b", (sys.executable, "-c", "pass"), tmp_path, runs_for=lambda p: p.startswith("b/")),
+    )
+    monkeypatch.setattr(check, "checks", lambda root=None, python=None: fakes)
+    assert check.select(["b/x", "y.a"]) == ["a", "b"]
+    assert check.select(["b/x"]) == ["b"]
+    assert check.select(["README.md"]) == []
+
+
+def test_missing_eslint_names_the_fix_for_that_checkout(check, tmp_path):
+    eslint = {c.name: c for c in check.checks(tmp_path, sys.executable)}["eslint"]
+    remedy = eslint.missing()
+    assert remedy is not None
+    assert "npm ci" in remedy
+    assert str(tmp_path / "frontend") in remedy

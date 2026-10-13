@@ -446,3 +446,52 @@ def test_python_output_reaches_claude_as_utf8(tmp_path, monkeypatch):
     assert message is not None
     assert "�" not in message
     assert "斷言失敗：中文說明" in message
+
+
+# ── #29：檢查清單與「哪些路徑觸發哪些檢查」只寫在 tools/check.py ──────────────
+
+
+def with_extra_check(monkeypatch, cmd: tuple[str, ...], runs_for) -> None:
+    """在 tools/check.py 的清單最後加一項檢查，模擬之後有人在那裡新增檢查。"""
+    tools_check = gate._tools_check()
+    original = tools_check.checks
+
+    def checks(root=tools_check.ROOT, python=sys.executable):
+        extra = tools_check.Check("extra", cmd, Path(root), runs_for=runs_for)
+        return (*original(root, python), extra)
+
+    monkeypatch.setattr(tools_check, "checks", checks)
+
+
+def test_path_rules_come_from_tools_check(monkeypatch):
+    with_extra_check(monkeypatch, ("extra-tool",), lambda path: path.endswith(".txt"))
+
+    assert gate._select_checks(["notes.txt"]) == ["extra"]
+    assert gate._select_checks(["notes.txt", "a.py"]) == ["ruff", "pytest", "extra"]
+
+
+def test_a_check_added_to_tools_check_runs_in_the_hook(repo, monkeypatch, capsys, checks_run):
+    fake_venv(repo)
+    with_extra_check(monkeypatch, ("extra-tool", "--strict"), lambda path: path.endswith(".py"))
+    write(repo, "b.py")
+
+    code, _ = run_hook(monkeypatch, capsys, {"cwd": str(repo)})
+
+    assert code == 0
+    assert checks_run.names == ["ruff", "pytest", "extra"]
+    assert checks_run.calls[-1][1] == ["extra-tool", "--strict"]
+    assert same(checks_run.calls[-1][2], repo)
+
+
+def test_blocks_when_tools_check_cannot_be_loaded(repo, tmp_path, monkeypatch, capsys):
+    """載入失敗若在 import 時丟例外，結束碼會是 1，Claude Code 會當成不阻擋而放行。"""
+    fake_venv(repo)
+    write(repo, "b.py")
+    monkeypatch.setattr(gate, "CHECK_SCRIPT", tmp_path / "no-such-check.py")
+    gate._tools_check.cache_clear()
+
+    code, err = run_hook(monkeypatch, capsys, {"cwd": str(repo)})
+    gate._tools_check.cache_clear()
+
+    assert code == 2
+    assert "no-such-check.py" in err
