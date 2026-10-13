@@ -377,3 +377,12 @@ class TestScriptContract:
             env=dict(os.environ, PYTHONIOENCODING="gbk"), timeout=60,
         )
         assert result.returncode == expected, result.stderr.decode("utf-8", "replace")
+
+    @pytest.mark.parametrize("target, expected", [("/tmp/x.txt", 0), ("lab/data/eval/a.txt", 2)])
+    def test_ignores_utf8_bom(self, target, expected):
+        """Windows PowerShell 5.1 把字串用管線送給外部程式時，前面會加 UTF-8 BOM。"""
+        payload = json.dumps(bash(f"echo x > {target}")).encode("utf-8")
+        result = subprocess.run(
+            [sys.executable, str(HOOK)], input=b"\xef\xbb\xbf" + payload, capture_output=True, timeout=60,
+        )
+        assert result.returncode == expected, result.stderr.decode("utf-8", "replace")

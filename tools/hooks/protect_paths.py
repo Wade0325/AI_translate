@@ -835,10 +835,11 @@ def check(payload: dict) -> str | None:
 
 def _read_payload() -> dict:
     # Claude Code 送的是 UTF-8。Windows 的 stdin 預設用系統碼頁（例如 GBK）解碼，
-    # 中文會讓 JSON 解析失敗，所以直接讀位元組自己解碼
+    # 中文會讓 JSON 解析失敗，所以直接讀位元組自己解碼。utf-8-sig 順便去掉
+    # Windows PowerShell 5.1 用管線送資料時加在前面的 BOM
     stream = getattr(sys.stdin, "buffer", None)
-    raw = stream.read().decode("utf-8") if stream is not None else sys.stdin.read()
-    payload = json.loads(raw)
+    raw = stream.read().decode("utf-8-sig") if stream is not None else sys.stdin.read()
+    payload = json.loads(raw.removeprefix("﻿"))
     if not isinstance(payload, dict):
         raise ValueError("最外層不是 JSON 物件")
     return payload
