@@ -106,8 +106,10 @@ foreach ($exe in @("ffmpeg.exe", "ffprobe.exe")) {
 
 # ── 4. 後端源碼與前端 dist ────────────────────────────────────────────────
 Step "複製 backend 源碼與 frontend/dist"
+# 執行期資料（上傳暫存、去靜音的除錯產物、保留的音檔）不能進發布包；
+# 資料夾名稱與 backend/app/core/config.py 一致（tests/unit/test_runtime_dirs_excluded.py 檢查）
 Copy-Tree (Join-Path $Root "backend") (Join-Path $StageDir "backend") @(
-    "/XD", ".venv", "__pycache__", "temp_uploads", "vad_artifacts",
+    "/XD", ".venv", "__pycache__", "temp_uploads", "vad_artifacts", "audio_store",
     "persistent_uploads", ".cache", ".pytest_cache",
     "/XF", ".env", "*.pyc", "*.db"
 )
