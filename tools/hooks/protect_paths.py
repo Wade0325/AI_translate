@@ -839,7 +839,7 @@ def _read_payload() -> dict:
     # Windows PowerShell 5.1 用管線送資料時加在前面的 BOM
     stream = getattr(sys.stdin, "buffer", None)
     raw = stream.read().decode("utf-8-sig") if stream is not None else sys.stdin.read()
-    payload = json.loads(raw.removeprefix("﻿"))
+    payload = json.loads(raw.removeprefix("\ufeff"))
     if not isinstance(payload, dict):
         raise ValueError("最外層不是 JSON 物件")
     return payload
