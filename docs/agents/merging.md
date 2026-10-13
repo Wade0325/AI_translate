@@ -2,8 +2,8 @@
 
 開始改動前讀一次，合併前再讀一次。
 
-1. **開工**：從 `origin/master` 開新分支。在 worktree 裡不連使用者的資料庫。
-2. **push 前**：在本機跑 `tools/check.py`，全綠才 push。不用 `--no-verify` 之類的參數跳過檢查；檢查因為 master 上的問題失敗時，合併 master 或等修正的 PR，不繞過。
+1. **開工**：從 `origin/main` 開新分支。在 worktree 裡不連使用者的資料庫。
+2. **push 前**：在本機跑 `tools/check.py`，全綠才 push。不用 `--no-verify` 之類的參數跳過檢查；檢查因為 main 上的問題失敗時，合併 main 或等修正的 PR，不繞過。
 3. **改到畫面時**：開 PR 前在瀏覽器實際操作一次。在 worktree 用免安裝模式起一個獨立的 app：`frontend/` 先 `npm run build`，再在 `backend/` 帶環境變數 `APP_MODE=standalone` 與 `AIT_DATA_DIR=<暫存資料夾>` 執行 `python -m uvicorn main:app --port <沒用到的埠>`，用瀏覽器開那個埠；資料只寫進暫存資料夾。不要在 worktree 啟動第二套 Docker stack：容器名稱與埠號是固定的，會和使用者正在跑的那套衝突。
 4. **PR 內文**：
    - 寫「使用者看得到的變更」（沒有就寫「無」）；改到使用者看得到的行為時，檢查 `README.md` 要不要跟著改。

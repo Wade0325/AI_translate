@@ -1,4 +1,4 @@
-# CI：PR、push 到 master、每週排程，以及發版前（release.yml 以 workflow_call 呼叫）執行。
+# CI：PR、push 到 main、每週排程，以及發版前（release.yml 以 workflow_call 呼叫）執行。
 #
 # 最底下的 `check` 是 ruleset 唯一要求的檢查：不准改名，其他 job 也不准取這個名字。
 # 新增 job 時，要加進 `check` 的 needs；`check` 逐一確認每個 needs 的結果，全部 success
@@ -13,7 +13,7 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [master]
+    branches: [main]
   schedule:
     - cron: "17 3 * * 1" # 每週一 03:17 UTC：抓上游套件與 runner 映像造成的漂移
   workflow_call:
@@ -22,7 +22,7 @@ permissions:
   contents: read
 
 concurrency:
-  # 同一個 ref 有新的執行時，取消舊的。release.yml 呼叫時 ref 是 tag，不會和 master 的執行互相取消
+  # 同一個 ref 有新的執行時，取消舊的。release.yml 呼叫時 ref 是 tag，不會和 main 的執行互相取消
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
