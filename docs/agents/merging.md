@@ -9,12 +9,14 @@
    - 寫「使用者看得到的變更」（沒有就寫「無」）；改到使用者看得到的行為時，檢查 `README.md` 要不要跟著改。
    - 改到畫面時，寫出在瀏覽器點了什麼、看到什麼，附截圖；沒有就寫「無畫面變更」。
    - 動到下列路徑的 PR 是單向門，內文要標明：`CLAUDE.md`、`docs/agents/`、`tools/hooks/`、`.github/`、`.gitignore`、進版控的 `.claude/` 檔案；閘門的設定 `ruff.toml`、`pytest.ini`、`frontend/eslint.config.js`、`pyrightconfig.json`、`frontend/tsconfig.json`；依賴 `backend/requirements*.txt`、`frontend/package.json`、`frontend/package-lock.json`；`migrations/`、`build_release.ps1`。
-5. **合併**：
+5. **合併**：ruleset 是唯一的關卡，對代理沒有例外。
    1. 等 `gh pr checks <PR> --watch` 全綠（#29 之前沒有任何檢查，跳過這步）。
    2. 狀態是 `BEHIND` 時執行 `gh pr update-branch`，回到 1。
-   3. 單向門的 PR 等使用者看過 diff、同意後才合併；其餘的直接 `gh pr merge --merge`，不加 `--admin` 或 `--delete-branch`。#29 與 #30 上線前，一律等使用者同意。
+   3. `gh pr merge --merge`，不加 `--admin` 或 `--delete-branch`。#29 與 #30 上線前沒有伺服器端的關卡，合併前先等使用者同意。
    4. 遠端分支沒有自動刪除時，手動刪掉。要移除 worktree 時，先跑 `git -C <worktree> status --ignored --porcelain`，把 `lab/` 之類被忽略的產出複製出來；`git worktree remove` 會不經警告就刪掉它們。
 
+例外：
+
+- **要使用者在本機驗證的 PR**：CI 不安裝 ML 依賴，所以動到 ML 依賴或 `backend/Dockerfile` 的 ML 那一段時，要使用者在本機重建 Docker 確認；issue 寫明合併前要使用者手動驗證的也一樣。等使用者回報通過再合併。
+- **資料表結構**：改到 `models.py` 的欄位或 `migrations/` 時，自動遷移補不了的變更要附 `migrations/` 的 SQL 與升級測試（#48），並在 PR 內文寫明使用者要執行的步驟。不要對使用者的資料庫（Docker 的 Postgres、免安裝版的 `data/app.db`）執行遷移或改結構的 SQL，由使用者自己執行。
 - **tag**：只推分支，不建立、不推送任何 tag。`v*` tag 一推就會公開發布 Release，由使用者自己推。
-- **ML 依賴**：CI 不安裝 ML 依賴；動到 ML 依賴或 `backend/Dockerfile` 的 ML 那一段時，請使用者在本機重建 Docker 確認。
-- **資料表結構**：改到 `models.py` 的欄位或 `migrations/` 時，自動遷移補不了的變更要附 `migrations/` 的 SQL 與升級測試（#48）。不要對使用者的資料庫（Docker 的 Postgres、免安裝版的 `data/app.db`）執行遷移或改結構的 SQL，由使用者自己執行。
