@@ -1,7 +1,8 @@
 """本地模型 provider：說話者分離 + 轉錄 + 強制對齊。
 
-僅在主機端 GPU worker（local_asr 佇列）上執行——flows.py 於 provider == "local"
-分支內才延遲 import 本模組，Docker 容器 worker 不需要 transformers/CUDA 相依。
+Docker 模式下只在主機端 GPU worker（local_asr 佇列）上執行，免安裝版則在行程內的
+local_asr 執行緒池執行——flows.py 於 provider == "local" 分支內才延遲 import 本模組，
+Docker 容器 worker 不需要 transformers/CUDA 相依。
 
 三種模型（frontend modelConfig 的 Local 選項，權重對照見 weights.MODEL_REPOS）：
   * moss-align（預設）：MOSS-Transcribe-Diarize 一次產生說話者、時間與文字，
@@ -15,7 +16,8 @@
   2. 組成 LRC：每行「[mm:ss.xx][S{n}] 文字」，時間軸為輸入檔（上游 flows 負責
      remap 回原始檔時間軸）；對齊失敗時退回「一個分離片段一行」
 
-VRAM 策略（16GB 卡）：各模型依序載入、用完即釋放，不可同時常駐。
+VRAM 策略：各模型依序載入、用完即釋放，不可同時常駐。依音檔長度把部分權重
+放到 CPU（_gpu_weight_limit）只有舊版 VibeVoice 會用到。
 """
 
 from __future__ import annotations

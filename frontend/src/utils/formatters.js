@@ -38,7 +38,7 @@ export function formatDateTime(dateStr) {
 
 /**
  * Date → 本地日期字串 YYYY-MM-DD。
- * 後端 /history/usage 的 daily[].date 是伺服器本地日期（DB func.now() 寫入本地時間），
+ * 後端 /history/usage 的 daily[].date 是伺服器本地日期（後端以 datetime.now() 寫入本地時間），
  * 前後端同機部署，所以用瀏覽器本地日期即可對齊；勿改用 toISOString()（那是 UTC）。
  */
 export function localDateKey(date) {

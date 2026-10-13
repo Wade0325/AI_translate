@@ -256,7 +256,7 @@ def run_batch(task_params_dict: dict, task_uuid: str):
     1. 將所有音訊檔案上傳至 Gemini File API
     2. 建立 Batch API 任務 (inline requests)
     3. 輪詢直到任務完成
-    4. 逐一處理每個檔案的結果 (格式轉換、翻譯、費用計算)
+    4. 逐一處理每個檔案的結果 (格式轉換、費用計算)
     5. 發布個別檔案與整體批次的狀態更新
 
     暫時性錯誤（GeminiTransientError）往上拋，由外層重試機制處理。

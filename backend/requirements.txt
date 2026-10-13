@@ -9,7 +9,7 @@ torch==2.7.0
 torchaudio==2.7.0 # silero-vad 的 read_audio 依賴
 silero-vad==5.1.2
 python-multipart
-gevent==25.4.2 # Windows 上 Celery 不支援 prefork，容器 worker 用 gevent pool
+gevent==25.4.2 # Docker 的 celery worker 用 gevent pool（docker-compose.yml：-P gevent -c 20）
 soundfile==0.12.1
 SQLAlchemy==2.0.31
 psycopg2-binary==2.9.9
