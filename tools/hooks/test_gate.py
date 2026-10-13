@@ -341,11 +341,14 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    # Windows 的 stderr 用系統碼頁，Claude 讀到的中文會變亂碼
-    try:
-        sys.stderr.reconfigure(encoding="utf-8")
-    except Exception:
-        pass
+    # Claude Code 以 UTF-8 送出 JSON，Windows 的 stdin 卻用系統碼頁解碼：輸入有中文時
+    # JSON 會解析失敗，而讀不到輸入會擋下回合。
+    # Windows 的 stderr 用系統碼頁，Claude 讀到的中文會變亂碼。
+    for stream in (sys.stdin, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
     try:
         code = main()
     except Exception:  # 連 main() 自己的回報都失敗時，一樣擋下，不讓 exit 1 放行
