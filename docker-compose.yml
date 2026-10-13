@@ -80,7 +80,7 @@ services:
     restart: unless-stopped
 
   frontend:
-    image: node:24-alpine
+    image: node:24-alpine # Node 主版本與 frontend/.nvmrc 一致，改版時兩邊一起改
     container_name: ait-frontend
     working_dir: /app
     ports:

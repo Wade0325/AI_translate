@@ -1,4 +1,4 @@
-# 推 v* tag 時建置 Windows 免安裝包並發布 GitHub Release
+# 推 v* tag 時：先跑完整的 CI（ci.yml），通過後建置 Windows 免安裝包並發布 GitHub Release
 
 name: Release
 
@@ -6,20 +6,32 @@ on:
   push:
     tags: ["v*"]
 
-permissions:
-  contents: write
+permissions: {}
 
 jobs:
-  windows-zip:
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
+  ci:
+    # $/ 是同一個 repo、同一個 commit 的 ci.yml（GitHub 建議的寫法，不受執行期的檔案狀態影響）
+    uses: $/.github/workflows/ci.yml
+    permissions:
+      contents: read
+      pull-requests: read # ci.yml 的 changes job 宣告了這個權限；tag 觸發時它不會列 PR 的檔案
 
-      - uses: actions/setup-node@v4
+  windows-zip:
+    needs: ci
+    runs-on: windows-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write # gh release create
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: frontend/.nvmrc
+          # 發版不還原任何快取；package.json 有 devEngines.packageManager 時 setup-node 預設會開
+          package-manager-cache: false
 
       - name: Install frontend dependencies
         working-directory: frontend
@@ -31,14 +43,18 @@ jobs:
 
       - name: Build release package
         shell: powershell
-        run: .\build_release.ps1 -Version "${{ github.ref_name }}" -SkipFrontend
+        env:
+          TAG: ${{ github.ref_name }}
+        run: .\build_release.ps1 -Version "$env:TAG" -SkipFrontend
 
       - name: Create GitHub Release
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
         shell: powershell
         run: >
-          gh release create "${{ github.ref_name }}"
+          gh release create "$env:TAG"
           (Get-ChildItem build\AI_Translate-*-win64.zip).FullName
-          --title "AI_Translate ${{ github.ref_name }}"
+          --title "AI_Translate $env:TAG"
           --generate-notes

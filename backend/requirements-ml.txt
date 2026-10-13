@@ -1,0 +1,6 @@
+# Docker 映像的 ml 依賴：torch 系列，數 GB。CI 不安裝這一份，只解析版本（ci.yml 的 docker job）；
+# 改這裡或 Dockerfile 的 ml 那一段時，要在本機重建 Docker 確認（docs/agents/merging.md 的例外）。
+# 免安裝版另外釘 cu128 的 torch，見 requirements-standalone.txt。
+torch==2.7.0
+torchaudio==2.7.0 # silero-vad 的 read_audio 依賴
+silero-vad==5.1.2
