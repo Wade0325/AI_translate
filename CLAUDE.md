@@ -8,3 +8,17 @@
 - `lab/data/eval/` 的標準答案與各處的 `.env` 只由使用者修改：用編輯工具或 shell 都不要寫入，需要改時請使用者自己改。
 - 改後端的任務派送、進度通知、取消或資料庫時：Docker 模式用到的 Redis、Celery、Postgres，在免安裝版（`APP_MODE=standalone`）都有行程內的替代實作，兩邊都要能動；在 `backend/` 搜尋 `is_standalone` 與 `sqlite` 找出位置。
 - 新增接收伺服器檔名的端點時，一律經 `utils/paths.py` 的 `resolve_upload_path()`。
+
+## Agent skills
+
+### Issue tracker
+
+issue 放在 GitHub 的 `Wade0325/AI_translate`，用 `gh` 操作。見 `docs/agents/issue-tracker.md`。
+
+### Triage labels
+
+沿用預設的五個流程標籤，名稱不變。見 `docs/agents/triage-labels.md`。
+
+### Domain docs
+
+單一上下文：根目錄的 `GLOSSARY.md` 加 `docs/adr/`。見 `docs/agents/domain.md`。
