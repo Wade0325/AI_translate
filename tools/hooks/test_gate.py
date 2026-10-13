@@ -11,18 +11,20 @@ CLAUDE.md 的規則是勸告，這支 hook 才是強制的；能不能合併，�
     origin/master、origin/main、master、main），只看這個分支自己的改動。
     這些分支都不存在時無從判斷分支從哪裡開始，就檢查 repo 裡的所有檔案。
 
-依路徑挑檢查（不只看副檔名）
-  * 任何 .py，或 backend/、tests/、tools/ 底下任何檔案（含 backend/requirements*.txt），
-    或 pytest.ini、ruff.toml → ruff + pytest
-  * frontend/ 底下除了 dist/ 以外的任何檔案 → ESLint
+挑哪些檢查
+  * 檢查清單、各項的指令，以及「改到哪些路徑時要跑哪一項」，都只寫在 tools/check.py
+    （checks() 與各項的 runs_for），CI 跑的也是同一份。這裡只決定哪些路徑改過、
+    用哪個直譯器、什麼時候擋；在 tools/check.py 新增的檢查，這裡不必改就會跟著跑。
+  * tools/check.py 取自這支 hook 所在的 checkout，不是被檢查的 repo，所以兩者一定是
+    同一個版本。載入失敗一樣擋下。
   * 全部跑完才一起回報，免得修好 lint 才看到測試也紅。
 
 在哪裡跑、用什麼跑
   * 一律以 repo 根目錄為基準。payload 的 cwd 會跟著 Claude 的 cd 走，所以先用
     ``git -C <cwd> rev-parse --show-toplevel`` 解析根目錄；cwd 不在任何 repo 時，
     改用 CLAUDE_PROJECT_DIR（session 啟動處）；兩者都失敗就擋下。
-  * Python 檢查依序用 <repo 根目錄>/backend/.venv、主 checkout 的 backend/.venv
-    （git common dir 的上一層），不用執行這支 hook 的直譯器。
+  * 以 Python 執行的檢查（tools/check.py 標了 uses_python）依序用 <repo 根目錄>/backend/.venv、
+    主 checkout 的 backend/.venv（git common dir 的上一層），不用執行這支 hook 的直譯器。
   * Python 子程序以 UTF-8 輸出（PYTHONIOENCODING），失敗原因裡的中文才不會變亂碼。
   * 找不到檢查工具（兩處都沒有 backend/.venv、venv 裡沒有 ruff 或 pytest、
     frontend/node_modules 裡沒有 ESLint、PATH 上沒有 node）也擋下，並印出原因與
@@ -43,10 +45,11 @@ CLAUDE.md 的規則是勸告，這支 hook 才是強制的；能不能合併，�
 
 from __future__ import annotations
 
+import functools
+import importlib.util
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 import traceback
@@ -61,8 +64,8 @@ DEFAULT_BRANCHES = (
     "refs/heads/master",
     "refs/heads/main",
 )
-PYTHON_DIRS = ("backend/", "tests/", "tools/")
-PYTHON_FILES = ("pytest.ini", "ruff.toml")
+# 唯一的檢查清單：取自這支 hook 所在的 checkout
+CHECK_SCRIPT = Path(__file__).resolve().parents[2] / "tools" / "check.py"
 WINDOWS = os.name == "nt"
 
 RED = (
@@ -183,14 +186,27 @@ def _record_green(root: Path) -> None:
         state.write_text(head + "\n", encoding="utf-8")
 
 
+@functools.lru_cache(maxsize=None)
+def _tools_check():
+    """載入 tools/check.py。在這裡載入而不是 import：載入失敗要擋下，不能讓 exit 1 放行。"""
+    name = "ait_test_gate_check"
+    try:
+        spec = importlib.util.spec_from_file_location(name, CHECK_SCRIPT)
+        module = importlib.util.module_from_spec(spec)
+        # dataclass 解析字串型別註記時，要在 sys.modules 找得到模組
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+    except Exception as e:
+        sys.modules.pop(name, None)
+        raise GateError(f"載入檢查清單 {CHECK_SCRIPT} 失敗：{e!r}") from e
+    return module
+
+
 def _select_checks(paths: list[str]) -> list[str]:
-    """依改動的路徑挑檢查：改設定或依賴檔，一樣可能讓測試或 lint 壞掉。"""
-    names: list[str] = []
-    if any(p.endswith(".py") or p.startswith(PYTHON_DIRS) or p in PYTHON_FILES for p in paths):
-        names += ["ruff", "pytest"]
-    if any(p.startswith("frontend/") and not p.startswith("frontend/dist/") for p in paths):
-        names.append("eslint")
-    return names
+    """依改動的路徑挑檢查；規則在 tools/check.py 各項的 runs_for。"""
+    if not paths:
+        return []
+    return _tools_check().select(paths)
 
 
 def _python_in(venv: Path) -> Path | None:
@@ -238,32 +254,9 @@ def _venv_python(root: Path) -> Path:
 
 
 def _python_checks(root: Path) -> list[Check]:
+    """tools/check.py 裡以 Python 執行的檢查，直譯器換成 _venv_python 找到的那一個。"""
     python = str(_venv_python(root))
-    return [
-        ("ruff", [python, "-m", "ruff", "check", "."], root),
-        ("pytest", [python, "-m", "pytest", "tests/", "-q"], root),
-    ]
-
-
-def _frontend_checks(root: Path) -> list[Check]:
-    frontend = root / "frontend"
-    # 直接用 node 跑 eslint 入口，避開 Windows 上 npx.cmd 得經過 shell 的問題
-    eslint = frontend / "node_modules" / "eslint" / "bin" / "eslint.js"
-    missing = []
-    if not eslint.is_file():
-        missing.append(
-            f"[eslint] 找不到 ESLint：{eslint} 不存在（這個 checkout 還沒裝前端依賴）。\n"
-            f'補救：照 package-lock.json 安裝：\n  npm ci --prefix "{frontend}"'
-        )
-    if shutil.which("node") is None:
-        missing.append(
-            "[eslint] PATH 上找不到 node。\n"
-            "補救：安裝 Node.js（Windows：winget install OpenJS.NodeJS.LTS），再重開 Claude Code 讓 PATH 生效。"
-        )
-    if missing:
-        raise MissingTool("\n\n".join(missing))
-    # --quiet 只印 error：react-hooks 的 warning 一則十幾行，會把真正的 error 擠出 TAIL_LINES
-    return [("eslint", ["node", str(eslint), ".", "--quiet"], frontend)]
+    return [(c.name, list(c.cmd), c.cwd) for c in _tools_check().checks(root, python) if c.uses_python]
 
 
 def _run(name: str, cmd: list[str], cwd: Path) -> str | None:
@@ -293,20 +286,27 @@ def _run(name: str, cmd: list[str], cwd: Path) -> str | None:
 
 
 def _verify(root: Path, names: list[str]) -> list[str]:
-    """跑挑到的檢查，回傳所有失敗（包括找不到工具）。"""
+    """照 tools/check.py 的順序跑挑到的檢查，回傳所有失敗（包括找不到工具）。"""
     failures: list[str] = []
-    checks: list[Check] = []
-    if "ruff" in names or "pytest" in names:
-        try:
-            checks += [check for check in _python_checks(root) if check[0] in names]
-        except MissingTool as e:
-            failures.append(str(e))
-    if "eslint" in names:
-        try:
-            checks += _frontend_checks(root)
-        except MissingTool as e:
-            failures.append(str(e))
-    failures += [msg for name, cmd, where in checks if (msg := _run(name, cmd, where))]
+    runs: list[Check] = []
+    python_checks: dict[str, Check] | None = None
+    for check in _tools_check().checks(root):
+        if check.name not in names:
+            continue
+        if check.uses_python:
+            if python_checks is None:
+                try:
+                    python_checks = {c[0]: c for c in _python_checks(root)}
+                except MissingTool as e:
+                    failures.append(str(e))
+                    python_checks = {}
+            if check.name in python_checks:
+                runs.append(python_checks[check.name])
+        elif remedy := check.missing():
+            failures.append(f"[{check.name}] 找不到檢查工具：\n{remedy}")
+        else:
+            runs.append((check.name, list(check.cmd), check.cwd))
+    failures += [msg for name, cmd, where in runs if (msg := _run(name, cmd, where))]
     return failures
 
 
