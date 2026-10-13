@@ -52,7 +52,7 @@ def extract_speech_segments(request: VADProcessRequest) -> SpeechExtractionResul
         frames = mono_data.reshape(-1, frame_length)
         rms = np.sqrt(np.mean(frames**2, axis=1) + 1e-10)  # +1e-10 避免 sqrt(0)
 
-        # 相對音量閾值：以最大音量為基準 (-45dB 或是絕對最小值)
+        # 相對音量閾值：最大音量的 0.005 倍（約 −46 dB），且不低於絕對下限 0.0005
         max_rms = np.max(rms)
         if max_rms < 1e-4:
             logger.warning("音軌完全無聲")

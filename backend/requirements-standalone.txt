@@ -4,7 +4,7 @@
 # runtime\Lib\site-packages）與 build_release.ps1 的單一事實來源。
 # 相對 requirements.txt：排除 celery / redis / gevent / psycopg2-binary
 # （單機模式用行程內執行緒 + asyncio queue + SQLite 取代），
-# 加入 Local ASR（VibeVoice + Qwen3-ASR）所需的 torch cu128 全套。
+# 加入本機引擎（預設 moss-align）所需的 torch cu128 全套。
 
 --extra-index-url https://download.pytorch.org/whl/cu128
 

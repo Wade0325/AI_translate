@@ -1,9 +1,12 @@
-"""VAD 前處理共用模組。
+"""去靜音前處理共用模組。
 
-`transcription/flows.py`（單檔轉錄）與 `celery/batch_task.py`（批次轉錄）
-皆需要先把音檔轉成 wav 再用 Silero VAD 萃取「純語音」檔，這裡集中
-該流程，回傳結構化結果。是否要採用純語音檔（例如語音佔比閾值判斷）
-由呼叫端依情境決定。
+`transcription/flows.py`（單檔轉錄）與 `tasks/batch_core.py`（批次轉錄）
+皆需要先把音檔轉成 wav，再以 RMS 音量閾值剪掉長段靜音、拼成「純語音」檔
+（`flows.extract_speech_segments`，不使用 Silero），這裡集中該流程，回傳結構化
+結果。是否要採用純語音檔（例如語音佔比閾值判斷）由呼叫端依情境決定。
+
+Silero VAD 只做兩件事：長音檔分段時找切點，以及 Gemini 轉錄失敗後的切割重試
+（`flows.split_audio_on_silence`）。
 """
 
 from __future__ import annotations
@@ -46,11 +49,11 @@ def run_vad_extraction(
     temp_dir: Path,
     vad_service,
 ) -> VadPreprocessResult:
-    """執行 VAD 純語音提取流程。
+    """執行去靜音流程，產生純語音檔。
 
     流程：
       1. 將輸入轉成 wav（若已是 wav 則略過）
-      2. 呼叫 Silero VAD 提取語音段
+      2. 以 RMS 音量閾值提取有聲片段（`flows.extract_speech_segments`）
       3. 回傳結構化結果與待清理檔案清單
 
     任何步驟失敗皆回傳 ``success=False``，由呼叫端決定是否回退到原始檔。

@@ -1,3 +1,10 @@
+"""SQLAlchemy ORM 模型。
+
+改欄位前先看：session.py 的自動遷移只會補上缺少的欄位（ADD COLUMN，不帶 NOT NULL）
+與索引。改型別、改約束或刪欄都不會自動套用：Postgres 要在 migrations/ 手寫 SQL；
+免安裝版的 SQLite（data/app.db 會跨版本保留）沒有對應的遷移，要另外確認舊資料庫的升級路徑。
+"""
+
 import uuid
 from datetime import datetime
 

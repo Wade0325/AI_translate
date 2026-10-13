@@ -2,7 +2,9 @@
 chcp 65001 > nul
 set PYTHONIOENCODING=utf-8
 set HF_HOME=D:\AI_translate\models\hf_cache
-REM Host-side GPU Celery worker for the "local" provider (VibeVoice + Qwen3-ASR).
+REM Host-side GPU Celery worker for the "local" provider (default model moss-align:
+REM MOSS-Transcribe-Diarize + Qwen3-ForcedAligner). No auto-reload: after editing
+REM backend code, close this window and start it again.
 REM Consumes only the local_asr queue; the Docker celery-worker keeps the default queue.
 REM Requires the Docker stack running (dc.bat start) so Redis/Postgres ports are up.
 REM Connection settings come from backend\.env (localhost URLs).
