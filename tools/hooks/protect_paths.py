@@ -35,7 +35,7 @@ import fnmatch
 import json
 import sys
 
-# Windows 的 stderr 預設 cp950，中文理由會變亂碼，Claude 就看不懂為什麼被擋
+# Windows 的 stderr 用系統碼頁，中文理由會變亂碼，Claude 就看不懂為什麼被擋
 try:
     sys.stderr.reconfigure(encoding="utf-8")
 except Exception:
