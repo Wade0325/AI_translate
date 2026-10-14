@@ -1,4 +1,4 @@
-"""執行期資料夾不能被打包進 Docker 映像或免安裝包。
+"""執行期資料夾不能被打包進 Docker 映像或免安裝版。
 
 backend/Dockerfile 是 `COPY . .`，build_release.ps1 以 robocopy 複製整個 backend/。
 Docker 模式與從原始碼執行時，上傳暫存、去靜音的除錯產物與保留的音檔，都以 cwd 相對路徑

@@ -1,4 +1,4 @@
-# 推 v* tag 時：先跑完整的 CI（ci.yml），通過後建置 Windows 免安裝包並發布 GitHub Release
+# 推 v* tag 時：先跑完整的 CI（ci.yml），通過後建置 Windows 免安裝版並發布 GitHub Release
 
 name: Release
 

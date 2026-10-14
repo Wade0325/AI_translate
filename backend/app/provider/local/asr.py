@@ -1,6 +1,6 @@
 """本地模型 provider：說話者分離 + 轉錄 + 強制對齊。
 
-Docker 模式下只在主機端 GPU worker（local_asr 佇列）上執行，免安裝版則在行程內的
+Docker 模式下只在主機端 GPU worker（local_asr 佇列）上執行，免安裝模式則在行程內的
 local_asr 執行緒池執行——flows.py 於 provider == "local" 分支內才延遲 import 本模組，
 Docker 容器 worker 不需要 transformers/CUDA 相依。
 
@@ -166,7 +166,7 @@ def _to_mono(audio_path: Path, sample_rate: int) -> Path:
 
 
 def single_pass_limit_seconds(model: Optional[str]) -> Optional[float]:
-    """此模型一次能處理的最長音檔（秒），供 flows 決定長檔是否對半切。
+    """此模型一次能處理的最長音檔（秒），供 flows 決定長檔要不要分段轉錄。
 
     MOSS 單次可吃約 90 分鐘，整檔一次分離說話者編號才會一致，回傳依顯卡估算的上限；
     None 表示沿用全域切段設定（VibeVoice 是依 900 秒切段設計的）。

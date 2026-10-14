@@ -30,7 +30,7 @@ logger = setup_logger(__name__)
 _settings = get_settings()
 # 語音佔比 >= 此閾值時跳過 VAD 預處理；低於則使用純語音檔轉錄
 VAD_SPEECH_RATIO_SKIP_THRESHOLD = _settings.vad_speech_ratio_skip_threshold
-# VAD 之後仍超過此時長（秒）的音檔，轉錄前在最接近中點的靜音處對半切；0 = 停用
+# 去靜音之後仍超過此時長（秒）的音檔要分段轉錄：在最接近中點的靜音處切成兩段；0 = 停用
 LONG_AUDIO_SPLIT_THRESHOLD_SECONDS = _settings.long_audio_split_threshold_seconds
 
 
@@ -229,7 +229,7 @@ class TranscriptionTask:
 
     @staticmethod
     def _split_threshold(provider: str, model: str) -> float:
-        """長檔對半切的門檻（秒）：provider 有自己的單次上限就用它，否則用全域設定。"""
+        """分段轉錄的門檻（秒）：provider 有自己的單次上限就用它，否則用全域設定。"""
         if provider == "local":
             from app.provider.local.asr import single_pass_limit_seconds
             limit = single_pass_limit_seconds(model)
@@ -242,7 +242,7 @@ class TranscriptionTask:
         轉錄音訊檔案的主要方法
 
         流程：
-        1. VAD 靜音移除 → 建立純語音檔案
+        1. 去靜音 → 建立純語音檔案
         2. 轉錄純語音檔案
         3. 時間戳重映射回原始時間軸
         4. 如果轉錄失敗且檔案夠長，嘗試分割重試
@@ -263,7 +263,7 @@ class TranscriptionTask:
                 total_tokens=0
             )
 
-        # --- VAD 靜音移除前處理 ---
+        # --- 去靜音前處理 ---
         speech_segments = None
         transcription_path = audio_path  # 預設直接使用原始檔案
 
@@ -284,7 +284,7 @@ class TranscriptionTask:
                         f"(>={VAD_SPEECH_RATIO_SKIP_THRESHOLD*100:.0f}%), 跳過 VAD 前處理"
                     )
 
-        # --- 轉錄（VAD 之後仍超過閾值的長檔，先在最接近中點的靜音處對半切） ---
+        # --- 轉錄（去靜音之後仍超過閾值的長檔，先分段轉錄） ---
         if speech_segments:
             transcription_duration = sum(
                 seg['end'] - seg['start'] for seg in speech_segments)
@@ -320,7 +320,7 @@ class TranscriptionTask:
         # 如果失敗且檔案夠長，嘗試分割
         # local provider 不走失敗後的分割重試：各段 diarization 的說話者編號互相
         # 獨立，拼接後 [S0]/[S1] 會指向不同人；直接回報失敗讓使用者拿到明確錯誤。
-        # （長檔的轉錄前切半是使用者明確要求的功能，接受此限制，見 _transcribe_halved）
+        # （長檔的分段轉錄是使用者明確要求的功能，接受此限制，見 _transcribe_halved）
         if not result.success and self.vad_service and self.provider != "local":
             logger.info(f"轉錄失敗，檔案長度 {duration:.1f} 秒，嘗試 VAD 分割")
             return self._transcribe_with_splitting(audio_path)
@@ -423,7 +423,7 @@ class TranscriptionTask:
         duration: float,
         silence_boundaries: Optional[List[float]],
     ) -> TranscriptionTaskResult:
-        """時長超過閾值時在最接近中點的靜音處對半切，兩半分別轉錄後合併。
+        """時長超過閾值時在最接近中點的靜音處切成兩段，分別轉錄後合併。
 
         遞迴呼叫自身，直到每段低於 ``self.split_threshold_seconds``。
         silence_boundaries 是音檔內已知的靜音位置（秒）——VAD 純語音檔
