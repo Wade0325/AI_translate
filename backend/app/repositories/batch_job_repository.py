@@ -12,7 +12,7 @@ class BatchJobRepository:
 
     def create_job(self, db: Session, batch_id: str, task_params_json: str) -> BatchJob:
         """
-        建立一筆新的批次任務記錄 (status=UPLOADING)。
+        建立一筆新的批次記錄 (status=UPLOADING)。
         """
         new_job = BatchJob(
             batch_id=batch_id,
@@ -26,7 +26,7 @@ class BatchJobRepository:
 
     def update_job(self, db: Session, batch_id: str, update_data: Dict[str, Any]) -> Optional[BatchJob]:
         """
-        根據 batch_id 更新一筆現有的批次任務記錄。
+        根據 batch_id 更新一筆現有的批次記錄。
         """
         job = db.query(BatchJob).filter(BatchJob.batch_id == batch_id).first()
         if job:
@@ -45,7 +45,7 @@ class BatchJobRepository:
 
     def get_active_tasks(self, db: Session) -> List[BatchJob]:
         """
-        取得活躍的批次任務（Task 頁面用）：
+        取得活躍的批次（Task 頁面用）：
         - 所有進行中/待取回的任務（UPLOADING/POLLING/COMPLETED/RECOVERING）
         - 24 小時內已取回的任務（RETRIEVED），供用戶確認和下載
         """

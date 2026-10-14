@@ -1,6 +1,6 @@
-"""本地模型 provider：說話者分離 + 轉錄 + 強制對齊。
+"""本機引擎的 provider：說話者分離 + 轉錄 + 強制對齊。
 
-Docker 模式下只在主機端 GPU worker（local_asr 佇列）上執行，免安裝版則在行程內的
+Docker 模式下只在主機端 GPU worker（local_asr 佇列）上執行，免安裝模式則在行程內的
 local_asr 執行緒池執行——flows.py 於 provider == "local" 分支內才延遲 import 本模組，
 Docker 容器 worker 不需要 transformers/CUDA 相依。
 
@@ -166,7 +166,7 @@ def _to_mono(audio_path: Path, sample_rate: int) -> Path:
 
 
 def single_pass_limit_seconds(model: Optional[str]) -> Optional[float]:
-    """此模型一次能處理的最長音檔（秒），供 flows 決定長檔是否對半切。
+    """此模型一次能處理的最長音檔（秒），供 flows 決定長檔要不要分段轉錄。
 
     MOSS 單次可吃約 90 分鐘，整檔一次分離說話者編號才會一致，回傳依顯卡估算的上限；
     None 表示沿用全域切段設定（VibeVoice 是依 900 秒切段設計的）。
@@ -502,7 +502,7 @@ def _build_lrc_lines(
 def _build_segment_records(entries: List[dict], source: str = "qwen") -> List[dict]:
     """把片段整理成上層要持久化的結構（時間軸＝輸入檔，由 flows 負責 remap）。
 
-    ``seg_key`` 是序號而非時間，因為重跑同一個檔案時片段順序穩定、時間可能微幅
+    ``seg_key`` 是序號而非時間，因為重新轉錄時片段順序穩定、時間可能微幅
     浮動；以序號為鍵才能覆寫而不是長出重複資料。``source`` 記錄主要文字的來源模型。
     """
     records: List[dict] = []

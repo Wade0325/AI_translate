@@ -42,7 +42,7 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"啟動清掃逾時 PROCESSING 紀錄失敗: {e}")
 
-    # 清掉超過保留天數的音檔（校正介面用的原音不是永久保存）
+    # 清掉超過保留天數的保留音檔（它不是永久保存）
     try:
         from app.services import audio_store
         audio_store.purge_expired()

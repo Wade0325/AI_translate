@@ -118,7 +118,7 @@ class LocalExecutor:
     def is_alive(self, task_id: str) -> bool:
         """任務是否仍在等待或執行中。
 
-        未知的 task_id 回 False：單機模式下行程重啟後任務必死，
+        未知的 task_id 回 False：免安裝模式下行程重啟後任務必死，
         比 Celery PENDING 的模糊語意更明確。
         """
         entry = self._registry.get(task_id)

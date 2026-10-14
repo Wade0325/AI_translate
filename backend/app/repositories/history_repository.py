@@ -93,7 +93,7 @@ class HistoryRepository:
           - 進行中：status=PROCESSING（不限時間）
           - 已完成 / 失敗：status in (COMPLETED, FAILED) 且發起時間在 recent_hours 內
 
-        排除批次任務 (is_batch=True)，避免與 BatchJob 區段重複。
+        排除屬於批次的任務 (is_batch=True)，避免與 BatchJob 區段重複。
         以發起時間倒序排列。
         """
         # request_timestamp 由應用層的 datetime.now() 寫入（本地時間，見 models.py），cutoff 需用本地時間對齊

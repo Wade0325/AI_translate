@@ -54,7 +54,7 @@ def publish_status(
         task_uuid: 任務唯一識別碼。
         status_text: 顯示給使用者的訊息。
         status_code: 機器可讀的狀態碼，例如 PROCESSING/COMPLETED/FAILED/BATCH_COMPLETED。
-        file_uid: 批次任務中，單一檔案的識別碼。
+        file_uid: 批次中，單一檔案的識別碼。
         result_data: 任務完成時的結果 payload。
         extra: 其他需要併入訊息的欄位（例如 batch_id）。
     """

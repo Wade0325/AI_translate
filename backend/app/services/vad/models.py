@@ -17,7 +17,7 @@ class SpeechSegment(BaseModel):
 
 class VADProcessRequest(BaseModel):
     """
-    VAD 處理請求
+    去靜音的處理請求
     """
     audio_path: str = Field(..., description="音訊檔案路徑")
     output_dir: str = Field(..., description="輸出目錄路徑")

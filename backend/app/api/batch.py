@@ -43,7 +43,7 @@ batch_repo = BatchJobRepository()
 
 @router.get("/tasks", response_model=list[BatchTaskResponse])
 def get_batch_tasks(db: Session = Depends(get_db)):
-    """取得所有活躍的批次任務（Task 頁面用），自動歸檔超過 24 小時的已完成任務。"""
+    """取得所有活躍的批次（Task 頁面用），自動歸檔超過 24 小時的已完成批次。"""
     archived = batch_repo.archive_old_completed(db)
     if archived > 0:
         logger.info(f"自動歸檔 {archived} 個超過 24 小時的已完成批次")
@@ -91,7 +91,7 @@ def get_batch_tasks(db: Session = Depends(get_db)):
 
 @router.post("/{batch_id}/dismiss")
 def dismiss_batch_task(batch_id: str, db: Session = Depends(get_db)):
-    """用戶手動忽略/歸檔一個批次任務。"""
+    """用戶手動忽略/歸檔一個批次。"""
     success = batch_repo.mark_as_retrieved(db, batch_id)
     if not success:
         raise HTTPException(status_code=404, detail="找不到此批次任務")
@@ -103,7 +103,7 @@ def dismiss_batch_task(batch_id: str, db: Session = Depends(get_db)):
 @router.post("/{batch_id}/recover", response_model=RecoverBatchResponse)
 def recover_batch(batch_id: str, body: RecoverBatchRequest, db: Session = Depends(get_db)):
     """
-    恢復指定批次任務的結果。
+    恢復指定批次的結果。
 
     - status=COMPLETED 且有 results_json：直接從 DB 讀取結果
     - 其他情況：透過 Celery task 從 Gemini 取得結果（batches.get 只能在 worker 中運行）

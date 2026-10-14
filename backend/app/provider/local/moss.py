@@ -156,7 +156,7 @@ def _total_vram_gib() -> Optional[float]:
 
 
 def max_single_pass_seconds() -> float:
-    """MOSS 單次推論能處理的最長音檔（秒）；更長的檔由 flows 在靜音處對半切。
+    """MOSS 單次推論能處理的最長音檔（秒）；更長的檔由 flows 分段轉錄。
 
     取三者最小：設定值（使用者給多少就用多少）、上下文上限（prompt 加預留的生成空間
     不超過 131072 token，約 96 分）、顯卡容量估算（16 GB 約 79 分、12 GB 約 52 分、
@@ -243,7 +243,7 @@ def transcribe(
     stopping_criteria=None,
     status_callback: Optional[Callable[[str], None]] = None,
 ) -> Tuple[List[dict], str]:
-    """對 16 kHz mono wav 跑 MOSS，回傳 (片段, 原始輸出文字)。
+    """對 16 kHz mono wav 跑 MOSS，回傳 (片段, 未解析的輸出文字)。
 
     stopping_criteria 由呼叫端傳入（取消旗標）；被中途停下時輸出不完整，
     呼叫端必須先檢查取消再使用結果。

@@ -18,7 +18,7 @@ class TranscriptionLogRepository:
     def insert_log(self, db: Session, initial_data: Dict[str, Any]) -> TranscriptionLog:
         """建立轉錄日誌；同 task_uuid 已存在時改為覆寫（upsert）。
 
-        Celery 任務被重派（redelivered）時會以相同 task_uuid 重跑，
+        Celery 任務被重派（redelivered）時會以相同 task_uuid 再執行一次，
         單純 insert 會撞主鍵並讓紀錄永遠卡在 PROCESSING。
         """
         data = dict(initial_data)
@@ -97,7 +97,7 @@ class TranscriptionLogRepository:
         """把卡在 PROCESSING 超過 max_age_hours 的單檔紀錄標記為 FAILED，回傳筆數。
 
         worker 行程中途被終止（斷電、手動砍掉）不會回來更新狀態，這類紀錄
-        會永遠顯示「處理中」。批次任務有自己的 recover 機制，不在此處理。
+        會永遠顯示「處理中」。批次有自己的 recover 機制，不在此處理。
         """
         cutoff = datetime.now() - timedelta(hours=max_age_hours)
         updated = (

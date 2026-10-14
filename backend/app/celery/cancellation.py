@@ -9,7 +9,7 @@
   行程生命週期即旗標生命週期
 
 ``task_id:{file_uid}`` 記錄最近一次派發的 task id，供 revoke 使用；
-重跑同一檔案時會被新 id 覆蓋。
+同一檔案再開一個任務時會被新 id 覆蓋。
 """
 
 from __future__ import annotations
