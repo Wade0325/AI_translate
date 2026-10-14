@@ -1,6 +1,6 @@
 # 從開工到合併
 
-開始改動前讀一次，合併前再讀一次。
+開始改動前讀一次，合併前再讀一次。push、開 PR 與合併都由代理自己做，不必先問。
 
 1. **開工**：從 `origin/main` 開新分支。在 worktree 裡不連使用者的資料庫。
 2. **push 前**：在本機跑 `tools/check.py`，全綠才 push。不用 `--no-verify` 之類的參數跳過檢查；檢查因為 main 上的問題失敗時，合併 main 或等修正的 PR，不繞過。
@@ -10,7 +10,7 @@
    - 改到畫面時，寫出在瀏覽器點了什麼、看到什麼，附截圖；沒有就寫「無畫面變更」。
    - 動到下列路徑的 PR 是單向門，內文要標明：`CLAUDE.md`、`docs/agents/`、`tools/hooks/`、`.github/`、`.gitignore`、進版控的 `.claude/` 檔案；閘門的設定 `tools/check.py`、`ruff.toml`、`pytest.ini`、`frontend/eslint.config.js`、`pyrightconfig.json`、`frontend/tsconfig.json`；依賴 `backend/requirements*.txt`、`frontend/package.json`、`frontend/package-lock.json`；`migrations/`、`build_release.ps1`。
 5. **合併**：ruleset 是唯一的關卡，對代理沒有例外。
-   1. 等 `gh pr checks <PR> --watch` 全綠。等很久時放到背景執行並設逾時；結束前停掉自己啟動的背景指令。
+   1. 等 `gh pr checks <PR> --watch` 全綠，綠燈之後才回報；紅燈就自己修，push 後回到 1。等很久時放到背景執行並設逾時；結束前停掉自己啟動的背景指令。
    2. 狀態是 `BEHIND` 時執行 `gh pr update-branch`，回到 1。
    3. `gh pr merge --merge`，不加 `--admin` 或 `--delete-branch`。
    4. 遠端分支沒有自動刪除時，手動刪掉。要移除 worktree 時，先跑 `git -C <worktree> status --ignored --porcelain`，把 `lab/` 之類被忽略的產出複製出來；`git worktree remove` 會不經警告就刪掉它們。
