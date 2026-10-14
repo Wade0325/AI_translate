@@ -31,16 +31,29 @@ CLAUDE.md 的規則是勸告，這支 hook 才是強制的；能不能合併，�
     可以直接執行的補救指令。改成「略過並警告」等於放寬閘門，要由使用者決定。
 
 什麼時候擋
-  * 紅燈就擋（exit 2），不看 payload 的 stop_hook_active。Claude Code 自己有上限：
+  * 紅燈就擋，不看 payload 的 stop_hook_active。Claude Code 自己有上限：
     Stop hook 連續讓回合繼續 8 次後，下一次阻擋會被覆寫、回合結束；但 Claude 每呼叫
     一次工具，計數就歸零（環境變數 CLAUDE_CODE_STOP_HOOK_BLOCK_CAP 可以調高上限）。
     所以代理持續呼叫工具修復時，會一直擋到綠燈；檢查因為與這次改動無關的原因一直
     紅燈時，要由使用者中斷。
-  * 故障也擋：任何例外或 git 指令失敗，都印出原因並 exit 2。exit 1 會被當成
+  * 故障也擋：任何例外或 git 指令失敗，都照下面的輸出協定擋下。exit 1 會被當成
     non-blocking error 而放行，Stop hook 的 onFailure 設定又沒有作用，只能在腳本裡
     處理。settings.json 設的逾時一到仍會放行，這點腳本補不了。
-  * 擋下的訊息第一行是這支腳本自己的路徑：從主 checkout 啟動的 session 進了
+  * 擋下的原因第一行是這支腳本自己的路徑：從主 checkout 啟動的 session 進了
     worktree，跑的仍是主 checkout 那一份（${CLAUDE_PROJECT_DIR} 不隨 worktree 改變）。
+
+輸出協定（官方 hooks 文件的 JSON output 一節）
+  * 放行：stdout 什麼都不印，exit 0。
+  * 擋下：stdout 只印一個 JSON 物件 ``{"decision": "block", "reason": "<原因與補救指令>"}``，
+    exit 0。Claude 收到的是 reason。
+  * 不用 stderr 加 exit 2：文件的 Exit code output 一節寫明，Stop hook exit 2、stdout
+    空白、stderr 又說找不到檔案（例如 ``No such file or directory``）時，Claude Code
+    當成 non-blocking error，回合照樣結束。git 找不到目錄、pytest 的 FileNotFoundError
+    都會印出這句話（#59）。
+  * exit 0 時，stdout 不是一個完整、合法的 JSON 物件也會放行。所以 stdout 只寫這一個
+    物件，而且只用 ASCII：Windows 管線的 stdout 用系統碼頁，直接寫中文的話，Claude Code
+    以 UTF-8 讀不回來。
+  * 連 JSON 都寫不出去時，才退回 exit 2，而且 stderr 什麼都不印（見檔尾）。
 """
 
 from __future__ import annotations
@@ -310,12 +323,17 @@ def _verify(root: Path, names: list[str]) -> list[str]:
     return failures
 
 
-def _report(root: Path | None, header: str, sections: list[str]) -> None:
+def _block(root: Path | None, header: str, sections: list[str]) -> int:
+    """擋下這個回合：stdout 只印 Stop hook 的 JSON 決定，原因放在 reason；回傳結束碼 0。"""
     lines = [f"Stop hook 腳本：{Path(__file__).resolve()}"]
     if root is not None:
         lines.append(f"檢查的 repo：{root}")
     lines.append(header)
-    print("\n".join(lines) + "\n\n" + "\n\n".join(sections), file=sys.stderr)
+    reason = "\n".join(lines) + "\n\n" + "\n\n".join(sections)
+    # ensure_ascii：中文寫成 \uXXXX，stdout 不管用哪個碼頁，都讀得回同一個 JSON
+    sys.stdout.write(json.dumps({"decision": "block", "reason": reason}, ensure_ascii=True))
+    sys.stdout.flush()
+    return 0
 
 
 def main() -> int:
@@ -328,29 +346,26 @@ def main() -> int:
         root = _repo_root(payload.get("cwd") or os.getcwd())
         failures = _verify(root, _select_checks(_changed_paths(root)))
         if failures:
-            _report(root, RED, failures)
-            return 2
+            return _block(root, RED, failures)
         _record_green(root)
         return 0
     except GateError as e:
-        _report(root, FAULT, [str(e)])
-        return 2
+        return _block(root, FAULT, [str(e)])
     except Exception:
-        _report(root, FAULT, ["\n".join(traceback.format_exc().splitlines()[-TAIL_LINES:])])
-        return 2
+        return _block(root, FAULT, ["\n".join(traceback.format_exc().splitlines()[-TAIL_LINES:])])
 
 
 if __name__ == "__main__":
     # Claude Code 以 UTF-8 送出 JSON，Windows 的 stdin 卻用系統碼頁解碼：輸入有中文時
-    # JSON 會解析失敗，而讀不到輸入會擋下回合。
-    # Windows 的 stderr 用系統碼頁，Claude 讀到的中文會變亂碼。
-    for stream in (sys.stdin, sys.stderr):
-        try:
-            stream.reconfigure(encoding="utf-8")
-        except Exception:
-            pass
+    # JSON 會解析失敗，而讀不到輸入會擋下回合。stdout 只寫 ASCII，不必改編碼。
+    try:
+        sys.stdin.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
     try:
         code = main()
-    except Exception:  # 連 main() 自己的回報都失敗時，一樣擋下，不讓 exit 1 放行
+    except Exception:
+        # 連 JSON 都寫不出去時的最後手段：exit 2 一樣擋下，不讓 exit 1 放行。stderr 什麼都
+        # 不印：stdout 空白時，stderr 只要提到找不到檔案，Claude Code 就會放行
         code = 2
     sys.exit(code)
