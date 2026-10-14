@@ -6,7 +6,7 @@
 - 把關交給 CI 與合併流程（`docs/agents/merging.md`）：不要跑 `/code-review`，skill 裡呼叫它的步驟也略過。
 - 實驗、研究筆記與報告寫在主 checkout 的 `lab/`（路徑是 `git rev-parse --path-format=absolute --git-common-dir` 的上一層），不寫在 worktree 裡。
 - `lab/data/eval/` 的標準答案與各處的 `.env` 只由使用者修改：用編輯工具或 shell 都不要寫入，需要改時請使用者自己改。
-- 改後端的任務派送、進度通知、取消或資料庫時：Docker 模式用到的 Redis、Celery、Postgres，在免安裝版（`APP_MODE=standalone`）都有行程內的替代實作，兩邊都要能動；在 `backend/` 搜尋 `is_standalone` 與 `sqlite` 找出位置。
+- 改後端的任務派送、進度通知、取消或資料庫時：Docker 模式用到的 Redis、Celery、Postgres，在免安裝模式（`APP_MODE=standalone`）都有行程內的替代實作，兩邊都要能動；在 `backend/` 搜尋 `is_standalone` 與 `sqlite` 找出位置。
 - 新增接收伺服器檔名的端點時，一律經 `utils/paths.py` 的 `resolve_upload_path()`。
 
 ## Agent skills
