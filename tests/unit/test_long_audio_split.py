@@ -1,4 +1,4 @@
-"""長檔切半（VAD 之後在中點靜音處對半切）的純函式測試。"""
+"""分段轉錄（去靜音之後在最接近中點的靜音處切成兩段）的純函式測試。"""
 
 from app.services.transcription.flows import (
     pick_halving_split_point,

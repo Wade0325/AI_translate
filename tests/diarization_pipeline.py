@@ -1,7 +1,7 @@
 """VibeVoice-ASR 說話者分離（diarization）獨立測試 pipeline。
 
 把音檔放進 tests/audio_input/，每檔流程：
-  1. VAD 靜音移除（與 vad_pipeline / 正式轉錄同一份程式碼）
+  1. 去靜音（與 vad_pipeline / 正式轉錄同一份程式碼）
   2. 整檔（不切片）餵 microsoft/VibeVoice-ASR-HF 做說話者分離
   3. 輸出到 tests/audio_output/{檔名}/：
      speakers.json       說話者摘要 + 各片段（時間為「分:秒.小數」，
@@ -158,7 +158,7 @@ def process_file(input_path: Path, processor, model, vad_service, args) -> dict:
         "total_duration": to_minutes(total_duration),
     }
 
-    # --- 1. 轉 wav + VAD 靜音移除（與正式流程/vad_pipeline 相同）---
+    # --- 1. 轉 wav + 去靜音（與正式流程/vad_pipeline 相同）---
     wav_path = convert_to_wav(input_path, work_dir)
     if wav_path is None:
         report["error"] = "ffmpeg 轉 WAV 失敗"
@@ -172,7 +172,7 @@ def process_file(input_path: Path, processor, model, vad_service, args) -> dict:
     if extraction.success and extraction.speech_only_path:
         model_source = extraction.speech_only_path
         vad_segments = extraction.segments
-        report["audio_fed_to_model"] = "speech_only_vad.wav（VAD 靜音移除、整檔不切片）"
+        report["audio_fed_to_model"] = "speech_only_vad.wav（去靜音、整檔不切片）"
         report["speech_only_duration"] = to_minutes(extraction.speech_duration)
     else:
         model_source = wav_path

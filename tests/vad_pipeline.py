@@ -189,7 +189,7 @@ def process_file(input_path: Path, *, include_split: bool, min_silence: float) -
     if wav_path != input_path:
         cleanup.append(wav_path)
 
-    # --- 方法一：VAD 靜音移除（正式轉錄的前處理主路徑）---
+    # --- 方法一：去靜音（正式轉錄的前處理主路徑）---
     extraction = run_vad_extraction(wav_path, work_dir, vad_service)
     cleanup.extend(extraction.cleanup_files)
 

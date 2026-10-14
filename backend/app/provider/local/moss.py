@@ -156,7 +156,7 @@ def _total_vram_gib() -> Optional[float]:
 
 
 def max_single_pass_seconds() -> float:
-    """MOSS 單次推論能處理的最長音檔（秒）；更長的檔由 flows 在靜音處對半切。
+    """MOSS 單次推論能處理的最長音檔（秒）；更長的檔由 flows 分段轉錄。
 
     取三者最小：設定值（使用者給多少就用多少）、上下文上限（prompt 加預留的生成空間
     不超過 131072 token，約 96 分）、顯卡容量估算（16 GB 約 79 分、12 GB 約 52 分、
