@@ -34,7 +34,7 @@ def run_vad_test(
 ) -> dict[str, Any]:
     """
     對單一音檔執行 VAD 測試：
-      1. 靜音移除 → speech_only.wav
+      1. 去靜音 → speech_only.wav
       2. （可選）靜音分割 → part1.wav / part2.wav
 
     產物一律保存到 vad_artifacts/（不受 VAD_KEEP_ARTIFACTS 開關限制）。
@@ -55,7 +55,7 @@ def run_vad_test(
     split_payload: Optional[dict[str, Any]] = None
     artifact_dir: Optional[str] = None
 
-    # --- 1. 靜音移除 ---
+    # --- 1. 去靜音 ---
     extract_result = run_vad_extraction(file_path, temp_dir, vad_service)
     to_cleanup.extend(extract_result.cleanup_files)
 

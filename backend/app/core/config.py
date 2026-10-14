@@ -100,11 +100,11 @@ class Settings(BaseSettings):
 
     # App
     temp_uploads_dir: str = "temp_uploads"
-    # VAD 除錯：保留切割產物供本機试听檢查（預設關閉）
+    # 去靜音與切點的除錯：保留切割產物供本機試聽檢查（預設關閉）
     vad_keep_artifacts: bool = False
     vad_artifacts_dir: str = "vad_artifacts"
 
-    # 轉錄完成後保留原始音檔（校正介面要能重播原音）；到期後由啟動清掃刪除
+    # 轉錄完成後留下保留音檔（校正介面要能重播）；到期後由啟動清掃刪除
     retain_audio: bool = True
     audio_store_dir: str = "audio_store"
     audio_retention_days: int = 30
@@ -154,10 +154,10 @@ class Settings(BaseSettings):
     # Batch / Flex 推論的費用折扣率（0.5 表示原價 50%）
     batch_cost_discount: float = 0.5
     flex_cost_discount: float = 0.5
-    # 語音佔比 >= 此閾值（預設 0.9）時跳過 VAD 預處理，直接用原檔轉錄；
+    # 語音佔比 >= 此閾值（預設 0.9）時跳過去靜音，直接用原檔轉錄；
     # 空白超過 10%（語音佔比 < 90%）才執行去靜音
     vad_speech_ratio_skip_threshold: float = 0.90
-    # VAD 前處理後（或跳過 VAD 時的原檔）仍超過此時長（秒）的音檔，
+    # 去靜音之後（或跳過去靜音時的原檔）仍超過此時長（秒）的音檔，
     # 轉錄前先在最接近中點的靜音處切成兩段，遞迴直到每段低於閾值；0 = 停用。
     # 適用 Gemini 與 Local 的 vibevoice-qwen3-asr；MOSS 模型改看下一個設定
     long_audio_split_threshold_seconds: float = 900.0
@@ -166,7 +166,7 @@ class Settings(BaseSettings):
     # （見 provider/local/moss.py）；0 = 停用切段
     local_moss_single_pass_max_seconds: float = 4200.0
     # 單檔紀錄卡在 PROCESSING 超過此時數即視為孤兒（worker 中斷後不會回寫狀態），
-    # 後端啟動時標記為 FAILED；需大於最長的合理轉錄時間（本地模型長檔可達數小時）
+    # 後端啟動時標記為 FAILED；需大於最長的合理轉錄時間（本機引擎跑長檔可達數小時）
     stale_processing_max_age_hours: int = 12
 
     model_config = SettingsConfigDict(

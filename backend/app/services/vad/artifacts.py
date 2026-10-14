@@ -1,4 +1,4 @@
-"""VAD 產物持久化 — 供本機檢查切割是否正確。
+"""去靜音與切點的產物持久化 — 供本機檢查切割是否正確。
 
 啟用 ``VAD_KEEP_ARTIFACTS=true`` 後，每次 VAD 前處理或分割會把 wav 與
 segments 資訊複製到 ``vad_artifacts/{檔名}_{task_id}/``，不受轉錄完成後
@@ -82,7 +82,7 @@ def persist_speech_extraction(
     used_for_transcription: bool,
     force: bool = False,
 ) -> Optional[Path]:
-    """保存 VAD 純語音提取結果（speech_only.wav + segments.json）。"""
+    """保存去靜音的純語音提取結果（speech_only.wav + segments.json）。"""
     run_dir = _artifact_run_dir(task_id, original_filename, force=force)
     if run_dir is None:
         return None

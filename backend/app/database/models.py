@@ -39,7 +39,7 @@ class ModelConfiguration(Base):
 
 
 class BatchJob(Base):
-    """batch_jobs 資料表 — 持久化 Gemini 批次任務資訊，供重啟後恢復"""
+    """batch_jobs 資料表 — 持久化 Gemini 批次的資訊，供重啟後恢復"""
     __tablename__ = 'batch_jobs'
 
     batch_id = Column(String, primary_key=True)         # 前端的 batch ID
@@ -74,7 +74,7 @@ class TranscriptionLog(Base):
     cost = Column(Float, nullable=True)
     error_message = Column(Text, nullable=True)
     is_batch = Column(Boolean, default=False, nullable=True)
-    # batch_id 參照 batch_jobs.batch_id，但允許 NULL（非批次任務）
+    # batch_id 參照 batch_jobs.batch_id，但允許 NULL（不屬於批次的任務）
     batch_id = Column(
         String,
         ForeignKey("batch_jobs.batch_id", ondelete="SET NULL"),
@@ -90,7 +90,7 @@ class TranscriptionLog(Base):
     session_id = Column(String, nullable=True, index=True)  # 同一次 Start 的任務群組
     # 實際推論層級：standard / flex / batch
     service_tier_used = Column(String, nullable=True)
-    # 保留下來的原始音檔檔名（位於 audio_store 目錄內）。校正介面要能重播原音，
+    # 保留音檔的檔名（位於 audio_store 目錄內）。校正介面要能重播它，
     # 只存檔名不存完整路徑，資料目錄搬家後仍然有效
     audio_filename = Column(String, nullable=True)
 
@@ -101,7 +101,7 @@ class TranscriptSegment(Base):
     LRC 仍是下載用的單一真相（``TranscriptionLog.lrc_content``）；這張表存的是
     可逐段更新、可標記、可回溯的結構化版本：說話者分離給出的每一段各一列。
 
-    ``seg_key`` 是確定性的（切段序號 + 片段序號），所以任務被重派、重跑時是
+    ``seg_key`` 是確定性的（切段序號 + 片段序號），所以任務被重派或重新轉錄時是
     覆寫同一列而不是產生重複資料。``text_alt`` 存另一個模型對同一段的轉錄
     （local provider 的 VibeVoice 文字），兩者不一致處即是需要人工複查的候選。
     """
@@ -120,7 +120,7 @@ class TranscriptSegment(Base):
     )
     seg_key = Column(String, nullable=False)      # 確定性片段 id
     seq = Column(Integer, nullable=False)         # 時間順序（0 起算）
-    start_sec = Column(Float, nullable=False)     # 原始音檔時間軸
+    start_sec = Column(Float, nullable=False)     # 去靜音前的時間軸
     end_sec = Column(Float, nullable=True)
     speaker = Column(String, nullable=True)       # "S0" / "S1"
     text = Column(Text, nullable=True)            # 主要轉錄結果

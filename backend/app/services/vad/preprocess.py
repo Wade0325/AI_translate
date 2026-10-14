@@ -25,7 +25,7 @@ logger = setup_logger(__name__)
 
 @dataclass
 class VadPreprocessResult:
-    """VAD 前處理回傳結果。
+    """去靜音的回傳結果。
 
     Attributes:
         success: 是否成功取得純語音檔（False 代表呼叫端應回退到原始檔）。

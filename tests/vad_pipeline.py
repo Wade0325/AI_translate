@@ -1,16 +1,16 @@
-"""VAD / ffmpeg 靜音切割獨立測試 pipeline — 不經 Docker / API，直接對本機音檔測試。
+"""去靜音（RMS／ffmpeg）與 Silero VAD 切點的獨立測試 pipeline — 不經 Docker / API，直接對本機音檔測試。
 
 把測試音檔放進 tests/audio_input/，執行後兩種切割方式都會跑一次，
 結果輸出到 tests/audio_output/{檔名}/，方便試聽比較（尚未做方法選擇機制）：
-  speech_only_vad.wav      VAD（RMS 音量閾值）靜音移除結果
-  segments_vad.json        VAD 各語音片段在原始音檔上的起訖時間（分:秒.小數）
-  speech_only_ffmpeg.wav   ffmpeg silencedetect 靜音移除結果
+  speech_only_vad.wav      去靜音結果（RMS 音量閾值）
+  segments_vad.json        去靜音找出的各有聲區間在原始時間軸上的起訖時間（分:秒.小數）
+  speech_only_ffmpeg.wav   ffmpeg silencedetect 的去靜音結果
   segments_ffmpeg.json     ffmpeg 各語音片段起訖時間
   report.json              兩種方法的統計摘要（語音佔比、正式流程是否會採用等）
-  part1.wav/part2.wav      （--split 時）VAD 靜音分割結果
+  part1.wav/part2.wav      （--split 時）Silero VAD 的靜音分割結果
 
 VAD 路徑走的程式碼與正式轉錄完全相同：
-  convert_to_wav（ffmpeg 16k 單聲道）→ run_vad_extraction（RMS 靜音移除）
+  convert_to_wav（ffmpeg 16k 單聲道）→ run_vad_extraction（RMS 去靜音）
   --split 時再跑 split_audio_on_silence（Silero VAD，首次執行會下載模型）
 ffmpeg 路徑：silencedetect 找靜音 → 依區間切割拼接。
 
@@ -116,7 +116,7 @@ def ffmpeg_speech_intervals(path: Path, total_duration: float) -> list[tuple[flo
 
 
 def run_ffmpeg_extraction(wav_path: Path, work_dir: Path) -> dict:
-    """ffmpeg silencedetect 靜音移除：偵測語音區間後切割拼接成 speech_only_ffmpeg.wav。"""
+    """ffmpeg silencedetect 去靜音：偵測語音區間後切割拼接成 speech_only_ffmpeg.wav。"""
     data, sr = sf.read(str(wav_path), dtype="float32")
     total_duration = len(data) / sr
 
@@ -227,7 +227,7 @@ def process_file(input_path: Path, *, include_split: bool, min_silence: float) -
             "error": "無法提取語音片段（可能全段靜音或格式不支援）",
         }
 
-    # --- 方法二：ffmpeg silencedetect 靜音移除（移植自 test.py）---
+    # --- 方法二：ffmpeg silencedetect 去靜音（移植自 test.py）---
     try:
         report["ffmpeg"] = run_ffmpeg_extraction(wav_path, work_dir)
     except Exception as e:

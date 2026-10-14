@@ -5,9 +5,9 @@
   2. 整檔（不切片）餵 microsoft/VibeVoice-ASR-HF 做說話者分離
   3. 輸出到 tests/audio_output/{檔名}/：
      speakers.json       說話者摘要 + 各片段（時間為「分:秒.小數」，
-                         同時給 speech_only 與原始音檔兩種時間軸）
+                         同時給 speech_only 與去靜音前兩種時間軸）
      speaker_00.wav ...  依說話者拼接的音檔（試聽判斷每個 Speaker 是誰）
-     speech_only_vad.wav 餵給模型的 VAD 處理檔（與 vad_pipeline 產物相同）
+     speech_only_vad.wav 餵給模型的去靜音結果（與 vad_pipeline 產物相同）
 
 模型約 18GB（BF16），16GB VRAM 放不下的層由 accelerate 自動降載到 CPU RAM
 （--gpu-mem 控制 GPU 權重上限，剩餘空間留給 KV cache）。
@@ -81,7 +81,7 @@ def to_model_wav(source: Path, work_dir: Path) -> Path | None:
 
 
 def build_remapper(segments: list[dict]):
-    """speech_only 時間軸 → 原始音檔時間軸（依 VAD 片段累積時長換算）。"""
+    """speech_only 時間軸 → 去靜音前的時間軸（依有聲區間累積時長換算）。"""
     if not segments:
         return lambda t: t
     bounds = []

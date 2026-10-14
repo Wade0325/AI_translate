@@ -1,6 +1,6 @@
-"""任務原始音檔的保管。
+"""保留音檔的保管。
 
-校正介面必須能重播原音，但轉錄流程原本會在結束時刪掉 ``temp_uploads`` 裡的上傳檔
+校正介面必須能重播保留音檔，但轉錄流程原本會在結束時刪掉 ``temp_uploads`` 裡的上傳檔
 （``TranscriptionTask.cleanup``）。這裡把檔案**搬**到 audio_store，檔名以 task_uuid
 命名，之後靠 ``TranscriptionLog.audio_filename`` 找回來。
 

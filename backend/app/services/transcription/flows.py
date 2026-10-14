@@ -28,16 +28,16 @@ from .models import (
 logger = setup_logger(__name__)
 
 _settings = get_settings()
-# 語音佔比 >= 此閾值時跳過 VAD 預處理；低於則使用純語音檔轉錄
+# 語音佔比 >= 此閾值時跳過去靜音；低於則使用純語音檔轉錄
 VAD_SPEECH_RATIO_SKIP_THRESHOLD = _settings.vad_speech_ratio_skip_threshold
 # 去靜音之後仍超過此時長（秒）的音檔要分段轉錄：在最接近中點的靜音處切成兩段；0 = 停用
 LONG_AUDIO_SPLIT_THRESHOLD_SECONDS = _settings.long_audio_split_threshold_seconds
 
 
 def speech_segment_boundaries(segments: List[Dict[str, float]]) -> List[float]:
-    """VAD 片段在「拼接後時間軸」上的交界位置。
+    """去靜音找出的有聲區間在「拼接後時間軸」上的交界位置。
 
-    純語音檔是各片段無縫拼接而成，片段交界正是原音檔的靜音處，
+    純語音檔是各有聲區間無縫拼接而成，交界正是去靜音前音檔的靜音處，
     也是切割純語音檔時唯一不會切在語句中間的位置。
     """
     boundaries: List[float] = []
@@ -59,7 +59,7 @@ def pick_halving_split_point(
 
 
 def speech_time_remapper(segments: List[Dict[str, float]]):
-    """回傳「純語音檔時間 → 原始音檔時間」的轉換函式。
+    """回傳「純語音檔時間 → 去靜音前時間」的轉換函式。
 
     LRC 與結構化片段共用同一套轉換，兩者的時間軸才不會分岔。
     """
@@ -328,9 +328,9 @@ class TranscriptionTask:
         return result
 
     def _extract_speech_only(self, audio_path: Path) -> Optional[dict]:
-        """使用 VAD 提取純語音檔案。
+        """去靜音：提取純語音檔案。
 
-        實際 VAD 流程由 :mod:`app.services.vad.preprocess` 共用實作，
+        實際的去靜音流程由 :mod:`app.services.vad.preprocess` 共用實作，
         此處只負責呼叫 callback、把產生的暫存檔登記進 cleanup 列表。
         """
         if self.status_callback:
@@ -426,8 +426,8 @@ class TranscriptionTask:
         """時長超過閾值時在最接近中點的靜音處切成兩段，分別轉錄後合併。
 
         遞迴呼叫自身，直到每段低於 ``self.split_threshold_seconds``。
-        silence_boundaries 是音檔內已知的靜音位置（秒）——VAD 純語音檔
-        以片段交界為準；無資訊（跳過 VAD）時改用 VAD 服務在檔案上找。
+        silence_boundaries 是音檔內已知的靜音位置（秒）——去靜音後的純語音檔
+        以有聲區間的交界為準；無資訊（跳過去靜音）時改用 VAD 服務在檔案上找。
         注意：local provider 兩半的說話者編號各自獨立（前半的 S0 未必是
         後半的 S0），多人對話的長檔請自行斟酌（MOSS 的門檻較長，多數檔案不會切）。
         """

@@ -18,5 +18,5 @@ from app.tasks.transcribe_core import run_transcription
     retry_backoff_max=60,
 )
 def transcribe_media_task(self, task_params_dict: dict):
-    """單檔轉錄 Celery 任務：VAD 前處理 → 轉錄 → 格式轉換 → 計費 → 寫 DB。"""
+    """單檔轉錄 Celery 任務：去靜音 → 轉錄 → 格式轉換 → 計費 → 寫 DB。"""
     return run_transcription(task_params_dict, self.request.id)
