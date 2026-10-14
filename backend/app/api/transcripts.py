@@ -1,8 +1,8 @@
 """校正介面用的轉錄文件端點。
 
-與 ``/history`` 的差別：history 給的是任務層級的統計與可下載的字幕字串，
-這裡給的是**可逐段操作的結構化文件**（說話者、逐字時間戳、第二份轉錄）加上
-原始音檔，讓前端能邊聽邊改。
+與 ``/history`` 的差別：history 給的是任務層級的統計與可下載的轉錄結果，
+這裡給的是**可逐段操作的結構化文件**（說話者、逐字時間戳、第二假設）加上
+保留音檔，讓前端能邊聽邊改。
 
 音檔用 FileResponse 直接服務；Starlette 會處理 Range 請求，播放器才能拖曳。
 """
@@ -80,7 +80,7 @@ def get_transcript(task_uuid: str, db: Session = Depends(get_db)):
 
 @router.get("/{task_uuid}/audio")
 def get_transcript_audio(task_uuid: str, db: Session = Depends(get_db)):
-    """回傳保留下來的原始音檔，供校正介面播放。"""
+    """回傳保留音檔，供校正介面播放。"""
     log = _get_log(db, task_uuid)
     path = audio_store.resolve(log.audio_filename)
     if path is None:

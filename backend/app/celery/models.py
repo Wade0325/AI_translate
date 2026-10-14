@@ -24,7 +24,7 @@ class TranscriptionTaskParams(BaseModel):
 
 
 class BatchFileItemParams(BaseModel):
-    """批次任務中的單一檔案參數；per-file 設定為 None 時套用批次層級的 fallback 值"""
+    """批次中的單一檔案參數；per-file 設定為 None 時套用批次層級的 fallback 值"""
     file_path: str
     original_filename: str
     file_uid: str

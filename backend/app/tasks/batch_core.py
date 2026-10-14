@@ -44,7 +44,7 @@ logger = setup_logger(__name__)
 
 _settings = get_settings()
 BATCH_COST_DISCOUNT = _settings.batch_cost_discount
-# 語音佔比超過此閾值時，視為原音檔幾乎全是語音，跳過 VAD 預處理
+# 語音佔比超過此閾值時，視為音檔幾乎全是語音，跳過去靜音
 VAD_SPEECH_RATIO_SKIP_THRESHOLD = _settings.vad_speech_ratio_skip_threshold
 
 
@@ -56,7 +56,7 @@ def _publish_batch_status(
     result_data: dict = None,
     file_uid: str = None,
 ):
-    """批次任務的 publish_status 薄包裝，自動附上 batch_id。"""
+    """批次的 publish_status 薄包裝，自動附上 batch_id。"""
     publish_status(
         batch_id,
         task_uuid,
@@ -86,10 +86,10 @@ def _vad_preprocess_file(
     file_uid: str | None = None,
     original_filename: str | None = None,
 ):
-    """對單一音檔執行 VAD 前處理（批次用）。
+    """對單一音檔執行去靜音（批次用）。
 
-    回傳 (上傳用的檔案路徑, VAD segments or None, 需清理的暫存檔列表)。
-    若語音佔比 >= ``VAD_SPEECH_RATIO_SKIP_THRESHOLD`` 或 VAD 失敗，
+    回傳 (上傳用的檔案路徑, 有聲區間 or None, 需清理的暫存檔列表)。
+    若語音佔比 >= ``VAD_SPEECH_RATIO_SKIP_THRESHOLD`` 或去靜音失敗，
     則回傳原始路徑與 None。
     """
     try:
@@ -349,7 +349,7 @@ def run_batch(task_params_dict: dict, task_uuid: str):
                 "file_uid": file_item.file_uid,
             })
 
-        # --- VAD 前處理 + 上傳所有檔案至 Gemini ---
+        # --- 去靜音 + 上傳所有檔案至 Gemini ---
         file_gemini_mapping = {}
         file_vad_segments = {}   # {file_uid: segments_list or None}
 
@@ -580,7 +580,7 @@ def run_batch(task_params_dict: dict, task_uuid: str):
         for file_item in task_params.files:
             _cleanup_local_file(file_item.file_path)
 
-        # 清理 VAD 暫存檔案
+        # 清理去靜音的暫存檔案
         for vad_file in vad_cleanup_files:
             try:
                 if vad_file.exists() and is_temp_upload(vad_file):
@@ -594,7 +594,7 @@ def run_batch(task_params_dict: dict, task_uuid: str):
 
 def process_gemini_batch_results(batch_id: str, api_key: str, db, batch_repo, log_repo):
     """
-    從 db 和 Gemini 恢復批次任務結果（同步函式）。
+    從 db 和 Gemini 恢復批次結果（同步函式）。
     由 API endpoints 或任務執行器呼叫。
     """
     from types import SimpleNamespace
@@ -723,7 +723,7 @@ def process_gemini_batch_results(batch_id: str, api_key: str, db, batch_repo, lo
 
 
 def run_recover(batch_id: str, api_key: str):
-    """恢復批次任務結果的入口：開自己的 DB session 並呼叫核心恢復流程。"""
+    """恢復批次結果的入口：開自己的 DB session 並呼叫核心恢復流程。"""
     db = SessionLocal()
     batch_repo = BatchJobRepository()
     log_repo = TranscriptionLogRepository()

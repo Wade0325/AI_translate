@@ -23,7 +23,7 @@ class TestModelPricesDefinition:
         assert "gemini-3.5-flash" in MODEL_PRICES
 
     def test_prices_are_non_negative(self):
-        """本地模型（如 vibevoice-qwen3-asr）價格為 0，故僅要求非負"""
+        """本機引擎的模型（如 vibevoice-qwen3-asr）價格為 0，故僅要求非負"""
         for model_name, price in MODEL_PRICES.items():
             assert price.input_text >= 0, f"{model_name} input_text should be non-negative"
             assert price.input_audio >= 0, f"{model_name} input_audio should be non-negative"

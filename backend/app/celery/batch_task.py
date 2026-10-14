@@ -22,5 +22,5 @@ def batch_transcribe_task(self, task_params_dict: dict):
 
 @celery_app.task(name="batch_recover_task", bind=True, max_retries=0)
 def batch_recover_task(self, batch_id: str, api_key: str):
-    """從 Celery worker 中恢復批次任務結果的 Task wrapper。"""
+    """從 Celery worker 中恢復批次結果的 Task wrapper。"""
     return run_recover(batch_id, api_key)

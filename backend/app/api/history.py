@@ -111,7 +111,7 @@ def get_active_single_tasks(
       - 進行中：所有 PROCESSING 的單檔任務
       - 已完成/失敗：最近 hours 小時內
 
-    批次任務不包含在此（已由 GET /api/v1/batch/tasks 提供）。
+    屬於批次的任務不包含在此（已由 GET /api/v1/batch/tasks 提供）。
     """
     logs = history_repo.get_active_single_tasks(db, recent_hours=hours)
     return [_log_to_response(log) for log in logs]
@@ -196,7 +196,7 @@ def download_transcript(
 
 @router.delete("/{task_uuid}")
 def delete_history(task_uuid: str, db: Session = Depends(get_db)):
-    """刪除單筆歷史紀錄，連帶清掉結構化片段與保留的原始音檔。
+    """刪除單筆歷史紀錄，連帶清掉結構化片段與保留音檔。
 
     SQLite 預設不強制外鍵，所以片段不能只靠 ON DELETE CASCADE，這裡明確刪除。
     """

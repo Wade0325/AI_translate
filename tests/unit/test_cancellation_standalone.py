@@ -43,6 +43,6 @@ def test_task_id_registry(standalone_cancellation):
     assert c.get_task_id("f1") is None
     c.register_task_id("f1", "task-a")
     assert c.get_task_id("f1") == "task-a"
-    # 重跑同一檔案時覆蓋
+    # 同一檔案再開任務時覆蓋
     c.register_task_id("f1", "task-b")
     assert c.get_task_id("f1") == "task-b"

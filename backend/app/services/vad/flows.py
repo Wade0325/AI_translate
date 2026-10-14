@@ -25,7 +25,7 @@ def _convert_segments_to_pydantic(segments: List[Dict[str, float]]) -> List[Spee
 
 
 def extract_speech_segments(request: VADProcessRequest) -> SpeechExtractionResult:
-    """以 RMS 音量閾值提取有聲片段並拼接成純語音檔（針對 ASMR 優化，不需 VAD 模型）。"""
+    """以 RMS 音量閾值提取有聲區間並拼接成純語音檔（針對 ASMR 優化，不需 VAD 模型）。"""
     logger.info(f"開始提取有聲片段 (音量閾值模式): {Path(request.audio_path).name}")
 
     try:

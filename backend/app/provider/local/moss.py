@@ -243,7 +243,7 @@ def transcribe(
     stopping_criteria=None,
     status_callback: Optional[Callable[[str], None]] = None,
 ) -> Tuple[List[dict], str]:
-    """對 16 kHz mono wav 跑 MOSS，回傳 (片段, 原始輸出文字)。
+    """對 16 kHz mono wav 跑 MOSS，回傳 (片段, 未解析的輸出文字)。
 
     stopping_criteria 由呼叫端傳入（取消旗標）；被中途停下時輸出不完整，
     呼叫端必須先檢查取消再使用結果。
