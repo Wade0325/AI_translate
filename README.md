@@ -28,8 +28,8 @@
 ### 🎯 核心能力
 
 - **🤖 高品質 AI 轉錄**：整合 Google Gemini 多模態模型，支援 `gemini-3.5-flash` / `gemini-2.5-flash` 等。
-- **🖥️ 本地模型轉錄**：預設 MOSS-Transcribe-Diarize 一次完成說話者分離與轉錄，再由 Qwen3-ForcedAligner 斷行與逐字對時；另可選 MOSS + Qwen3-ASR、舊版 VibeVoice + Qwen3-ASR（主機 GPU 執行，零 API 費用；以 `local_worker.bat` 啟動）。
-- **🗣️ 智能 VAD 切片**：使用 Silero VAD 自動移除靜默段落，提升精度並節省 Token。
+- **🖥️ 本機引擎轉錄**：預設 MOSS-Transcribe-Diarize 一次完成說話者分離與轉錄，再由 Qwen3-ForcedAligner 強制對齊並斷行；另可選 MOSS + Qwen3-ASR、舊版 VibeVoice + Qwen3-ASR（主機 GPU 執行，零 API 費用；以 `local_worker.bat` 啟動）。
+- **🗣️ 去靜音與分段轉錄**：轉錄前剪掉長段靜音以節省 Token；長音檔分段轉錄時，用 Silero VAD 找靜音處當切點。
 - **⏱️ 毫秒級時間戳**：輸出帶 `[mm:ss.xxx]` 精確時間戳的逐字稿。
 - **📦 多格式匯出**：LRC、SRT、VTT、TXT 一鍵下載；批量任務支援 ZIP 打包。
 - **📤 多來源輸入**：支援 MP3 / WAV / FLAC / M4A / MP4 / WebM 等音訊與視頻格式。
@@ -39,10 +39,10 @@
 | 功能 | 說明 |
 |------|------|
 | 📚 **批次轉錄** | 採用 Gemini Batch API，**費用為標準 API 的 50%**，適合大量檔案非同步處理 |
-| 🔄 **任務恢復** | 重啟服務後可自動恢復未完成的批次任務（無需重新上傳） |
+| 🔄 **任務恢復** | 重啟服務後可自動恢復未完成的批次（無需重新上傳） |
 | 👥 **多人對話模式** | 自動以 `Speaker 1:` / `Speaker 2:` 標記不同說話者 |
 | 📝 **自訂 Prompt** | 自定指令，搭配術語表、特殊標記、ASMR 聲響描述等 |
-| 📊 **即時進度** | WebSocket 推送 VAD → 上傳 → 轉錄 → 完成 各階段狀態 |
+| 📊 **即時進度** | WebSocket 推送 去靜音 → 上傳 → 轉錄 → 完成 各階段狀態 |
 | 💰 **成本追蹤** | 自動計算每次任務的 Token 用量與費用，提供儀表板與計費頁查詢 |
 | 🕘 **歷史紀錄** | 所有轉錄結果儲存於 PostgreSQL，可隨時回查與重新下載 |
 
@@ -139,15 +139,15 @@ docker compose --env-file .env down
 
 ### 步驟 3️⃣ — 開始轉錄
 
-- **單檔轉錄**：點擊「開始轉錄」，右側即時顯示 VAD → 上傳 → 轉錄 → 完成的進度。
-- **批次轉錄**：處理模式選擇「Batch（半價）」後送出，可關閉視窗稍後在 **📋 任務 (Tasks)** 頁面查看；批次任務即使重啟後端也會自動恢復。
+- **單檔轉錄**：點擊「開始轉錄」，右側即時顯示 去靜音 → 上傳 → 轉錄 → 完成的進度。
+- **批次轉錄**：處理模式選擇「Batch（半價）」後送出，可關閉視窗稍後在 **📋 任務 (Tasks)** 頁面查看；批次即使重啟後端也會自動恢復。
 
 ### 步驟 4️⃣ — 檢視與下載結果
 
 到 **📄 結果 (Result)** 頁面：
 
 - 預覽逐字稿與時間戳。
-- 下載 `.lrc` / `.srt` / `.vtt` / `.txt`（批次任務可一鍵 ZIP 下載全部）。
+- 下載 `.lrc` / `.srt` / `.vtt` / `.txt`（批次可一鍵 ZIP 下載全部）。
 
 ### 步驟 5️⃣ — 追蹤紀錄與費用
 
@@ -238,7 +238,7 @@ export const modelOptions = {
 };
 ```
 
-2. 若是新服務商，於 `backend/app/provider/{provider}/` 新增對應客戶端模組。
+2. 若是新引擎，於 `backend/app/provider/{provider}/` 新增對應客戶端模組。
 
 ### 修改預設 Prompt
 
@@ -263,7 +263,7 @@ backend\.venv\Scripts\python.exe tools/check.py pytest    # 只跑指定的項�
 由使用者首次啟動時以隨包 `uv` 依 `backend/requirements-standalone.txt` 自動下載）。
 推 `v*` tag 時 GitHub Actions（`.github/workflows/release.yml`）會先跑一次完整的 CI，通過後自動建置並發布 Release。
 
-單機模式的程式碼開關是 `APP_MODE=standalone` 環境變數：SQLite + 行程內執行緒
+免安裝模式的程式碼開關是 `APP_MODE=standalone` 環境變數：SQLite + 行程內執行緒
 + asyncio queue 取代 Postgres / Redis / Celery，同一份程式碼與 Docker 模式並存。
 開發時可直接用 venv 驗證，不需打包：
 
@@ -274,7 +274,7 @@ cd backend
 ```
 
 `backend\.venv` 同時是 Docker 模式主機 GPU worker（`local_worker.bat`）的執行環境，
-依賴與免安裝包相同，以 `backend/requirements-standalone.txt` 為準。升級到預設 MOSS
+依賴與免安裝版相同，以 `backend/requirements-standalone.txt` 為準。升級到預設 MOSS
 模型的既有 venv 至少要補裝：
 
 ```powershell

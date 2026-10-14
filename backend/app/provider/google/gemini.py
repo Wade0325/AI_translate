@@ -412,7 +412,7 @@ def poll_batch_job_status(client: genai.Client, job_name: str) -> Any:
 
 
 def get_batch_job_state_name(batch_job) -> str:
-    """安全地取得批次任務狀態名稱"""
+    """安全地取得 Gemini 批次的狀態名稱"""
     if hasattr(batch_job.state, 'name'):
         return batch_job.state.name
     return str(batch_job.state)

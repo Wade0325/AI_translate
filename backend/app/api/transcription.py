@@ -74,7 +74,7 @@ def start_transcription_task_sync(payload_str: str, file_uid: str) -> None:
     # （local_worker.bat）消化，standalone 模式對應序列化的 GPU 執行緒池
     queue = "local_asr" if task_params.provider.lower() == "local" else "celery"
     # 清掉上一次執行殘留的取消旗標（例如被 revoke 掉、沒機會自行清理的任務），
-    # 否則同一檔案重跑會被誤取消
+    # 否則同一檔案再開的任務會被誤取消
     clear_cancel_flag(file_uid)
     task_id = dispatch.submit_transcription(task_params.model_dump(), queue)
     register_task_id(file_uid, task_id)

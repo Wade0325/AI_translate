@@ -209,7 +209,7 @@ class HistoryUsageResponse(BaseModel):
 
 
 class TranscriptWord(BaseModel):
-    """逐字時間戳（原始音檔時間軸，秒）"""
+    """逐字時間戳（去靜音前的時間軸，秒）"""
     text: Optional[str] = None
     start: float
     end: Optional[float] = None

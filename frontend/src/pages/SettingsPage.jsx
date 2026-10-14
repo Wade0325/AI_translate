@@ -208,7 +208,7 @@ export default function SettingsPage() {
 }
 
 /**
- * 單機（standalone）模式的本機模型權重管理卡片。
+ * 免安裝模式（standalone）的本機引擎模型權重管理卡片。
  * Docker 模式下 status.standalone 為 false，整張卡不渲染。
  */
 function LocalModelsCard() {

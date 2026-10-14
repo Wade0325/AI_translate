@@ -25,7 +25,7 @@ class VadTestRequest(BaseModel):
 @router.post("/test")
 async def vad_test(body: VadTestRequest):
     """
-    僅執行 VAD 前處理測試，不呼叫 Gemini 轉錄。
+    僅執行去靜音與切點的測試，不呼叫 Gemini 轉錄。
 
     回傳語音佔比、片段時間戳、分割點，並將 wav 產物保存至 vad_artifacts/。
     """

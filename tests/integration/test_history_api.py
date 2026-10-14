@@ -332,7 +332,7 @@ class TestHistoryUsage:
         assert "gemini-2.5-flash" in models
         assert "default" not in models
         for p in data["pricing"]:
-            # 本地模型（如 vibevoice-qwen3-asr）價格為 0，故僅要求非負
+            # 本機引擎的模型（如 vibevoice-qwen3-asr）價格為 0，故僅要求非負
             assert p["input_text"] >= 0
             assert p["input_audio"] >= 0
             assert p["output_text"] >= 0

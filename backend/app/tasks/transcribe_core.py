@@ -52,7 +52,7 @@ def resolve_input_path(file_path: str, task_uuid) -> Path:
 
 
 def run_transcription(task_params_dict: dict, task_uuid: str):
-    """單檔轉錄：VAD 前處理 → 轉錄 → 格式轉換 → 計費 → 寫 DB。
+    """單檔轉錄：去靜音 → 轉錄 → 格式轉換 → 計費 → 寫 DB。
 
     暫時性錯誤（GeminiTransientError）會往上拋，由外層的重試機制處理
     （Celery autoretry 或 LocalExecutor 的 retry wrapper）。
@@ -122,7 +122,7 @@ def run_transcription(task_params_dict: dict, task_uuid: str):
             logger.warning(
                 f"Could not read audio duration for {local_path.name}.")
 
-        # 初始化 provider client（local 為本地模型，不需 API key）
+        # 初始化 provider client（local 是本機引擎，不需 API key）
         provider = task_params.provider.lower()
         if provider not in ('google', 'local'):
             raise ValueError(
@@ -313,10 +313,10 @@ def run_transcription(task_params_dict: dict, task_uuid: str):
         update_status(f"任務失敗: {e}", status_code="FAILED")
         raise e
     finally:
-        # 任務結束後旗標已無作用，清掉以免影響同一檔案的重跑
+        # 任務結束後旗標已無作用，清掉以免影響同一檔案之後再開的任務
         clear_cancel_flag(file_uid)
 
-        # 音檔搬進 audio_store：成功要給校正介面重播，失敗／取消要留給重跑與診斷。
+        # 音檔搬進 audio_store：成功要給校正介面重播，失敗／取消要留給再開任務與診斷。
         # 必須在 cleanup 之前，否則會被當成暫存檔刪掉。
         # 包在 try 裡：這裡若拋例外會蓋掉真正的失敗原因
         try:
