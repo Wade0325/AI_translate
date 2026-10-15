@@ -860,7 +860,7 @@ def main() -> int:
     except Exception as e:  # hook 自己的錯：擋下並說明，不靜默放行
         print(
             f"受保護路徑的 hook 檢查時出錯（{type(e).__name__}: {e}），先擋下。"
-            "請使用者修正 tools/hooks/protect_paths.py；不要改用其他寫法繞過。",
+            "請使用者修正 .claude/hooks/protect_paths.py；不要改用其他寫法繞過。",
             file=sys.stderr,
         )
         return 2
