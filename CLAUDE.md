@@ -2,7 +2,6 @@
 
 - 碰到領域用語時先讀 `GLOSSARY.md`；中文的文件、issue 與 commit 用它的中文詞，程式識別名稱與英文文字用括號裡的英文名稱。動手前讀 `docs/adr/` 裡和這次要動的範圍有關的決策，輸出和它衝突時要明講。
 - 從開工到合併照 `docs/agents/merging.md` 自己走完：開工前與合併前各讀一次。
-- 把關交給 CI 與合併流程（`docs/agents/merging.md`）：不要跑 `/code-review`，skill 裡呼叫它的步驟也略過。
 - 實驗、研究筆記與報告寫在主 checkout 的 `lab/`（路徑是 `git rev-parse --path-format=absolute --git-common-dir` 的上一層）。
 
 ## Agent skills
