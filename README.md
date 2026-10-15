@@ -251,7 +251,13 @@ backend\.venv\Scripts\python.exe tools/check.py           # 依序跑 ruff → p
 backend\.venv\Scripts\python.exe tools/check.py pytest    # 只跑指定的項目
 ```
 
-> `tools/check.py` 是唯一的檢查清單，CI 跑的也是它。Python 的檢查要先安裝 `backend/requirements-dev.txt`，ESLint 要先在 `frontend/` 執行 `npm ci`。`pytest.ini` 已設定 `pythonpath = backend`，測試可直接 `from app.api import ...` 匯入；測試自帶 SQLite in-memory 與 mock，不需 Postgres/Redis。
+clone 之後執行一次下面這行，讓 git 在每次 commit 前跑快的檢查（ruff、ESLint；測試交給 CI）。只影響開發用的 git checkout，免安裝版與 Docker 的使用者不需要：
+
+```powershell
+git config core.hooksPath .githooks
+```
+
+> `tools/check.py` 是唯一的檢查清單，CI 與 pre-commit 跑的也是它。Python 的檢查要先安裝 `backend/requirements-dev.txt`，ESLint 要先在 `frontend/` 執行 `npm ci`。`pytest.ini` 已設定 `pythonpath = backend`，測試可直接 `from app.api import ...` 匯入；測試自帶 SQLite in-memory 與 mock，不需 Postgres/Redis。
 
 ### 建置 Windows 免安裝發布包
 

@@ -4,6 +4,7 @@ CI 的 job 與本機都經由它跑檢查，所以最要緊的性質是：任何
 結束碼就不是 0，而且其餘項目照樣跑完，一次看到全部的紅燈。
 """
 import importlib.util
+import subprocess
 import sys
 from pathlib import Path
 
@@ -90,36 +91,78 @@ def test_unknown_check_name_is_rejected(check):
     assert exc.value.code == 2
 
 
-# ── Stop hook 也從這裡取清單與路徑規則（#29） ──────────────────────────────────
-
-
-def test_checks_can_target_another_root_and_interpreter(check, tmp_path):
-    """Stop hook 對 worktree、用 venv 的直譯器跑同一份清單。"""
-    by_name = {c.name: c for c in check.checks(tmp_path, "venv-python")}
-    assert list(by_name) == ["ruff", "pytest", "eslint"]
-    for name in ("ruff", "pytest"):
-        assert by_name[name].cmd[0] == "venv-python"
-        assert by_name[name].cwd == tmp_path
-        assert by_name[name].uses_python
-    assert by_name["eslint"].cwd == tmp_path / "frontend"
-    assert not by_name["eslint"].uses_python
-
-
-def test_select_asks_each_check_which_paths_it_covers(check, monkeypatch, tmp_path):
-    """「哪些路徑觸發哪些檢查」只寫在各項檢查的 runs_for；select 照清單的順序挑。"""
-    fakes = (
-        check.Check("a", (sys.executable, "-c", "pass"), tmp_path, runs_for=lambda p: p.endswith(".a")),
-        check.Check("b", (sys.executable, "-c", "pass"), tmp_path, runs_for=lambda p: p.startswith("b/")),
-    )
-    monkeypatch.setattr(check, "checks", lambda root=None, python=None: fakes)
-    assert check.select(["b/x", "y.a"]) == ["a", "b"]
-    assert check.select(["b/x"]) == ["b"]
-    assert check.select(["README.md"]) == []
-
 
 def test_missing_eslint_names_the_fix_for_that_checkout(check, tmp_path):
-    eslint = {c.name: c for c in check.checks(tmp_path, sys.executable)}["eslint"]
+    eslint = {c.name: c for c in check.checks(tmp_path)}["eslint"]
     remedy = eslint.missing()
     assert remedy is not None
     assert "npm ci" in remedy
     assert str(tmp_path / "frontend") in remedy
+
+
+# ── pre-commit：只跑快的檢查，而且只跑和暫存區有關的（#49） ──────────────────────
+
+
+def _init_repo(path):
+    subprocess.run(["git", "init", "-q", str(path)], check=True)
+
+
+@pytest.fixture
+def stage(check, monkeypatch, tmp_path):
+    """tmp_path/repo 是一個空的 repo，ROOT 指向它；回傳「把這些檔案加進暫存區」的函式。"""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    monkeypatch.setattr(check, "ROOT", repo)
+
+    def add(*paths):
+        for path in paths:
+            (repo / path).parent.mkdir(parents=True, exist_ok=True)
+            (repo / path).write_text("x", encoding="utf-8")
+        subprocess.run(["git", "add", *paths], cwd=repo, check=True)
+    return add
+
+
+def _covering(check, tmp_path, name, suffix, *, pre_commit, code=0):
+    fake = _fake(check, tmp_path, name, code)
+    return check.Check(name, fake.cmd, fake.cwd, runs_for=lambda p: p.endswith(suffix),
+                       pre_commit=pre_commit)
+
+
+def test_staged_runs_fast_checks_covering_staged_paths(check, monkeypatch, tmp_path, stage):
+    monkeypatch.setattr(check, "CHECKS", (
+        _covering(check, tmp_path, "a", ".py", pre_commit=True),
+        _covering(check, tmp_path, "b", ".py", pre_commit=False),
+        _covering(check, tmp_path, "c", ".js", pre_commit=True),
+    ))
+    stage("backend/x.py", "README.md")
+    assert check.main(["--staged"]) == 0
+    # b 是慢的檢查（像 pytest），交給 CI；c 和暫存的檔案無關
+    assert _ran(tmp_path) == "a"
+
+
+def test_staged_with_nothing_relevant_passes_without_running(check, monkeypatch, tmp_path, stage):
+    monkeypatch.setattr(check, "CHECKS", (
+        _covering(check, tmp_path, "a", ".py", pre_commit=True),))
+    stage("docs/x.md")
+    assert check.main(["--staged"]) == 0
+    assert _ran(tmp_path) == ""
+
+
+def test_staged_failure_blocks_the_commit(check, monkeypatch, tmp_path, stage):
+    monkeypatch.setattr(check, "CHECKS", (
+        _covering(check, tmp_path, "a", ".py", pre_commit=True, code=1),))
+    stage("x.py")
+    assert check.main(["--staged"]) == 1
+
+
+def test_only_ruff_and_eslint_run_before_commit(check):
+    assert [c.name for c in check.CHECKS if c.pre_commit] == ["ruff", "eslint"]
+
+
+def test_python_change_triggers_ruff_and_frontend_change_triggers_eslint(check):
+    by_name = {c.name: c for c in check.CHECKS}
+    assert by_name["ruff"].runs_for("backend/requirements.txt")
+    assert by_name["ruff"].runs_for("ruff.toml")
+    assert not by_name["ruff"].runs_for("README.md")
+    assert by_name["eslint"].runs_for("frontend/src/App.jsx")
+    assert not by_name["eslint"].runs_for("frontend/dist/index.js")
