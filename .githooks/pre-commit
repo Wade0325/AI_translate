@@ -1,0 +1,21 @@
+#!/bin/sh
+# git 的 pre-commit：commit 前跑快的檢查（tools/check.py --staged），測試交給 CI。
+# 一次性的安裝與「不准跳過」的規定見 docs/agents/merging.md。
+#
+# Python 的檢查要用裝了 backend/requirements-dev.txt 的直譯器：先找這個 checkout 的
+# backend/.venv，再找主 checkout 的（worktree 通常沒有自己的 venv）。
+
+root=$(git rev-parse --show-toplevel) || exit 1
+main=$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")
+
+for venv in "$root/backend/.venv" "$main/backend/.venv"; do
+  for python in "$venv/Scripts/python.exe" "$venv/bin/python"; do
+    if [ -x "$python" ]; then
+      exec "$python" "$root/tools/check.py" --staged
+    fi
+  done
+done
+
+echo "pre-commit：找不到 backend/.venv（找過 $root 與 $main）。" >&2
+echo "在主 checkout 建 venv 並安裝 backend/requirements-dev.txt，見 README 的「執行測試」一節。" >&2
+exit 1
