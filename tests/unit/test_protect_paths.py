@@ -402,8 +402,13 @@ class TestRegistration:
         (entry,) = settings["hooks"]["PreToolUse"]
         return entry
 
-    def test_settings_hold_only_hooks(self, settings):
-        assert set(settings) == {"hooks"}
+    def test_settings_hold_only_hooks_and_permissions(self, settings):
+        assert set(settings) == {"hooks", "permissions"}
+
+    def test_deny_blocks_only_builtin_code_review(self, settings):
+        # #74 無頭實測：Skill(review) 擋內建的 code-review，Matt 版 mattpocock-skills:code-review 照常載入；
+        # Skill(skill:code-review)、Skill(code-review) 會連 Matt 版一起擋
+        assert settings["permissions"] == {"deny": ["Skill(review)"]}
 
     def test_matcher_covers_every_writing_tool(self, entry):
         assert set(entry["matcher"].split("|")) == {"Edit", "Write", "NotebookEdit", "Bash", "PowerShell"}
