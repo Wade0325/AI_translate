@@ -1,4 +1,4 @@
-"""單元測試：受保護路徑的 PreToolUse hook（tools/hooks/protect_paths.py）
+"""單元測試：受保護路徑的 PreToolUse hook（.claude/hooks/protect_paths.py）
 
 用假的 payload 執行 hook 的 main()，確認：
   * 寫入、刪除或搬移標準答案（lab/data/eval/）與 .env 的變體時擋下（exit 2）
@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-HOOK = Path(__file__).resolve().parents[2] / "tools" / "hooks" / "protect_paths.py"
+HOOK = Path(__file__).resolve().parents[2] / ".claude" / "hooks" / "protect_paths.py"
 ROOT = "D:\\dev\\AI_translate"                         # 假的主 checkout
 WORKTREE = ROOT + "\\.claude\\worktrees\\feature"
 
@@ -386,3 +386,29 @@ class TestScriptContract:
             [sys.executable, str(HOOK)], input=b"\xef\xbb\xbf" + payload, capture_output=True, timeout=60,
         )
         assert result.returncode == expected, result.stderr.decode("utf-8", "replace")
+
+
+class TestRegistration:
+    """進版控的 .claude/settings.json 登記這支 hook（#40）：新的 clone、worktree 一樣有閘門。"""
+
+    SETTINGS = HOOK.parents[1] / "settings.json"
+
+    @pytest.fixture(scope="class")
+    def settings(self):
+        return json.loads(self.SETTINGS.read_text(encoding="utf-8"))
+
+    @pytest.fixture(scope="class")
+    def entry(self, settings):
+        (entry,) = settings["hooks"]["PreToolUse"]
+        return entry
+
+    def test_settings_hold_only_hooks(self, settings):
+        assert set(settings) == {"hooks"}
+
+    def test_matcher_covers_every_writing_tool(self, entry):
+        assert set(entry["matcher"].split("|")) == {"Edit", "Write", "NotebookEdit", "Bash", "PowerShell"}
+
+    def test_command_runs_this_script_with_py_launcher(self, entry):
+        (hook,) = entry["hooks"]
+        assert hook["command"] == 'py -3 "$CLAUDE_PROJECT_DIR"/.claude/hooks/protect_paths.py'
+        assert hook["onFailure"] == "block"
