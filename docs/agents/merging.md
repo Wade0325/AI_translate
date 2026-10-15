@@ -8,15 +8,15 @@
 4. **PR 內文**：先寫下面三項，再接 `pr` skill 的 Summary、Evidence、Merge Danger 三段。
    - 寫「使用者看得到的變更」（沒有就寫「無」）；改到使用者看得到的行為時，檢查 `README.md` 要不要跟著改。
    - 改到畫面時，寫出在瀏覽器點了什麼、看到什麼，附截圖；沒有就寫「無畫面變更」。
-   - 動到下列路徑的 PR 是單向門，內文要標明：`CLAUDE.md`、`docs/agents/`、`tools/hooks/`、`.github/`、`.gitignore`、進版控的 `.claude/` 檔案；閘門的設定 `tools/check.py`、`ruff.toml`、`pytest.ini`、`frontend/eslint.config.js`、`pyrightconfig.json`、`frontend/tsconfig.json`；依賴 `backend/requirements*.txt`、`frontend/package.json`、`frontend/package-lock.json`；`migrations/`、`build_release.ps1`。
+   - 動到下列路徑的 PR 是單向門，內文要標明：`CLAUDE.md`、`docs/agents/`、`tools/hooks/`、`.github/`、`.gitignore`、進版控的 `.claude/` 檔案；閘門的設定 `tools/check.py`、`ruff.toml`、`pytest.ini`、`frontend/eslint.config.js`、`pyrightconfig.json`、`frontend/tsconfig.json`；依賴 `backend/requirements*.txt`、`frontend/package.json`、`frontend/package-lock.json`；`migrations/`、`build_release.ps1`。單向門一樣由代理自己驗證、自己合併：在 Evidence 寫明怎麼驗證，例如用全新的無頭 session 實測設定與 hook。
 5. **合併**：ruleset 是唯一的關卡，對代理沒有例外。
    1. 等 `gh pr checks <PR> --watch` 全綠，綠燈之後才回報；紅燈就自己修，push 後回到 1。等很久時放到背景執行並設逾時；結束前停掉自己啟動的背景指令。
    2. 狀態是 `BEHIND` 時執行 `gh pr update-branch`，回到 1。
-   3. `gh pr merge --merge`，不加 `--admin` 或 `--delete-branch`。
+   3. `gh pr merge --merge`，不加 `--admin` 或 `--delete-branch`。auto 模式的分類器擋下合併時，不換別的方法繞過，請使用者明確說「合併 #<PR>」。
    4. 遠端分支沒有自動刪除時，手動刪掉。要移除 worktree 時，先跑 `git -C <worktree> status --ignored --porcelain`，把 `lab/` 之類被忽略的產出複製出來；`git worktree remove` 會不經警告就刪掉它們。
 
 例外：
 
-- **要使用者在本機驗證的 PR**：CI 不安裝 ML 依賴，所以動到 ML 依賴或 `backend/Dockerfile` 的 ML 那一段時，要使用者在本機重建 Docker 確認；issue 寫明合併前要使用者手動驗證的也一樣。等使用者回報通過再合併。
+- **代理驗不了的 PR**：需要 GPU、要在本機重建 Docker 的 ML 映像（CI 不安裝 ML 依賴，動到 ML 依賴或 `backend/Dockerfile` 的 ML 那一段時就是這種）、要真實音檔或人工聽打才能驗證的改動，等使用者在本機驗證並回報通過再合併。
 - **資料表結構**：改到 `models.py` 的欄位或 `migrations/` 時，自動遷移補不了的變更，Postgres 要附 `migrations/` 的 SQL，免安裝版（SQLite）要把升級步驟做進程式，讓升級測試（#48）保持綠燈；不要為了讓測試變綠而改寫既有的凍結 schema。PR 內文寫明使用者要執行的步驟；需要使用者執行 SQL 的，等使用者執行並回報後再合併。不要對使用者的資料庫（Docker 的 Postgres、免安裝版的 `data/app.db`）執行遷移或改結構的 SQL。
 - **tag**：只推分支，不建立、不推送任何 tag。`v*` tag 一推就會公開發布 Release，由使用者自己推。
