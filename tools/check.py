@@ -5,16 +5,17 @@
     python tools/check.py               # 依序跑全部
     python tools/check.py pytest        # 只跑指定的項目，可以列好幾項
     python tools/check.py --list        # 列出所有項目
+    python tools/check.py --staged      # git 的 pre-commit（.githooks/pre-commit）用
 
-CI（.github/workflows/ci.yml）的 python 與 frontend job、README 與 .vscode/tasks.json
-都呼叫這支腳本，不另寫檢查指令。Stop hook（tools/hooks/test_gate.py）也從這裡取清單與
-「改到哪些路徑時要跑哪一項」（各項的 runs_for），自己不定義任何檢查。要加檢查（例如
-#34 的型別檢查）就加在 checks()，各處會一起跑。它決定閘門跑哪些檢查，屬於單向門
-（docs/agents/merging.md）。
+CI（.github/workflows/ci.yml）的 python 與 frontend job、git 的 pre-commit、README 與
+.vscode/tasks.json 都呼叫這支腳本，不另寫檢查指令。要加檢查（例如 #34 的型別檢查）
+就加在 checks()，各處會一起跑；快到可以每次 commit 都跑的，標上 pre_commit。它決定
+閘門跑哪些檢查，屬於單向門（docs/agents/merging.md）。
 
 幾個刻意的取捨：
-  * 只用標準函式庫：CI 的 frontend job 用 runner 內建的 Python 執行，不裝任何套件；
-    Stop hook 也是直接載入這個檔
+  * 只用標準函式庫：CI 的 frontend job 用 runner 內建的 Python 執行，不裝任何套件
+  * --staged 只跑標了 pre_commit、而且和暫存區的檔案有關的檢查，測試交給 CI（照 Matt 的
+    course-video-manager）。檢查的是工作目錄而不是暫存區的快照：沒暫存的改動也算進去
   * ruff 與 pytest 用執行這支腳本的直譯器跑（``python -m``），所以要用裝了
     backend/requirements-dev.txt 的直譯器呼叫，例如 backend/.venv 裡的 python
   * 不替子程序開 UTF-8 模式（PYTHONUTF8、-X utf8）：CI 的 Windows 腿要和使用者的
@@ -29,7 +30,7 @@ import importlib.util
 import shutil
 import subprocess
 import sys
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -50,10 +51,10 @@ class Check:
     cwd: Path
     # 工具不在時回傳給人看的補救方法；工具都在時回傳 None
     missing: Callable[[], str | None] = lambda: None
-    # 改到這個路徑（以 repo 根目錄為基準、用 /）時要跑這項：Stop hook 依此挑檢查，CI 一律全跑
+    # 暫存區有這個路徑（以 repo 根目錄為基準、用 /）時 --staged 才跑這項；CI 一律全跑
     runs_for: Callable[[str], bool] = lambda path: True
-    # 以 Python 直譯器執行（python -m …）：Stop hook 會換成它找到的 venv 裡的 python
-    uses_python: bool = False
+    # 快到可以每次 commit 都跑：--staged 只跑這些
+    pre_commit: bool = False
 
 
 def _python_related(path: str) -> bool:
@@ -65,11 +66,9 @@ def _frontend_related(path: str) -> bool:
     return path.startswith("frontend/") and not path.startswith("frontend/dist/")
 
 
-def _python_module_missing(python: str, module: str) -> Callable[[], str | None]:
+def _python_module_missing(module: str) -> Callable[[], str | None]:
     def missing() -> str | None:
-        # 只認得執行這支腳本的直譯器；換成別的直譯器時（Stop hook 找到的 venv），
-        # 由呼叫的一方從執行結果判斷
-        if python != sys.executable or importlib.util.find_spec(module) is not None:
+        if importlib.util.find_spec(module) is not None:
             return None
         return (f"{sys.executable} 沒有安裝 {module}：先執行 "
                 f"`{sys.executable} -m pip install -r backend/requirements-dev.txt`，"
@@ -91,28 +90,30 @@ def _eslint_missing(frontend: Path) -> Callable[[], str | None]:
     return missing
 
 
-def checks(root: Path = ROOT, python: str = sys.executable) -> tuple[Check, ...]:
-    """檢查清單。Stop hook 傳入 root 與 python，對 worktree、用 venv 的直譯器跑同一份清單。"""
+def checks(root: Path = ROOT) -> tuple[Check, ...]:
     frontend = root / "frontend"
+    python = sys.executable
     return (
         Check("ruff", (python, "-m", "ruff", "check", "."), root,
-              _python_module_missing(python, "ruff"), _python_related, uses_python=True),
+              _python_module_missing("ruff"), _python_related, pre_commit=True),
         Check("pytest", (python, "-m", "pytest", "tests/", "-q"), root,
-              _python_module_missing(python, "pytest"), _python_related, uses_python=True),
+              _python_module_missing("pytest"), _python_related),
         # 直接用 node 跑 eslint 的入口，避開 Windows 上 npx.cmd／npm.cmd 得經過 shell 的問題。
         # --quiet 只印 error：warning 不擋合併，react-hooks 的 warning 一則十幾行，會把 error 淹掉
         Check("eslint", ("node", str(ESLINT_JS), ".", "--quiet"), frontend,
-              _eslint_missing(frontend), _frontend_related),
+              _eslint_missing(frontend), _frontend_related, pre_commit=True),
     )
 
 
 CHECKS: tuple[Check, ...] = checks()
 
 
-def select(paths: Iterable[str]) -> list[str]:
-    """改到這些路徑（以 repo 根目錄為基準、用 /）時要跑的檢查，照清單的順序。"""
-    paths = list(paths)
-    return [c.name for c in checks() if any(c.runs_for(p) for p in paths)]
+def _staged_paths() -> list[str]:
+    """暫存區裡新增、修改、改名的檔案（以 repo 根目錄為基準、用 /）；刪掉的不算。"""
+    out = subprocess.run(
+        ["git", "diff", "--cached", "--name-only", "--diff-filter=ACMR", "-z"],
+        cwd=ROOT, capture_output=True, check=True).stdout
+    return [p for p in out.decode("utf-8").split("\0") if p]
 
 
 def _run(check: Check) -> str | None:
@@ -138,6 +139,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("checks", nargs="*", metavar="CHECK",
                         help="只跑這些項目（" + "、".join(names) + "）；不給就全部跑")
     parser.add_argument("--list", action="store_true", help="列出所有項目後結束")
+    parser.add_argument("--staged", action="store_true",
+                        help="只跑標了 pre_commit、和暫存區的檔案有關的項目（git 的 pre-commit 用）")
     args = parser.parse_args(argv)
 
     if args.list:
@@ -148,6 +151,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error(f"沒有這個檢查：{'、'.join(unknown)}（可用：{'、'.join(names)}）")
 
     selected = [c for c in CHECKS if not args.checks or c.name in args.checks]
+    if args.staged:
+        paths = _staged_paths()
+        selected = [c for c in selected
+                    if c.pre_commit and any(c.runs_for(p) for p in paths)]
+        if not selected:
+            print("暫存區沒有要在 commit 前檢查的檔案")
+            return 0
     results = [(c.name, _run(c)) for c in selected]
 
     print("\n結果：")
