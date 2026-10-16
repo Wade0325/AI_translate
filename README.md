@@ -28,7 +28,7 @@
 ### 🎯 核心能力
 
 - **🤖 高品質 AI 轉錄**：整合 Google Gemini 多模態模型，支援 `gemini-3.5-flash` / `gemini-2.5-flash` 等。
-- **🖥️ 本機引擎轉錄**：預設 MOSS-Transcribe-Diarize 一次完成說話者分離與轉錄，再由 Qwen3-ForcedAligner 強制對齊並斷行；另可選 MOSS + Qwen3-ASR、舊版 VibeVoice + Qwen3-ASR（主機 GPU 執行，零 API 費用；以 `local_worker.bat` 啟動）。
+- **🖥️ 本機轉錄**：預設 MOSS-Transcribe-Diarize 一次完成說話者分離與轉錄，再由 Qwen3-ForcedAligner 強制對齊並斷行；另可選 MOSS + Qwen3-ASR、舊版 VibeVoice + Qwen3-ASR（主機 GPU 執行，零 API 費用；以 `local_worker.bat` 啟動）。
 - **🗣️ 去靜音與分段轉錄**：轉錄前剪掉長段靜音以節省 Token；長音檔分段轉錄時，用 Silero VAD 找靜音處當切點。
 - **⏱️ 毫秒級時間戳**：輸出帶 `[mm:ss.xxx]` 精確時間戳的逐字稿。
 - **📦 多格式匯出**：LRC、SRT、VTT、TXT 一鍵下載；批量任務支援 ZIP 打包。
@@ -238,7 +238,7 @@ export const modelOptions = {
 };
 ```
 
-2. 若是新引擎，於 `backend/app/provider/{provider}/` 新增對應客戶端模組。
+2. 若是新供應商，於 `backend/app/provider/{provider}/` 新增對應客戶端模組。
 
 ### 修改預設 Prompt
 

@@ -166,7 +166,7 @@ class Settings(BaseSettings):
     # （見 provider/local/moss.py）；0 = 停用切段
     local_moss_single_pass_max_seconds: float = 4200.0
     # 單檔紀錄卡在 PROCESSING 超過此時數即視為孤兒（worker 中斷後不會回寫狀態），
-    # 後端啟動時標記為 FAILED；需大於最長的合理轉錄時間（本機引擎跑長檔可達數小時）
+    # 後端啟動時標記為 FAILED；需大於最長的合理轉錄時間（本機跑長檔可達數小時）
     stale_processing_max_age_hours: int = 12
 
     model_config = SettingsConfigDict(
