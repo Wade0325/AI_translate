@@ -1,4 +1,4 @@
-"""本機引擎的 provider：說話者分離 + 轉錄 + 強制對齊。
+"""本機供應商（local provider）：說話者分離 + 轉錄 + 強制對齊。
 
 Docker 模式下只在主機端 GPU worker（local_asr 佇列）上執行，免安裝模式則在行程內的
 local_asr 執行緒池執行——flows.py 於 provider == "local" 分支內才延遲 import 本模組，

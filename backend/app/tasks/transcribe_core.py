@@ -122,7 +122,7 @@ def run_transcription(task_params_dict: dict, task_uuid: str):
             logger.warning(
                 f"Could not read audio duration for {local_path.name}.")
 
-        # 初始化 provider client（local 是本機引擎，不需 API key）
+        # 初始化供應商的 client（local 是本機，不需 API key）
         provider = task_params.provider.lower()
         if provider not in ('google', 'local'):
             raise ValueError(
