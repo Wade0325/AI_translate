@@ -1,7 +1,7 @@
 """型別閘門（#34）：tools/typecheck_py.py 的判定，與 tools/ratchet.py 的棘輪。
 
 要緊的性質：分析到 0 個檔案不算通過；@ts-nocheck 的檔案數與 baseline 的條目數
-比 origin/main 多就失敗，origin/main 還沒有那道閘門時不比。
+比 origin/main 多就失敗（逐檔、逐規則，不只比總數），origin/main 還沒有那道閘門時不比。
 """
 import importlib.util
 import json
@@ -81,8 +81,8 @@ def _write(repo, path, text):
     (repo / path).write_text(text, encoding="utf-8")
 
 
-def _baseline(entries):
-    return json.dumps({"files": {"./backend/x.py": [{"code": "r"}] * entries}})
+def _baseline(entries, path="./backend/x.py"):
+    return json.dumps({"files": {path: [{"code": "r"}] * entries}})
 
 
 @pytest.fixture
@@ -123,11 +123,33 @@ def test_new_ts_nocheck_file_fails(ratchet, repo):
     assert len(ratchet.compare(repo)) == 1
 
 
+def test_moving_ts_nocheck_to_another_file_fails(ratchet, repo):
+    _write(repo, "frontend/src/a.jsx", "export {}\n")
+    _write(repo, "frontend/src/b.jsx", "// @ts-nocheck\nexport {}\n")
+    assert ratchet.compare(repo) == ["新標了 @ts-nocheck：frontend/src/b.jsx"]
+
+
+def test_swapping_a_fixed_error_for_a_new_one_fails(ratchet, repo):
+    # 總數一樣是 2，但 y.py 的錯誤是 main 沒有的：重產錯誤清單吸收了新錯誤
+    swapped = {"files": {"./backend/x.py": [{"code": "r"}],
+                         "./backend/y.py": [{"code": "r"}]}}
+    _write(repo, ".basedpyright/baseline.json", json.dumps(swapped))
+    failures = ratchet.compare(repo)
+    assert len(failures) == 1
+    assert "./backend/y.py" in failures[0]
+
+
+def test_broken_baseline_is_an_error_not_a_crash(ratchet, repo):
+    _write(repo, ".basedpyright/baseline.json", "{not json")
+    with pytest.raises(ratchet.RatchetError):
+        ratchet.compare(repo)
+
+
 def test_bigger_baseline_fails(ratchet, repo):
     _write(repo, ".basedpyright/baseline.json", _baseline(3))
     failures = ratchet.compare(repo)
     assert len(failures) == 1
-    assert "baseline" in failures[0]
+    assert "錯誤清單多了 ./backend/x.py" in failures[0]
 
 
 def test_gates_missing_on_main_are_not_compared(ratchet, tmp_path):
@@ -145,5 +167,5 @@ def test_gates_missing_on_main_are_not_compared(ratchet, tmp_path):
 
 def test_missing_origin_main_is_an_error(ratchet, repo):
     _git(repo, "update-ref", "-d", "refs/remotes/origin/main")
-    with pytest.raises(RuntimeError, match="git fetch"):
+    with pytest.raises(ratchet.RatchetError, match="git fetch"):
         ratchet.compare(repo)

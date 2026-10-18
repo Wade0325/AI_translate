@@ -37,7 +37,7 @@ def _ran(tmp_path):
     return log.read_text(encoding="utf-8") if log.exists() else ""
 
 
-def test_checks_in_order(check):
+def test_checks_are_lint_typecheck_test_ratchet_in_order(check):
     assert [c.name for c in check.CHECKS] == [
         "ruff", "basedpyright", "pytest", "eslint", "tsc", "ratchet"]
 

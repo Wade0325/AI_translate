@@ -8,7 +8,7 @@
 4. **PR 內文**：先寫下面三項，再接 `pr` skill 的 Summary、Evidence、Merge Danger 三段。
    - 寫「使用者看得到的變更」（沒有就寫「無」）；改到使用者看得到的行為時，檢查 `README.md` 要不要跟著改。
    - 改到畫面時，寫出在瀏覽器點了什麼、看到什麼，附截圖；沒有就寫「無畫面變更」。
-   - 動到下列路徑的 PR 是單向門，內文要標明：`CLAUDE.md`、`docs/agents/`、`.githooks/`、`.gitattributes`、`.github/`、`.gitignore`、進版控的 `.claude/` 檔案；閘門的設定 `tools/check.py`、`ruff.toml`、`pytest.ini`、`frontend/eslint.config.js`、`pyrightconfig.json`、`.basedpyright/baseline.json`、`frontend/tsconfig.json`；依賴 `backend/requirements*.txt`、`frontend/package.json`、`frontend/package-lock.json`；`migrations/`、`build_release.ps1`。單向門一樣由代理自己驗證、自己合併：在 Evidence 寫明怎麼驗證，例如用全新的無頭 session 實測設定與 hook。
+   - 動到下列路徑的 PR 是單向門，內文要標明：`CLAUDE.md`、`docs/agents/`、`.githooks/`、`.gitattributes`、`.github/`、`.gitignore`、進版控的 `.claude/` 檔案；閘門的設定 `tools/check.py`、`tools/typecheck_py.py`、`tools/ratchet.py`、`ruff.toml`、`pytest.ini`、`frontend/eslint.config.js`、`pyrightconfig.json`、`.basedpyright/baseline.json`、`backend/typings/`、`frontend/tsconfig.json`；依賴 `backend/requirements*.txt`、`frontend/package.json`、`frontend/package-lock.json`；`migrations/`、`build_release.ps1`。單向門一樣由代理自己驗證、自己合併：在 Evidence 寫明怎麼驗證，例如用全新的無頭 session 實測設定與 hook。
 5. **合併**：ruleset 是唯一的關卡，對代理沒有例外。
    1. 等 `gh pr checks <PR> --watch` 全綠，綠燈之後才回報；紅燈就自己修，push 後回到 1。等很久時放到背景執行並設逾時；結束前停掉自己啟動的背景指令。
    2. 狀態是 `BEHIND` 時執行 `gh pr update-branch`，回到 1。

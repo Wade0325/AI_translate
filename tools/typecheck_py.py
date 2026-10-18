@@ -1,11 +1,11 @@
-"""basedpyright 閘門：只擋 .basedpyright/baseline.json 以外的新錯誤，並確認真的分析到檔案。
+"""basedpyright 閘門：只擋錯誤清單（.basedpyright/baseline.json）以外的新錯誤，並確認真的分析到檔案。
 
 由 tools/check.py 的 basedpyright 項目呼叫；用執行這支腳本的直譯器跑 basedpyright，
 也拿它當分析時的 Python 環境（``--pythonpath``）。設定在 repo 根目錄的 pyrightconfig.json。
 
 錯誤數是 0 還不夠：pyrightconfig.json 的 include 對不上時，pyright 回報 0 個錯誤，
-其實一個檔案也沒分析，所以分析到 0 個檔案也算失敗。baseline 裡的錯誤修掉時，
-basedpyright 會自己把它們從 baseline 拿掉；重產 baseline（--writebaseline）等於放寬閘門。
+其實一個檔案也沒分析，所以分析到 0 個檔案也算失敗。清單裡的錯誤修掉時，basedpyright
+會自己把它們從清單拿掉；重產清單（--writebaseline）等於放寬閘門，tools/ratchet.py 會擋。
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ def verdict(report: dict) -> tuple[list[str], str | None]:
         return lines, "basedpyright 沒有分析到任何檔案：檢查 pyrightconfig.json 的 include"
     count = summary.get("errorCount", len(errors))
     if count:
-        return lines, f"{count} 個 baseline 以外的型別錯誤"
+        return lines, f"{count} 個錯誤清單以外的型別錯誤"
     return lines, None
 
 
@@ -51,7 +51,7 @@ def main() -> int:
     print("\n".join(lines))
     summary = report.get("summary", {})
     print(f"分析了 {summary.get('filesAnalyzed', 0)} 個檔案，"
-          f"{summary.get('errorCount', 0)} 個 baseline 以外的錯誤")
+          f"{summary.get('errorCount', 0)} 個錯誤清單以外的錯誤")
     if failure:
         print(failure)
         return 1

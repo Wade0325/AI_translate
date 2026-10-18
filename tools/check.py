@@ -8,8 +8,9 @@
     python tools/check.py --staged      # git 的 pre-commit（.githooks/pre-commit）用
 
 CI（.github/workflows/ci.yml）的 python 與 frontend job、git 的 pre-commit、README 與
-.vscode/tasks.json 都呼叫這支腳本，不另寫檢查指令。要加檢查就加在 checks()，各處會一起跑；快到可以每次 commit 都跑的，標上 pre_commit。它決定
-閘門跑哪些檢查，屬於單向門（docs/agents/merging.md）。
+.vscode/tasks.json 都呼叫這支腳本，不另寫檢查指令。要加檢查就加在 checks()，各處會
+一起跑；快到可以每次 commit 都跑的，標上 pre_commit。它決定閘門跑哪些檢查，屬於單向門
+（docs/agents/merging.md）。
 
 幾個刻意的取捨：
   * 只用標準函式庫：CI 的 frontend job 用 runner 內建的 Python 執行，不裝任何套件
@@ -17,8 +18,9 @@ CI（.github/workflows/ci.yml）的 python 與 frontend job、git 的 pre-commit
     course-video-manager）。檢查的是工作目錄而不是暫存區的快照：沒暫存的改動也算進去
   * ruff、basedpyright 與 pytest 用執行這支腳本的直譯器跑（``python -m``），所以要用裝了
     backend/requirements-dev.txt 的直譯器呼叫，例如 backend/.venv 裡的 python
-  * 型別檢查只擋新增的錯誤：basedpyright 有 baseline（tools/typecheck_py.py），前端的舊檔
-    標 @ts-nocheck；兩者的數量只減不增，由 ratchet（tools/ratchet.py）對 origin/main 檢查
+  * 型別檢查只擋新增的錯誤：既有的 Python 錯誤記在錯誤清單 .basedpyright/baseline.json
+    （tools/typecheck_py.py），有錯的舊前端檔標 @ts-nocheck；兩者只減不增，由 ratchet
+    （tools/ratchet.py）對 origin/main 檢查
   * 不替子程序開 UTF-8 模式（PYTHONUTF8、-X utf8）：CI 的 Windows 腿要和使用者的
     環境一樣，才抓得到 open() 沒指定 encoding 的 bug
   * 一項失敗也把其餘的跑完再一起回報；任何一項失敗或跑不起來，結束碼就是 1
