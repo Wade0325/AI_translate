@@ -3,6 +3,7 @@
  */
 
 import { resolveSessionIdFromStorage } from './transcribeSessions'
+import { TASK_STATUS } from '../constants/taskStatus'
 
 function parseTime(value) {
   if (!value) return 0
@@ -127,11 +128,11 @@ export function isBatchCompleted(task) {
 }
 
 export function isSingleProcessing(task) {
-  return task.status === "PROCESSING"
+  return task.status === TASK_STATUS.PROCESSING
 }
 
 export function isSingleCompleted(task) {
-  return ["COMPLETED", "FAILED"].includes(task.status)
+  return [TASK_STATUS.COMPLETED, TASK_STATUS.FAILED].includes(task.status)
 }
 
 export function sessionHasProcessing(session) {

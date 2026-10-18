@@ -3,6 +3,7 @@ import { message } from 'antd';
 import { api, WS_URLS } from '../services/api';
 import { registerTranscribeSession } from '../utils/transcribeSessions';
 import { randomId } from '../utils/id';
+import { TASK_STATUS } from '../constants/taskStatus';
 
 /**
  * 封裝「上傳檔案 → 開啟 WebSocket → 接收後端推送」的完整流程。
@@ -49,7 +50,7 @@ function applyFileResult(file, data) {
     statusText: data.status_text,
     task_uuid: data.task_uuid,
   };
-  if (data.status_code === 'COMPLETED') {
+  if (data.status_code === TASK_STATUS.COMPLETED) {
     next.status = 'completed';
     next.percent = 100;
     next.result = data.result?.transcripts;
@@ -59,11 +60,11 @@ function applyFileResult(file, data) {
     next.audioDurationSec = data.result?.audio_duration_seconds;
     next.model = data.result?.model ?? file.model;
     next.sourceLanguage = data.result?.source_language;
-  } else if (data.status_code === 'FAILED') {
+  } else if (data.status_code === TASK_STATUS.FAILED) {
     next.status = 'error';
     next.percent = 100;
     next.error = data.status_text;
-  } else if (data.status_code === 'CANCELLED') {
+  } else if (data.status_code === TASK_STATUS.CANCELLED) {
     next.status = 'cancelled';
     next.percent = 100;
   }
@@ -253,7 +254,7 @@ export function useUploadQueue({ fileList, setFileList, socketManager, onBatchSu
           return;
         }
 
-        if (data.status_code === 'BATCH_SUBMITTED') {
+        if (data.status_code === TASK_STATUS.BATCH_SUBMITTED) {
           // 送出成功：把仍在 processing 的批次檔案改成 batch_pending；
           // 主動關閉這條 socket，後續結果靠 recovery 取回
           setFileList((current) =>
@@ -269,7 +270,7 @@ export function useUploadQueue({ fileList, setFileList, socketManager, onBatchSu
           return;
         }
 
-        if (data.status_code === 'BATCH_COMPLETED') {
+        if (data.status_code === TASK_STATUS.BATCH_COMPLETED) {
           return;
         }
 

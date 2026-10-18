@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from app.celery.models import BatchTranscriptionTaskParams, BatchFileItemParams
 from app.runtime import dispatch
 from app.core.config import get_settings
+from app.core.task_status import TaskStatus
 from app.database.session import SessionLocal, get_db
 from app.repositories.batch_job_repository import BatchJobRepository
 from app.services.api_keys import resolve_api_key
@@ -132,7 +133,7 @@ def recover_batch(batch_id: str, body: RecoverBatchRequest, db: Session = Depend
             file_results.append(RecoverFileResult(
                 file_uid=file_uid,
                 original_filename=original_filename,
-                status="COMPLETED",
+                status=TaskStatus.COMPLETED,
                 result=result_data,
             ))
 
@@ -186,7 +187,7 @@ def start_batch_task_sync(payload_str: str, batch_id: str) -> list[dict]:
             rejected.append({
                 "client_id": batch_id,
                 "file_uid": f.file_uid,
-                "status_code": "FAILED",
+                "status_code": TaskStatus.FAILED,
                 "status_text": str(e),
             })
             continue

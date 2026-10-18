@@ -14,6 +14,7 @@ import json
 from typing import Optional
 
 from app.core.config import get_settings
+from app.core.task_status import TaskStatus
 from app.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -41,7 +42,7 @@ def publish_status(
     client_id: str,
     task_uuid: str,
     status_text: str,
-    status_code: str = "PROCESSING",
+    status_code: str = TaskStatus.PROCESSING,
     *,
     file_uid: Optional[str] = None,
     result_data: Optional[dict] = None,

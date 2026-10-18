@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import or_, desc
 from sqlalchemy.orm import Session
 
+from app.core.task_status import TaskStatus
 from app.database.models import TranscriptionLog, BatchJob
 from app.utils.identifiers import coerce_uuid
 from app.utils.logger import setup_logger
@@ -103,8 +104,8 @@ class HistoryRepository:
             .filter(TranscriptionLog.is_batch.is_(False))
             .filter(
                 or_(
-                    TranscriptionLog.status == "PROCESSING",
-                    (TranscriptionLog.status.in_(["COMPLETED", "FAILED"]))
+                    TranscriptionLog.status == TaskStatus.PROCESSING,
+                    (TranscriptionLog.status.in_([TaskStatus.COMPLETED, TaskStatus.FAILED]))
                     & (TranscriptionLog.request_timestamp >= cutoff),
                 )
             )
@@ -181,7 +182,7 @@ class HistoryRepository:
                 func.sum(TranscriptionLog.cost),
                 func.count(TranscriptionLog.task_uuid),
             )
-            .filter(TranscriptionLog.status == "COMPLETED")
+            .filter(TranscriptionLog.status == TaskStatus.COMPLETED)
             .filter(TranscriptionLog.request_timestamp >= since)
             .group_by(day)
             .order_by(day)
@@ -195,7 +196,7 @@ class HistoryRepository:
                 func.sum(TranscriptionLog.cost),
                 func.count(TranscriptionLog.task_uuid),
             )
-            .filter(TranscriptionLog.status == "COMPLETED")
+            .filter(TranscriptionLog.status == TaskStatus.COMPLETED)
             .filter(TranscriptionLog.request_timestamp >= since)
             .group_by(TranscriptionLog.model_used)
             .order_by(desc(func.sum(TranscriptionLog.total_tokens)))
@@ -229,16 +230,16 @@ class HistoryRepository:
 
         total = db.query(func.count(TranscriptionLog.task_uuid)).scalar() or 0
         completed = db.query(func.count(TranscriptionLog.task_uuid)).filter(
-            TranscriptionLog.status == "COMPLETED"
+            TranscriptionLog.status == TaskStatus.COMPLETED
         ).scalar() or 0
         failed = db.query(func.count(TranscriptionLog.task_uuid)).filter(
-            TranscriptionLog.status == "FAILED"
+            TranscriptionLog.status == TaskStatus.FAILED
         ).scalar() or 0
         total_cost = db.query(func.sum(TranscriptionLog.cost)).scalar() or 0.0
         total_tokens = db.query(func.sum(TranscriptionLog.total_tokens)).scalar() or 0
         total_duration = db.query(func.sum(TranscriptionLog.audio_duration_seconds)).scalar() or 0.0
         avg_processing_time = db.query(func.avg(TranscriptionLog.processing_time_seconds)).filter(
-            TranscriptionLog.status == "COMPLETED"
+            TranscriptionLog.status == TaskStatus.COMPLETED
         ).scalar() or 0.0
 
         return {
