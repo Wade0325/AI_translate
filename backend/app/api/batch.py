@@ -11,7 +11,7 @@ from fastapi import (
 from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session
 from app.celery.models import BatchTranscriptionTaskParams, BatchFileItemParams
-from app.runtime import dispatch
+from app.runtime import run_mode
 from app.core.config import get_settings
 from app.core.task_status import TaskStatus
 from app.database.session import SessionLocal, get_db
@@ -70,7 +70,7 @@ def get_batch_tasks(db: Session = Depends(get_db)):
 
         is_alive = None
         if job.status in ("UPLOADING", "POLLING", "RECOVERING"):
-            alive = dispatch.task_is_alive(job.celery_task_id)
+            alive = run_mode.get().is_alive(job.celery_task_id)
             if alive is not None:
                 is_alive = alive
             elif elapsed and elapsed > 300:
@@ -159,7 +159,7 @@ def recover_batch(batch_id: str, body: RecoverBatchRequest, db: Session = Depend
 
     # 派送背景任務非同步處理。結果稍後透過 WebSocket / pending API 通知前端
     batch_repo.update_job(db, batch_id, {"status": "RECOVERING"})
-    dispatch.submit_recover(batch_id, api_key)
+    run_mode.get().submit_recover(batch_id, api_key)
 
     # 立刻回傳空結果；前端應透過 WebSocket 或重新查詢 /pending 取得最新狀態
     return RecoverBatchResponse(batch_id=batch_id, files=[])
@@ -227,7 +227,7 @@ def start_batch_task_sync(payload_str: str, batch_id: str) -> list[dict]:
         session_id=request_data.session_id or batch_id,
     )
 
-    dispatch.submit_batch(task_params.model_dump())
+    run_mode.get().submit_batch(task_params.model_dump())
     logger.info(f"已為 batch_id: {batch_id} 啟動批次轉錄任務 ({len(file_items)} 個檔案)。")
     return rejected
 

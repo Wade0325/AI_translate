@@ -5,15 +5,9 @@ from fastapi import (
 )
 from fastapi.concurrency import run_in_threadpool
 
-from app.celery.cancellation import (
-    clear_cancel_flag,
-    get_task_id,
-    register_task_id,
-    request_cancel,
-)
-from app.celery.notifier import publish_status
 from app.celery.models import TranscriptionTaskParams
-from app.runtime import dispatch
+from app.runtime import run_mode
+from app.runtime.run_mode import publish_status
 from app.core.config import get_settings
 from app.core.task_status import TaskStatus
 from app.database.session import SessionLocal
@@ -76,9 +70,10 @@ def start_transcription_task_sync(payload_str: str, file_uid: str) -> None:
     queue = "local_asr" if task_params.provider.lower() == "local" else "celery"
     # 清掉上一次執行殘留的取消旗標（例如被 revoke 掉、沒機會自行清理的任務），
     # 否則同一檔案再開的任務會被誤取消
-    clear_cancel_flag(file_uid)
-    task_id = dispatch.submit_transcription(task_params.model_dump(), queue)
-    register_task_id(file_uid, task_id)
+    mode = run_mode.get()
+    mode.clear_cancel(file_uid)
+    task_id = mode.submit_transcription(task_params.model_dump(), queue)
+    mode.register_task(file_uid, task_id)
     logger.info(f"已為 file_uid: {file_uid} 啟動轉錄任務（queue={queue}）。")
 
 
@@ -93,15 +88,16 @@ def cancel_transcription(file_uid: str, provider: str = ""):
 
     任務尚未派發（仍在上傳）時無事可取消，回報 not-started 讓前端稍後重試。
     """
-    task_id = get_task_id(file_uid)
+    mode = run_mode.get()
+    task_id = mode.registered_task(file_uid)
     if not task_id:
         return {"file_uid": file_uid, "cancelled": False, "reason": "not-started"}
 
-    request_cancel(file_uid)
+    mode.request_cancel(file_uid)
     # local worker 是 solo pool，不支援 terminate；送 terminate=True 會在
     # worker 端拋 NotImplementedError，因此僅對非 local 任務終止執行中行程
     terminate = provider.lower() != "local"
-    dispatch.revoke_task(task_id, terminate=terminate)
+    mode.revoke(task_id, terminate=terminate)
 
     # 被 revoke/terminate 掉的任務不會再回報狀態：仍在 PROCESSING 的紀錄由此補寫。
     # local 執行中的任務會走 task.py 的 CANCELLED 分支自行更新，此處條件式更新不衝突。

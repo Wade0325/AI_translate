@@ -1,7 +1,7 @@
 """單檔轉錄任務本體（純同步 Python，與任務框架無關）。
 
 docker 模式由 `app.celery.task.transcribe_media_task` 包裝執行，
-standalone 模式由 `app.runtime.dispatch.submit_transcription` 丟進
+standalone 模式由 `app.runtime.in_process.InProcessRunMode.submit_transcription` 丟進
 行程內執行緒池；兩邊共用這裡的同一份流程。
 """
 
@@ -10,9 +10,9 @@ import traceback
 from pathlib import Path
 from datetime import datetime
 
-from app.celery.cancellation import clear_cancel_flag, is_cancel_requested
 from app.celery.models import TranscriptionTaskParams
-from app.celery.notifier import publish_status
+from app.runtime import run_mode
+from app.runtime.run_mode import publish_status
 from app.core.config import get_settings
 from app.core.default_prompt import build_prompt
 from app.core.task_status import TaskStatus
@@ -74,8 +74,8 @@ def run_transcription(task_params_dict: dict, task_uuid: str):
 
     # 任務在佇列等待期間可能已被取消；revoke 廣播可能沒送達（worker 當時離線），
     # 靠旗標做最後攔截
-    if is_cancel_requested(file_uid):
-        clear_cancel_flag(file_uid)
+    if run_mode.get().is_cancel_requested(file_uid):
+        run_mode.get().clear_cancel(file_uid)
         logger.info(f"任務 {task_uuid} 在啟動前已被取消 (file_uid={file_uid})")
         update_status("任務已取消", status_code=TaskStatus.CANCELLED)
         return {"cancelled": True}
@@ -176,7 +176,7 @@ def run_transcription(task_params_dict: dict, task_uuid: str):
             original_filename=task_params.original_filename,
             provider=provider,
             source_lang=task_params.source_lang,
-            cancel_check=lambda: is_cancel_requested(file_uid),
+            cancel_check=lambda: run_mode.get().is_cancel_requested(file_uid),
         )
 
         logger.info(f"Starting transcription. Task ID : {task_uuid}")
@@ -315,7 +315,7 @@ def run_transcription(task_params_dict: dict, task_uuid: str):
         raise e
     finally:
         # 任務結束後旗標已無作用，清掉以免影響同一檔案之後再開的任務
-        clear_cancel_flag(file_uid)
+        run_mode.get().clear_cancel(file_uid)
 
         # 音檔搬進 audio_store：成功要給校正介面重播，失敗／取消要留給再開任務與診斷。
         # 必須在 cleanup 之前，否則會被當成暫存檔刪掉。

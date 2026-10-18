@@ -15,6 +15,7 @@ from app.websocket.origin import WebSocketOriginMiddleware
 
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import get_settings
+from app.runtime import run_mode
 from app.database.session import init_db, SessionLocal
 from app.repositories.transcription_log_repository import TranscriptionLogRepository
 from app.utils.logger import setup_logger
@@ -49,7 +50,8 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"清理過期音檔失敗: {e}")
 
-    # 啟動 WebSocket 狀態監聽器（docker：Redis pub/sub；standalone：local_bus）
+    # 依執行模式選一次轉接器，再啟動 WebSocket 狀態監聽器
+    run_mode.get()
     websocket_manager.start()
 
     # 預熱 VAD，避免首個任務才載模型
@@ -69,9 +71,7 @@ async def lifespan(app: FastAPI):
     finally:
         logger.info("應用程式正在關閉...")
         await websocket_manager.shutdown()
-        if settings.is_standalone:
-            from app.runtime.executor import shutdown_executor
-            shutdown_executor()
+        run_mode.close()
 
 
 app = FastAPI(title="AI Voice Transcription API",

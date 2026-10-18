@@ -5,3 +5,5 @@ ruff==0.17.0
 # tests/unit/test_local_moss.py 替換 huggingface_hub.snapshot_download；CI 不裝免安裝版的依賴，
 # 所以列在這裡（版本同 requirements-standalone.txt）
 huggingface_hub==1.23.0
+# tests/unit/test_run_mode_contract.py 用假的 Redis 跑執行模式的 Celery＋Redis 轉接器（#104）
+fakeredis==2.39.0
