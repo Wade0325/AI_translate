@@ -62,7 +62,22 @@ def db_session(test_engine):
         session.close()
 
 
-# ─── 3. FastAPI TestClient ───────────────────────────────────────────────────
+# ─── 3. 執行模式 ─────────────────────────────────────────────────────────────
+
+@pytest.fixture
+def in_process_run_mode():
+    """換上行程內轉接器（免安裝模式），測試結束後還原並關閉。"""
+    from app.runtime import run_mode
+    from app.runtime.in_process import InProcessRunMode
+
+    mode = InProcessRunMode(concurrency=1)
+    previous = run_mode.use(mode)
+    yield mode
+    run_mode.use(previous)
+    mode.close()
+
+
+# ─── 4. FastAPI TestClient ───────────────────────────────────────────────────
 
 def _make_override_get_db(test_engine):
     """建立一個覆蓋 get_db 的 generator，綁定到測試 SQLite engine。"""

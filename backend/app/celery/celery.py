@@ -19,7 +19,7 @@ celery_app.conf.update(
     task_track_started=True,
     result_expires=settings.celery_result_expires,
     # 本機的任務單檔可跑數小時；預設 1h visibility timeout 會讓執行中的
-    # 任務被誤判逾時而重複派發（local_worker.bat 與 cancellation.py 依賴此值）
+    # 任務被誤判逾時而重複派發（local_worker.bat 與 runtime/celery_redis.py 的旗標 TTL 依賴此值）
     broker_transport_options={"visibility_timeout": 12 * 60 * 60},
 )
 
