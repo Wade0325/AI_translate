@@ -9,6 +9,7 @@ from app.celery.models import TranscriptionTaskParams
 from app.runtime import run_mode
 from app.runtime.run_mode import publish_status
 from app.core.config import get_settings
+from app.core.task_status import TaskStatus
 from app.database.session import SessionLocal
 from app.repositories.transcription_log_repository import TranscriptionLogRepository
 from app.services.api_keys import resolve_api_key
@@ -108,7 +109,7 @@ def cancel_transcription(file_uid: str, provider: str = ""):
 
     publish_status(
         file_uid, task_id, "任務已取消",
-        status_code="CANCELLED", file_uid=file_uid,
+        status_code=TaskStatus.CANCELLED, file_uid=file_uid,
     )
     logger.info(f"已送出取消請求 file_uid={file_uid} task_id={task_id} "
                 f"terminate={terminate}")
@@ -134,7 +135,7 @@ async def websocket_endpoint(
             await websocket.send_json({
                 "client_id": file_uid,
                 "file_uid": file_uid,
-                "status_code": "FAILED",
+                "status_code": TaskStatus.FAILED,
                 "status_text": str(e),
             })
             manager.disconnect(file_uid)

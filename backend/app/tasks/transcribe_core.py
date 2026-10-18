@@ -15,6 +15,7 @@ from app.runtime import run_mode
 from app.runtime.run_mode import publish_status
 from app.core.config import get_settings
 from app.core.default_prompt import build_prompt
+from app.core.task_status import TaskStatus
 from app.database.session import SessionLocal
 from app.exceptions import GeminiTransientError, TranscriptionCancelledError
 from app.provider.google.gemini import GeminiClient
@@ -61,7 +62,7 @@ def run_transcription(task_params_dict: dict, task_uuid: str):
     client_id = task_params.client_id
     file_uid = task_params.file_uid
 
-    def update_status(status_text: str, status_code: str = "PROCESSING", result_data: dict = None):
+    def update_status(status_text: str, status_code: TaskStatus = TaskStatus.PROCESSING, result_data: dict = None):
         publish_status(
             client_id,
             task_uuid,
@@ -76,7 +77,7 @@ def run_transcription(task_params_dict: dict, task_uuid: str):
     if run_mode.get().is_cancel_requested(file_uid):
         run_mode.get().clear_cancel(file_uid)
         logger.info(f"任務 {task_uuid} 在啟動前已被取消 (file_uid={file_uid})")
-        update_status("任務已取消", status_code="CANCELLED")
+        update_status("任務已取消", status_code=TaskStatus.CANCELLED)
         return {"cancelled": True}
 
     db = SessionLocal()
@@ -88,7 +89,7 @@ def run_transcription(task_params_dict: dict, task_uuid: str):
 
     try:
         initial_log_data = {
-            "status": "PROCESSING",
+            "status": TaskStatus.PROCESSING,
             "original_filename": task_params.original_filename,
             "model_used": task_params.model,
             "source_language": task_params.source_lang,
@@ -229,7 +230,7 @@ def run_transcription(task_params_dict: dict, task_uuid: str):
             f"Metrics calculated. Task ID: {task_uuid}. Cost: ${final_cost:.6f}")
 
         update_data = {
-            "status": "COMPLETED",
+            "status": TaskStatus.COMPLETED,
             "audio_duration_seconds": metrics_response.audio_duration_seconds,
             "processing_time_seconds": metrics_response.processing_time_seconds,
             "total_tokens": metrics_response.total_tokens,
@@ -271,7 +272,7 @@ def run_transcription(task_params_dict: dict, task_uuid: str):
         if 'task_uuid' in final_response_dict and hasattr(final_response_dict['task_uuid'], 'hex'):
             final_response_dict['task_uuid'] = final_response_dict['task_uuid'].hex
 
-        update_status("任務完成", status_code="COMPLETED",
+        update_status("任務完成", status_code=TaskStatus.COMPLETED,
                       result_data=final_response_dict)
 
         return {"raw_lrc_text": final_lrc_text}
@@ -281,19 +282,19 @@ def run_transcription(task_params_dict: dict, task_uuid: str):
         processing_time_seconds = time.time() - start_time
         logger.info(f"Transcription task {task_uuid} cancelled by user.")
         log_repo.update_log(db, task_uuid, {
-            "status": "CANCELLED",
+            "status": TaskStatus.CANCELLED,
             "error_message": "使用者取消任務",
             "processing_time_seconds": processing_time_seconds,
             "completed_at": datetime.now(),
         })
-        update_status("任務已取消", status_code="CANCELLED")
+        update_status("任務已取消", status_code=TaskStatus.CANCELLED)
         return {"cancelled": True}
     except GeminiTransientError as e:
         # 暫時性錯誤：交給外層重試機制處理，不寫入 FAILED log
         logger.warning(
             f"Transcription task {task_uuid} hit transient Gemini error, will retry: {e}"
         )
-        update_status(f"暫時性錯誤，將重試: {e}", status_code="PROCESSING")
+        update_status(f"暫時性錯誤，將重試: {e}", status_code=TaskStatus.PROCESSING)
         raise
     except Exception as e:
         processing_time_seconds = time.time() - start_time
@@ -304,13 +305,13 @@ def run_transcription(task_params_dict: dict, task_uuid: str):
         # session 可能因失敗的 commit 處於 pending rollback 狀態，先復原才能寫 FAILED
         db.rollback()
         failure_update_data = {
-            "status": "FAILED",
+            "status": TaskStatus.FAILED,
             "error_message": str(e),
             "processing_time_seconds": processing_time_seconds
         }
         log_repo.update_log(db, task_uuid, failure_update_data)
 
-        update_status(f"任務失敗: {e}", status_code="FAILED")
+        update_status(f"任務失敗: {e}", status_code=TaskStatus.FAILED)
         raise e
     finally:
         # 任務結束後旗標已無作用，清掉以免影響同一檔案之後再開的任務

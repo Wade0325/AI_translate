@@ -16,6 +16,7 @@ from __future__ import annotations
 import threading
 from typing import TYPE_CHECKING, AsyncIterator, Optional, Protocol
 
+from app.core.task_status import TaskStatus
 from app.utils.logger import setup_logger
 
 if TYPE_CHECKING:
@@ -117,7 +118,7 @@ def publish_status(
     client_id: str,
     task_uuid: str,
     status_text: str,
-    status_code: str = "PROCESSING",
+    status_code: TaskStatus = TaskStatus.PROCESSING,
     *,
     file_uid: Optional[str] = None,
     result_data: Optional[dict] = None,

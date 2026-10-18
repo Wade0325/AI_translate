@@ -16,6 +16,7 @@ from app.celery.models import BatchTranscriptionTaskParams
 from app.runtime.run_mode import publish_status
 from app.core.config import get_settings
 from app.core.default_prompt import build_prompt
+from app.core.task_status import TaskStatus
 from app.database.session import SessionLocal
 from app.exceptions import GeminiTransientError
 from app.provider.google.gemini import (
@@ -52,7 +53,7 @@ def _publish_batch_status(
     batch_id: str,
     task_uuid: str,
     status_text: str,
-    status_code: str = "PROCESSING",
+    status_code: TaskStatus = TaskStatus.PROCESSING,
     result_data: dict = None,
     file_uid: str = None,
 ):
@@ -151,9 +152,9 @@ def _process_single_result(
     if not inline_response.response:
         error_msg = str(getattr(inline_response, "error", "未知錯誤"))
         logger.error(f"檔案 {file_item.original_filename} 批次轉錄失敗: {error_msg}")
-        update_fn(f"轉錄失敗: {error_msg}", status_code="FAILED", file_uid=file_uid)
+        update_fn(f"轉錄失敗: {error_msg}", status_code=TaskStatus.FAILED, file_uid=file_uid)
         log_repo.update_log(db, file_task_uuid, {
-            "status": "FAILED",
+            "status": TaskStatus.FAILED,
             "error_message": error_msg,
             "processing_time_seconds": time.time() - start_time,
         })
@@ -167,9 +168,9 @@ def _process_single_result(
             error_text = f"轉錄失敗：請求被 Gemini 以 '{response.prompt_feedback.block_reason}' 原因阻擋"
         except Exception:
             pass
-        update_fn(error_text, status_code="FAILED", file_uid=file_uid)
+        update_fn(error_text, status_code=TaskStatus.FAILED, file_uid=file_uid)
         log_repo.update_log(db, file_task_uuid, {
-            "status": "FAILED",
+            "status": TaskStatus.FAILED,
             "error_message": error_text,
             "processing_time_seconds": time.time() - start_time,
         })
@@ -216,7 +217,7 @@ def _process_single_result(
     batch_cost = metrics.cost * BATCH_COST_DISCOUNT
 
     if not log_repo.update_log(db, file_task_uuid, {
-        "status": "COMPLETED",
+        "status": TaskStatus.COMPLETED,
         "audio_duration_seconds": audio_duration,
         "processing_time_seconds": processing_time_seconds,
         "total_tokens": metrics.total_tokens,
@@ -244,7 +245,7 @@ def _process_single_result(
     if "task_uuid" in result_dict and hasattr(result_dict["task_uuid"], "hex"):
         result_dict["task_uuid"] = str(result_dict["task_uuid"])
 
-    update_fn("任務完成", status_code="COMPLETED", result_data=result_dict, file_uid=file_uid)
+    update_fn("任務完成", status_code=TaskStatus.COMPLETED, result_data=result_dict, file_uid=file_uid)
     logger.info(f"檔案 {file_item.original_filename} 處理完成, 費用: ${batch_cost:.6f}")
 
 
@@ -265,7 +266,7 @@ def run_batch(task_params_dict: dict, task_uuid: str):
     batch_id = task_params.batch_id
 
     def update_status(
-        status_text, status_code="PROCESSING", result_data=None, file_uid=None
+        status_text, status_code=TaskStatus.PROCESSING, result_data=None, file_uid=None
     ):
         _publish_batch_status(
             batch_id, task_uuid, status_text, status_code, result_data, file_uid
@@ -336,7 +337,7 @@ def run_batch(task_params_dict: dict, task_uuid: str):
             file_task_uuid = str(uuid.uuid4())
             file_log_uuids[file_item.file_uid] = file_task_uuid
             log_repo.insert_log(db, {
-                "status": "PROCESSING",
+                "status": TaskStatus.PROCESSING,
                 "original_filename": file_item.original_filename,
                 "model_used": task_params.model,
                 "source_language": file_item.source_lang or task_params.source_lang,
@@ -376,17 +377,17 @@ def run_batch(task_params_dict: dict, task_uuid: str):
                 logger.error(f"上傳檔案失敗 {file_item.original_filename}: {e}")
                 update_status(
                     f"檔案上傳失敗: {e}",
-                    status_code="FAILED",
+                    status_code=TaskStatus.FAILED,
                     file_uid=file_item.file_uid,
                 )
                 log_repo.update_log(db, file_log_uuids[file_item.file_uid], {
-                    "status": "FAILED",
+                    "status": TaskStatus.FAILED,
                     "error_message": f"檔案上傳失敗: {str(e)}",
                     "processing_time_seconds": time.time() - start_time,
                 })
 
         if not file_gemini_mapping:
-            update_status("所有檔案上傳失敗，批次任務終止", status_code="BATCH_COMPLETED")
+            update_status("所有檔案上傳失敗，批次任務終止", status_code=TaskStatus.BATCH_COMPLETED)
             return
 
         # --- 建立 Gemini Batch 任務 ---
@@ -431,7 +432,7 @@ def run_batch(task_params_dict: dict, task_uuid: str):
         # 通知前端：檔案已全部提交，可以釋放 UI（結果可稍後恢復）
         update_status(
             f"批次任務已提交至 Gemini，共 {len(file_gemini_mapping)} 個檔案，等待處理中...",
-            status_code="BATCH_SUBMITTED",
+            status_code=TaskStatus.BATCH_SUBMITTED,
         )
 
         # --- 輪詢等待完成 ---
@@ -459,13 +460,13 @@ def run_batch(task_params_dict: dict, task_uuid: str):
             for file_item in task_params.files:
                 file_uid = file_item.file_uid
                 if file_uid in file_log_uuids:
-                    update_status(error_msg, status_code="FAILED", file_uid=file_uid)
+                    update_status(error_msg, status_code=TaskStatus.FAILED, file_uid=file_uid)
                     log_repo.update_log(db, file_log_uuids[file_uid], {
-                        "status": "FAILED",
+                        "status": TaskStatus.FAILED,
                         "error_message": error_msg,
                         "processing_time_seconds": time.time() - start_time,
                     })
-            update_status(error_msg, status_code="BATCH_COMPLETED")
+            update_status(error_msg, status_code=TaskStatus.BATCH_COMPLETED)
             return
 
         # --- 逐一處理結果 ---
@@ -475,10 +476,10 @@ def run_batch(task_params_dict: dict, task_uuid: str):
         captured_results = {}
 
         def update_status_capture(
-            status_text, status_code="PROCESSING", result_data=None, file_uid=None
+            status_text, status_code=TaskStatus.PROCESSING, result_data=None, file_uid=None
         ):
             update_status(status_text, status_code, result_data, file_uid)
-            if file_uid and result_data and status_code == "COMPLETED":
+            if file_uid and result_data and status_code == TaskStatus.COMPLETED:
                 captured_results[file_uid] = result_data
 
         if batch_job.dest and batch_job.dest.inlined_responses:
@@ -519,10 +520,10 @@ def run_batch(task_params_dict: dict, task_uuid: str):
                         exc_info=True,
                     )
                     update_status(
-                        f"處理結果失敗: {e}", status_code="FAILED", file_uid=file_uid
+                        f"處理結果失敗: {e}", status_code=TaskStatus.FAILED, file_uid=file_uid
                     )
                     log_repo.update_log(db, file_task_uuid, {
-                        "status": "FAILED",
+                        "status": TaskStatus.FAILED,
                         "error_message": str(e),
                         "processing_time_seconds": time.time() - start_time,
                     })
@@ -538,14 +539,14 @@ def run_batch(task_params_dict: dict, task_uuid: str):
 
         elapsed = time.time() - start_time
         update_status(
-            f"批次任務全部完成 (耗時 {elapsed:.1f} 秒)", status_code="BATCH_COMPLETED"
+            f"批次任務全部完成 (耗時 {elapsed:.1f} 秒)", status_code=TaskStatus.BATCH_COMPLETED
         )
         logger.info(f"批次任務完成: {batch_id}, 耗時 {elapsed:.1f} 秒")
 
     except GeminiTransientError as e:
         # 暫時性錯誤：交給外層重試機制，狀態保留 POLLING/UPLOADING 以便恢復
         logger.warning(f"批次任務 {batch_id} hit transient Gemini error, will retry: {e}")
-        update_status(f"暫時性錯誤，將重試: {e}", status_code="PROCESSING")
+        update_status(f"暫時性錯誤，將重試: {e}", status_code=TaskStatus.PROCESSING)
         raise
     except Exception as e:
         error_message = traceback.format_exc()
@@ -558,13 +559,13 @@ def run_batch(task_params_dict: dict, task_uuid: str):
             file_uid = file_item.file_uid
             if file_uid in file_log_uuids:
                 log_repo.update_log(db, file_log_uuids[file_uid], {
-                    "status": "FAILED",
+                    "status": TaskStatus.FAILED,
                     "error_message": str(e),
                     "processing_time_seconds": time.time() - start_time,
                 })
-                update_status(f"批次任務失敗: {e}", status_code="FAILED", file_uid=file_uid)
+                update_status(f"批次任務失敗: {e}", status_code=TaskStatus.FAILED, file_uid=file_uid)
 
-        update_status(f"批次任務失敗: {e}", status_code="BATCH_COMPLETED")
+        update_status(f"批次任務失敗: {e}", status_code=TaskStatus.BATCH_COMPLETED)
         raise e
 
     finally:
@@ -610,21 +611,21 @@ def process_gemini_batch_results(batch_id: str, api_key: str, db, batch_repo, lo
             batch_repo.update_job(db, batch_id, {"status": "POLLING"})
             return {"status": "POLLING", "files": []}
 
-        def update_status(status_text, status_code="PROCESSING", result_data=None, file_uid=None):
+        def update_status(status_text, status_code=TaskStatus.PROCESSING, result_data=None, file_uid=None):
             _publish_batch_status(batch_id, "", status_text, status_code, result_data, file_uid)
 
         update_status("正在從 Gemini 恢復批次任務結果...")
 
         client = GeminiClient(api_key).client
         if not client:
-            update_status("API Key 無效", status_code="BATCH_COMPLETED")
+            update_status("API Key 無效", status_code=TaskStatus.BATCH_COMPLETED)
             batch_repo.update_job(db, batch_id, {"status": "POLLING"})
             return {"status": "POLLING", "files": []}
 
         try:
             batch_job = poll_batch_job_status(client, job.gemini_job_name)
         except Exception as e:
-            update_status(f"查詢 Gemini 失敗: {e}", status_code="BATCH_COMPLETED")
+            update_status(f"查詢 Gemini 失敗: {e}", status_code=TaskStatus.BATCH_COMPLETED)
             batch_repo.update_job(db, batch_id, {"status": "POLLING"})
             return {"status": "POLLING", "files": []}
 
@@ -633,14 +634,14 @@ def process_gemini_batch_results(batch_id: str, api_key: str, db, batch_repo, lo
 
         if state_name not in BATCH_COMPLETED_STATES:
             logger.info(f"恢復任務 {batch_id}: 任務尚未完成，狀態={state_name}")
-            update_status(f"任務仍在進行中 ({state_name})", status_code="BATCH_COMPLETED")
+            update_status(f"任務仍在進行中 ({state_name})", status_code=TaskStatus.BATCH_COMPLETED)
             batch_repo.update_job(db, batch_id, {"status": "POLLING"})
             return {"status": "POLLING", "files": []}
 
         if state_name != "JOB_STATE_SUCCEEDED":
             logger.info(f"恢復任務 {batch_id}: 任務失敗，狀態={state_name}")
             batch_repo.update_job(db, batch_id, {"status": "FAILED"})
-            update_status(f"任務失敗 ({state_name})", status_code="BATCH_COMPLETED")
+            update_status(f"任務失敗 ({state_name})", status_code=TaskStatus.BATCH_COMPLETED)
             return {"status": "FAILED", "files": []}
 
         logger.info(f"恢復任務 {batch_id}: 任務成功，開始處理結果...")
@@ -661,9 +662,9 @@ def process_gemini_batch_results(batch_id: str, api_key: str, db, batch_repo, lo
         start_time = time.time()
         captured_results = {}
 
-        def update_status_capture(status_text, status_code="PROCESSING", result_data=None, file_uid=None):
+        def update_status_capture(status_text, status_code=TaskStatus.PROCESSING, result_data=None, file_uid=None):
             update_status(status_text, status_code, result_data, file_uid)
-            if file_uid and result_data and status_code == "COMPLETED":
+            if file_uid and result_data and status_code == TaskStatus.COMPLETED:
                 captured_results[file_uid] = result_data
 
         ordered_indices = sorted(file_mapping.keys(), key=int)
@@ -701,7 +702,7 @@ def process_gemini_batch_results(batch_id: str, api_key: str, db, batch_repo, lo
                     )
                 except Exception as e:
                     logger.error(f"恢復檔案 {original_filename} 失敗: {e}", exc_info=True)
-                    update_status(f"恢復失敗: {e}", status_code="FAILED", file_uid=file_uid)
+                    update_status(f"恢復失敗: {e}", status_code=TaskStatus.FAILED, file_uid=file_uid)
 
         batch_repo.update_job(db, batch_id, {
             "status": "COMPLETED",
@@ -709,7 +710,7 @@ def process_gemini_batch_results(batch_id: str, api_key: str, db, batch_repo, lo
         })
 
         elapsed = time.time() - start_time
-        update_status(f"恢復完成 (耗時 {elapsed:.1f} 秒)", status_code="BATCH_COMPLETED")
+        update_status(f"恢復完成 (耗時 {elapsed:.1f} 秒)", status_code=TaskStatus.BATCH_COMPLETED)
         logger.info(f"批次 {batch_id} 恢復完成，{len(captured_results)} 個檔案")
         return {"status": "COMPLETED", "files": captured_results}
 
