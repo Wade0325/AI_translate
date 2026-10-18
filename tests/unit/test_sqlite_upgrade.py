@@ -24,7 +24,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from sqlalchemy import Column, MetaData, String, Table, UniqueConstraint, create_engine, inspect
+from sqlalchemy import Column, MetaData, String, Table, UniqueConstraint, inspect
 
 from app.database import models, session
 
@@ -85,9 +85,23 @@ def _nullable(value: bool) -> str:
     return "NULL" if value else "NOT NULL"
 
 
-def _upgrade(tmp_path, monkeypatch, build_old):
-    """build_old 在 tmp_path 建出舊版資料庫，換掉 session 的 engine 後跑 init_db()。"""
-    engine = session._create_engine(f"sqlite:///{(tmp_path / 'old.db').as_posix()}")
+@pytest.fixture
+def sqlite_engine(tmp_path):
+    """在 tmp_path 建 SQLite 檔的 engine（和免安裝模式同一個工廠）；測試結束時釋放檔案。"""
+    engines = []
+
+    def make(name: str):
+        engine = session._create_engine(f"sqlite:///{(tmp_path / name).as_posix()}")
+        engines.append(engine)
+        return engine
+
+    yield make
+    for engine in engines:
+        engine.dispose()
+
+
+def _upgrade(engine, monkeypatch, build_old):
+    """build_old 在 engine 建出舊版資料庫，換掉 session 的 engine 後跑 init_db()。"""
     build_old(engine)
     monkeypatch.setattr(session, "engine", engine)
     monkeypatch.setattr(session, "SessionLocal", session.sessionmaker(bind=engine))
@@ -95,8 +109,7 @@ def _upgrade(tmp_path, monkeypatch, build_old):
     return engine
 
 
-def _fresh(tmp_path):
-    engine = session._create_engine(f"sqlite:///{(tmp_path / 'fresh.db').as_posix()}")
+def _fresh(engine):
     models.Base.metadata.create_all(engine)
     return engine
 
@@ -125,11 +138,11 @@ def test_there_is_a_frozen_schema():
 
 
 @pytest.mark.parametrize("frozen", FROZEN_SCHEMAS, ids=lambda path: path.stem)
-def test_upgraded_database_matches_fresh_one(frozen, tmp_path, monkeypatch):
+def test_upgraded_database_matches_fresh_one(frozen, sqlite_engine, monkeypatch):
     ddl = frozen.read_text(encoding="utf-8")
-    upgraded = _upgrade(tmp_path, monkeypatch, _run_ddl(ddl))
+    upgraded = _upgrade(sqlite_engine("old.db"), monkeypatch, _run_ddl(ddl))
 
-    diff = _schema_diff(upgraded, _fresh(tmp_path))
+    diff = _schema_diff(upgraded, _fresh(sqlite_engine("fresh.db")))
 
     assert not diff, (
         f"用 {frozen.name} 建的資料庫跑過 init_db() 之後和新建的不一致，"
@@ -161,39 +174,39 @@ def _legacy_metadata(*, omit=(), retype=None, extra=(), unique=True) -> MetaData
     return metadata
 
 
-def test_dropped_column_is_reported(tmp_path, monkeypatch):
+def test_dropped_column_is_reported(sqlite_engine, monkeypatch):
     legacy = _legacy_metadata(extra=[Column("legacy_note", String)])
-    old = _upgrade(tmp_path, monkeypatch, legacy.create_all)
+    old = _upgrade(sqlite_engine("old.db"), monkeypatch, legacy.create_all)
 
-    diff = _schema_diff(old, _fresh(tmp_path))
+    diff = _schema_diff(old, _fresh(sqlite_engine("fresh.db")))
 
     assert "transcript_segments.legacy_note：升級後多了這個欄位（models.py 已刪除）" in diff, diff
 
 
-def test_new_not_null_column_is_reported(tmp_path, monkeypatch):
+def test_new_not_null_column_is_reported(sqlite_engine, monkeypatch):
     # 舊版還沒有 seg_key：自動遷移補上的欄位不帶 NOT NULL
     legacy = _legacy_metadata(omit={"seg_key"}, unique=False)
-    old = _upgrade(tmp_path, monkeypatch, legacy.create_all)
+    old = _upgrade(sqlite_engine("old.db"), monkeypatch, legacy.create_all)
 
-    diff = _schema_diff(old, _fresh(tmp_path))
+    diff = _schema_diff(old, _fresh(sqlite_engine("fresh.db")))
 
     assert "transcript_segments.seg_key：可空性是 NULL，新建的是 NOT NULL" in diff, diff
 
 
-def test_changed_type_is_reported(tmp_path, monkeypatch):
+def test_changed_type_is_reported(sqlite_engine, monkeypatch):
     legacy = _legacy_metadata(retype={"seq": String()})
-    old = _upgrade(tmp_path, monkeypatch, legacy.create_all)
+    old = _upgrade(sqlite_engine("old.db"), monkeypatch, legacy.create_all)
 
-    diff = _schema_diff(old, _fresh(tmp_path))
+    diff = _schema_diff(old, _fresh(sqlite_engine("fresh.db")))
 
     assert "transcript_segments.seq：型別是 VARCHAR，新建的是 INTEGER" in diff, diff
 
 
-def test_new_unique_constraint_is_reported(tmp_path, monkeypatch):
+def test_new_unique_constraint_is_reported(sqlite_engine, monkeypatch):
     legacy = _legacy_metadata(unique=False)
-    old = _upgrade(tmp_path, monkeypatch, legacy.create_all)
+    old = _upgrade(sqlite_engine("old.db"), monkeypatch, legacy.create_all)
 
-    diff = _schema_diff(old, _fresh(tmp_path))
+    diff = _schema_diff(old, _fresh(sqlite_engine("fresh.db")))
 
     assert "transcript_segments：升級後少了唯一約束 (seg_key, task_uuid)" in diff, diff
 
@@ -201,7 +214,7 @@ def test_new_unique_constraint_is_reported(tmp_path, monkeypatch):
 if __name__ == "__main__":
     # 凍結目前 models.py 的 SQLite schema；用法見檔頭
     name, commit = sys.argv[1:3]
-    engine = create_engine("sqlite://")
+    engine = session._create_engine("sqlite://")
     models.Base.metadata.create_all(engine)
     target = FROZEN_DIR / f"{name}.sql"
     if target.exists():
