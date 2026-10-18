@@ -1,7 +1,7 @@
 """批次轉錄任務本體（純同步 Python，與任務框架無關）。
 
 docker 模式由 `app.celery.batch_task` 的 Celery shim 包裝執行，
-standalone 模式由 `app.runtime.dispatch.submit_batch / submit_recover`
+standalone 模式由 `app.runtime.in_process.InProcessRunMode.submit_batch / submit_recover`
 丟進行程內執行緒池；兩邊共用這裡的同一份流程。
 """
 
@@ -13,7 +13,7 @@ import json
 from datetime import datetime
 
 from app.celery.models import BatchTranscriptionTaskParams
-from app.celery.notifier import publish_status
+from app.runtime.run_mode import publish_status
 from app.core.config import get_settings
 from app.core.default_prompt import build_prompt
 from app.database.session import SessionLocal
