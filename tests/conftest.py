@@ -13,14 +13,14 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 # ─── 1. 在所有 app 模組被匯入之前，先 mock 重量級依賴 ──────────────────────
-# 避免 torch / torchaudio / silero_vad 在測試環境進行緩慢的首次匯入
+# 避免 torch / torchaudio / silero_vad 在測試環境進行緩慢的首次匯入。
+# soundfile 用真的：它在 base 依賴裡，測試要用它產生合成音檔（#103）
 _HEAVY_MODULES = [
     "torch",
     "torchaudio",
     "torchaudio.transforms",
     "torchaudio.functional",
     "silero_vad",
-    "soundfile",
 ]
 for _mod in _HEAVY_MODULES:
     if _mod not in sys.modules:
