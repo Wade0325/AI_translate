@@ -19,6 +19,7 @@ from app.core.default_prompt import build_prompt
 from app.core.task_status import TaskStatus
 from app.database.session import SessionLocal
 from app.exceptions import GeminiTransientError
+from app.provider.registry import model_capabilities
 from app.provider.google.gemini import (
     GeminiClient,
     upload_file_to_gemini,
@@ -281,10 +282,8 @@ def run_batch(task_params_dict: dict, task_uuid: str):
     start_time = time.time()
 
     try:
-        if task_params.provider.lower() != "google":
-            raise ValueError(
-                f"Provider '{task_params.provider}' is not supported. Only 'google' is allowed."
-            )
+        if not model_capabilities(task_params.provider, task_params.model).supports_batch:
+            raise ValueError(f"模型 {task_params.model} 不支援批次")
 
         client = GeminiClient(task_params.api_keys).client
         if not client:

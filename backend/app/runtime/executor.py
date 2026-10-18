@@ -129,6 +129,6 @@ class LocalExecutor:
         entry = self._registry.get(task_id)
         return entry.state if entry else None
 
-    def shutdown(self) -> None:
+    def shutdown(self, wait: bool = False) -> None:
         for pool in self._pools.values():
-            pool.shutdown(wait=False, cancel_futures=True)
+            pool.shutdown(wait=wait, cancel_futures=True)

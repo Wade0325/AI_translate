@@ -18,3 +18,10 @@ class GeminiPermanentError(AppError):
 
 class TranscriptionCancelledError(AppError):
     """使用者取消轉錄任務。task.py 據此把任務標記為 CANCELLED 而非 FAILED。"""
+
+
+class ProviderNotReadyError(AppError, ValueError):
+    """供應商還不能轉錄（缺 GPU、缺模型權重、API 金鑰無效）。
+
+    不是轉錄失敗：分段轉錄不拿它切段重試，直接往上拋，讓任務以這則訊息失敗。
+    """

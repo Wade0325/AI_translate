@@ -66,6 +66,13 @@ class TranscriptionLogRepository:
             return log_to_update
         return None
 
+    def get(self, db: Session, task_uuid) -> Optional[TranscriptionLog]:
+        uuid_val = self._coerce_task_uuid(task_uuid)
+        if uuid_val is None:
+            return None
+        return db.query(TranscriptionLog).filter(
+            TranscriptionLog.task_uuid == uuid_val).first()
+
     def mark_cancelled_if_processing(self, db: Session, task_uuid) -> bool:
         """僅當紀錄仍在 PROCESSING 時標記為 CANCELLED，回傳是否有更新。
 

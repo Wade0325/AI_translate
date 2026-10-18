@@ -62,9 +62,8 @@ export const api = {
     return request('/upload', { method: 'POST', body: formData });
   },
   transcription: {
-    cancel(fileUid, provider) {
-      const query = provider ? `?provider=${encodeURIComponent(provider)}` : '';
-      return request(`/transcription/${fileUid}/cancel${query}`, { method: 'POST' });
+    cancel(fileUid) {
+      return request(`/transcription/${fileUid}/cancel`, { method: 'POST' });
     },
   },
   history: {

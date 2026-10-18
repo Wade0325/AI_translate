@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import List, Dict, Optional
 
 from app.core.config import get_settings
-from app.exceptions import TranscriptionCancelledError
+from app.exceptions import ProviderNotReadyError, TranscriptionCancelledError
 from app.utils.logger import setup_logger
 from app.utils.paths import is_temp_upload
 from app.utils.audio import (
@@ -11,11 +11,7 @@ from app.utils.audio import (
     convert_to_wav,
     slice_audio,
 )
-from app.provider.google.gemini import (
-    upload_file_to_gemini,
-    transcribe_with_uploaded_file,
-    cleanup_gemini_file
-)
+from app.provider.base import Provider, TranscribeRequest
 from app.services.converter.service import _parse_lrc
 from app.services.vad.preprocess import run_vad_extraction
 from app.services.vad.artifacts import persist_speech_extraction, persist_split
@@ -30,8 +26,6 @@ logger = setup_logger(__name__)
 _settings = get_settings()
 # 語音佔比 >= 此閾值時跳過去靜音；低於則使用純語音檔轉錄
 VAD_SPEECH_RATIO_SKIP_THRESHOLD = _settings.vad_speech_ratio_skip_threshold
-# 去靜音之後仍超過此時長（秒）的音檔要分段轉錄：在最接近中點的靜音處切成兩段；0 = 停用
-LONG_AUDIO_SPLIT_THRESHOLD_SECONDS = _settings.long_audio_split_threshold_seconds
 
 
 def speech_segment_boundaries(segments: List[Dict[str, float]]) -> List[float]:
@@ -191,34 +185,25 @@ class TranscriptionTask:
 
     def __init__(
         self,
-        client,
-        model: str,
-        prompt: str,
+        provider: Provider,
+        request: TranscribeRequest,
         temp_dir: Path,
-        status_callback=None,
-        service_tier: Optional[str] = None,
         artifact_task_id: Optional[str] = None,
         original_filename: Optional[str] = None,
-        provider: str = "google",
-        source_lang: Optional[str] = None,
-        cancel_check=None,
     ):
-        self.client = client
-        self.model = model
-        self.prompt = prompt
-        self.temp_dir = temp_dir
-        self.status_callback = status_callback
-        self.service_tier = service_tier  # None/"standard" 或 "flex"
         self.provider = provider
-        self.source_lang = source_lang
-        self.cancel_check = cancel_check
+        self.request = request
+        self.capabilities = provider.capabilities()[request.model]
+        self.temp_dir = temp_dir
+        self.status_callback = request.status_callback
+        self.service_tier = request.service_tier  # None/"standard" 或 "flex"
+        self.cancel_check = request.cancel_check
         self.artifact_task_id = artifact_task_id
         self.original_filename = original_filename
         self.local_cleanup_list = []
-        self.gemini_cleanup_list = []
         self.max_duration_seconds = get_settings().transcription_max_duration_seconds
         self.original_file = None
-        self.split_threshold_seconds = self._split_threshold(provider, model)
+        self.split_threshold_seconds = self.capabilities.single_pass_seconds
 
         try:
             self.vad_service = get_vad_service()
@@ -226,16 +211,6 @@ class TranscriptionTask:
         except Exception as e:
             logger.warning(f"無法取得 VAD 服務: {e}")
             self.vad_service = None
-
-    @staticmethod
-    def _split_threshold(provider: str, model: str) -> float:
-        """分段轉錄的門檻（秒）：provider 有自己的單次上限就用它，否則用全域設定。"""
-        if provider == "local":
-            from app.provider.local.asr import single_pass_limit_seconds
-            limit = single_pass_limit_seconds(model)
-            if limit is not None:
-                return limit
-        return LONG_AUDIO_SPLIT_THRESHOLD_SECONDS
 
     def transcribe_audio(self, audio_path: Path) -> TranscriptionTaskResult:
         """
@@ -267,7 +242,7 @@ class TranscriptionTask:
         speech_segments = None
         transcription_path = audio_path  # 預設直接使用原始檔案
 
-        if self.vad_service:
+        if self.capabilities.remove_silence and self.vad_service:
             vad_result = self._extract_speech_only(audio_path)
             if vad_result and vad_result.get("speech_only_path"):
                 speech_ratio = vad_result.get("speech_ratio", 1.0)
@@ -317,11 +292,10 @@ class TranscriptionTask:
                     f"檔案 {audio_path.name} 短於 {self.max_duration_seconds/60:.1f} 分鐘，接受失敗結果")
             return result
 
-        # 如果失敗且檔案夠長，嘗試分割
-        # local provider 不走失敗後的分割重試：各段 diarization 的說話者編號互相
-        # 獨立，拼接後 [S0]/[S1] 會指向不同人；直接回報失敗讓使用者拿到明確錯誤。
-        # （長檔的分段轉錄是使用者明確要求的功能，接受此限制，見 _transcribe_halved）
-        if not result.success and self.vad_service and self.provider != "local":
+        # 如果失敗且檔案夠長，模型能力允許時切段重試；不允許的（例如各段說話者
+        # 編號互相獨立）直接回報失敗，讓使用者拿到明確錯誤
+        if (not result.success and self.vad_service
+                and self.capabilities.split_retry_on_failure):
             logger.info(f"轉錄失敗，檔案長度 {duration:.1f} 秒，嘗試 VAD 分割")
             return self._transcribe_with_splitting(audio_path)
 
@@ -376,38 +350,11 @@ class TranscriptionTask:
         return duration
 
     def _attempt_transcription(self, audio_path: Path) -> TranscriptionTaskResult:
-        """嘗試轉錄單一音訊檔案"""
+        """透過供應商轉錄一段音檔；一般錯誤轉成失敗結果，交給上層決定要不要切段重試。"""
         try:
-            if self.provider == "local":
-                # 主機端 GPU worker 專用；延遲 import，容器 worker 不需 transformers
-                from app.provider.local.asr import transcribe_with_local_models
-                result = transcribe_with_local_models(
-                    audio_path, self.source_lang, self.status_callback,
-                    cancel_check=self.cancel_check, model=self.model)
-            else:
-                gemini_file = upload_file_to_gemini(
-                    audio_path, self.client, self.status_callback)
-                self.gemini_cleanup_list.append(gemini_file)
-
-                if self.status_callback:
-                    self.status_callback("AI模型處理中...")
-
-                result = transcribe_with_uploaded_file(
-                    self.client, gemini_file, self.model, self.prompt,
-                    service_tier=self.service_tier,
-                )
-
-            return TranscriptionTaskResult(
-                success=result["success"],
-                text=result.get("text", ""),
-                input_tokens=result.get("input_tokens", 0),
-                output_tokens=result.get("output_tokens", 0),
-                total_tokens=result.get("total_tokens", 0),
-                service_tier_used=result.get("service_tier_used"),
-                segments=result.get("segments") or [],
-            )
-        except TranscriptionCancelledError:
-            # 取消不是失敗：往上拋給 task.py 標記為 CANCELLED
+            return self.provider.transcribe(audio_path, self.request)
+        except (TranscriptionCancelledError, ProviderNotReadyError):
+            # 取消不是失敗、供應商還沒準備好也不是切段能解決的：往上拋給任務
             raise
         except Exception as e:
             logger.error(f"轉錄過程發生錯誤: {e}")
@@ -626,12 +573,11 @@ class TranscriptionTask:
             return []
 
     def cleanup(self):
-        """清理所有相關的暫存檔案，包括 Gemini 檔案、本地暫存檔和原始上傳檔案。"""
-        for gemini_file in self.gemini_cleanup_list:
-            try:
-                cleanup_gemini_file(self.client, gemini_file)
-            except Exception as e:
-                logger.warning(f"清理 Gemini 檔案失敗: {e}")
+        """清理供應商的遠端與暫存資源、本地暫存檔和原始上傳檔案。"""
+        try:
+            self.provider.release()
+        except Exception as e:
+            logger.warning(f"釋放供應商資源失敗: {e}")
 
         local_files = set(self.local_cleanup_list)
         if self.original_file:

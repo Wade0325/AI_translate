@@ -156,7 +156,7 @@ export const TranscriptionProvider = ({ children }) => {
       current.map((f) => (f.uid === uid ? { ...f, statusText: '正在取消...' } : f))
     );
     try {
-      const res = await api.transcription.cancel(uid, target.provider);
+      const res = await api.transcription.cancel(uid);
       if (res?.cancelled === false) {
         message.warning('任務尚未提交到佇列（可能還在上傳），請稍後再試。');
         setFileList((current) =>

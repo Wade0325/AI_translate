@@ -11,6 +11,7 @@ from app.runtime.run_mode import publish_status
 from app.core.config import get_settings
 from app.core.task_status import TaskStatus
 from app.database.session import SessionLocal
+from app.provider.registry import UnsupportedModelError, model_capabilities
 from app.repositories.transcription_log_repository import TranscriptionLogRepository
 from app.services.api_keys import resolve_api_key
 from app.utils.logger import setup_logger
@@ -33,9 +34,13 @@ def start_transcription_task_sync(payload_str: str, file_uid: str) -> None:
 
     Raises:
         UnsafeUploadFilenameError: filename 不是 temp_uploads 內的單純檔名。
+        UnsupportedModelError: 模型不屬於所選的供應商。
     """
     request_data = WebSocketTranscriptionRequest.model_validate_json(
         payload_str)
+
+    # 先驗證再碰檔案：不符的組合不能默默跑到別的供應商
+    capabilities = model_capabilities(request_data.provider, request_data.model)
 
     temp_file_path = resolve_upload_path(request_data.filename, TEMP_UPLOADS_DIR)
 
@@ -65,9 +70,7 @@ def start_transcription_task_sync(payload_str: str, file_uid: str) -> None:
         session_id=request_data.session_id,
     )
 
-    # local provider 路由到專用佇列：docker 模式由主機端 GPU worker
-    # （local_worker.bat）消化，standalone 模式對應序列化的 GPU 執行緒池
-    queue = "local_asr" if task_params.provider.lower() == "local" else "celery"
+    queue = capabilities.queue
     # 清掉上一次執行殘留的取消旗標（例如被 revoke 掉、沒機會自行清理的任務），
     # 否則同一檔案再開的任務會被誤取消
     mode = run_mode.get()
@@ -78,13 +81,12 @@ def start_transcription_task_sync(payload_str: str, file_uid: str) -> None:
 
 
 @router.post("/transcription/{file_uid}/cancel", name="Cancel Transcription")
-def cancel_transcription(file_uid: str, provider: str = ""):
-    """取消單檔轉錄任務。
+def cancel_transcription(file_uid: str):
+    """取消單檔轉錄任務；供應商從任務紀錄查，不由前端告知。
 
-    - 佇列中：revoke 讓任務不會啟動（旗標另作保險，攔截廣播沒送達的情況）
-    - local 執行中：solo pool 無法 terminate，GPU worker 靠合作式檢查點
-      在數秒內自行中止並釋放模型
-    - 其他 provider 執行中：gevent pool 支援 terminate，直接終止
+    - 佇列中（紀錄還沒建立）：revoke 讓任務不會啟動（旗標另作保險，攔截廣播沒送達的情況）
+    - 執行中：模型能力允許強制終止的直接終止；不允許的（例如本機的 GPU worker）
+      靠合作式檢查點在數秒內自行中止並釋放模型
 
     任務尚未派發（仍在上傳）時無事可取消，回報 not-started 讓前端稍後重試。
     """
@@ -94,13 +96,13 @@ def cancel_transcription(file_uid: str, provider: str = ""):
         return {"file_uid": file_uid, "cancelled": False, "reason": "not-started"}
 
     mode.request_cancel(file_uid)
-    # local worker 是 solo pool，不支援 terminate；送 terminate=True 會在
-    # worker 端拋 NotImplementedError，因此僅對非 local 任務終止執行中行程
-    terminate = provider.lower() != "local"
-    mode.revoke(task_id, terminate=terminate)
+    with SessionLocal() as db:
+        log = TranscriptionLogRepository().get(db, task_id)
+        provider, model = (log.provider, log.model_used) if log else (None, None)
+    mode.revoke(task_id, terminate=_can_terminate(provider, model))
 
     # 被 revoke/terminate 掉的任務不會再回報狀態：仍在 PROCESSING 的紀錄由此補寫。
-    # local 執行中的任務會走 task.py 的 CANCELLED 分支自行更新，此處條件式更新不衝突。
+    # 合作式停止的任務會走 transcribe_core 的 CANCELLED 分支自行更新，此處條件式更新不衝突。
     db = SessionLocal()
     try:
         TranscriptionLogRepository().mark_cancelled_if_processing(db, task_id)
@@ -111,9 +113,18 @@ def cancel_transcription(file_uid: str, provider: str = ""):
         file_uid, task_id, "任務已取消",
         status_code=TaskStatus.CANCELLED, file_uid=file_uid,
     )
-    logger.info(f"已送出取消請求 file_uid={file_uid} task_id={task_id} "
-                f"terminate={terminate}")
+    logger.info(f"已送出取消請求 file_uid={file_uid} task_id={task_id}")
     return {"file_uid": file_uid, "cancelled": True}
+
+
+def _can_terminate(provider: str | None, model: str | None) -> bool:
+    """還在佇列（沒有紀錄）的任務 revoke 就不會啟動，不需要終止。"""
+    if not provider or not model:
+        return False
+    try:
+        return model_capabilities(provider, model).can_terminate
+    except UnsupportedModelError:
+        return False
 
 
 @router.websocket("/ws/{file_uid}", name="WebSocket Transcription")
@@ -130,8 +141,8 @@ async def websocket_endpoint(
 
         try:
             await run_in_threadpool(start_transcription_task_sync, payload_str=payload_str, file_uid=file_uid)
-        except UnsafeUploadFilenameError as e:
-            logger.warning(f"拒絕不合法的上傳檔名 (file_uid: {file_uid}): {e.filename!r}")
+        except (UnsafeUploadFilenameError, UnsupportedModelError) as e:
+            logger.warning(f"拒絕轉錄請求 (file_uid: {file_uid}): {e}")
             await websocket.send_json({
                 "client_id": file_uid,
                 "file_uid": file_uid,
