@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import Dict
 
 from app.core.config import get_settings
-from app.exceptions import ProviderNotReadyError
 from app.provider.base import LOCAL_QUEUE, ModelCapabilities, TranscribeRequest
 from app.provider.local import weights
 from app.services.transcription.models import TranscriptionTaskResult
@@ -43,37 +42,23 @@ def _capabilities(model: str) -> ModelCapabilities:
 
 
 class LocalProvider:
-    def __init__(self):
-        self._ready = False
+    def __init__(self, model: str, api_key: str = ""):
+        # 先確認 GPU 與所選模型的權重齊備，缺什麼直接以明確訊息失敗（ValueError），
+        # 不在任務裡默默下載好幾 GB
+        weights.ensure_local_ready(model)
 
-    def capabilities(self) -> Dict[str, ModelCapabilities]:
+    @staticmethod
+    def capabilities() -> Dict[str, ModelCapabilities]:
         return {model: _capabilities(model) for model in weights.MODEL_REPOS}
 
     def transcribe(self, audio_path: Path, request: TranscribeRequest) -> TranscriptionTaskResult:
-        self._ensure_ready(request.model)
         # 延遲 import：見模組說明
         from app.provider.local.asr import transcribe_with_local_models
 
-        result = transcribe_with_local_models(
+        return TranscriptionTaskResult.model_validate(transcribe_with_local_models(
             audio_path, request.source_lang, request.status_callback,
-            cancel_check=request.cancel_check, model=request.model)
-        return TranscriptionTaskResult(
-            success=result["success"],
-            text=result.get("text", ""),
-            service_tier_used=result.get("service_tier_used"),
-            segments=result.get("segments") or [],
-        )
+            cancel_check=request.cancel_check, model=request.model))
 
     def release(self) -> None:
         # 模型與暫存 wav 在每次轉錄結束時就已釋放
         pass
-
-    def _ensure_ready(self, model: str) -> None:
-        """先確認 GPU 與所選模型的權重齊備，缺什麼直接以明確訊息失敗。"""
-        if self._ready:
-            return
-        try:
-            weights.ensure_local_ready(model)
-        except ValueError as e:
-            raise ProviderNotReadyError(str(e)) from e
-        self._ready = True

@@ -10,8 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.core.config import get_settings
-from app.exceptions import ProviderNotReadyError, TranscriptionCancelledError
-from app.provider.base import TranscribeRequest
+from app.exceptions import TranscriptionCancelledError
 from app.provider.local import asr, moss, weights
 from app.provider.local.provider import LocalProvider
 
@@ -324,7 +323,7 @@ class TestLocalCapabilities:
         monkeypatch.setattr(moss, "max_single_pass_seconds", lambda: 4200.0)
 
     def _capabilities(self):
-        return LocalProvider().capabilities()
+        return LocalProvider.capabilities()
 
     def test_lists_every_local_model(self):
         assert set(self._capabilities()) == set(weights.MODEL_REPOS)
@@ -346,8 +345,14 @@ class TestLocalCapabilities:
 
 
 class TestLocalReadiness:
-    def test_missing_gpu_is_not_ready(self, monkeypatch):
+    def test_missing_gpu_fails_before_any_transcription(self, monkeypatch):
         monkeypatch.setattr(weights, "cuda_status", lambda: (False, None))
-        request = TranscribeRequest(model="moss-align")
-        with pytest.raises(ProviderNotReadyError, match="NVIDIA GPU"):
-            LocalProvider().transcribe(Path("in.wav"), request)
+        with pytest.raises(ValueError, match="NVIDIA GPU"):
+            LocalProvider("moss-align")
+
+    def test_missing_weights_of_selected_model_fail(self, monkeypatch):
+        monkeypatch.setattr(weights, "cuda_status", lambda: (True, "GPU"))
+        monkeypatch.setattr(weights, "repo_is_ready", lambda repo: repo != weights.ASR_MODEL_ID)
+        LocalProvider("moss-align")  # 不需要 Qwen3-ASR
+        with pytest.raises(ValueError, match=weights.ASR_MODEL_ID):
+            LocalProvider("moss-qwen3-asr")

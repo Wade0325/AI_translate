@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import List, Dict, Optional
 
 from app.core.config import get_settings
-from app.exceptions import ProviderNotReadyError, TranscriptionCancelledError
+from app.exceptions import TranscriptionCancelledError
 from app.utils.logger import setup_logger
 from app.utils.paths import is_temp_upload
 from app.utils.audio import (
@@ -195,9 +195,6 @@ class TranscriptionTask:
         self.request = request
         self.capabilities = provider.capabilities()[request.model]
         self.temp_dir = temp_dir
-        self.status_callback = request.status_callback
-        self.service_tier = request.service_tier  # None/"standard" 或 "flex"
-        self.cancel_check = request.cancel_check
         self.artifact_task_id = artifact_task_id
         self.original_filename = original_filename
         self.local_cleanup_list = []
@@ -272,8 +269,7 @@ class TranscriptionTask:
 
         # --- 時間戳重映射 ---
         if result.success and speech_segments:
-            if self.status_callback:
-                self.status_callback("校正時間軸...")
+            self.request.notify("校正時間軸...")
             result = TranscriptionTaskResult(
                 success=True,
                 text=remap_lrc_timestamps(result.text, speech_segments),
@@ -307,8 +303,7 @@ class TranscriptionTask:
         實際的去靜音流程由 :mod:`app.services.vad.preprocess` 共用實作，
         此處只負責呼叫 callback、把產生的暫存檔登記進 cleanup 列表。
         """
-        if self.status_callback:
-            self.status_callback("分析語音活動...")
+        self.request.notify("分析語音活動...")
 
         result = run_vad_extraction(audio_path, self.temp_dir, self.vad_service)
 
@@ -353,8 +348,8 @@ class TranscriptionTask:
         """透過供應商轉錄一段音檔；一般錯誤轉成失敗結果，交給上層決定要不要切段重試。"""
         try:
             return self.provider.transcribe(audio_path, self.request)
-        except (TranscriptionCancelledError, ProviderNotReadyError):
-            # 取消不是失敗、供應商還沒準備好也不是切段能解決的：往上拋給任務
+        except TranscriptionCancelledError:
+            # 取消不是失敗：往上拋給任務標記為 CANCELLED
             raise
         except Exception as e:
             logger.error(f"轉錄過程發生錯誤: {e}")
@@ -382,7 +377,7 @@ class TranscriptionTask:
         if threshold <= 0 or duration <= threshold:
             return self._attempt_transcription(audio_path)
 
-        if self.cancel_check and self.cancel_check():
+        if self.request.cancel_requested():
             raise TranscriptionCancelledError("使用者已取消任務")
 
         part1 = part2 = None
@@ -424,9 +419,8 @@ class TranscriptionTask:
 
         logger.info(
             f"長檔切半: {audio_path.name} ({duration:.0f}s) 於 {split_point:.2f}s 切割")
-        if self.status_callback:
-            self.status_callback(
-                f"音檔較長（{duration / 60:.1f} 分鐘），於靜音處切半分段處理...")
+        self.request.notify(
+            f"音檔較長（{duration / 60:.1f} 分鐘），於靜音處切半分段處理...")
 
         left = right = None
         if silence_boundaries is not None:
@@ -517,7 +511,7 @@ class TranscriptionTask:
 
         combined_text = "\n".join(results)
 
-        final_tier = "flex" if (self.service_tier == "flex" and all_flex) else "standard"
+        final_tier = "flex" if (self.request.service_tier == "flex" and all_flex) else "standard"
 
         return TranscriptionTaskResult(
             success=True,
@@ -573,7 +567,7 @@ class TranscriptionTask:
             return []
 
     def cleanup(self):
-        """清理供應商的遠端與暫存資源、本地暫存檔和原始上傳檔案。"""
+        """清理供應商的遠端與暫存資源、自己產生的暫存檔和原始上傳檔案。"""
         try:
             self.provider.release()
         except Exception as e:

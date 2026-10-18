@@ -53,11 +53,7 @@ class TranscriptionLogRepository:
         :param update_data: 包含要更新欄位和值的字典。
         :return: 更新後的 TranscriptionLog ORM 物件，如果找不到則返回 None。
         """
-        uuid_val = self._coerce_task_uuid(task_uuid)
-        if uuid_val is None:
-            return None
-        log_to_update = db.query(TranscriptionLog).filter(
-            TranscriptionLog.task_uuid == uuid_val).first()
+        log_to_update = self.get(db, task_uuid)
         if log_to_update:
             for key, value in update_data.items():
                 setattr(log_to_update, key, value)

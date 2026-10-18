@@ -50,6 +50,7 @@ class TranscribeRequest:
     prompt: str = ""
     source_lang: Optional[str] = None
     service_tier: Optional[str] = None
+    """Gemini 的處理模式：None／"standard" 或 "flex"；其他供應商忽略。"""
     status_callback: Optional[Callable[[str], None]] = None
     cancel_check: Optional[Callable[[], bool]] = None
 
@@ -62,7 +63,11 @@ class TranscribeRequest:
 
 
 class Provider(Protocol):
-    """一個任務專用的供應商轉接器；任務結束時呼叫 :meth:`release`。"""
+    """一個任務專用的供應商轉接器；任務結束時呼叫 :meth:`release`。
+
+    建立轉接器時就確認它能轉錄（權重齊備、金鑰可用），不行就拋出明確的錯誤，
+    見 :func:`app.provider.registry.open_provider`。
+    """
 
     def capabilities(self) -> Mapping[str, ModelCapabilities]:
         """這個供應商每個模型的模型能力，key 是模型名稱。"""
@@ -70,8 +75,8 @@ class Provider(Protocol):
     def transcribe(self, audio_path: Path, request: TranscribeRequest) -> TranscriptionTaskResult:
         """轉錄一段音檔，時間軸是這段音檔本身。
 
-        還不能轉錄（缺權重、金鑰無效）時拋 :class:`~app.exceptions.ProviderNotReadyError`；
-        使用者取消時拋 :class:`~app.exceptions.TranscriptionCancelledError`。
+        使用者取消時拋 :class:`~app.exceptions.TranscriptionCancelledError`；
+        其他錯誤由分段轉錄當成這一段失敗處理。
         """
 
     def release(self) -> None:

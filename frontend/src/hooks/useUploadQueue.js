@@ -92,8 +92,8 @@ export function useUploadQueue({ fileList, setFileList, socketManager, onBatchSu
     );
   }, [setFileList]);
 
-  // 建立 session 並把候選檔案標記為 processing；記下 provider 與模式供取消端點使用
-  const beginSession = useCallback((candidates, provider, transcribeMode) => {
+  // 建立 session 並把候選檔案標記為 processing；記下模式（只有單檔任務能取消）
+  const beginSession = useCallback((candidates, transcribeMode) => {
     const sessionId = randomId('session');
     registerTranscribeSession({
       sessionId,
@@ -109,7 +109,6 @@ export function useUploadQueue({ fileList, setFileList, socketManager, onBatchSu
               status: 'processing',
               statusText: '正在上傳檔案...',
               sessionId,
-              provider,
               transcribeMode,
             }
           : f
@@ -132,7 +131,7 @@ export function useUploadQueue({ fileList, setFileList, socketManager, onBatchSu
       return { skipped: true };
     }
 
-    const sessionId = beginSession(candidates, provider, 'single');
+    const sessionId = beginSession(candidates, 'single');
 
     const openTranscriptionSocket = (file, serverFilename) => {
       socketManager.openSocket(file.uid, WS_URLS.transcription(file.uid), {
@@ -187,7 +186,7 @@ export function useUploadQueue({ fileList, setFileList, socketManager, onBatchSu
       return { skipped: true, reason: 'no-files' };
     }
 
-    const sessionId = beginSession(candidates, provider, 'batch');
+    const sessionId = beginSession(candidates, 'batch');
 
     const uploaded = [];
     for (const file of candidates) {

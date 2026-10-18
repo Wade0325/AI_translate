@@ -6,34 +6,32 @@
 from __future__ import annotations
 
 import threading
-from typing import Callable, Optional
+from typing import Mapping, Optional, Protocol
 
 from app.provider.base import ModelCapabilities, Provider
+from app.provider.google.provider import GeminiProvider
+from app.provider.local.provider import LocalProvider
 
-ProviderFactory = Callable[[str], Provider]
-"""API 金鑰 → 一個任務專用的轉接器。建立時不連線、不檢查權重。"""
+
+class ProviderFactory(Protocol):
+    """一個供應商：查模型能力不必建立轉接器；建立的轉接器專給一個任務用。"""
+
+    def capabilities(self) -> Mapping[str, ModelCapabilities]: ...
+
+    def __call__(self, model: str, api_key: str) -> Provider:
+        """建立已經準備好的轉接器；還不能轉錄（缺權重、金鑰無效）時拋 ValueError。"""
 
 
 class UnsupportedModelError(ValueError):
     """供應商不存在，或模型不屬於這個供應商；訊息可直接顯示給使用者。"""
 
 
-def _gemini(api_key: str) -> Provider:
-    from app.provider.google.provider import GeminiProvider
-    return GeminiProvider(api_key)
-
-
-def _local(api_key: str) -> Provider:
-    from app.provider.local.provider import LocalProvider
-    return LocalProvider()
-
-
-_factories: dict[str, ProviderFactory] = {"google": _gemini, "local": _local}
+_factories: dict[str, ProviderFactory] = {"google": GeminiProvider, "local": LocalProvider}
 _lock = threading.Lock()
 
 
 def register(name: str, factory: Optional[ProviderFactory]) -> Optional[ProviderFactory]:
-    """換上（None 代表移除）某個名稱的轉接器，回傳原本的；測試用來換上假供應商。"""
+    """換上（None 代表移除）某個名稱的供應商，回傳原本的；測試用來換上假供應商。"""
     key = name.lower()
     with _lock:
         previous = _factories.get(key)
@@ -44,23 +42,32 @@ def register(name: str, factory: Optional[ProviderFactory]) -> Optional[Provider
     return previous
 
 
-def open_provider(provider: str, model: str, api_key: str = "") -> tuple[Provider, ModelCapabilities]:
-    """建立轉接器並回傳這個模型的模型能力；模型不屬於這個供應商就拒絕。
-
-    Raises:
-        UnsupportedModelError: 供應商不存在，或模型不屬於它。
-    """
+def _factory(provider: str) -> ProviderFactory:
     with _lock:
         factory = _factories.get((provider or "").lower())
     if factory is None:
         raise UnsupportedModelError(f"不支援的供應商：{provider}")
-    adapter = factory(api_key)
-    capabilities = adapter.capabilities().get(model)
-    if capabilities is None:
-        raise UnsupportedModelError(f"模型 {model} 不屬於供應商 {provider}")
-    return adapter, capabilities
+    return factory
 
 
 def model_capabilities(provider: str, model: str) -> ModelCapabilities:
-    """這個供應商的這個模型的模型能力；不符時同 :func:`open_provider` 拒絕。"""
-    return open_provider(provider, model)[1]
+    """這個供應商的這個模型的模型能力。
+
+    Raises:
+        UnsupportedModelError: 供應商不存在，或模型不屬於它。
+    """
+    capabilities = _factory(provider).capabilities().get(model)
+    if capabilities is None:
+        raise UnsupportedModelError(f"模型 {model} 不屬於供應商 {provider}")
+    return capabilities
+
+
+def open_provider(provider: str, model: str, api_key: str = "") -> Provider:
+    """驗證模型屬於這個供應商，再建立一個任務專用的轉接器。
+
+    Raises:
+        UnsupportedModelError: 供應商不存在，或模型不屬於它。
+        ValueError: 供應商還不能轉錄（缺 GPU、缺模型權重、API 金鑰無效）。
+    """
+    model_capabilities(provider, model)
+    return _factory(provider)(model, api_key)

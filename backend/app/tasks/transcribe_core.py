@@ -124,9 +124,9 @@ def run_transcription(task_params_dict: dict, task_uuid: str):
             logger.warning(
                 f"Could not read audio duration for {local_path.name}.")
 
-        # 查出供應商轉接器；模型不屬於這個供應商就以明確訊息失敗。
-        # 權重就緒、金鑰有效之類的檢查由轉接器在轉錄時自己做
-        provider, _ = open_provider(
+        # 查出供應商轉接器：模型不屬於這個供應商、或供應商還不能轉錄
+        # （缺權重、金鑰無效）都在這裡以明確訊息失敗，不必等去靜音跑完
+        adapter = open_provider(
             task_params.provider, task_params.model, task_params.api_keys)
 
         update_status("正在初始化模型...")
@@ -152,7 +152,7 @@ def run_transcription(task_params_dict: dict, task_uuid: str):
             )
 
         task_manager = TranscriptionTask(
-            provider=provider,
+            provider=adapter,
             request=TranscribeRequest(
                 model=task_params.model,
                 prompt=user_prompt,

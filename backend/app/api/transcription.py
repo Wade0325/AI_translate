@@ -10,6 +10,7 @@ from app.runtime import run_mode
 from app.runtime.run_mode import publish_status
 from app.core.config import get_settings
 from app.core.task_status import TaskStatus
+from app.database.models import TranscriptionLog
 from app.database.session import SessionLocal
 from app.provider.registry import UnsupportedModelError, model_capabilities
 from app.repositories.transcription_log_repository import TranscriptionLogRepository
@@ -96,18 +97,12 @@ def cancel_transcription(file_uid: str):
         return {"file_uid": file_uid, "cancelled": False, "reason": "not-started"}
 
     mode.request_cancel(file_uid)
+    log_repo = TranscriptionLogRepository()
     with SessionLocal() as db:
-        log = TranscriptionLogRepository().get(db, task_id)
-        provider, model = (log.provider, log.model_used) if log else (None, None)
-    mode.revoke(task_id, terminate=_can_terminate(provider, model))
-
-    # 被 revoke/terminate 掉的任務不會再回報狀態：仍在 PROCESSING 的紀錄由此補寫。
-    # 合作式停止的任務會走 transcribe_core 的 CANCELLED 分支自行更新，此處條件式更新不衝突。
-    db = SessionLocal()
-    try:
-        TranscriptionLogRepository().mark_cancelled_if_processing(db, task_id)
-    finally:
-        db.close()
+        mode.revoke(task_id, terminate=_can_terminate(log_repo.get(db, task_id)))
+        # 被 revoke/terminate 掉的任務不會再回報狀態：仍在 PROCESSING 的紀錄由此補寫。
+        # 合作式停止的任務會走 transcribe_core 的 CANCELLED 分支自行更新，此處條件式更新不衝突。
+        log_repo.mark_cancelled_if_processing(db, task_id)
 
     publish_status(
         file_uid, task_id, "任務已取消",
@@ -117,12 +112,12 @@ def cancel_transcription(file_uid: str):
     return {"file_uid": file_uid, "cancelled": True}
 
 
-def _can_terminate(provider: str | None, model: str | None) -> bool:
-    """還在佇列（沒有紀錄）的任務 revoke 就不會啟動，不需要終止。"""
-    if not provider or not model:
+def _can_terminate(log: TranscriptionLog | None) -> bool:
+    """依任務的供應商的模型能力決定；還在佇列（沒有紀錄）的任務 revoke 就不會啟動，不需要終止。"""
+    if log is None:
         return False
     try:
-        return model_capabilities(provider, model).can_terminate
+        return model_capabilities(log.provider, log.model_used).can_terminate
     except UnsupportedModelError:
         return False
 
