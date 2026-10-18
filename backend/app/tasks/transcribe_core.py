@@ -62,7 +62,7 @@ def run_transcription(task_params_dict: dict, task_uuid: str):
     client_id = task_params.client_id
     file_uid = task_params.file_uid
 
-    def update_status(status_text: str, status_code: str = TaskStatus.PROCESSING, result_data: dict = None):
+    def update_status(status_text: str, status_code: TaskStatus = TaskStatus.PROCESSING, result_data: dict = None):
         publish_status(
             client_id,
             task_uuid,

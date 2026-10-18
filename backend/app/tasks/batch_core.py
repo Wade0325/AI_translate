@@ -53,7 +53,7 @@ def _publish_batch_status(
     batch_id: str,
     task_uuid: str,
     status_text: str,
-    status_code: str = TaskStatus.PROCESSING,
+    status_code: TaskStatus = TaskStatus.PROCESSING,
     result_data: dict = None,
     file_uid: str = None,
 ):

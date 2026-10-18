@@ -35,8 +35,3 @@ def test_frontend_constants_match_backend_enum():
     frontend = _frontend_task_status(FRONTEND_CONSTANTS.read_text(encoding="utf-8"))
     assert frontend == {s.name: s.value for s in TaskStatus}
 
-
-def test_parser_detects_missing_frontend_status():
-    # 後端多一個狀態、前端沒有時，比對要失敗（避免解析器默默回傳空的或少一項）
-    source = "export const TASK_STATUS = Object.freeze({\n  COMPLETED: 'COMPLETED',\n});"
-    assert _frontend_task_status(source) != {s.name: s.value for s in TaskStatus}

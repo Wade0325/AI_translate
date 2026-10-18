@@ -42,7 +42,7 @@ def publish_status(
     client_id: str,
     task_uuid: str,
     status_text: str,
-    status_code: str = TaskStatus.PROCESSING,
+    status_code: TaskStatus = TaskStatus.PROCESSING,
     *,
     file_uid: Optional[str] = None,
     result_data: Optional[dict] = None,
