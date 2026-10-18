@@ -1,3 +1,4 @@
+// @ts-nocheck
 /**
  * 統一的後端 API 客戶端：集中 baseURL 與錯誤格式，endpoint 變更時只改此檔。
  */

@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { Card } from "antd"
 import {
     BarChart,

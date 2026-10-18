@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { useState, useEffect, useCallback } from "react"
 import { Card, Button, Input, Select, Switch, Typography, Row, Col, Spin, Divider, Progress, Alert } from "antd"
 import { Key, Bell, Save, Trash2, Cpu, Download, CheckCircle2 } from "lucide-react"

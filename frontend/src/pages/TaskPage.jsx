@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { useState, useEffect, useCallback, useRef, useMemo } from "react"
 import { Card, Button, Typography, message, Empty, Spin, Popconfirm } from "antd"
 import { Archive } from "lucide-react"

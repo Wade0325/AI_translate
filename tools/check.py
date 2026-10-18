@@ -1,4 +1,4 @@
-"""唯一的檢查清單：ruff → pytest → ESLint。
+"""唯一的檢查清單：ruff → basedpyright → pytest → ESLint → tsc → ratchet。
 
 用法（在哪個目錄執行都可以，一律以 repo 根目錄為基準）：
 
@@ -8,16 +8,17 @@
     python tools/check.py --staged      # git 的 pre-commit（.githooks/pre-commit）用
 
 CI（.github/workflows/ci.yml）的 python 與 frontend job、git 的 pre-commit、README 與
-.vscode/tasks.json 都呼叫這支腳本，不另寫檢查指令。要加檢查（例如 #34 的型別檢查）
-就加在 checks()，各處會一起跑；快到可以每次 commit 都跑的，標上 pre_commit。它決定
+.vscode/tasks.json 都呼叫這支腳本，不另寫檢查指令。要加檢查就加在 checks()，各處會一起跑；快到可以每次 commit 都跑的，標上 pre_commit。它決定
 閘門跑哪些檢查，屬於單向門（docs/agents/merging.md）。
 
 幾個刻意的取捨：
   * 只用標準函式庫：CI 的 frontend job 用 runner 內建的 Python 執行，不裝任何套件
   * --staged 只跑標了 pre_commit、而且和暫存區的檔案有關的檢查，測試交給 CI（照 Matt 的
     course-video-manager）。檢查的是工作目錄而不是暫存區的快照：沒暫存的改動也算進去
-  * ruff 與 pytest 用執行這支腳本的直譯器跑（``python -m``），所以要用裝了
+  * ruff、basedpyright 與 pytest 用執行這支腳本的直譯器跑（``python -m``），所以要用裝了
     backend/requirements-dev.txt 的直譯器呼叫，例如 backend/.venv 裡的 python
+  * 型別檢查只擋新增的錯誤：basedpyright 有 baseline（tools/typecheck_py.py），前端的舊檔
+    標 @ts-nocheck；兩者的數量只減不增，由 ratchet（tools/ratchet.py）對 origin/main 檢查
   * 不替子程序開 UTF-8 模式（PYTHONUTF8、-X utf8）：CI 的 Windows 腿要和使用者的
     環境一樣，才抓得到 open() 沒指定 encoding 的 bug
   * 一項失敗也把其餘的跑完再一起回報；任何一項失敗或跑不起來，結束碼就是 1
@@ -36,12 +37,13 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 ESLINT_JS = Path("node_modules") / "eslint" / "bin" / "eslint.js"
+TSC_JS = Path("node_modules") / "typescript" / "bin" / "tsc"
 
 # 改到這些路徑要跑 Python 的檢查：任何 .py，或這些目錄底下的任何檔案（含
 # backend/requirements*.txt 與測試資料），或這些設定檔。改設定或依賴檔一樣可能讓
 # 測試或 lint 壞掉，所以不只看副檔名
-PYTHON_DIRS = ("backend/", "tests/", "tools/")
-PYTHON_FILES = ("pytest.ini", "ruff.toml")
+PYTHON_DIRS = ("backend/", "tests/", "tools/", ".basedpyright/")
+PYTHON_FILES = ("pytest.ini", "ruff.toml", "pyrightconfig.json")
 
 
 @dataclass(frozen=True)
@@ -66,6 +68,10 @@ def _frontend_related(path: str) -> bool:
     return path.startswith("frontend/") and not path.startswith("frontend/dist/")
 
 
+def _ratchet_related(path: str) -> bool:
+    return path.startswith(("frontend/src/", ".basedpyright/"))
+
+
 def _python_module_missing(module: str) -> Callable[[], str | None]:
     def missing() -> str | None:
         if importlib.util.find_spec(module) is not None:
@@ -76,15 +82,15 @@ def _python_module_missing(module: str) -> Callable[[], str | None]:
     return missing
 
 
-def _eslint_missing(frontend: Path) -> Callable[[], str | None]:
+def _node_tool_missing(frontend: Path, entry: Path) -> Callable[[], str | None]:
     def missing() -> str | None:
         problems = []
         if shutil.which("node") is None:
             problems.append("找不到 node：先安裝 frontend/.nvmrc 指定的 Node 版本"
                             "（Windows：winget install OpenJS.NodeJS.LTS），再重開終端機或"
                             " Claude Code，讓 PATH 生效")
-        if not (frontend / ESLINT_JS).is_file():
-            problems.append(f"{frontend / ESLINT_JS} 不存在（這個 checkout 還沒裝前端依賴）："
+        if not (frontend / entry).is_file():
+            problems.append(f"{frontend / entry} 不存在（這個 checkout 還沒裝前端依賴）："
                             f'照 package-lock.json 安裝：npm ci --prefix "{frontend}"')
         return "\n".join(problems) or None
     return missing
@@ -96,12 +102,18 @@ def checks(root: Path = ROOT) -> tuple[Check, ...]:
     return (
         Check("ruff", (python, "-m", "ruff", "check", "."), root,
               _python_module_missing("ruff"), _python_related, pre_commit=True),
+        Check("basedpyright", (python, str(root / "tools" / "typecheck_py.py")), root,
+              _python_module_missing("basedpyright"), _python_related, pre_commit=True),
         Check("pytest", (python, "-m", "pytest", "tests/", "-q"), root,
               _python_module_missing("pytest"), _python_related),
-        # 直接用 node 跑 eslint 的入口，避開 Windows 上 npx.cmd／npm.cmd 得經過 shell 的問題。
+        # 直接用 node 跑 eslint 與 tsc 的入口，避開 Windows 上 npx.cmd／npm.cmd 得經過 shell 的問題。
         # --quiet 只印 error：warning 不擋合併，react-hooks 的 warning 一則十幾行，會把 error 淹掉
         Check("eslint", ("node", str(ESLINT_JS), ".", "--quiet"), frontend,
-              _eslint_missing(frontend), _frontend_related, pre_commit=True),
+              _node_tool_missing(frontend, ESLINT_JS), _frontend_related, pre_commit=True),
+        Check("tsc", ("node", str(TSC_JS), "--noEmit", "-p", "tsconfig.json"), frontend,
+              _node_tool_missing(frontend, TSC_JS), _frontend_related, pre_commit=True),
+        Check("ratchet", (python, str(root / "tools" / "ratchet.py")), root,
+              runs_for=_ratchet_related, pre_commit=True),
     )
 
 

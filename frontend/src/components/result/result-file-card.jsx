@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { Button, Tag, Dropdown, Typography } from "antd"
 import {
     FileAudio,

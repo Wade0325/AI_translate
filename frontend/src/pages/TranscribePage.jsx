@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { useState, useRef } from "react"
 import { Card, Typography, Button, Input, Modal, Pagination, Space, Tag, Dropdown, Popconfirm, message } from "antd"
 import { UploadZone } from "@/components/transcribe/upload-zone"
