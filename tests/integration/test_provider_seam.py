@@ -16,11 +16,13 @@ import numpy as np
 import pytest
 import soundfile as sf
 from fastapi.testclient import TestClient
+from gevent import GreenletExit
 from starlette.websockets import WebSocketDisconnect
 
 from app.core.task_status import TaskStatus
 from app.exceptions import TransientError
 from app.provider import registry
+from app.runtime import run_mode
 from app.runtime.run_mode import TRANSIENT_RETRIES
 from tests.support.fake_provider import FAKE_MODEL, Fail, FakeProvider
 
@@ -220,6 +222,13 @@ def codes(messages: list[dict]) -> list[str]:
     return [m["status_code"] for m in messages]
 
 
+def wait_until(condition) -> None:
+    deadline = time.monotonic() + TIMEOUT
+    while not condition():
+        assert time.monotonic() < deadline, "等太久"
+        time.sleep(0.02)
+
+
 # ─── 單檔任務跑完 ───────────────────────────────────────────────────────────
 
 SCRIPT = [[
@@ -286,22 +295,26 @@ class TestSingleFileTask:
         assert record["status"] == TaskStatus.FAILED
         assert "模型壞掉了" in record["error_message"]
 
-    def test_completed_task_is_recorded_and_priced(self, api, fake):
+    # 按 token 計價的假模型套用預設價：音訊輸入每百萬 token 1.00 美元、輸出 2.50 美元
+    # → 0.20 + 0.10；模型能力寫明免費的（例如本機）不收費，用量照記
+    @pytest.mark.parametrize("pricing, cost", [("per_token", 0.30), ("free", 0.0)])
+    def test_completed_task_is_recorded_and_priced(self, api, fake, pricing, cost):
+        fake.model_capabilities = replace(fake.model_capabilities, pricing=pricing)
         fake.usage = (200_000, 40_000)
         done = transcribe(api, "uid-priced")[-1]
 
-        # 假模型套用預設價：音訊輸入每百萬 token 1.00 美元、輸出 2.50 美元 → 0.20 + 0.10
         assert done["result"]["tokens_used"] == 240_000
-        assert done["result"]["cost"] == pytest.approx(0.30)
+        assert done["result"]["cost"] == pytest.approx(cost)
         record = api.get(f"/api/v1/history/{done['task_uuid']}").json()
         assert record["status"] == TaskStatus.COMPLETED
         assert record["total_tokens"] == 240_000
-        assert record["cost"] == pytest.approx(0.30)
+        assert record["cost"] == pytest.approx(cost)
         assert record["audio_duration_seconds"] == pytest.approx(12.0, abs=0.1)
         assert record["service_tier_used"] == "standard"
 
     def test_flex_tier_applies_the_discount(self, api, fake, settings, monkeypatch):
         monkeypatch.setattr(settings, "flex_cost_discount", 0.5)
+        fake.model_capabilities = replace(fake.model_capabilities, pricing="per_token")
         fake.usage = (200_000, 40_000)
         fake.service_tier = "flex"
         done = transcribe(api, "uid-flex")[-1]
@@ -468,6 +481,44 @@ class TestCancel:
         assert stored_segments(api, task_end["task_uuid"]) == []
         assert api.get(f"/api/v1/history/{queued_end['task_uuid']}").status_code == 404
 
+    def test_provider_that_ignores_the_cancel_does_not_complete_the_task(self, api, fake):
+        fake.ignores_cancel = True
+        fake.hold = threading.Event()
+        fake.script = list(SCRIPT)
+        filename = upload(api)
+        with api.websocket_connect("/api/v1/ws/uid-ignores-cancel") as ws:
+            submit(ws, filename)
+            assert fake.started.wait(TIMEOUT)
+            cancel_when_dispatched(api, "uid-ignores-cancel")
+            endpoint_end = receive_until_terminal(ws)[-1]
+            fake.hold.set()  # 供應商不理會取消，照樣轉完
+            task_end = receive_until_terminal(ws)[-1]
+
+        # 使用者已經取消：任務維持已取消，畫面不會從已取消跳回完成，也不存片段
+        assert codes([endpoint_end, task_end]) == [TaskStatus.CANCELLED] * 2
+        record = api.get(f"/api/v1/history/{task_end['task_uuid']}").json()
+        assert record["status"] == TaskStatus.CANCELLED
+        assert stored_segments(api, task_end["task_uuid"]) == []
+
+    @pytest.mark.parametrize("error", [TransientError("503 服務暫時無法使用"), RuntimeError("連線中斷")],
+                             ids=["transient", "failure"])
+    def test_error_after_the_cancel_is_a_cancellation(self, api, fake, error):
+        fake.raises_when_cancelled = error
+        fake.hold = threading.Event()
+        filename = upload(api)
+        with api.websocket_connect("/api/v1/ws/uid-error-after-cancel") as ws:
+            submit(ws, filename)
+            assert fake.started.wait(TIMEOUT)
+            cancel_when_dispatched(api, "uid-error-after-cancel")
+            endpoint_end = receive_until_terminal(ws)[-1]
+            task_end = receive_until_terminal(ws)[-1]
+
+        # 使用者取消之後才冒出的錯誤（例如 503 剛好回來）：不重試，也不算失敗
+        assert codes([endpoint_end, task_end]) == [TaskStatus.CANCELLED] * 2
+        assert len(fake.calls) == 1
+        record = api.get(f"/api/v1/history/{task_end['task_uuid']}").json()
+        assert record["status"] == TaskStatus.CANCELLED
+
     def test_cancelled_before_start_is_recorded_without_calling_the_provider(
             self, api, fake, run_mode_spy, data_dir):
         # worker 離線、收不到 revoke：佇列中的任務照樣會開始，開始時從取消旗標得知已取消
@@ -525,9 +576,29 @@ def run_to_cancellation(api, fake) -> dict:
     return cancel_while_transcribing(api, fake, "uid-finish")
 
 
+def run_to_termination(api, fake) -> dict:
+    """在轉錄途中取消，執行模式強制終止任務；等任務整個結束，回傳取消端點的廣播。
+
+    Docker 模式的 gevent worker 強制終止時在任務裡丟 GreenletExit（BaseException，不是
+    Exception），被終止的任務自己不會再宣告結果。行程內執行模式不能強制終止，由假供應商
+    在看到取消時代為丟出。
+    """
+    fake.raises_when_cancelled = GreenletExit()
+    fake.hold = threading.Event()
+    filename = upload(api)
+    with api.websocket_connect("/api/v1/ws/uid-finish") as ws:
+        submit(ws, filename)
+        assert fake.started.wait(TIMEOUT)
+        cancel_when_dispatched(api, "uid-finish")
+        end = receive_until_terminal(ws)[-1]
+    # 沒有結果可等：關閉執行模式，等裡面的任務整個跑完
+    run_mode.get().close(wait=True)
+    return end
+
+
 FINISHED_RUNS = pytest.mark.parametrize(
-    "run_task", [run_to_completion, run_to_failure, run_to_cancellation],
-    ids=["completed", "failed", "cancelled"])
+    "run_task", [run_to_completion, run_to_failure, run_to_cancellation, run_to_termination],
+    ids=["completed", "failed", "cancelled", "terminated"])
 
 
 class TestFinishing:
@@ -553,15 +624,43 @@ class TestFinishing:
         assert retained_files(data_dir) == []
         assert leftovers(data_dir) == []
 
+    def test_a_failing_step_does_not_stop_the_rest_or_change_the_result(self, api, fake, data_dir):
+        fake.hold = threading.Event()
+        fake.script = list(SCRIPT)
+        filename = upload(api)
+        with api.websocket_connect("/api/v1/ws/uid-flags-down") as ws:
+            submit(ws, filename)
+            assert fake.started.wait(TIMEOUT)
+            healthy = run_mode.use(CancelFlagsDown(run_mode.get()))
+            try:
+                fake.hold.set()
+                end = receive_until_terminal(ws)[-1]
+            finally:
+                run_mode.use(healthy)
+
+        # 清不掉取消旗標，任務照樣完成；音檔照樣保留，暫存檔與供應商資源照樣清掉
+        assert end["status_code"] == TaskStatus.COMPLETED
+        assert api.get(f"/api/v1/transcripts/{end['task_uuid']}/audio").content == synthetic_audio()
+        assert leftovers(data_dir) == []
+        assert fake.released == 1
+
+
+class CancelFlagsDown:
+    """取消旗標清不掉（Docker 模式的 Redis 剛好斷線），其餘照轉。"""
+
+    def __init__(self, inner):
+        self._inner = inner
+
+    def clear_cancel(self, file_uid):
+        raise ConnectionError("Redis 連不上")
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
 
 # ─── 暫時錯誤 ────────────────────────────────────────────────────────────────
 
 class TestTransientError:
-    @pytest.fixture(autouse=True)
-    def _no_backoff(self, monkeypatch):
-        # 執行模式重試前會退避等待真實的時間；測試裡不等
-        monkeypatch.setattr("app.runtime.executor.time.sleep", lambda seconds: None)
-
     @pytest.mark.parametrize("retain_audio", [True, False], ids=["retain", "no-retain"])
     def test_retry_reads_the_kept_input_and_completes(
             self, api, fake, settings, monkeypatch, data_dir, retain_audio):

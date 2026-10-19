@@ -25,8 +25,11 @@ logger = setup_logger(__name__)
 
 
 class InProcessRunMode:
-    def __init__(self, concurrency: int = 4):
+    def __init__(self, concurrency: int = 4, retry_backoff_max: int = 60):
+        """``retry_backoff_max``：暫時錯誤重試前最多等幾秒，對齊 Celery 任務的
+        ``retry_backoff_max``；測試傳 0，不必真的等。"""
         self._executor = LocalExecutor(concurrency)
+        self._retry_backoff_max = retry_backoff_max
         self._lock = threading.Lock()
         self._cancel_flags: set[str] = set()
         self._task_ids: dict[str, str] = {}
@@ -51,6 +54,7 @@ class InProcessRunMode:
             queue=queue,
             retry_on=(TransientError,),
             max_retries=TRANSIENT_RETRIES,
+            backoff_max=self._retry_backoff_max,
         )
         return task_id
 
@@ -63,6 +67,7 @@ class InProcessRunMode:
             args=(task_params_dict, task_id),
             task_id=task_id,
             retry_on=(GeminiTransientError,),
+            backoff_max=self._retry_backoff_max,
         )
         return task_id
 

@@ -65,6 +65,11 @@ class FakeProvider:
         # hold 設定後，轉錄會停在這裡直到 hold 被 set 或使用者取消
         self.hold: Optional[threading.Event] = None
         self.started = threading.Event()
+        # 不理會取消：照樣等到 hold 放行、回傳結果
+        self.ignores_cancel = False
+        # 看到取消時改丟這個例外：模擬 503 剛好在取消之後回來，或執行模式強制終止執行中的
+        # 任務（Docker 模式的 gevent worker 在任務裡丟 GreenletExit）
+        self.raises_when_cancelled: Optional[BaseException] = None
 
     # ── ProviderFactory ──────────────────────────────────────────
     def capabilities(self):
@@ -83,11 +88,14 @@ class FakeProvider:
         for text in self.reports:
             progress.report(text)
         if self.hold is not None:
-            while not self.hold.wait(0.02) and not progress.cancel_requested():
-                pass
+            while not self.hold.wait(0.02):
+                if not self.ignores_cancel and progress.cancel_requested():
+                    break
         # 取消只能從進度與取消物件得知
-        if progress.cancel_requested():
+        if not self.ignores_cancel and progress.cancel_requested():
             self.cancelled += 1
+            if self.raises_when_cancelled is not None:
+                raise self.raises_when_cancelled
             progress.raise_if_cancelled()
 
         step = self.script.pop(0) if self.script else []
