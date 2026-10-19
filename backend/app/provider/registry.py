@@ -7,9 +7,9 @@
 from __future__ import annotations
 
 import threading
-from typing import Dict, Mapping, Optional, Protocol
+from typing import Dict, Mapping, Optional, Protocol, cast
 
-from app.provider.base import ModelCapabilities, Provider
+from app.provider.base import BatchProvider, ModelCapabilities, Provider
 from app.provider.google.provider import GeminiProvider
 from app.provider.local.provider import LocalProvider
 
@@ -114,3 +114,29 @@ def open_provider(provider: str, model: str, api_key: str = "") -> Provider:
     """
     model_capabilities(provider, model)
     return _factory(provider)(model, api_key)
+
+
+def open_batch_provider(provider: str, model: str, api_key: str = "") -> BatchProvider:
+    """驗證模型屬於這個供應商而且支援批次，再建立一個批次專用的轉接器。
+
+    Raises:
+        UnsupportedModelError: 供應商不存在、模型不屬於它，或模型不支援批次。
+        ValueError: 供應商還不能轉錄（API 金鑰無效）。
+    """
+    if not model_capabilities(provider, model).supports_batch:
+        raise UnsupportedModelError(f"模型 {model} 不支援批次")
+    # 模型能力標明支援批次的供應商，轉接器都實作 BatchProvider
+    return cast(BatchProvider, _factory(provider)(model, api_key))
+
+
+def reopen_batch_provider(provider: str, model: str, api_key: str = "") -> BatchProvider:
+    """建立轉接器，接手一個已經送出的批次（重啟後復原）。
+
+    模型在送出時驗證過，這裡不再驗證：升級後模型清單拿掉了送出時的模型，
+    還在進行中的批次也收得回來。
+
+    Raises:
+        UnsupportedModelError: 供應商不存在。
+        ValueError: 供應商還不能使用（API 金鑰無效）。
+    """
+    return cast(BatchProvider, _factory(provider)(model, api_key))
