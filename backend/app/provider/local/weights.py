@@ -176,7 +176,7 @@ def cuda_status() -> tuple[bool, str | None]:
 
 
 def ensure_local_ready(model: str | None = None) -> None:
-    """standalone 模式派發 local 轉錄前的前置檢查；不符合直接拋明確錯誤。"""
+    """本機轉錄前的前置檢查（由本機轉接器呼叫）；不符合直接拋明確錯誤。"""
     cuda_ok, _ = cuda_status()
     if not cuda_ok:
         raise ValueError("Local 轉錄需要 NVIDIA GPU，未偵測到可用的 CUDA 裝置")

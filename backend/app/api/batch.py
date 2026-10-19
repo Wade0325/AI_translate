@@ -11,9 +11,11 @@ from fastapi import (
 from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session
 from app.celery.models import BatchTranscriptionTaskParams, BatchFileItemParams
-from app.runtime import dispatch
+from app.runtime import run_mode
 from app.core.config import get_settings
+from app.core.task_status import TaskStatus
 from app.database.session import SessionLocal, get_db
+from app.provider.registry import UnsupportedModelError, check_request
 from app.repositories.batch_job_repository import BatchJobRepository
 from app.services.api_keys import resolve_api_key
 from app.utils.logger import setup_logger
@@ -69,7 +71,7 @@ def get_batch_tasks(db: Session = Depends(get_db)):
 
         is_alive = None
         if job.status in ("UPLOADING", "POLLING", "RECOVERING"):
-            alive = dispatch.task_is_alive(job.celery_task_id)
+            alive = run_mode.get().is_alive(job.celery_task_id)
             if alive is not None:
                 is_alive = alive
             elif elapsed and elapsed > 300:
@@ -132,7 +134,7 @@ def recover_batch(batch_id: str, body: RecoverBatchRequest, db: Session = Depend
             file_results.append(RecoverFileResult(
                 file_uid=file_uid,
                 original_filename=original_filename,
-                status="COMPLETED",
+                status=TaskStatus.COMPLETED,
                 result=result_data,
             ))
 
@@ -158,7 +160,7 @@ def recover_batch(batch_id: str, body: RecoverBatchRequest, db: Session = Depend
 
     # 派送背景任務非同步處理。結果稍後透過 WebSocket / pending API 通知前端
     batch_repo.update_job(db, batch_id, {"status": "RECOVERING"})
-    dispatch.submit_recover(batch_id, api_key)
+    run_mode.get().submit_recover(batch_id, api_key)
 
     # 立刻回傳空結果；前端應透過 WebSocket 或重新查詢 /pending 取得最新狀態
     return RecoverBatchResponse(batch_id=batch_id, files=[])
@@ -172,9 +174,25 @@ def start_batch_task_sync(payload_str: str, batch_id: str) -> list[dict]:
     在獨立執行緒中執行以避免阻塞事件迴圈。
 
     檔名不合法（不是 temp_uploads 內的單純檔名）的檔案不派發，其餘照常；
+    模型不屬於所選供應商、不支援批次或不吃提示詞時整批不派發。
     回傳被拒檔案的 FAILED 訊息，由 WS 端點送回前端。
     """
     request_data = WebSocketBatchRequest.model_validate_json(payload_str)
+
+    try:
+        # 批次層級與各檔案的提示詞串在一起檢查：任一個填了，串起來就不是空白
+        all_prompts = "".join(p or "" for p in (
+            request_data.prompt, *(f.prompt for f in request_data.files)))
+        check_request(request_data.provider, request_data.model,
+                      prompt=all_prompts, batch=True)
+    except UnsupportedModelError as e:
+        logger.warning(f"批次任務 {batch_id} 被拒: {e}")
+        return [{
+            "client_id": batch_id,
+            "file_uid": f.file_uid,
+            "status_code": TaskStatus.FAILED,
+            "status_text": str(e),
+        } for f in request_data.files]
 
     file_items = []
     rejected = []
@@ -186,7 +204,7 @@ def start_batch_task_sync(payload_str: str, batch_id: str) -> list[dict]:
             rejected.append({
                 "client_id": batch_id,
                 "file_uid": f.file_uid,
-                "status_code": "FAILED",
+                "status_code": TaskStatus.FAILED,
                 "status_text": str(e),
             })
             continue
@@ -226,7 +244,7 @@ def start_batch_task_sync(payload_str: str, batch_id: str) -> list[dict]:
         session_id=request_data.session_id or batch_id,
     )
 
-    dispatch.submit_batch(task_params.model_dump())
+    run_mode.get().submit_batch(task_params.model_dump())
     logger.info(f"已為 batch_id: {batch_id} 啟動批次轉錄任務 ({len(file_items)} 個檔案)。")
     return rejected
 

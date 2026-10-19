@@ -4,6 +4,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from contextlib import asynccontextmanager
 from app.api import local_models
 from app.api import model_manager
+from app.api import providers
 from app.api import transcription
 from app.api import upload
 from app.api import batch
@@ -15,6 +16,7 @@ from app.websocket.origin import WebSocketOriginMiddleware
 
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import get_settings
+from app.runtime import run_mode
 from app.database.session import init_db, SessionLocal
 from app.repositories.transcription_log_repository import TranscriptionLogRepository
 from app.utils.logger import setup_logger
@@ -49,7 +51,8 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"清理過期音檔失敗: {e}")
 
-    # 啟動 WebSocket 狀態監聽器（docker：Redis pub/sub；standalone：local_bus）
+    # 依執行模式選一次轉接器，再啟動 WebSocket 狀態監聽器
+    run_mode.get()
     websocket_manager.start()
 
     # 預熱 VAD，避免首個任務才載模型
@@ -69,9 +72,7 @@ async def lifespan(app: FastAPI):
     finally:
         logger.info("應用程式正在關閉...")
         await websocket_manager.shutdown()
-        if settings.is_standalone:
-            from app.runtime.executor import shutdown_executor
-            shutdown_executor()
+        run_mode.close()
 
 
 app = FastAPI(title="AI Voice Transcription API",
@@ -86,6 +87,7 @@ def health():
 
 app.include_router(transcription.router, prefix="/api/v1",
                    tags=["Transcription"])
+app.include_router(providers.router, prefix="/api/v1", tags=["Providers"])
 app.include_router(model_manager.router,
                    prefix="/api/v1/setting",
                    tags=["Model Settings"])

@@ -9,7 +9,8 @@
   （full-jitter，退避上限 ``backoff_max`` 秒）
 
 執行中的任務無法被強制終止（執行緒不可 kill）；取消依賴既有的
-cancellation 合作式旗標，與 Docker 模式的 solo pool 行為一致。
+取消旗標合作式停止，與 Docker 模式的 solo pool 行為一致。
+由 :class:`app.runtime.in_process.InProcessRunMode` 持有與關閉。
 """
 
 from __future__ import annotations
@@ -128,30 +129,6 @@ class LocalExecutor:
         entry = self._registry.get(task_id)
         return entry.state if entry else None
 
-    def shutdown(self) -> None:
+    def shutdown(self, wait: bool = False) -> None:
         for pool in self._pools.values():
-            pool.shutdown(wait=False, cancel_futures=True)
-
-
-_executor: Optional[LocalExecutor] = None
-_executor_lock = threading.Lock()
-
-
-def get_executor() -> LocalExecutor:
-    global _executor
-    if _executor is None:
-        with _executor_lock:
-            if _executor is None:
-                from app.core.config import get_settings
-                _executor = LocalExecutor(
-                    get_settings().standalone_worker_concurrency)
-    return _executor
-
-
-def shutdown_executor() -> None:
-    """由 lifespan shutdown 呼叫；同時重置單例（測試亦賴此隔離）。"""
-    global _executor
-    with _executor_lock:
-        if _executor is not None:
-            _executor.shutdown()
-            _executor = None
+            pool.shutdown(wait=wait, cancel_futures=True)

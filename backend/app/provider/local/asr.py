@@ -1,7 +1,7 @@
 """本機供應商（local provider）：說話者分離 + 轉錄 + 強制對齊。
 
 Docker 模式下只在主機端 GPU worker（local_asr 佇列）上執行，免安裝模式則在行程內的
-local_asr 執行緒池執行——flows.py 於 provider == "local" 分支內才延遲 import 本模組，
+local_asr 執行緒池執行——本機轉接器（provider.py）第一次轉錄時才延遲 import 本模組，
 Docker 容器 worker 不需要 transformers/CUDA 相依。
 
 三種模型（frontend modelConfig 的 Local 選項，權重對照見 weights.MODEL_REPOS）：
@@ -163,18 +163,6 @@ def _to_mono(audio_path: Path, sample_rate: int) -> Path:
         raise RuntimeError(
             f"ffmpeg 轉 {sample_rate // 1000}kHz 失敗: {result.stderr.strip()[-200:]}")
     return output
-
-
-def single_pass_limit_seconds(model: Optional[str]) -> Optional[float]:
-    """此模型一次能處理的最長音檔（秒），供 flows 決定長檔要不要分段轉錄。
-
-    MOSS 單次可吃約 90 分鐘，整檔一次分離說話者編號才會一致，回傳依顯卡估算的上限；
-    None 表示沿用全域切段設定（VibeVoice 是依 900 秒切段設計的）。
-    """
-    if is_moss_model(model):
-        from app.provider.local import moss
-        return moss.max_single_pass_seconds()
-    return None
 
 
 def _run_moss(wav_path: Path, cancel_check=None, status_callback=None) -> List[dict]:

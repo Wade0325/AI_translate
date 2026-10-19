@@ -15,7 +15,6 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.api import batch, transcription, vad
-from app.runtime import dispatch
 
 
 @pytest.fixture
@@ -36,7 +35,7 @@ def _is_inside(path: str, root) -> bool:
 
 
 @pytest.fixture
-def dispatched(uploads, monkeypatch):
+def dispatched(uploads, monkeypatch, in_process_run_mode):
     """記錄派發的任務參數；參數指向上傳目錄外就直接拋錯。
 
     拋錯讓端點走例外分支關閉連線，漏洞存在時測試會失敗而不是卡在 receive。
@@ -57,11 +56,8 @@ def dispatched(uploads, monkeypatch):
         calls.append(params)
         return "task-id"
 
-    monkeypatch.setattr(dispatch, "submit_transcription", _submit_transcription)
-    monkeypatch.setattr(dispatch, "submit_batch", _submit_batch)
-    # docker 模式的取消旗標存在 Redis；測試不連外
-    monkeypatch.setattr(transcription, "clear_cancel_flag", lambda file_uid: None)
-    monkeypatch.setattr(transcription, "register_task_id", lambda file_uid, task_id: None)
+    monkeypatch.setattr(in_process_run_mode, "submit_transcription", _submit_transcription)
+    monkeypatch.setattr(in_process_run_mode, "submit_batch", _submit_batch)
     return calls
 
 

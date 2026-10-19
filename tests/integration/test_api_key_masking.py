@@ -19,7 +19,6 @@ from sqlalchemy.orm import sessionmaker
 
 from app.api import batch, transcription
 from app.database.models import BatchJob, ModelConfiguration
-from app.runtime import dispatch
 
 REAL_KEY = "AIzaSyTEST-0123456789-abcdefghij-WXYZ"
 REAL_KEY_MASKED = "AIza********WXYZ"
@@ -169,7 +168,7 @@ class TestConnectionUsesStoredKey:
 # ─── 任務：缺少金鑰或只帶遮罩值時改用資料庫的金鑰 ───────────────────────────
 
 @pytest.fixture
-def task_env(tmp_path, monkeypatch, test_engine):
+def task_env(tmp_path, monkeypatch, test_engine, in_process_run_mode):
     """WS 派發流程的測試環境：上傳目錄、測試資料庫、記錄派發參數。"""
     uploads = tmp_path / "uploads"
     uploads.mkdir()
@@ -180,12 +179,10 @@ def task_env(tmp_path, monkeypatch, test_engine):
                             sessionmaker(autocommit=False, autoflush=False, bind=test_engine))
 
     calls = []
-    monkeypatch.setattr(dispatch, "submit_transcription",
+    monkeypatch.setattr(in_process_run_mode, "submit_transcription",
                         lambda params, queue: calls.append(params) or "task-id")
-    monkeypatch.setattr(dispatch, "submit_batch",
+    monkeypatch.setattr(in_process_run_mode, "submit_batch",
                         lambda params: calls.append(params) or "task-id")
-    monkeypatch.setattr(transcription, "clear_cancel_flag", lambda file_uid: None)
-    monkeypatch.setattr(transcription, "register_task_id", lambda file_uid, task_id: None)
     return calls
 
 
@@ -260,9 +257,9 @@ class TestRecoverUsesStoredKey:
         db_session.commit()
 
     @pytest.fixture
-    def recovered(self, monkeypatch):
+    def recovered(self, monkeypatch, in_process_run_mode):
         calls = []
-        monkeypatch.setattr(dispatch, "submit_recover",
+        monkeypatch.setattr(in_process_run_mode, "submit_recover",
                             lambda batch_id, api_key: calls.append((batch_id, api_key)) or "task-id")
         return calls
 

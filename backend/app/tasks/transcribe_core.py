@@ -1,7 +1,7 @@
 """單檔轉錄任務本體（純同步 Python，與任務框架無關）。
 
 docker 模式由 `app.celery.task.transcribe_media_task` 包裝執行，
-standalone 模式由 `app.runtime.dispatch.submit_transcription` 丟進
+standalone 模式由 `app.runtime.in_process.InProcessRunMode.submit_transcription` 丟進
 行程內執行緒池；兩邊共用這裡的同一份流程。
 """
 
@@ -10,14 +10,16 @@ import traceback
 from pathlib import Path
 from datetime import datetime
 
-from app.celery.cancellation import clear_cancel_flag, is_cancel_requested
 from app.celery.models import TranscriptionTaskParams
-from app.celery.notifier import publish_status
+from app.runtime import run_mode
+from app.runtime.run_mode import publish_status
 from app.core.config import get_settings
 from app.core.default_prompt import build_prompt
+from app.core.task_status import TaskStatus
 from app.database.session import SessionLocal
 from app.exceptions import GeminiTransientError, TranscriptionCancelledError
-from app.provider.google.gemini import GeminiClient
+from app.provider.base import TranscribeRequest
+from app.provider.registry import open_provider
 from app.repositories.transcript_segment_repository import TranscriptSegmentRepository
 from app.repositories.transcription_log_repository import TranscriptionLogRepository
 from app.services import audio_store
@@ -61,7 +63,7 @@ def run_transcription(task_params_dict: dict, task_uuid: str):
     client_id = task_params.client_id
     file_uid = task_params.file_uid
 
-    def update_status(status_text: str, status_code: str = "PROCESSING", result_data: dict = None):
+    def update_status(status_text: str, status_code: TaskStatus = TaskStatus.PROCESSING, result_data: dict = None):
         publish_status(
             client_id,
             task_uuid,
@@ -73,10 +75,10 @@ def run_transcription(task_params_dict: dict, task_uuid: str):
 
     # 任務在佇列等待期間可能已被取消；revoke 廣播可能沒送達（worker 當時離線），
     # 靠旗標做最後攔截
-    if is_cancel_requested(file_uid):
-        clear_cancel_flag(file_uid)
+    if run_mode.get().is_cancel_requested(file_uid):
+        run_mode.get().clear_cancel(file_uid)
         logger.info(f"任務 {task_uuid} 在啟動前已被取消 (file_uid={file_uid})")
-        update_status("任務已取消", status_code="CANCELLED")
+        update_status("任務已取消", status_code=TaskStatus.CANCELLED)
         return {"cancelled": True}
 
     db = SessionLocal()
@@ -88,7 +90,7 @@ def run_transcription(task_params_dict: dict, task_uuid: str):
 
     try:
         initial_log_data = {
-            "status": "PROCESSING",
+            "status": TaskStatus.PROCESSING,
             "original_filename": task_params.original_filename,
             "model_used": task_params.model,
             "source_language": task_params.source_lang,
@@ -122,25 +124,10 @@ def run_transcription(task_params_dict: dict, task_uuid: str):
             logger.warning(
                 f"Could not read audio duration for {local_path.name}.")
 
-        # 初始化供應商的 client（local 是本機，不需 API key）
-        provider = task_params.provider.lower()
-        if provider not in ('google', 'local'):
-            raise ValueError(
-                f"Provider '{task_params.provider}' is not supported. Only 'google' or 'local' is allowed.")
-
-        if provider == 'local' and get_settings().is_standalone:
-            # standalone 模式先確認 GPU 與所選模型的權重齊備，缺什麼直接以明確訊息失敗
-            from app.provider.local.weights import ensure_local_ready
-            ensure_local_ready(task_params.model)
-
-        client = None
-        if provider == 'google':
-            logger.info(
-                f"Initializing Gemini Client for model: {task_params.model}")
-            client = GeminiClient(task_params.api_keys).client
-            if not client:
-                raise ValueError(
-                    "Failed to initialize Gemini Client. Check API key.")
+        # 查出供應商轉接器：模型不屬於這個供應商、或供應商還不能轉錄
+        # （缺權重、金鑰無效）都在這裡以明確訊息失敗，不必等去靜音跑完
+        adapter = open_provider(
+            task_params.provider, task_params.model, task_params.api_keys)
 
         update_status("正在初始化模型...")
 
@@ -165,17 +152,18 @@ def run_transcription(task_params_dict: dict, task_uuid: str):
             )
 
         task_manager = TranscriptionTask(
-            client=client,
-            model=task_params.model,
-            prompt=user_prompt,
+            provider=adapter,
+            request=TranscribeRequest(
+                model=task_params.model,
+                prompt=user_prompt,
+                source_lang=task_params.source_lang,
+                service_tier=task_params.service_tier,
+                status_callback=update_status,
+                cancel_check=lambda: run_mode.get().is_cancel_requested(file_uid),
+            ),
             temp_dir=local_path.parent,
-            status_callback=update_status,
-            service_tier=task_params.service_tier,
             artifact_task_id=str(task_uuid),
             original_filename=task_params.original_filename,
-            provider=provider,
-            source_lang=task_params.source_lang,
-            cancel_check=lambda: is_cancel_requested(file_uid),
         )
 
         logger.info(f"Starting transcription. Task ID : {task_uuid}")
@@ -229,7 +217,7 @@ def run_transcription(task_params_dict: dict, task_uuid: str):
             f"Metrics calculated. Task ID: {task_uuid}. Cost: ${final_cost:.6f}")
 
         update_data = {
-            "status": "COMPLETED",
+            "status": TaskStatus.COMPLETED,
             "audio_duration_seconds": metrics_response.audio_duration_seconds,
             "processing_time_seconds": metrics_response.processing_time_seconds,
             "total_tokens": metrics_response.total_tokens,
@@ -271,7 +259,7 @@ def run_transcription(task_params_dict: dict, task_uuid: str):
         if 'task_uuid' in final_response_dict and hasattr(final_response_dict['task_uuid'], 'hex'):
             final_response_dict['task_uuid'] = final_response_dict['task_uuid'].hex
 
-        update_status("任務完成", status_code="COMPLETED",
+        update_status("任務完成", status_code=TaskStatus.COMPLETED,
                       result_data=final_response_dict)
 
         return {"raw_lrc_text": final_lrc_text}
@@ -281,19 +269,19 @@ def run_transcription(task_params_dict: dict, task_uuid: str):
         processing_time_seconds = time.time() - start_time
         logger.info(f"Transcription task {task_uuid} cancelled by user.")
         log_repo.update_log(db, task_uuid, {
-            "status": "CANCELLED",
+            "status": TaskStatus.CANCELLED,
             "error_message": "使用者取消任務",
             "processing_time_seconds": processing_time_seconds,
             "completed_at": datetime.now(),
         })
-        update_status("任務已取消", status_code="CANCELLED")
+        update_status("任務已取消", status_code=TaskStatus.CANCELLED)
         return {"cancelled": True}
     except GeminiTransientError as e:
         # 暫時性錯誤：交給外層重試機制處理，不寫入 FAILED log
         logger.warning(
             f"Transcription task {task_uuid} hit transient Gemini error, will retry: {e}"
         )
-        update_status(f"暫時性錯誤，將重試: {e}", status_code="PROCESSING")
+        update_status(f"暫時性錯誤，將重試: {e}", status_code=TaskStatus.PROCESSING)
         raise
     except Exception as e:
         processing_time_seconds = time.time() - start_time
@@ -304,17 +292,17 @@ def run_transcription(task_params_dict: dict, task_uuid: str):
         # session 可能因失敗的 commit 處於 pending rollback 狀態，先復原才能寫 FAILED
         db.rollback()
         failure_update_data = {
-            "status": "FAILED",
+            "status": TaskStatus.FAILED,
             "error_message": str(e),
             "processing_time_seconds": processing_time_seconds
         }
         log_repo.update_log(db, task_uuid, failure_update_data)
 
-        update_status(f"任務失敗: {e}", status_code="FAILED")
+        update_status(f"任務失敗: {e}", status_code=TaskStatus.FAILED)
         raise e
     finally:
         # 任務結束後旗標已無作用，清掉以免影響同一檔案之後再開的任務
-        clear_cancel_flag(file_uid)
+        run_mode.get().clear_cancel(file_uid)
 
         # 音檔搬進 audio_store：成功要給校正介面重播，失敗／取消要留給再開任務與診斷。
         # 必須在 cleanup 之前，否則會被當成暫存檔刪掉。

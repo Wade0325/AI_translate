@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
+from app.core.task_status import TaskStatus
 from app.database.models import TranscriptionLog
 from app.database.session import get_db
 from app.repositories.history_repository import HistoryRepository
@@ -174,7 +175,7 @@ def download_transcript(
     log = history_repo.get_log_by_uuid(db, task_uuid)
     if not log:
         raise HTTPException(status_code=404, detail="找不到此任務紀錄")
-    if log.status != "COMPLETED":
+    if log.status != TaskStatus.COMPLETED:
         raise HTTPException(status_code=400, detail="任務尚未完成，無法下載字幕")
     lrc_text = history_repo.resolve_lrc_content(db, log, backfill=True)
     if not lrc_text:

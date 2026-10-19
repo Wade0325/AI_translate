@@ -3,7 +3,7 @@
 測試範圍：
   ModelSettingsRepository  — model_manager_repository.py
   HistoryRepository        — history_repository.py
-使用 SQLite in-memory 資料庫，透過 db_session fixture 確保每個測試後回滾。
+使用 SQLite 測試資料庫（tests/conftest.py 的 test_engine），透過 db_session fixture 確保每個測試後回滾。
 """
 import uuid
 from datetime import datetime, timedelta
