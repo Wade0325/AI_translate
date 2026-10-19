@@ -318,6 +318,44 @@ class TestChunkedTranscriptionFollowsCapabilities:
         assert len(fake.calls) == 1
 
 
+# ─── 輸出格式從片段產生 ─────────────────────────────────────────────────────
+
+class TestOutputFormatsFromSegments:
+    @pytest.fixture
+    def completed(self, api, fake):
+        """片段帶逐字時間的任務；不去靜音，時間軸就是送進供應商的時間。"""
+        fake.model_capabilities = replace(fake.model_capabilities, remove_silence=False)
+        # 供應商自己的 LRC 是一段一行：「[00:00.20][S0] おはよう。こんにちは。」
+        fake.script = [[(0.2, 2.6, 0, "おはよう。こんにちは。",
+                         [("おはよう", 0.24, 0.9), ("こんにちは", 1.5, 2.56)])]]
+        messages = transcribe(api, "uid-words")
+        assert codes(messages)[-1] == TaskStatus.COMPLETED
+        return messages[-1]
+
+    @staticmethod
+    def download(api, task_uuid: str, fmt: str) -> str:
+        response = api.get(f"/api/v1/history/{task_uuid}/download/{fmt}")
+        assert response.status_code == 200
+        return response.text
+
+    @pytest.mark.parametrize("fmt, expected", [
+        ("lrc", "[00:00.24][S0] おはよう。\n[00:01.50][S0] こんにちは。"),
+        ("srt", "1\n00:00:00,240 --> 00:00:01,500\n[S0] おはよう。\n\n"
+                "2\n00:00:01,500 --> 00:00:06,500\n[S0] こんにちは。\n"),
+        ("vtt", "WEBVTT\n\n00:00:00.240 --> 00:00:01.500\n[S0] おはよう。\n\n"
+                "00:00:01.500 --> 00:00:06.500\n[S0] こんにちは。\n"),
+        ("txt", "[S0] おはよう。\n[S0] こんにちは。"),
+    ])
+    def test_downloads_break_lines_at_sentences_using_word_timings(
+            self, api, completed, fmt, expected):
+        assert self.download(api, completed["task_uuid"], fmt) == expected
+
+    @pytest.mark.parametrize("fmt", ["lrc", "srt", "vtt", "txt"])
+    def test_completion_broadcast_matches_the_download(self, api, completed, fmt):
+        broadcast = completed["result"]["transcripts"][fmt]
+        assert broadcast == self.download(api, completed["task_uuid"], fmt)
+
+
 # ─── 模型不屬於供應商 ───────────────────────────────────────────────────────
 
 MISMATCHES = [

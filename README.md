@@ -209,7 +209,7 @@ AI_translate/
 │   │   ├── core/            # 設定、預設 Prompt（單一真實來源）
 │   │   ├── database/        # ORM 模型、自動遷移
 │   │   ├── provider/        # google（Gemini）與 local（MOSS／VibeVoice + Qwen3-ASR／ForcedAligner）客戶端
-│   │   ├── services/        # vad / transcription / converter / calculator
+│   │   ├── services/        # vad / transcription / output_format（輸出格式）/ calculator
 │   │   └── websocket/       # ConnectionManager + Redis 監聽器
 │   └── main.py
 ├── frontend/                # React 19 + Vite 6

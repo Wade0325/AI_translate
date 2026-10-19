@@ -84,7 +84,8 @@ class TranscriptionLog(Base):
     provider = Column(String, nullable=True)
     target_language = Column(String, nullable=True)
     completed_at = Column(DateTime, nullable=True)
-    # 僅儲存 LRC；SRT/VTT/TXT 於下載時由後端即時轉換
+    # 凍結的原始轉錄副本（ADR-0007）。有片段的任務，輸出格式從片段產生、不讀這裡；
+    # 沒有片段的舊任務才從這份 LRC 轉換（app.services.output_format）
     lrc_content = Column(Text, nullable=True)
     file_uid = Column(String, nullable=True, index=True)  # 前端檔案 uid
     session_id = Column(String, nullable=True, index=True)  # 同一次 Start 的任務群組
@@ -98,8 +99,9 @@ class TranscriptionLog(Base):
 class TranscriptSegment(Base):
     """轉錄片段 — 校正介面與逐段回傳的持久化單位。
 
-    LRC 仍是下載用的單一真相（``TranscriptionLog.lrc_content``）；這張表存的是
-    可逐段更新、可標記、可回溯的結構化版本：說話者分離給出的每一段各一列。
+    片段是轉錄結果的唯一表示：四種輸出格式都從這裡產生（app.services.output_format），
+    ``TranscriptionLog.lrc_content`` 只是凍結的原始轉錄副本。說話者分離給出的每一段各一列，
+    可逐段更新、可標記、可回溯。
 
     ``seg_key`` 是確定性的（切段序號 + 片段序號），所以任務被重派或重新轉錄時是
     覆寫同一列而不是產生重複資料。``text_alt`` 存另一個模型對同一段的轉錄

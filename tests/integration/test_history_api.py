@@ -6,11 +6,15 @@
   GET    /api/v1/history/{task_uuid}
   DELETE /api/v1/history/{task_uuid}
 """
+import json
 import uuid
+
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
-from app.database.models import TranscriptionLog
+from app.database.models import BatchJob, TranscriptionLog
+from app.repositories.transcript_segment_repository import TranscriptSegmentRepository
 
 
 # ─── 測試資料輔助函數 ─────────────────────────────────────────────────────────
@@ -291,6 +295,94 @@ class TestHistoryDownload:
         )
         response = client.get(f"/api/v1/history/{log.task_uuid}/download/xyz")
         assert response.status_code == 400
+
+
+# ─── 輸出格式的資料來源 ───────────────────────────────────────────────────────
+
+SEGMENTS = [
+    {"seg_key": "0000", "start": 1.5, "end": 2.8, "speaker": "S0", "text": "おはよう。"},
+    {"seg_key": "0001", "start": 3.25, "end": 4.0, "speaker": "S1", "text": "こんにちは。"},
+]
+FROM_SEGMENTS = {
+    "lrc": "[00:01.50][S0] おはよう。\n[00:03.25][S1] こんにちは。",
+    "srt": ("1\n00:00:01,500 --> 00:00:03,250\n[S0] おはよう。\n\n"
+            "2\n00:00:03,250 --> 00:00:08,250\n[S1] こんにちは。\n"),
+    "vtt": ("WEBVTT\n\n00:00:01.500 --> 00:00:03.250\n[S0] おはよう。\n\n"
+            "00:00:03.250 --> 00:00:08.250\n[S1] こんにちは。\n"),
+    "txt": "[S0] おはよう。\n[S1] こんにちは。",
+}
+
+
+class TestDownloadFromSegments:
+    @pytest.mark.parametrize("fmt", ["lrc", "srt", "vtt", "txt"])
+    def test_every_format_comes_from_segments_not_the_stored_lrc(
+            self, client: TestClient, db_session: Session, fmt):
+        # 存下來的 LRC 只是凍結的原始轉錄副本，有片段時下載不讀它
+        log = _create_log(db_session, lrc_content="[00:00.00]凍結的原始轉錄副本")
+        TranscriptSegmentRepository.replace_all(db_session, log.task_uuid, SEGMENTS)
+
+        response = client.get(f"/api/v1/history/{log.task_uuid}/download/{fmt}")
+        assert response.status_code == 200
+        assert response.text == FROM_SEGMENTS[fmt]
+
+
+# 片段功能上線前的任務與批次任務沒有片段，輸出要和以前從存下來的 LRC 轉換時一模一樣
+STORED_LRC = ("[00:01.50]Speaker A: Hello\n[00:03.123]Speaker B: World\n"
+              "這行沒有時間戳\n[61:02.00]Final line")
+FROM_STORED_LRC = {
+    "lrc": STORED_LRC,
+    "srt": ("1\n00:00:01,500 --> 00:00:03,123\nHello\n\n"
+            "2\n00:00:03,123 --> 01:01:02,000\nWorld\n\n"
+            "3\n01:01:02,000 --> 01:01:07,000\nFinal line\n"),
+    "vtt": ("WEBVTT\n\n00:00:01.500 --> 00:00:03.123\nHello\n\n"
+            "00:00:03.123 --> 01:01:02.000\nWorld\n\n"
+            "01:01:02.000 --> 01:01:07.000\nFinal line\n"),
+    "txt": "Hello\nWorld\nFinal line",
+}
+BATCH_LRC = "[00:02.00]批次的結果"
+FROM_BATCH_LRC = {
+    "lrc": BATCH_LRC,
+    "srt": "1\n00:00:02,000 --> 00:00:07,000\n批次的結果\n",
+    "vtt": "WEBVTT\n\n00:00:02.000 --> 00:00:07.000\n批次的結果\n",
+    "txt": "批次的結果",
+}
+
+
+class TestDownloadWithoutSegments:
+    @pytest.mark.parametrize("fmt", ["lrc", "srt", "vtt", "txt"])
+    def test_old_task_converts_the_stored_lrc_as_before(
+            self, client: TestClient, db_session: Session, fmt):
+        log = _create_log(db_session, lrc_content=STORED_LRC)
+
+        response = client.get(f"/api/v1/history/{log.task_uuid}/download/{fmt}")
+        assert response.status_code == 200
+        assert response.text == FROM_STORED_LRC[fmt]
+
+    @pytest.mark.parametrize("fmt", ["lrc", "srt", "vtt", "txt"])
+    def test_batch_task_without_stored_lrc_uses_the_batch_result(
+            self, client: TestClient, db_session: Session, fmt):
+        task_uuid = uuid.uuid4()
+        batch_id = f"batch-{task_uuid.hex[:8]}"
+        db_session.add(BatchJob(
+            batch_id=batch_id,
+            results_json=json.dumps({"f1": {"transcripts": {"lrc": BATCH_LRC}}}),
+            file_log_uuids_json=json.dumps({"f1": str(task_uuid)}),
+        ))
+        db_session.commit()
+        _create_log(db_session, task_uuid=task_uuid, is_batch=True, batch_id=batch_id)
+
+        response = client.get(f"/api/v1/history/{task_uuid}/download/{fmt}")
+        assert response.status_code == 200
+        assert response.text == FROM_BATCH_LRC[fmt]
+
+    def test_stored_lrc_without_timestamps_has_no_subtitles(
+            self, client: TestClient, db_session: Session):
+        log = _create_log(db_session, lrc_content="沒有任何時間戳")
+
+        assert client.get(f"/api/v1/history/{log.task_uuid}/download/lrc").text == "沒有任何時間戳"
+        response = client.get(f"/api/v1/history/{log.task_uuid}/download/srt")
+        assert response.status_code == 404
+        assert response.json()["detail"] == "無法產生此格式的字幕內容"
 
 
 # ─── 用量彙總 API ─────────────────────────────────────────────────────────────
