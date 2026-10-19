@@ -5,7 +5,11 @@
 測試只從外部觀察：狀態廣播、API 回應、存下來的片段與可以下載的輸出格式。
 """
 import io
+import os
 import re
+import subprocess
+import sys
+import textwrap
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -389,9 +393,10 @@ class TestModelMustBelongToProvider:
 
 # ─── 模型能力端點（#108） ───────────────────────────────────────────────────
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+BACKEND_DIR = REPO_ROOT / "backend"
 # 前端只在這裡讀模型能力的欄位
-FRONTEND_CAPABILITY_READER = (
-    Path(__file__).resolve().parents[2] / "frontend" / "src" / "hooks" / "useProviderList.js")
+FRONTEND_CAPABILITY_READER = REPO_ROOT / "frontend" / "src" / "hooks" / "useProviderList.js"
 
 
 def listed_capabilities(api) -> dict:
@@ -429,6 +434,39 @@ class TestModelCapabilitiesEndpoint:
         assert {"gemini-3.5-flash", "gemini-2.5-flash"} <= set(gemini)
         assert not any(c["accepts_prompt"] or c["accepts_user_text"] for c in local.values())
         assert all(c["accepts_prompt"] and c["accepts_user_text"] for c in gemini.values())
+
+    def test_listing_does_not_import_torch(self):
+        # 列模型能力的是 API 行程（Docker 模式的 API 容器沒有顯卡，也不裝 torch）：
+        # 依顯卡容量收斂的單次長度只在真的要轉錄的轉接器裡算。另開一個行程，記下任何
+        # import torch 的嘗試（沒裝 torch 的 CI 上也抓得到），只看呼叫端點的那一段
+        probe = textwrap.dedent("""
+            import sys
+
+            attempts = []
+
+            class RecordTorch:
+                def find_spec(self, name, path=None, target=None):
+                    if name.split(".")[0] == "torch":
+                        attempts.append(name)
+                        raise ImportError("probe: torch blocked")
+                    return None
+
+            sys.meta_path.insert(0, RecordTorch())
+            from fastapi.testclient import TestClient
+            from main import app
+
+            attempts.clear()
+            response = TestClient(app).get("/api/v1/providers")
+            print("PROBE", response.status_code, sorted(set(attempts)))
+        """)
+        result = subprocess.run(
+            [sys.executable, "-c", probe], cwd=BACKEND_DIR, capture_output=True,
+            text=True, encoding="utf-8", errors="replace", timeout=120,
+            env={**os.environ, "PYTHONIOENCODING": "utf-8"})
+
+        assert result.returncode == 0, result.stderr
+        probe_lines = [line for line in result.stdout.splitlines() if line.startswith("PROBE ")]
+        assert probe_lines == ["PROBE 200 []"], result.stdout
 
     def test_frontend_reads_only_capabilities_the_endpoint_lists(self, api):
         # 前端讀不到的欄位一律當成支援（還沒載入時不限制）：欄位一改名，畫面就默默全部開放

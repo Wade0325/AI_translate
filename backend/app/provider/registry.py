@@ -11,11 +11,12 @@ from typing import Dict, Mapping, Optional, Protocol, cast
 
 from app.provider.base import BatchProvider, ModelCapabilities, Provider
 from app.provider.google.provider import GeminiProvider
-from app.provider.local.provider import LocalProvider
+from app.provider.local.provider import local_provider
 
 
 class ProviderFactory(Protocol):
-    """一個供應商：查模型能力不必建立轉接器；建立的轉接器專給一個任務用。"""
+    """一個供應商：查模型能力不必建立轉接器，也不碰顯卡之類的硬體（API 行程與模型能力
+    端點都會查）；建立的轉接器專給一個任務用。"""
 
     def capabilities(self) -> Mapping[str, ModelCapabilities]: ...
 
@@ -32,7 +33,7 @@ class UnsupportedInputError(UnsupportedModelError):
     """請求填了模型不吃的輸入（提示詞、使用者文稿）。"""
 
 
-_factories: dict[str, ProviderFactory] = {"google": GeminiProvider, "local": LocalProvider}
+_factories: dict[str, ProviderFactory] = {"google": GeminiProvider, "local": local_provider}
 _lock = threading.Lock()
 
 
@@ -57,9 +58,9 @@ def _factory(provider: str) -> ProviderFactory:
 
 
 def providers() -> Dict[str, Mapping[str, ModelCapabilities]]:
-    """每個供應商（小寫名稱）的每個模型的模型能力。
+    """每個供應商（小寫名稱）的每個模型、不建立轉接器就知道的模型能力。
 
-    每次都向供應商重新查，不快取：本機的單次長度依顯卡容量而定。
+    單次長度是上限：轉接器在執行的機器上可能更短（本機依顯卡容量收斂）。
     """
     with _lock:
         factories = list(_factories.items())

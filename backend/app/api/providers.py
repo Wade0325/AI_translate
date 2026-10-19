@@ -1,6 +1,7 @@
 """列出供應商、它們的模型與每個模型的模型能力（唯讀）。
 
 畫面依模型能力停用模型不支援的欄位，不再自己寫死哪個供應商能用哪些欄位。
+列的是不建立轉接器就知道的模型能力，不碰顯卡：API 行程沒有顯卡、沒裝 torch 也列得出來。
 """
 
 from typing import List
@@ -15,7 +16,8 @@ router = APIRouter()
 
 
 class ListedModel(BaseModel):
-    """清單上的一個模型與它的模型能力。"""
+    """清單上的一個模型與它的模型能力。``single_pass_seconds`` 是上限：實際轉錄時，
+    轉接器在執行的機器上可能切得更短（本機依顯卡容量收斂）。"""
     model: str
     capabilities: ModelCapabilities
 
