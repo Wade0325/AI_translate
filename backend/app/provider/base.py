@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Literal, Mapping, Optional, Protocol
 
+from app.exceptions import TranscriptionCancelledError
 from app.services.transcription.models import TranscriptionTaskResult
 
 LOCAL_QUEUE = "local_asr"
@@ -51,15 +52,32 @@ class TranscribeRequest:
     source_lang: Optional[str] = None
     service_tier: Optional[str] = None
     """Gemini 的處理模式：None／"standard" 或 "flex"；其他供應商忽略。"""
-    status_callback: Optional[Callable[[str], None]] = None
-    cancel_check: Optional[Callable[[], bool]] = None
 
-    def notify(self, text: str) -> None:
-        if self.status_callback:
-            self.status_callback(text)
+
+class Progress:
+    """進度與取消物件：任務生命週期建立一個，經分段轉錄一路傳到供應商轉接器。
+
+    同一個物件回報進度（廣播給畫面的處理中訊息），也回答使用者取消了沒有；
+    分段轉錄與轉接器只收到它，不另外收 callable。轉接器在自己的檢查點呼叫
+    :meth:`raise_if_cancelled`，本機轉接器另用 :meth:`cancel_requested` 產生停止生成的條件。
+    """
+
+    def __init__(self, report: Callable[[str], None], cancel_requested: Callable[[], bool]):
+        self._report = report
+        self._cancel_requested = cancel_requested
+
+    def report(self, text: str) -> None:
+        """回報一則進度文字。"""
+        self._report(text)
 
     def cancel_requested(self) -> bool:
-        return bool(self.cancel_check and self.cancel_check())
+        """使用者是否已要求取消這個任務。"""
+        return bool(self._cancel_requested())
+
+    def raise_if_cancelled(self) -> None:
+        """使用者已要求取消時拋 :class:`~app.exceptions.TranscriptionCancelledError`。"""
+        if self.cancel_requested():
+            raise TranscriptionCancelledError("使用者已取消任務")
 
 
 class Provider(Protocol):
@@ -72,10 +90,13 @@ class Provider(Protocol):
     def capabilities(self) -> Mapping[str, ModelCapabilities]:
         """這個供應商每個模型的模型能力，key 是模型名稱。"""
 
-    def transcribe(self, audio_path: Path, request: TranscribeRequest) -> TranscriptionTaskResult:
+    def transcribe(
+        self, audio_path: Path, request: TranscribeRequest, progress: Progress,
+    ) -> TranscriptionTaskResult:
         """轉錄一段音檔，時間軸是這段音檔本身。
 
-        使用者取消時拋 :class:`~app.exceptions.TranscriptionCancelledError`；
+        進度經 ``progress`` 回報；使用者取消時拋
+        :class:`~app.exceptions.TranscriptionCancelledError`。
         其他錯誤由分段轉錄當成這一段失敗處理。
         """
 

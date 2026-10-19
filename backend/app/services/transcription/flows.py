@@ -11,7 +11,7 @@ from app.utils.audio import (
     convert_to_wav,
     slice_audio,
 )
-from app.provider.base import Provider, TranscribeRequest
+from app.provider.base import Progress, Provider, TranscribeRequest
 from app.services.converter.service import _parse_lrc
 from app.services.vad.preprocess import run_vad_extraction
 from app.services.vad.artifacts import persist_speech_extraction, persist_split
@@ -187,12 +187,14 @@ class TranscriptionTask:
         self,
         provider: Provider,
         request: TranscribeRequest,
+        progress: Progress,
         temp_dir: Path,
         artifact_task_id: Optional[str] = None,
         original_filename: Optional[str] = None,
     ):
         self.provider = provider
         self.request = request
+        self.progress = progress
         self.capabilities = provider.capabilities()[request.model]
         self.temp_dir = temp_dir
         self.artifact_task_id = artifact_task_id
@@ -222,9 +224,9 @@ class TranscriptionTask:
         logger.info(f"開始轉錄音訊: {audio_path.name}")
 
         if self.original_file is None:
+            # 輸入音檔歸任務生命週期處理（先保留，再清理），這裡不登記清理
             self.original_file = audio_path
-
-        if audio_path not in self.local_cleanup_list:
+        elif audio_path not in self.local_cleanup_list:
             self.local_cleanup_list.append(audio_path)
 
         duration = self._get_audio_duration(audio_path)
@@ -269,7 +271,7 @@ class TranscriptionTask:
 
         # --- 時間戳重映射 ---
         if result.success and speech_segments:
-            self.request.notify("校正時間軸...")
+            self.progress.report("校正時間軸...")
             result = TranscriptionTaskResult(
                 success=True,
                 text=remap_lrc_timestamps(result.text, speech_segments),
@@ -303,7 +305,7 @@ class TranscriptionTask:
         實際的去靜音流程由 :mod:`app.services.vad.preprocess` 共用實作，
         此處只負責呼叫 callback、把產生的暫存檔登記進 cleanup 列表。
         """
-        self.request.notify("分析語音活動...")
+        self.progress.report("分析語音活動...")
 
         result = run_vad_extraction(audio_path, self.temp_dir, self.vad_service)
 
@@ -347,7 +349,7 @@ class TranscriptionTask:
     def _attempt_transcription(self, audio_path: Path) -> TranscriptionTaskResult:
         """透過供應商轉錄一段音檔；一般錯誤轉成失敗結果，交給上層決定要不要切段重試。"""
         try:
-            return self.provider.transcribe(audio_path, self.request)
+            return self.provider.transcribe(audio_path, self.request, self.progress)
         except TranscriptionCancelledError:
             # 取消不是失敗：往上拋給任務標記為 CANCELLED
             raise
@@ -377,8 +379,7 @@ class TranscriptionTask:
         if threshold <= 0 or duration <= threshold:
             return self._attempt_transcription(audio_path)
 
-        if self.request.cancel_requested():
-            raise TranscriptionCancelledError("使用者已取消任務")
+        self.progress.raise_if_cancelled()
 
         part1 = part2 = None
         split_point = None
@@ -419,7 +420,7 @@ class TranscriptionTask:
 
         logger.info(
             f"長檔切半: {audio_path.name} ({duration:.0f}s) 於 {split_point:.2f}s 切割")
-        self.request.notify(
+        self.progress.report(
             f"音檔較長（{duration / 60:.1f} 分鐘），於靜音處切半分段處理...")
 
         left = right = None
@@ -567,17 +568,13 @@ class TranscriptionTask:
             return []
 
     def cleanup(self):
-        """清理供應商的遠端與暫存資源、自己產生的暫存檔和原始上傳檔案。"""
+        """清理供應商的遠端與暫存資源，以及自己產生的暫存檔；不動輸入音檔。"""
         try:
             self.provider.release()
         except Exception as e:
             logger.warning(f"釋放供應商資源失敗: {e}")
 
-        local_files = set(self.local_cleanup_list)
-        if self.original_file:
-            local_files.add(self.original_file)
-
-        for local_file in local_files:
+        for local_file in set(self.local_cleanup_list):
             try:
                 if local_file and local_file.exists():
                     # 只刪 temp_uploads 目錄下的檔案，防止路徑異常時誤刪其他位置

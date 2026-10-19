@@ -1,0 +1,328 @@
+"""任務生命週期模組：一個單檔任務的狀態轉換與副作用都在這裡。
+
+    開始 → 進度 … → 完成／失敗／取消／暫時錯誤 → 收尾
+
+呼叫端只給「怎麼轉錄」（拿到輸入音檔與進度與取消物件、回傳轉錄結果），其餘由這裡負責：
+任務紀錄與片段、計價、狀態廣播、取消旗標、保留音檔與清理輸入音檔。
+狀態廣播與查詢取消只經由執行模式模組（:mod:`app.runtime.run_mode`）。
+"""
+
+from __future__ import annotations
+
+import time
+import traceback
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+from typing import Callable, Optional
+
+from sqlalchemy.orm import Session
+
+from app.celery.models import TranscriptionTaskParams
+from app.core.config import get_settings
+from app.core.task_status import TaskStatus
+from app.database.session import SessionLocal
+from app.exceptions import GeminiTransientError, TranscriptionCancelledError
+from app.provider.base import Progress
+from app.repositories.transcript_segment_repository import TranscriptSegmentRepository
+from app.repositories.transcription_log_repository import TranscriptionLogRepository
+from app.runtime import run_mode
+from app.runtime.run_mode import publish_status
+from app.services import audio_store
+from app.services.calculator.models import CalculationItem
+from app.services.calculator.service import CalculatorService
+from app.services.converter.service import convert_from_lrc
+from app.services.transcription.flows import order_segments
+from app.services.transcription.models import TranscriptionResponse, TranscriptionTaskResult
+from app.utils.audio import get_audio_duration
+from app.utils.logger import setup_logger
+from app.utils.paths import is_temp_upload
+
+logger = setup_logger(__name__)
+
+Transcribe = Callable[[Path, Progress], TranscriptionTaskResult]
+"""轉錄輸入音檔：自己產生的暫存檔與供應商資源自己清，輸入音檔不能動（由收尾處理）。"""
+
+
+@dataclass
+class _Outcome:
+    """任務這一次執行的結果：要宣告的狀態，以及收尾之後要回傳或往上拋的東西。"""
+
+    status: TaskStatus
+    text: str
+    result: Optional[dict] = None
+    """完成時送給畫面的結果。"""
+    error: Optional[Exception] = None
+    """收尾之後往上拋，讓執行模式記下失敗或安排重試。"""
+    retry: bool = False
+    """暫時錯誤：執行模式會再跑一次這個任務。"""
+    value: Optional[dict] = None
+    """:meth:`TaskLifecycle.run` 的回傳值。"""
+
+
+class TaskLifecycle:
+    """一個單檔任務的生命週期；每次執行（含重試）建立一個。"""
+
+    def __init__(self, task_uuid: str, params: TranscriptionTaskParams):
+        self._task_uuid = task_uuid
+        self._params = params
+        self._input = _resolve_input(params.file_path, task_uuid)
+        self._started_at = time.time()
+        self._duration = 0.0
+        self._records = TranscriptionLogRepository()
+        self._progress = Progress(self._report, self._cancel_requested)
+
+    def run(self, transcribe: Transcribe) -> dict:
+        """跑完這個任務，回傳給執行模式的結果。
+
+        Raises:
+            Exception: 失敗或暫時錯誤時，任務紀錄與廣播都處理完之後，原本的例外往上拋。
+        """
+        if self._progress.cancel_requested():
+            # 任務在佇列等待期間可能已被取消；revoke 廣播可能沒送達（worker 當時離線），
+            # 靠旗標做最後攔截
+            run_mode.get().clear_cancel(self._params.file_uid)
+            logger.info(
+                f"任務 {self._task_uuid} 在啟動前已被取消 (file_uid={self._params.file_uid})")
+            self._announce(_Outcome(TaskStatus.CANCELLED, "任務已取消"))
+            return {"cancelled": True}
+
+        with SessionLocal() as db:
+            outcome = self._attempt(db, transcribe)
+            self._announce(outcome)
+            self._finish(db)
+        if outcome.error is not None:
+            raise outcome.error
+        return outcome.value or {}
+
+    # ── 狀態轉換 ──────────────────────────────────────────────────
+    def _attempt(self, db: Session, transcribe: Transcribe) -> _Outcome:
+        try:
+            self._start(db)
+            result = transcribe(self._input, self._progress)
+            if not result.success:
+                # 失敗結果的 text 是錯誤描述而非 LRC，不能標成完成、產出空字幕
+                raise ValueError(f"轉錄失敗: {result.text}")
+            return self._complete(db, result)
+        except TranscriptionCancelledError:
+            return self._cancel(db)
+        except GeminiTransientError as e:
+            return self._transient(e)
+        except Exception as e:
+            return self._fail(db, e)
+
+    def _start(self, db: Session) -> None:
+        """開始：建立任務紀錄，廣播處理中。"""
+        self._records.insert_log(db, {"status": TaskStatus.PROCESSING, **self._record_fields()})
+        if self._params.session_id:
+            logger.info(
+                f"TranscriptionLog created session_id={self._params.session_id} "
+                f"file_uid={self._params.file_uid}")
+        else:
+            logger.warning(f"TranscriptionLog missing session_id file_uid={self._params.file_uid}")
+        logger.info(f"Transcription task started. Task ID: {self._task_uuid}")
+
+        self._progress.report("檔案處理與分析...")
+        self._duration = get_audio_duration(self._input) or 0.0
+        if self._duration > 0:
+            logger.info(
+                f"Audio file {self._input.name} for task {self._task_uuid}: "
+                f"{self._duration:.2f} seconds")
+        else:
+            logger.warning(f"Could not read audio duration for {self._input.name}.")
+
+    def _complete(self, db: Session, result: TranscriptionTaskResult) -> _Outcome:
+        """完成：產生輸出格式、計價、存任務紀錄與片段。"""
+        logger.info(
+            f"Transcription complete. Task ID: {self._task_uuid}. "
+            f"Tokens used: {result.total_tokens:,}")
+
+        self._progress.report("正在轉換字幕格式...")
+        transcripts = _output_formats(result)
+
+        self._progress.report("正在計算費用...")
+        elapsed = self._elapsed()
+        tokens, cost = self._price(result, elapsed)
+
+        if self._records.update_log(db, self._task_uuid, {
+            "status": TaskStatus.COMPLETED,
+            "audio_duration_seconds": self._duration,
+            "processing_time_seconds": elapsed,
+            "total_tokens": tokens,
+            "cost": cost,
+            "completed_at": datetime.now(),
+            "lrc_content": result.text or None,
+            "service_tier_used": result.service_tier_used or "standard",
+        }):
+            logger.info(f"Task status updated to COMPLETED. Task ID: {self._task_uuid}")
+        else:
+            logger.warning(f"無法更新 transcription_log（可能 task_uuid 不符）: {self._task_uuid}")
+        self._save_segments(db, result)
+
+        response = TranscriptionResponse(
+            task_uuid=self._task_uuid,
+            transcripts=transcripts,
+            tokens_used=tokens,
+            cost=cost,
+            model=self._params.model,
+            source_language=self._params.source_lang,
+            audio_duration_seconds=self._duration,
+        ).model_dump()
+        response["task_uuid"] = response["task_uuid"].hex
+        return _Outcome(TaskStatus.COMPLETED, "任務完成", result=response,
+                        value={"raw_lrc_text": result.text})
+
+    def _cancel(self, db: Session) -> _Outcome:
+        """取消：不是失敗，任務紀錄寫 CANCELLED。"""
+        logger.info(f"Transcription task {self._task_uuid} cancelled by user.")
+        self._records.update_log(db, self._task_uuid, {
+            "status": TaskStatus.CANCELLED,
+            "error_message": "使用者取消任務",
+            "processing_time_seconds": self._elapsed(),
+            "completed_at": datetime.now(),
+        })
+        return _Outcome(TaskStatus.CANCELLED, "任務已取消", value={"cancelled": True})
+
+    def _transient(self, error: Exception) -> _Outcome:
+        """暫時錯誤：不寫 FAILED，交給執行模式重試。"""
+        logger.warning(
+            f"Transcription task {self._task_uuid} hit transient error, will retry: {error}")
+        return _Outcome(TaskStatus.PROCESSING, f"暫時性錯誤，將重試: {error}",
+                        error=error, retry=True)
+
+    def _fail(self, db: Session, error: Exception) -> _Outcome:
+        """失敗：任務紀錄寫 FAILED 與錯誤訊息。"""
+        logger.error(
+            f"Transcription task failed for log ID: {self._task_uuid}\n{traceback.format_exc()}")
+        # session 可能因失敗的 commit 處於 pending rollback 狀態，先復原才能寫 FAILED
+        db.rollback()
+        self._records.update_log(db, self._task_uuid, {
+            "status": TaskStatus.FAILED,
+            "error_message": str(error),
+            "processing_time_seconds": self._elapsed(),
+        })
+        return _Outcome(TaskStatus.FAILED, f"任務失敗: {error}", error=error)
+
+    def _finish(self, db: Session) -> None:
+        """收尾：先保留音檔，再清理。"""
+        # 任務結束後旗標已無作用，清掉以免影響同一檔案之後再開的任務
+        run_mode.get().clear_cancel(self._params.file_uid)
+
+        # 音檔搬進保留區：成功要給校正介面重播，失敗／取消要留給再開任務與診斷。
+        # 這裡拋例外會蓋掉真正的結果，所以只記警告
+        retained = None
+        try:
+            retained = audio_store.retain(self._input, self._task_uuid)
+            if retained:
+                self._records.update_log(db, self._task_uuid, {"audio_filename": retained})
+        except Exception as e:
+            logger.warning(f"保留音檔失敗 (task={self._task_uuid}): {e}")
+
+        if not retained:
+            _delete_upload(self._input)
+
+    # ── 進度與廣播 ────────────────────────────────────────────────
+    def _report(self, text: str) -> None:
+        self._publish(text, TaskStatus.PROCESSING)
+
+    def _cancel_requested(self) -> bool:
+        return run_mode.get().is_cancel_requested(self._params.file_uid)
+
+    def _announce(self, outcome: _Outcome) -> None:
+        self._publish(outcome.text, outcome.status, outcome.result)
+
+    def _publish(self, text: str, status: TaskStatus, result: Optional[dict] = None) -> None:
+        publish_status(
+            self._params.client_id,
+            self._task_uuid,
+            text,
+            status_code=status,
+            file_uid=self._params.file_uid,
+            result_data=result,
+        )
+
+    # ── 小工具 ────────────────────────────────────────────────────
+    def _record_fields(self) -> dict:
+        params = self._params
+        return {
+            "original_filename": params.original_filename,
+            "model_used": params.model,
+            "source_language": params.source_lang,
+            "task_uuid": self._task_uuid,
+            "provider": params.provider,
+            "target_language": params.target_lang,
+            "is_batch": False,
+            "session_id": params.session_id,
+            "file_uid": params.file_uid,
+        }
+
+    def _price(self, result: TranscriptionTaskResult, elapsed: float) -> tuple[int, float]:
+        """計價：回傳 (總 token 數, 費用)。"""
+        items = []
+        if result.total_tokens > 0:
+            items.append(CalculationItem(
+                task_name="total_transcription",
+                input_tokens=result.input_tokens,
+                output_tokens=result.output_tokens,
+                content_type="audio",
+            ))
+        metrics = CalculatorService().calculate_metrics(
+            items=items,
+            model=self._params.model,
+            processing_time_seconds=elapsed,
+            audio_duration_seconds=self._duration,
+        )
+        cost = metrics.cost
+        # 實際以 Flex 層級完成（不是退回 Standard）才打折
+        if result.service_tier_used == "flex":
+            discount = get_settings().flex_cost_discount
+            cost *= discount
+            logger.info(f"Flex 層級生效，費用套用 {int(discount * 100)}% 折扣")
+        logger.info(f"Metrics calculated. Task ID: {self._task_uuid}. Cost: ${cost:.6f}")
+        return metrics.total_tokens, cost
+
+    def _save_segments(self, db: Session, result: TranscriptionTaskResult) -> None:
+        """片段是校正介面的資料來源；寫入失敗不影響任務結果（LRC 已經存進紀錄），只記警告。"""
+        if not result.segments:
+            return
+        try:
+            segments = order_segments(result.segments)
+            count = TranscriptSegmentRepository.replace_all(db, self._task_uuid, segments)
+            logger.info(f"已寫入 {count} 個轉錄片段 (task={self._task_uuid})")
+        except Exception as e:
+            db.rollback()
+            logger.warning(f"寫入轉錄片段失敗 (task={self._task_uuid}): {e}")
+
+    def _elapsed(self) -> float:
+        return time.time() - self._started_at
+
+
+def _output_formats(result: TranscriptionTaskResult) -> dict:
+    """完成時送給畫面的輸出格式；#109 改由輸出格式模組產生。"""
+    transcripts = convert_from_lrc(result.text)
+    return transcripts.model_dump() if transcripts else {}
+
+
+def _resolve_input(file_path: str, task_uuid: str) -> Path:
+    """輸入音檔；暫時錯誤的重試時，上傳檔已經搬進保留區，改從那裡找。
+
+    Celery 重試沿用同一個 task id，所以保留檔名找得到。
+    """
+    path = Path(file_path)
+    if path.exists():
+        return path
+    retained = audio_store.resolve(f"{task_uuid}{path.suffix.lower()}")
+    if retained:
+        logger.info(f"輸入檔已不在 temp_uploads，改用保留的音檔: {retained.name}")
+        return retained
+    return path
+
+
+def _delete_upload(path: Path) -> None:
+    """刪掉沒有保留下來的上傳檔；只刪 temp_uploads 裡的，路徑異常時寧可不刪。"""
+    try:
+        if path.exists() and is_temp_upload(path):
+            path.unlink()
+            logger.info(f"已清理上傳檔: {path.name}")
+    except OSError as e:
+        logger.warning(f"清理上傳檔 {path} 失敗: {e}")

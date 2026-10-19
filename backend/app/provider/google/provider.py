@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Dict, List
 
 from app.core.config import get_settings
-from app.provider.base import DEFAULT_QUEUE, ModelCapabilities, TranscribeRequest
+from app.provider.base import DEFAULT_QUEUE, ModelCapabilities, Progress, TranscribeRequest
 from app.provider.google.gemini import (
     GeminiClient,
     cleanup_gemini_file,
@@ -57,11 +57,13 @@ class GeminiProvider:
     def capabilities() -> Dict[str, ModelCapabilities]:
         return {model: _capabilities() for model in MODELS}
 
-    def transcribe(self, audio_path: Path, request: TranscribeRequest) -> TranscriptionTaskResult:
-        gemini_file = upload_file_to_gemini(audio_path, self._client, request.status_callback)
+    def transcribe(
+        self, audio_path: Path, request: TranscribeRequest, progress: Progress,
+    ) -> TranscriptionTaskResult:
+        gemini_file = upload_file_to_gemini(audio_path, self._client, progress.report)
         self._uploaded.append(gemini_file)
 
-        request.notify("AI模型處理中...")
+        progress.report("AI模型處理中...")
         return TranscriptionTaskResult.model_validate(transcribe_with_uploaded_file(
             self._client, gemini_file, request.model, request.prompt,
             service_tier=request.service_tier,

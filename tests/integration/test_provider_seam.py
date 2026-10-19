@@ -401,11 +401,11 @@ class TestCancel:
             assert queued_end["status_code"] == TaskStatus.CANCELLED
 
             cancel_when_dispatched(api, running_uid)
-            # 放行之後，不理會取消的供應商會把任務跑完；理會的話任務自己回報已取消
-            fake.hold.set()
+            # 不放行：假供應商只能從進度與取消物件得知取消，停下之後任務自己回報已取消
             endpoint_end = receive_until_terminal(running)[-1]
             task_end = receive_until_terminal(running)[-1]
             assert codes([endpoint_end, task_end]) == [TaskStatus.CANCELLED] * 2
+            assert fake.cancelled == 1
 
         # 能不能強制終止看任務的供應商的模型能力；佇列中的任務撤銷就好，不必終止
         queued_revoke, running_revoke = run_mode_spy.revoked

@@ -11,8 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Sequence, Tuple, Union
 
-from app.exceptions import TranscriptionCancelledError
-from app.provider.base import LOCAL_QUEUE, ModelCapabilities, TranscribeRequest
+from app.provider.base import LOCAL_QUEUE, ModelCapabilities, Progress, TranscribeRequest
 from app.services.transcription.models import TranscriptionTaskResult
 
 FAKE_MODEL = "fake-model"
@@ -56,6 +55,8 @@ class FakeProvider:
         self.opened = 0
         self.calls: List[Path] = []
         self.released = 0
+        # 看到使用者取消而停下的次數
+        self.cancelled = 0
         # hold 設定後，轉錄會停在這裡直到 hold 被 set 或使用者取消
         self.hold: Optional[threading.Event] = None
         self.started = threading.Event()
@@ -69,15 +70,18 @@ class FakeProvider:
         return self
 
     # ── Provider ─────────────────────────────────────────────────
-    def transcribe(self, audio_path: Path, request: TranscribeRequest) -> TranscriptionTaskResult:
+    def transcribe(
+        self, audio_path: Path, request: TranscribeRequest, progress: Progress,
+    ) -> TranscriptionTaskResult:
         self.calls.append(audio_path)
         self.started.set()
         if self.hold is not None:
-            while not self.hold.wait(0.02):
-                if request.cancel_requested():
-                    break
-            if request.cancel_requested():
-                raise TranscriptionCancelledError("使用者已取消任務")
+            while not self.hold.wait(0.02) and not progress.cancel_requested():
+                pass
+        # 取消只能從進度與取消物件得知
+        if progress.cancel_requested():
+            self.cancelled += 1
+            progress.raise_if_cancelled()
 
         step = self.script.pop(0) if self.script else []
         if isinstance(step, Exception):
