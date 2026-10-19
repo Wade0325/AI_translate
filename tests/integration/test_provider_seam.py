@@ -5,11 +5,13 @@
 測試只從外部觀察：狀態廣播、API 回應、存下來的片段與可以下載的輸出格式。
 """
 import io
+import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from dataclasses import replace
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -173,22 +175,61 @@ def upload(api: TestClient, name: str = "voice.wav") -> str:
     return response.json()["filename"]
 
 
-def submit(ws, filename: str, provider: str = "fake", model: str = FAKE_MODEL):
+def submit(ws, filename: str, provider: str = "fake", model: str = FAKE_MODEL, **fields):
+    """送出單檔任務；fields 是請求的其他欄位，例如提示詞與使用者文稿。"""
     ws.send_json({
         "filename": filename,
         "original_filename": filename,
         "provider": provider,
         "model": model,
         "source_lang": "ja",
+        **fields,
     })
 
 
-def transcribe(api, file_uid: str, name: str = "voice.wav") -> list[dict]:
+def transcribe(api, file_uid: str, name: str = "voice.wav", **fields) -> list[dict]:
     """上傳、送出，收下這個任務的所有廣播直到結束。"""
     filename = upload(api, name)
     with api.websocket_connect(f"/api/v1/ws/{file_uid}") as ws:
-        submit(ws, filename)
+        submit(ws, filename, **fields)
         return receive_until_terminal(ws)
+
+
+def task_rejection(api, file_uid: str, **submit_args) -> str:
+    """送出一個該被拒絕的單檔任務，回傳拒絕的訊息。
+
+    被拒絕時只回一則 FAILED 就關閉連線（1008），而且沒有派送任何任務。
+    """
+    filename = upload(api)
+    with api.websocket_connect(f"/api/v1/ws/{file_uid}") as ws:
+        submit(ws, filename, **submit_args)
+        message = receive(ws)
+        with pytest.raises(WebSocketDisconnect) as closed:
+            receive(ws)
+    assert closed.value.code == 1008
+    assert message["status_code"] == TaskStatus.FAILED
+    assert api.post(f"/api/v1/transcription/{file_uid}/cancel").json()["cancelled"] is False
+    return message["status_text"]
+
+
+def batch_rejection(api, file_fields: dict | None = None, **fields) -> str:
+    """送出只有一個檔案（f1）、該被拒絕的批次，回傳拒絕的訊息。
+
+    fields 是批次層級的欄位（預設用假供應商），file_fields 是那個檔案的欄位。
+    """
+    with api.websocket_connect("/api/v1/batch/ws/batch-reject") as ws:
+        ws.send_json({
+            "files": [{"filename": "a.wav", "original_filename": "a.wav", "file_uid": "f1",
+                       **(file_fields or {})}],
+            "provider": "fake",
+            "model": FAKE_MODEL,
+            "source_lang": "ja",
+            **fields,
+        })
+        message = receive(ws)
+    assert message["file_uid"] == "f1"
+    assert message["status_code"] == TaskStatus.FAILED
+    return message["status_text"]
 
 
 def stored_segments(api, task_uuid: str) -> list[dict]:
@@ -331,19 +372,10 @@ MISMATCHES = [
 class TestModelMustBelongToProvider:
     @pytest.mark.parametrize("provider, model", MISMATCHES)
     def test_single_file_rejected_with_clear_error(self, api, fake, provider, model):
-        filename = upload(api)
-        with api.websocket_connect("/api/v1/ws/uid-reject") as ws:
-            submit(ws, filename, provider=provider, model=model)
-            message = receive(ws)
-            assert message["status_code"] == TaskStatus.FAILED
-            assert model in message["status_text"] or provider in message["status_text"]
-            with pytest.raises(WebSocketDisconnect) as closed:
-                receive(ws)
-        assert closed.value.code == 1008
+        reason = task_rejection(api, "uid-reject", provider=provider, model=model)
 
-        # 沒有派送任何任務，也沒有跑到任何供應商
-        cancel = api.post("/api/v1/transcription/uid-reject/cancel").json()
-        assert cancel["cancelled"] is False
+        assert model in reason or provider in reason
+        # 沒有跑到任何供應商
         assert fake.opened == 0
 
     @pytest.mark.parametrize("provider, model, reason", [
@@ -351,17 +383,122 @@ class TestModelMustBelongToProvider:
         ("fake", FAKE_MODEL, "不支援批次"),
     ])
     def test_batch_rejected_with_clear_error(self, api, fake, provider, model, reason):
-        with api.websocket_connect("/api/v1/batch/ws/batch-reject") as ws:
-            ws.send_json({
-                "files": [{"filename": "a.wav", "original_filename": "a.wav", "file_uid": "f1"}],
-                "provider": provider,
-                "model": model,
-                "source_lang": "ja",
-            })
-            message = receive(ws)
-        assert message["file_uid"] == "f1"
-        assert message["status_code"] == TaskStatus.FAILED
-        assert reason in message["status_text"]
+        assert reason in batch_rejection(api, provider=provider, model=model)
+        assert fake.opened == 0
+
+
+# ─── 模型能力端點（#108） ───────────────────────────────────────────────────
+
+# 前端只在這裡讀模型能力的欄位
+FRONTEND_CAPABILITY_READER = (
+    Path(__file__).resolve().parents[2] / "frontend" / "src" / "hooks" / "useProviderList.js")
+
+
+def listed_capabilities(api) -> dict:
+    """GET /providers 攤平成 {(供應商, 模型): 模型能力}。"""
+    response = api.get("/api/v1/providers")
+    assert response.status_code == 200
+    return {(entry["provider"], item["model"]): item["capabilities"]
+            for entry in response.json() for item in entry["models"]}
+
+
+class TestModelCapabilitiesEndpoint:
+    def test_lists_each_model_of_each_provider_with_its_capabilities(self, api, fake):
+        # 回的是供應商當下回報的模型能力，不是寫死的副本
+        fake.model_capabilities = replace(
+            fake.model_capabilities, single_pass_seconds=42.0, accepts_prompt=False)
+
+        assert listed_capabilities(api)[("fake", FAKE_MODEL)] == {
+            "single_pass_seconds": 42.0,
+            "queue": "local_asr",
+            "can_terminate": False,
+            "split_retry_on_failure": False,
+            "accepts_prompt": False,
+            "accepts_user_text": True,
+            "supports_batch": False,
+            "pricing": "free",
+            "remove_silence": True,
+        }
+
+    def test_local_models_take_no_prompt_or_user_text_gemini_models_do(self, api):
+        listed = listed_capabilities(api)
+        local = {model: c for (provider, model), c in listed.items() if provider == "local"}
+        gemini = {model: c for (provider, model), c in listed.items() if provider == "google"}
+
+        assert set(local) == {"moss-align", "moss-qwen3-asr", "vibevoice-qwen3-asr"}
+        assert {"gemini-3.5-flash", "gemini-2.5-flash"} <= set(gemini)
+        assert not any(c["accepts_prompt"] or c["accepts_user_text"] for c in local.values())
+        assert all(c["accepts_prompt"] and c["accepts_user_text"] for c in gemini.values())
+
+    def test_frontend_reads_only_capabilities_the_endpoint_lists(self, api):
+        # 前端讀不到的欄位一律當成支援（還沒載入時不限制）：欄位一改名，畫面就默默全部開放
+        source = FRONTEND_CAPABILITY_READER.read_text(encoding="utf-8")
+        read = set(re.findall(r"capabilities\??\.(\w+)", source))
+        listed = {field for capabilities in listed_capabilities(api).values()
+                  for field in capabilities}
+
+        assert {"accepts_prompt", "accepts_user_text", "supports_batch"} <= read
+        assert read <= listed
+
+
+# ─── 模型不吃的輸入（#108） ─────────────────────────────────────────────────
+
+class TestInputsTheModelDoesNotTake:
+    @pytest.mark.parametrize("fields, reported", [
+        ({"prompt": "語助詞也要寫出來"}, "提示詞"),
+        ({"original_text": "おはよう。こんにちは。"}, "使用者文稿"),
+    ], ids=["prompt", "user-text"])
+    def test_local_model_rejects_them_with_clear_error(self, api, fields, reported):
+        reason = task_rejection(
+            api, "uid-local-input", provider="local", model="moss-align", **fields)
+
+        assert "moss-align" in reason
+        assert reported in reason
+
+    def test_model_that_takes_them_runs_as_usual(self, api, fake):
+        fake.script = list(SCRIPT)
+
+        messages = transcribe(api, "uid-with-inputs",
+                              prompt="語助詞也要寫出來", original_text="おはよう。")
+
+        assert codes(messages)[-1] == TaskStatus.COMPLETED
+        assert len(fake.calls) == 1
+
+    @pytest.mark.parametrize("fields", [
+        {"prompt": None, "original_text": None},
+        {"prompt": "", "original_text": ""},
+        {"prompt": " \n", "original_text": "\t"},
+    ], ids=["null", "empty", "blank"])
+    def test_unfilled_inputs_are_submitted_as_usual(self, api, fake, fields):
+        fake.model_capabilities = replace(
+            fake.model_capabilities, accepts_prompt=False, accepts_user_text=False)
+        fake.script = list(SCRIPT)
+
+        messages = transcribe(api, "uid-unfilled", **fields)
+
+        assert codes(messages)[-1] == TaskStatus.COMPLETED
+
+    @pytest.mark.parametrize("batch_prompt, file_prompt", [
+        ("語助詞也要寫出來", None),
+        (None, "語助詞也要寫出來"),
+    ], ids=["batch-prompt", "file-prompt"])
+    def test_batch_rejects_them_with_clear_error(self, api, fake, batch_prompt, file_prompt):
+        fake.model_capabilities = replace(
+            fake.model_capabilities, supports_batch=True, accepts_prompt=False)
+
+        reason = batch_rejection(api, file_fields={"prompt": file_prompt}, prompt=batch_prompt)
+
+        assert "提示詞" in reason
+        assert fake.opened == 0
+
+    def test_batch_on_model_without_batch_reports_that_first(self, api, fake):
+        # 整批都跑不了時先說批次：先說提示詞的話，使用者清掉之後還會再被拒一次
+        fake.model_capabilities = replace(
+            fake.model_capabilities, supports_batch=False, accepts_prompt=False)
+
+        reason = batch_rejection(api, prompt="語助詞也要寫出來")
+
+        assert "不支援批次" in reason
         assert fake.opened == 0
 
 
