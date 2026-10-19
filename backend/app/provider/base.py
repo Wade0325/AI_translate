@@ -6,6 +6,7 @@
 - :class:`app.provider.local.provider.LocalProvider`：本機
 - :class:`app.provider.google.provider.GeminiProvider`：Gemini
 
+支援批次的供應商另外實作 :class:`BatchProvider`（上傳、送出、輪詢）。
 依名稱找轉接器、驗證模型屬於供應商，見 :mod:`app.provider.registry`。
 """
 
@@ -13,7 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Literal, Mapping, Optional, Protocol
+from typing import Any, Callable, Literal, Mapping, Optional, Protocol, Sequence, Tuple
 
 from app.exceptions import TranscriptionCancelledError
 from app.services.transcription.models import TranscriptionTaskResult
@@ -103,3 +104,41 @@ class Provider(Protocol):
 
     def release(self) -> None:
         """釋放這次用到的遠端資源與暫存資源；失敗只記 log，不拋例外。"""
+
+
+@dataclass(frozen=True)
+class BatchStatus:
+    """查一次批次的結果。"""
+
+    state: str
+    """供應商回報的狀態名稱，原樣放進狀態文字與 log。"""
+    done: bool
+    """批次已經結束（成功或失敗），不必再查。"""
+    succeeded: bool = False
+    results: Tuple[TranscriptionTaskResult, ...] = ()
+    """成功結束時每個請求一份轉錄結果，順序和送出時相同；
+    失敗的請求 ``success=False``，``text`` 是給使用者看的失敗原因。"""
+
+
+class BatchProvider(Provider, Protocol):
+    """支援批次（模型能力的 ``supports_batch``）的供應商轉接器。
+
+    批次結束後同樣呼叫 :meth:`release` 刪掉遠端資源。
+    新的批次用 :func:`app.provider.registry.open_batch_provider` 建立，
+    重啟後復原用 :func:`app.provider.registry.reopen_batch_provider`。
+    """
+
+    def upload(self, audio_path: Path) -> Any:
+        """把一個音檔交給供應商，回傳 :meth:`submit_batch` 要用的代號。"""
+        ...
+
+    def submit_batch(self, requests: Sequence[Tuple[Any, str]], display_name: str) -> str:
+        """送出批次；每個請求是（:meth:`upload` 的代號, 提示詞）。
+
+        回傳批次名稱：之後輪詢、重啟後復原都用它。
+        """
+        ...
+
+    def poll_batch(self, name: str) -> BatchStatus:
+        """查一次批次的狀態；成功結束時附上每個請求的轉錄結果。"""
+        ...
