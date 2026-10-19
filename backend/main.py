@@ -4,6 +4,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from contextlib import asynccontextmanager
 from app.api import local_models
 from app.api import model_manager
+from app.api import providers
 from app.api import transcription
 from app.api import upload
 from app.api import batch
@@ -86,6 +87,7 @@ def health():
 
 app.include_router(transcription.router, prefix="/api/v1",
                    tags=["Transcription"])
+app.include_router(providers.router, prefix="/api/v1", tags=["Providers"])
 app.include_router(model_manager.router,
                    prefix="/api/v1/setting",
                    tags=["Model Settings"])
