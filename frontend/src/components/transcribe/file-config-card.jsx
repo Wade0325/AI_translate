@@ -19,6 +19,7 @@ import {
 } from "lucide-react"
 import { Button, Select, Switch, Slider, Tag, Typography, Input, Dropdown, Spin, Tooltip, Popconfirm } from "antd"
 import { LoadingOutlined } from "@ant-design/icons"
+import { ReasonText, ReasonTooltip } from "@/components/disabled-reason"
 import { languages, formatLang } from "@/constants/languages"
 import { downloadFormats } from "@/constants/downloadFormats"
 
@@ -34,6 +35,10 @@ const statusConfig = {
     cancelled: { icon: Ban, color: "#8888a8", label: "已取消" },
 }
 
+/**
+ * disabledReasons：所選的模型不支援的輸入與原因（{ prompt, userText }，見 useProviderList）；
+ * 有原因的欄位停用並顯示它，已經填了的值標成不會送出。
+ */
 export function FileConfigCard({
     config,
     globalConfig,
@@ -47,6 +52,7 @@ export function FileConfigCard({
     onCancel,
     vadTesting = false,
     readOnly = false,
+    disabledReasons = {},
 }) {
     const [expanded, setExpanded] = useState(false)
 
@@ -78,15 +84,30 @@ export function FileConfigCard({
     const isActive = config.status === "processing"
     const isCancelled = config.status === "cancelled"
 
+    // 還會送出的檔案（等待中、失敗、已取消）才標出所選的模型不支援、送出時不會帶上的輸入；
+    // notSentReason 是不會帶上的原因，會帶上時是 null
+    const submittable = ["waiting", "error", "cancelled"].includes(config.status)
+    const notSentReason = (reason) => (submittable ? reason : null)
+
     const tags = [
         { label: formatLang(config.language), icon: Languages, overridden: isOverridden("language") },
         { label: config.isMultiSpeaker ? `${config.speakerCount} speakers` : "Single", icon: Users, overridden: isOverridden("isMultiSpeaker") || isOverridden("speakerCount") },
         { label: config.includeTimestamps ? "Timestamps" : "No timestamps", icon: Clock, overridden: isOverridden("includeTimestamps") },
         ...((config.prompt ?? "").length > 0
-            ? [{ label: "Prompt", icon: MessageSquareText, overridden: config.prompt !== globalConfig.prompt }]
+            ? [{
+                label: "Prompt",
+                icon: MessageSquareText,
+                overridden: config.prompt !== globalConfig.prompt,
+                notSentReason: notSentReason(disabledReasons.prompt),
+            }]
             : []),
         ...(config.original_text
-            ? [{ label: "附加文本", icon: FileText, overridden: true }]
+            ? [{
+                label: "使用者文稿",
+                icon: FileText,
+                overridden: true,
+                notSentReason: notSentReason(disabledReasons.userText),
+            }]
             : []),
     ]
 
@@ -146,33 +167,41 @@ export function FileConfigCard({
                         </Tag>
                     </div>
                     <div style={{ display: "flex", flexWrap: "wrap", gap: 4, alignItems: "center" }}>
-                        {tags.map((tag) => (
-                            <Tag
-                                key={tag.label}
-                                style={{
-                                    display: "inline-flex",
-                                    alignItems: "center",
-                                    gap: 4,
-                                    fontSize: 10,
-                                    padding: "1px 6px",
-                                    borderRadius: 4,
-                                    lineHeight: "16px",
-                                    margin: 0,
-                                    background: tag.overridden ? "rgba(45, 212, 168, 0.1)" : "rgba(42, 42, 72, 0.6)",
-                                    border: tag.overridden ? "1px solid rgba(45, 212, 168, 0.2)" : "1px solid transparent",
-                                    color: tag.overridden ? "#2dd4a8" : "#8888a8",
-                                }}
-                            >
-                                <tag.icon size={10} />
-                                {tag.label}
-                            </Tag>
-                        ))}
+                        {tags.map((tag) => {
+                            const highlighted = tag.overridden && !tag.notSentReason
+                            return (
+                                <Tag
+                                    key={tag.label}
+                                    style={{
+                                        display: "inline-flex",
+                                        alignItems: "center",
+                                        gap: 4,
+                                        fontSize: 10,
+                                        padding: "1px 6px",
+                                        borderRadius: 4,
+                                        lineHeight: "16px",
+                                        margin: 0,
+                                        background: highlighted ? "rgba(45, 212, 168, 0.1)" : "rgba(42, 42, 72, 0.6)",
+                                        border: highlighted ? "1px solid rgba(45, 212, 168, 0.2)" : "1px solid transparent",
+                                        color: highlighted ? "#2dd4a8" : "#8888a8",
+                                        textDecoration: tag.notSentReason ? "line-through" : undefined,
+                                    }}
+                                >
+                                    <tag.icon size={10} />
+                                    {tag.label}
+                                </Tag>
+                            )
+                        })}
                         {isCompleted && config.tokens_used > 0 && (
                             <Text style={{ fontSize: 10, color: "#2dd4a8", marginLeft: 4 }}>
                                 {config.tokens_used?.toLocaleString()} tokens · ${config.cost?.toFixed(4)}
                             </Text>
                         )}
                     </div>
+                    {/* 劃掉的輸入不會送出，原因直接寫出來 */}
+                    {tags.filter((tag) => tag.notSentReason).map((tag) => (
+                        <ReasonText key={tag.label} reason={tag.notSentReason} />
+                    ))}
                 </div>
 
                 <div style={{ display: "flex", alignItems: "center", gap: 2, flexShrink: 0 }}>
@@ -220,17 +249,22 @@ export function FileConfigCard({
                             />
                         </Tooltip>
                     )}
-                    {/* Attach text：處理中時隱藏 */}
+                    {/* 使用者文稿：處理中時隱藏；所選的模型不支援使用者文稿時停用並說明原因 */}
                     {!readOnly && !isCompleted && !isActive && onAttachText && (
-                        <Tooltip title="附加文本">
+                        <ReasonTooltip title={disabledReasons.userText || "附加使用者文稿"}>
                             <Button
                                 type="text"
                                 size="small"
                                 icon={<FileText size={14} />}
+                                disabled={Boolean(disabledReasons.userText)}
                                 onClick={() => onAttachText(config.id)}
-                                style={{ width: 28, height: 28, color: config.original_text ? "#2dd4a8" : "#8888a8" }}
+                                style={{
+                                    width: 28,
+                                    height: 28,
+                                    color: config.original_text && !disabledReasons.userText ? "#2dd4a8" : "#8888a8",
+                                }}
                             />
-                        </Tooltip>
+                        </ReasonTooltip>
                     )}
                     {/* Cancel：僅執行中且由單檔轉錄啟動的任務 */}
                     {!readOnly && isActive && onCancel && (
@@ -378,10 +412,12 @@ export function FileConfigCard({
                         <TextArea
                             value={config.prompt}
                             onChange={(e) => update({ prompt: e.target.value })}
+                            disabled={Boolean(disabledReasons.prompt)}
                             placeholder="Override the global prompt for this file..."
                             autoSize={{ minRows: 2 }}
                             style={{ fontSize: 12 }}
                         />
+                        <ReasonText reason={disabledReasons.prompt} />
                     </div>
                 </div>
             )}

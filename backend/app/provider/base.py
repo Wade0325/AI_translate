@@ -28,7 +28,10 @@ class ModelCapabilities:
     """一個模型支援哪些輸入與處理方式；依供應商名稱分支的規則都改讀這裡。"""
 
     single_pass_seconds: float
-    """單次能處理的長度（秒）；更長的音檔要分段轉錄。0 = 不分段。"""
+    """單次能處理的長度（秒）；更長的音檔要分段轉錄。0 = 不分段。
+
+    不建立轉接器就列出來的（registry、模型能力端點）是上限；轉接器回報的是在執行的
+    機器上的值，可能更短（本機依顯卡容量收斂）。"""
     queue: str
     """工作佇列：``LOCAL_QUEUE`` 或 ``DEFAULT_QUEUE``。"""
     can_terminate: bool
@@ -71,7 +74,8 @@ class Provider(Protocol):
     """
 
     def capabilities(self) -> Mapping[str, ModelCapabilities]:
-        """這個供應商每個模型的模型能力，key 是模型名稱。"""
+        """這個供應商每個模型在這台機器上的模型能力，key 是模型名稱；分段轉錄照這裡的
+        單次長度切。"""
 
     def transcribe(self, audio_path: Path, request: TranscribeRequest) -> TranscriptionTaskResult:
         """轉錄一段音檔，時間軸是這段音檔本身。

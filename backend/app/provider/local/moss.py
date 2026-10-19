@@ -155,17 +155,28 @@ def _total_vram_gib() -> Optional[float]:
     return None
 
 
-def max_single_pass_seconds() -> float:
-    """MOSS 單次推論能處理的最長音檔（秒）；更長的檔由 flows 分段轉錄。
+def single_pass_limit_seconds() -> float:
+    """不查顯卡的單次長度上限（秒）：設定值（使用者給多少就用多少）與上下文上限
+    （prompt 加預留的生成空間不超過 131072 token，約 96 分）取小；0＝停用切段。
 
-    取三者最小：設定值（使用者給多少就用多少）、上下文上限（prompt 加預留的生成空間
-    不超過 131072 token，約 96 分）、顯卡容量估算（16 GB 約 79 分、12 GB 約 52 分、
-    8 GB 約 26 分；估算值至少 300 秒——實測 275 秒峰值 2.32 GiB，4 GB 卡即可容納）。
+    列模型能力時用這個：API 行程（Docker 模式的 API 容器沒有顯卡）不 import torch。
     """
     cap = float(get_settings().local_moss_single_pass_max_seconds)
     if cap <= 0:
         return 0.0  # 與 long_audio_split_threshold_seconds 相同：0＝停用切段（使用者自負風險）
-    limit = min(cap, (MAX_LENGTH - 1024) / _PASS_TOKENS_PER_SECOND)
+    return min(cap, (MAX_LENGTH - 1024) / _PASS_TOKENS_PER_SECOND)
+
+
+def max_single_pass_seconds() -> float:
+    """這台機器上 MOSS 單次推論能處理的最長音檔（秒）；更長的檔由 flows 分段轉錄。
+
+    :func:`single_pass_limit_seconds` 再依顯卡容量收斂（16 GB 約 79 分、12 GB 約 52 分、
+    8 GB 約 26 分；估算值至少 300 秒——實測 275 秒峰值 2.32 GiB，4 GB 卡即可容納）。
+    會 import torch，只在真的要轉錄的行程呼叫。
+    """
+    limit = single_pass_limit_seconds()
+    if limit <= 0:
+        return limit
     total = _total_vram_gib()
     if total is not None:
         usable_k_tokens = (total - _VRAM_HEADROOM_GIB - _WEIGHTS_GIB) / _GIB_PER_K_TOKENS

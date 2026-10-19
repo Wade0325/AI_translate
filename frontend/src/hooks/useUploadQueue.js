@@ -13,30 +13,33 @@ import { TASK_STATUS } from '../constants/taskStatus';
  *   - socketManager：來自 useTranscriptionSocket()
  *
  * 回傳兩個高階函式：
- *   - startRegular({ provider, model, prompt, defaults }):
+ *   - startRegular({ provider, model, prompt, defaults, supports }):
  *       每個檔案各自一條 WS；單檔轉錄／Flex／Standard 模式
- *   - startBatch({ provider, model, prompt, defaults }):
+ *   - startBatch({ provider, model, prompt, defaults, supports }):
  *       所有檔案共用一條 batch WS（Gemini Batch API，50% 折扣）
  *
  * 請求不帶 API 金鑰：後端從資料庫取用，明文金鑰不經過瀏覽器。
  *
  * defaults 物件包含全域 fallback：source_lang / multi_speaker / service_tier；
  * 當檔案本身沒指定 per-file 設定時會用 defaults 補上。
+ *
+ * supports 是所選模型支援的輸入（useProviderList 的 modelSupports）：不支援的欄位在
+ * 畫面上已停用並註明原因，送出時不帶上，包括設定裡存的提示詞。
  */
 
 const isRestartable = (f) =>
   (f.status === 'waiting' || f.status === 'error' || f.status === 'cancelled') &&
   !!f.originFileObj;
 
-function buildSinglePayload({ serverFilename, file, provider, model, prompt, defaults, sessionId }) {
+function buildSinglePayload({ serverFilename, file, provider, model, prompt, defaults, supports, sessionId }) {
   return {
     filename: serverFilename,
     original_filename: file.name,
     provider,
     model,
     source_lang: file.language || defaults.sourceLang,
-    prompt: file.prompt ?? prompt,
-    original_text: file.original_text || null,
+    prompt: supports.prompt ? (file.prompt ?? prompt) : null,
+    original_text: supports.userText ? (file.original_text || null) : null,
     multi_speaker: file.isMultiSpeaker ?? defaults.multiSpeaker,
     service_tier: defaults.serviceTier,
     session_id: sessionId,
@@ -125,7 +128,7 @@ export function useUploadQueue({ fileList, setFileList, socketManager, onBatchSu
   }, []);
 
   // 一般模式：每個 file uid 一條 WebSocket
-  const startRegular = useCallback(async ({ provider, model, prompt, defaults }) => {
+  const startRegular = useCallback(async ({ provider, model, prompt, defaults, supports }) => {
     const candidates = fileList.filter(isRestartable);
     if (candidates.length === 0) {
       return { skipped: true };
@@ -144,6 +147,7 @@ export function useUploadQueue({ fileList, setFileList, socketManager, onBatchSu
             model,
             prompt,
             defaults,
+            supports,
             sessionId,
           });
           socketManager.sendMessage(file.uid, payload);
@@ -180,7 +184,7 @@ export function useUploadQueue({ fileList, setFileList, socketManager, onBatchSu
   }, [fileList, updateFile, socketManager, handleSingleMessage, beginSession, uploadFile]);
 
   // 批次模式：所有檔案共用一條 batch WebSocket
-  const startBatch = useCallback(async ({ provider, model, prompt, defaults }) => {
+  const startBatch = useCallback(async ({ provider, model, prompt, defaults, supports }) => {
     const candidates = fileList.filter(isRestartable);
     if (candidates.length === 0) {
       return { skipped: true, reason: 'no-files' };
@@ -232,14 +236,14 @@ export function useUploadQueue({ fileList, setFileList, socketManager, onBatchSu
             file_uid: f.uid,
             // per-file 設定，後端優先於下方批次層級 fallback 使用
             source_lang: f.language || defaults.sourceLang,
-            prompt: f.prompt ?? prompt,
+            prompt: supports.prompt ? (f.prompt ?? prompt) : null,
             multi_speaker: f.isMultiSpeaker ?? defaults.multiSpeaker,
           })),
           provider,
           model,
           // 整個批次的 fallback 值
           source_lang: defaults.sourceLang,
-          prompt,
+          prompt: supports.prompt ? prompt : null,
           multi_speaker: defaults.multiSpeaker,
           session_id: sessionId,
         };
