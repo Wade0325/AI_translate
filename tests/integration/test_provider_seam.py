@@ -525,9 +525,13 @@ def run_to_cancellation(api, fake) -> dict:
     return cancel_while_transcribing(api, fake, "uid-finish")
 
 
+FINISHED_RUNS = pytest.mark.parametrize(
+    "run_task", [run_to_completion, run_to_failure, run_to_cancellation],
+    ids=["completed", "failed", "cancelled"])
+
+
 class TestFinishing:
-    @pytest.mark.parametrize("run_task", [run_to_completion, run_to_failure, run_to_cancellation],
-                             ids=["completed", "failed", "cancelled"])
+    @FINISHED_RUNS
     def test_audio_is_retained_and_temp_files_cleaned_before_the_result(
             self, api, fake, data_dir, run_task):
         end = run_task(api, fake)
@@ -536,6 +540,17 @@ class TestFinishing:
         audio = api.get(f"/api/v1/transcripts/{end['task_uuid']}/audio")
         assert audio.status_code == 200
         assert audio.content == synthetic_audio()
+        assert leftovers(data_dir) == []
+
+    @FINISHED_RUNS
+    def test_without_retention_no_copy_of_the_audio_is_left(
+            self, api, fake, settings, monkeypatch, data_dir, run_task):
+        monkeypatch.setattr(settings, "retain_audio", False)
+        end = run_task(api, fake)
+
+        # 使用者關掉保留音檔時，任務一結束，上傳的音檔與暫存檔都不留在電腦上
+        assert api.get(f"/api/v1/transcripts/{end['task_uuid']}/audio").status_code == 404
+        assert retained_files(data_dir) == []
         assert leftovers(data_dir) == []
 
 
