@@ -5,9 +5,11 @@
 呼叫端只給「怎麼轉錄」：拿到輸入音檔與進度與取消物件，回傳轉錄結果。任務紀錄與片段、
 計價、狀態廣播、取消旗標、保留音檔與清理輸入音檔都在這裡，每條規則只寫一次：
 
-- 取消不是失敗：任務紀錄寫 CANCELLED。開始前就取消的任務也有紀錄，不呼叫供應商。
+- 取消不是失敗：任務紀錄寫 CANCELLED。開始前就取消的任務也有紀錄，不呼叫供應商；
+  使用者取消之後，供應商才跑完或才出錯，都不蓋掉取消。
 - 暫時錯誤不寫 FAILED：輸入音檔與取消旗標留給執行模式的重試；沒有重試了才照失敗處理。
-- 先保留音檔，再清理：不論結果，輸入音檔先搬進保留區，沒保留下來的才刪掉。
+- 先保留音檔，再清理：不論結果（連被強制終止也一樣），輸入音檔先搬進保留區，沒保留
+  下來的才刪掉；收尾的每一步各自保護，失敗只記 log。
 - 收尾之後才宣告結果：畫面收到完成、失敗或取消時，紀錄、片段與保留音檔都已就緒。
 
 狀態廣播與查詢取消只經由執行模式模組（:mod:`app.runtime.run_mode`）。
@@ -30,7 +32,7 @@ from app.core.config import get_settings
 from app.core.task_status import TaskStatus
 from app.database.session import SessionLocal
 from app.exceptions import TranscriptionCancelledError, TransientError
-from app.provider.base import Progress
+from app.provider.base import ProgressAndCancel
 from app.provider.registry import UnsupportedModelError, model_capabilities
 from app.repositories.transcript_segment_repository import TranscriptSegmentRepository
 from app.repositories.transcription_log_repository import TranscriptionLogRepository
@@ -48,24 +50,29 @@ from app.utils.paths import is_temp_upload
 
 logger = setup_logger(__name__)
 
-Transcribe = Callable[[Path, Progress], TranscriptionTaskResult]
+Transcribe = Callable[[Path, ProgressAndCancel], TranscriptionTaskResult]
 """轉錄輸入音檔；見 :meth:`TaskLifecycle.run`。"""
 
 
-@dataclass
+@dataclass(frozen=True)
 class _Outcome:
     """任務這一次執行的結果：要宣告的狀態，以及收尾之後要回傳或往上拋的東西。"""
 
     status: TaskStatus
     text: str
-    result: Optional[dict] = None
-    """完成時送給畫面的結果。"""
+    """宣告時的狀態文字。"""
+    broadcast_result: Optional[dict] = None
+    """完成時隨宣告送給畫面的結果。"""
     error: Optional[Exception] = None
     """收尾之後往上拋，讓執行模式記下失敗或安排重試。"""
     retry: bool = False
     """暫時錯誤：執行模式會再跑一次這個任務。"""
-    value: Optional[dict] = None
-    """:meth:`TaskLifecycle.run` 的回傳值。"""
+    return_value: Optional[dict] = None
+    """:meth:`TaskLifecycle.run` 回傳給執行模式的值。"""
+
+
+def _cancelled() -> _Outcome:
+    return _Outcome(TaskStatus.CANCELLED, "任務已取消", return_value={"cancelled": True})
 
 
 class TaskLifecycle:
@@ -83,7 +90,7 @@ class TaskLifecycle:
         self._started_at = time.time()
         self._duration = 0.0
         self._records = TranscriptionLogRepository()
-        self._progress = Progress(self._report, self._cancel_requested)
+        self._progress = ProgressAndCancel(self._report, self._cancel_requested)
 
     def run(self, transcribe: Transcribe) -> dict:
         """跑完這個任務，回傳給執行模式的結果。
@@ -113,7 +120,7 @@ class TaskLifecycle:
         self._announce(outcome)
         if outcome.error is not None:
             raise outcome.error
-        return outcome.value or {}
+        return outcome.return_value or {}
 
     # ── 狀態轉換 ──────────────────────────────────────────────────
     def _attempt(self, db: Session, transcribe: Transcribe) -> _Outcome:
@@ -201,14 +208,14 @@ class TaskLifecycle:
             audio_duration_seconds=self._duration,
         ).model_dump()
         response["task_uuid"] = response["task_uuid"].hex
-        return _Outcome(TaskStatus.COMPLETED, "任務完成", result=response,
-                        value={"raw_lrc_text": result.text})
+        return _Outcome(TaskStatus.COMPLETED, "任務完成", broadcast_result=response,
+                        return_value={"raw_lrc_text": result.text})
 
     def _cancel(self, db: Session) -> _Outcome:
         """取消：不是失敗，任務紀錄寫 CANCELLED。"""
         logger.info(f"Transcription task {self._task_uuid} cancelled by user.")
         self._records.update_log(db, self._task_uuid, self._cancelled_fields())
-        return _Outcome(TaskStatus.CANCELLED, "任務已取消", value={"cancelled": True})
+        return _cancelled()
 
     def _cancel_before_start(self, db: Session) -> _Outcome:
         """開始前就取消：建立已取消的任務紀錄，不呼叫供應商。
@@ -219,7 +226,7 @@ class TaskLifecycle:
         logger.info(
             f"任務 {self._task_uuid} 在啟動前已被取消 (file_uid={self._params.file_uid})")
         self._records.insert_log(db, {**self._record_fields(), **self._cancelled_fields()})
-        return _Outcome(TaskStatus.CANCELLED, "任務已取消", value={"cancelled": True})
+        return _cancelled()
 
     def _transient(self, error: Exception) -> _Outcome:
         """暫時錯誤：不寫 FAILED，交給執行模式重試。"""
@@ -286,7 +293,7 @@ class TaskLifecycle:
         return run_mode.get().is_cancel_requested(self._params.file_uid)
 
     def _announce(self, outcome: _Outcome) -> None:
-        self._publish(outcome.text, outcome.status, outcome.result)
+        self._publish(outcome.text, outcome.status, outcome.broadcast_result)
 
     def _publish(self, text: str, status: TaskStatus, result: Optional[dict] = None) -> None:
         publish_status(

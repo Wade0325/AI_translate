@@ -56,7 +56,7 @@ os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
 import soundfile as sf
 
 from app.exceptions import TranscriptionCancelledError
-from app.provider.base import Progress
+from app.provider.base import ProgressAndCancel
 from app.utils.binaries import ffmpeg_bin
 from app.utils.logger import setup_logger
 
@@ -103,7 +103,7 @@ _LANGUAGE_MAP = {
 }
 
 
-def _make_cancel_stopping_criteria(progress: Progress):
+def _make_cancel_stopping_criteria(progress: ProgressAndCancel):
     """用進度與取消物件產生 generate 的停止生成條件（StoppingCriteria）。
 
     長檔 diarization 的單次 generate 可達數分鐘，靠它在解碼途中停下
@@ -154,7 +154,7 @@ def _to_mono(audio_path: Path, sample_rate: int) -> Path:
     return output
 
 
-def _run_moss(wav_path: Path, progress: Progress) -> List[dict]:
+def _run_moss(wav_path: Path, progress: ProgressAndCancel) -> List[dict]:
     """MOSS 一次產生說話者、時間與文字，回傳與 VibeVoice 相同結構的片段。"""
     from app.provider.local import moss
 
@@ -179,7 +179,7 @@ def _entries_from_segments(segments: List[dict]) -> List[dict]:
     ]
 
 
-def _run_diarization(wav_path: Path, progress: Progress) -> List[dict]:
+def _run_diarization(wav_path: Path, progress: ProgressAndCancel) -> List[dict]:
     """VibeVoice-ASR 整檔說話者分離，回傳 [{Start, End, Speaker, ...}]。"""
     import torch
     from transformers import AutoProcessor, VibeVoiceAsrForConditionalGeneration
@@ -235,7 +235,7 @@ def _transcribe_segments(
     wav_path: Path,
     segments: List[dict],
     language: Optional[str],
-    progress: Progress,
+    progress: ProgressAndCancel,
 ) -> List[dict]:
     """Qwen3-ASR 逐段轉錄，回傳 [{start, end, speaker, text}]（輸入檔時間軸）。"""
     import torch
@@ -301,7 +301,7 @@ def _split_keep_delimiters(text: str, pattern: re.Pattern) -> List[str]:
 def _align_segments(
     wav_path: Path,
     entries: List[dict],
-    progress: Progress,
+    progress: ProgressAndCancel,
 ):
     """Qwen3-ForcedAligner 逐段強制對齊，將逐詞時間戳寫入 entry["words"]。
 
@@ -445,7 +445,7 @@ def _split_long_unit(text: str, offset: int, words: List[dict], count_words) -> 
 def _build_lrc_lines(
     wav_path: Path,
     entries: List[dict],
-    progress: Progress,
+    progress: ProgressAndCancel,
 ) -> List[str]:
     """強制對齊 + 依句斷行；對齊流程整體失敗時退回「一個片段一行」。"""
     try:
@@ -504,7 +504,7 @@ def _build_segment_records(entries: List[dict], source: str = "qwen") -> List[di
 def transcribe_with_local_models(
     audio_path: Path,
     source_lang: Optional[str],
-    progress: Progress,
+    progress: ProgressAndCancel,
     model: Optional[str] = None,
 ) -> Dict:
     """對單一音訊檔執行分離＋轉錄，回傳與 Gemini provider 相同合約的 dict。

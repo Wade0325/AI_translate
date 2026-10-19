@@ -28,7 +28,7 @@ from app.provider.base import (
     DEFAULT_QUEUE,
     BatchStatus,
     ModelCapabilities,
-    Progress,
+    ProgressAndCancel,
     TranscribeRequest,
 )
 from app.provider.google.gemini import GeminiClient
@@ -259,7 +259,7 @@ class GeminiProvider:
         return {model: _capabilities() for model in MODELS}
 
     def transcribe(
-        self, audio_path: Path, request: TranscribeRequest, progress: Progress,
+        self, audio_path: Path, request: TranscribeRequest, progress: ProgressAndCancel,
     ) -> TranscriptionTaskResult:
         progress.report("上傳檔案至AI模型...")
         gemini_file = self.upload(audio_path)

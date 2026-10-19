@@ -11,7 +11,7 @@ from pathlib import Path
 from app.celery.models import TranscriptionTaskParams
 from app.core.config import get_settings
 from app.core.default_prompt import build_prompt
-from app.provider.base import Progress, TranscribeRequest
+from app.provider.base import ProgressAndCancel, TranscribeRequest
 from app.provider.registry import open_provider
 from app.services.transcription.flows import TranscriptionTask
 from app.services.transcription.models import TranscriptionTaskResult
@@ -33,7 +33,7 @@ def run_transcription(task_params_dict: dict, task_uuid: str, retries_left: int 
 
 
 def _transcribe(
-    params: TranscriptionTaskParams, task_uuid: str, audio: Path, progress: Progress,
+    params: TranscriptionTaskParams, task_uuid: str, audio: Path, progress: ProgressAndCancel,
 ) -> TranscriptionTaskResult:
     # 查出供應商轉接器：模型不屬於這個供應商、或供應商還不能轉錄
     # （缺權重、金鑰無效）都在這裡以明確訊息失敗，不必等去靜音跑完
@@ -63,7 +63,7 @@ def _transcribe(
 
 
 def _prompt(params: TranscriptionTaskParams) -> str:
-    # 有提供逐字稿時改走「對齊」prompt，只補時間戳不重新轉錄
+    # 有使用者文稿時改用「對齊」的提示詞：只補時間戳，不重新轉錄
     if params.original_text:
         return f"""
 請你扮演一位專業的逐字稿專家。你的任務是將提供的音檔與以下的完整逐字稿內容進行對齊，並生成一個帶有時間戳的LRC格式檔案。

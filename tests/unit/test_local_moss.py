@@ -11,7 +11,7 @@ import pytest
 
 from app.core.config import get_settings
 from app.exceptions import TranscriptionCancelledError
-from app.provider.base import Progress
+from app.provider.base import ProgressAndCancel
 from app.provider.local import asr, moss, weights
 from app.provider.local.provider import LocalProvider
 
@@ -296,8 +296,8 @@ MOSS_SEGMENTS = [
 ]
 
 
-def _progress(cancelled: bool) -> Progress:
-    return Progress(report=lambda text: None, cancel_requested=lambda: cancelled)
+def _progress(cancelled: bool) -> ProgressAndCancel:
+    return ProgressAndCancel(report=lambda text: None, cancel_requested=lambda: cancelled)
 
 
 class TestRunMoss:

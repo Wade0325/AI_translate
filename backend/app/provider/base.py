@@ -55,12 +55,13 @@ class TranscribeRequest:
     """Gemini 的處理模式：None／"standard" 或 "flex"；其他供應商忽略。"""
 
 
-class Progress:
+class ProgressAndCancel:
     """進度與取消物件：任務生命週期建立一個，經分段轉錄一路傳到供應商轉接器。
 
     同一個物件回報進度（廣播給畫面的處理中訊息），也回答使用者取消了沒有；
     分段轉錄與轉接器只收到它，不另外收 callable。轉接器在自己的檢查點呼叫
     :meth:`raise_if_cancelled`，本機轉接器另用 :meth:`cancel_requested` 產生停止生成的條件。
+    沒有檢查點的轉接器照樣跑完時，任務生命週期仍把任務記為已取消、不採用結果。
     """
 
     def __init__(self, report: Callable[[str], None], cancel_requested: Callable[[], bool]):
@@ -92,7 +93,7 @@ class Provider(Protocol):
         """這個供應商每個模型的模型能力，key 是模型名稱。"""
 
     def transcribe(
-        self, audio_path: Path, request: TranscribeRequest, progress: Progress,
+        self, audio_path: Path, request: TranscribeRequest, progress: ProgressAndCancel,
     ) -> TranscriptionTaskResult:
         """轉錄一段音檔，時間軸是這段音檔本身。
 

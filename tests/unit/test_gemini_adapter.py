@@ -9,7 +9,7 @@ import pytest
 from google.genai import types
 
 from app.exceptions import GeminiPermanentError, GeminiTransientError
-from app.provider.base import Progress, TranscribeRequest
+from app.provider.base import ProgressAndCancel, TranscribeRequest
 from app.provider.google.provider import GeminiProvider
 from tests.support.fake_genai import (
     Blocked,
@@ -22,7 +22,7 @@ from tests.support.fake_genai import (
 
 MODEL = "gemini-2.5-flash"
 # 這裡不看進度，使用者也沒有取消
-PROGRESS = Progress(report=lambda text: None, cancel_requested=lambda: False)
+PROGRESS = ProgressAndCancel(report=lambda text: None, cancel_requested=lambda: False)
 
 
 @pytest.fixture

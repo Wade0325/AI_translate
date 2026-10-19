@@ -11,7 +11,7 @@ from app.utils.audio import (
     convert_to_wav,
     slice_audio,
 )
-from app.provider.base import Progress, Provider, TranscribeRequest
+from app.provider.base import ProgressAndCancel, Provider, TranscribeRequest
 from app.services.converter.service import _parse_lrc
 from app.services.vad.preprocess import run_vad_extraction
 from app.services.vad.artifacts import persist_speech_extraction, persist_split
@@ -187,7 +187,7 @@ class TranscriptionTask:
         self,
         provider: Provider,
         request: TranscribeRequest,
-        progress: Progress,
+        progress: ProgressAndCancel,
         temp_dir: Path,
         artifact_task_id: Optional[str] = None,
         original_filename: Optional[str] = None,

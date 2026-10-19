@@ -81,19 +81,42 @@ class RecordingRunMode:
     """包住行程內轉接器，記下 revoke 的參數，其餘照轉。
 
     行程內執行模式不能強制終止執行緒、會忽略 terminate，「依模型能力決定要不要強制終止」
-    只在執行模式的介面上看得到，所以在這個接縫上記錄。``revokes_delivered`` 設成 False
-    時 revoke 不轉給轉接器，模擬 Docker 模式的 worker 離線、收不到 revoke。
+    只在執行模式的介面上看得到，所以在這個接縫上記錄。
     """
 
     def __init__(self, inner):
         self._inner = inner
         self.revoked = []
-        self.revokes_delivered = True
 
     def revoke(self, task_id, terminate=False):
         self.revoked.append((task_id, terminate))
-        if self.revokes_delivered:
-            self._inner.revoke(task_id, terminate)
+        self._inner.revoke(task_id, terminate)
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
+class RevokesLost:
+    """撤銷送不到（Docker 模式的 worker 離線），其餘照轉；用 ``run_mode.use`` 換上。"""
+
+    def __init__(self, inner):
+        self._inner = inner
+
+    def revoke(self, task_id, terminate=False):
+        pass
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
+class CancelFlagsDown:
+    """取消旗標清不掉（Docker 模式的 Redis 剛好斷線），其餘照轉；用 ``run_mode.use`` 換上。"""
+
+    def __init__(self, inner):
+        self._inner = inner
+
+    def clear_cancel(self, file_uid):
+        raise ConnectionError("Redis 連不上")
 
     def __getattr__(self, name):
         return getattr(self._inner, name)
@@ -520,9 +543,7 @@ class TestCancel:
         assert record["status"] == TaskStatus.CANCELLED
 
     def test_cancelled_before_start_is_recorded_without_calling_the_provider(
-            self, api, fake, run_mode_spy, data_dir):
-        # worker 離線、收不到 revoke：佇列中的任務照樣會開始，開始時從取消旗標得知已取消
-        run_mode_spy.revokes_delivered = False
+            self, api, fake, data_dir):
         fake.hold = threading.Event()
         fake.script = list(SCRIPT)
         first_file, second_file = upload(api, "a.wav"), upload(api, "b.wav")
@@ -532,7 +553,12 @@ class TestCancel:
             submit(first, first_file)
             assert fake.started.wait(TIMEOUT)
             submit(second, second_file)
-            cancel_when_dispatched(api, "uid-second")
+            # worker 離線、收不到撤銷：佇列中的任務照樣會開始，開始時才從取消旗標得知已取消
+            reachable = run_mode.use(RevokesLost(run_mode.get()))
+            try:
+                cancel_when_dispatched(api, "uid-second")
+            finally:
+                run_mode.use(reachable)
             receive_until_terminal(second)  # 取消端點的廣播
             fake.hold.set()
             assert receive_until_terminal(first)[-1]["status_code"] == TaskStatus.COMPLETED
@@ -643,19 +669,6 @@ class TestFinishing:
         assert api.get(f"/api/v1/transcripts/{end['task_uuid']}/audio").content == synthetic_audio()
         assert leftovers(data_dir) == []
         assert fake.released == 1
-
-
-class CancelFlagsDown:
-    """取消旗標清不掉（Docker 模式的 Redis 剛好斷線），其餘照轉。"""
-
-    def __init__(self, inner):
-        self._inner = inner
-
-    def clear_cancel(self, file_uid):
-        raise ConnectionError("Redis 連不上")
-
-    def __getattr__(self, name):
-        return getattr(self._inner, name)
 
 
 # ─── 暫時錯誤 ────────────────────────────────────────────────────────────────

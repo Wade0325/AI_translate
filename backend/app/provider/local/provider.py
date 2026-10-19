@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Dict
 
 from app.core.config import get_settings
-from app.provider.base import LOCAL_QUEUE, ModelCapabilities, Progress, TranscribeRequest
+from app.provider.base import LOCAL_QUEUE, ModelCapabilities, ProgressAndCancel, TranscribeRequest
 from app.provider.local import weights
 from app.services.transcription.models import TranscriptionTaskResult
 
@@ -52,7 +52,7 @@ class LocalProvider:
         return {model: _capabilities(model) for model in weights.MODEL_REPOS}
 
     def transcribe(
-        self, audio_path: Path, request: TranscribeRequest, progress: Progress,
+        self, audio_path: Path, request: TranscribeRequest, progress: ProgressAndCancel,
     ) -> TranscriptionTaskResult:
         # 延遲 import：見模組說明
         from app.provider.local.asr import transcribe_with_local_models

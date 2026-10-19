@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Sequence, Tuple, Union
 
-from app.provider.base import LOCAL_QUEUE, ModelCapabilities, Progress, TranscribeRequest
+from app.provider.base import LOCAL_QUEUE, ModelCapabilities, ProgressAndCancel, TranscribeRequest
 from app.services.transcription.models import TranscriptionTaskResult
 
 FAKE_MODEL = "fake-model"
@@ -81,7 +81,7 @@ class FakeProvider:
 
     # ── Provider ─────────────────────────────────────────────────
     def transcribe(
-        self, audio_path: Path, request: TranscribeRequest, progress: Progress,
+        self, audio_path: Path, request: TranscribeRequest, progress: ProgressAndCancel,
     ) -> TranscriptionTaskResult:
         self.calls.append(audio_path)
         self.started.set()
