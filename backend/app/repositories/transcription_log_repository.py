@@ -69,6 +69,18 @@ class TranscriptionLogRepository:
         return db.query(TranscriptionLog).filter(
             TranscriptionLog.task_uuid == uuid_val).first()
 
+    def current_status(self, db: Session, task_uuid) -> Optional[str]:
+        """這筆紀錄在資料庫裡現在的狀態；沒有紀錄時回 None。
+
+        直接查欄位，不經過 session 裡已經載入的物件：別的 session（例如取消端點）
+        改了狀態，已經載入的物件不會自己更新。
+        """
+        uuid_val = self._coerce_task_uuid(task_uuid)
+        if uuid_val is None:
+            return None
+        return db.query(TranscriptionLog.status).filter(
+            TranscriptionLog.task_uuid == uuid_val).scalar()
+
     def update_log_if_processing(
         self, db: Session, task_uuid, update_data: Dict[str, Any]
     ) -> bool:

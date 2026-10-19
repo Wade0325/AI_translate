@@ -329,8 +329,7 @@ class TaskLifecycle:
         }
 
     def _record_cancelled(self, db: Session) -> bool:
-        record = self._records.get(db, self._task_uuid)
-        return record is not None and record.status == TaskStatus.CANCELLED
+        return self._records.current_status(db, self._task_uuid) == TaskStatus.CANCELLED
 
     def _price(self, result: TranscriptionTaskResult, elapsed: float) -> tuple[int, float]:
         """計價：回傳 (總 token 數, 費用)；收不收費照模型能力的計價方式。"""
