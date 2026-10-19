@@ -71,5 +71,5 @@ tests/test_gemini_integration.py
 .claude/worktrees/
 **/.claude/settings.local.json
 
-# 研究區（lab/）— 本機實驗，不進版控
+# 研究區已搬到 repo 外（見 CLAUDE.md）；舊位置 lab/ 仍然忽略，免得誤加進版控
 /lab/
