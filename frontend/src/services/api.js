@@ -62,10 +62,13 @@ export const api = {
     return request('/upload', { method: 'POST', body: formData });
   },
   transcription: {
-    cancel(fileUid, provider) {
-      const query = provider ? `?provider=${encodeURIComponent(provider)}` : '';
-      return request(`/transcription/${fileUid}/cancel${query}`, { method: 'POST' });
+    cancel(fileUid) {
+      return request(`/transcription/${fileUid}/cancel`, { method: 'POST' });
     },
+  },
+  /** 供應商、它們的模型與每個模型的模型能力 */
+  providers() {
+    return request('/providers');
   },
   history: {
     list({ page = 1, pageSize = 10, keyword, status, mode } = {}) {

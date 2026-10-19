@@ -2,6 +2,7 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Dict, Any, Optional
 from sqlalchemy.orm import Session
+from app.core.task_status import TaskStatus
 from app.database.models import TranscriptionLog
 from app.utils.identifiers import coerce_uuid
 
@@ -52,11 +53,7 @@ class TranscriptionLogRepository:
         :param update_data: 包含要更新欄位和值的字典。
         :return: 更新後的 TranscriptionLog ORM 物件，如果找不到則返回 None。
         """
-        uuid_val = self._coerce_task_uuid(task_uuid)
-        if uuid_val is None:
-            return None
-        log_to_update = db.query(TranscriptionLog).filter(
-            TranscriptionLog.task_uuid == uuid_val).first()
+        log_to_update = self.get(db, task_uuid)
         if log_to_update:
             for key, value in update_data.items():
                 setattr(log_to_update, key, value)
@@ -64,6 +61,13 @@ class TranscriptionLogRepository:
             db.refresh(log_to_update)
             return log_to_update
         return None
+
+    def get(self, db: Session, task_uuid) -> Optional[TranscriptionLog]:
+        uuid_val = self._coerce_task_uuid(task_uuid)
+        if uuid_val is None:
+            return None
+        return db.query(TranscriptionLog).filter(
+            TranscriptionLog.task_uuid == uuid_val).first()
 
     def mark_cancelled_if_processing(self, db: Session, task_uuid) -> bool:
         """僅當紀錄仍在 PROCESSING 時標記為 CANCELLED，回傳是否有更新。
@@ -78,11 +82,11 @@ class TranscriptionLogRepository:
             db.query(TranscriptionLog)
             .filter(
                 TranscriptionLog.task_uuid == uuid_val,
-                TranscriptionLog.status == "PROCESSING",
+                TranscriptionLog.status == TaskStatus.PROCESSING,
             )
             .update(
                 {
-                    TranscriptionLog.status: "CANCELLED",
+                    TranscriptionLog.status: TaskStatus.CANCELLED,
                     TranscriptionLog.error_message: "使用者取消任務",
                     TranscriptionLog.completed_at: datetime.now(),
                 },
@@ -104,12 +108,12 @@ class TranscriptionLogRepository:
             db.query(TranscriptionLog)
             .filter(
                 TranscriptionLog.is_batch.isnot(True),
-                TranscriptionLog.status == "PROCESSING",
+                TranscriptionLog.status == TaskStatus.PROCESSING,
                 TranscriptionLog.request_timestamp < cutoff,
             )
             .update(
                 {
-                    TranscriptionLog.status: "FAILED",
+                    TranscriptionLog.status: TaskStatus.FAILED,
                     TranscriptionLog.error_message:
                         f"任務逾時未完成（超過 {max_age_hours} 小時，worker 可能已中斷），"
                         "由啟動清掃標記為失敗",

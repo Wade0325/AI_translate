@@ -1,10 +1,16 @@
-import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { message } from 'antd';
 import { modelOptions, findProviderForModel } from '../constants/modelConfig';
 import { useModelManager } from '../components/ModelManager';
 import { useTranscriptionSocket } from '../hooks/useTranscriptionSocket';
 import { useUploadQueue } from '../hooks/useUploadQueue';
 import { useDownloadBundle } from '../hooks/useDownloadBundle';
+import {
+  disabledReasonsFor,
+  findModelCapabilities,
+  modelSupports,
+  useProviderList,
+} from '../hooks/useProviderList';
 import { api } from '../services/api';
 
 const TranscriptionContext = createContext(null);
@@ -27,6 +33,12 @@ export const TranscriptionProvider = ({ children }) => {
   const [multiSpeaker, setMultiSpeaker] = useState(false);
 
   const useBatchMode = processingMode === 'batch';
+
+  // 所選模型支援哪些輸入與處理方式；模型能力還沒載入時不限制，由後端把關
+  const providerList = useProviderList();
+  const capabilities = findModelCapabilities(providerList, findProviderForModel(model), model);
+  const supports = useMemo(() => modelSupports(capabilities), [capabilities]);
+  const reasons = useMemo(() => disabledReasonsFor(supports), [supports]);
 
   const [isPreviewModalVisible, setIsPreviewModalVisible] = useState(false);
   const [previewContent, setPreviewContent] = useState('');
@@ -156,7 +168,7 @@ export const TranscriptionProvider = ({ children }) => {
       current.map((f) => (f.uid === uid ? { ...f, statusText: '正在取消...' } : f))
     );
     try {
-      const res = await api.transcription.cancel(uid, target.provider);
+      const res = await api.transcription.cancel(uid);
       if (res?.cancelled === false) {
         message.warning('任務尚未提交到佇列（可能還在上傳），請稍後再試。');
         setFileList((current) =>
@@ -197,8 +209,8 @@ export const TranscriptionProvider = ({ children }) => {
       message.error(`請先在模型管理中為 ${provider} 設定 API 金鑰。`);
       return;
     }
-    if (isLocalProvider && useBatchMode) {
-      message.error('本地模型不支援批次模式，請改用一般模式。');
+    if (useBatchMode && reasons.batch) {
+      message.error(reasons.batch);
       return;
     }
 
@@ -211,7 +223,7 @@ export const TranscriptionProvider = ({ children }) => {
     setIsProcessing(true);
 
     const runner = useBatchMode ? startBatch : startRegular;
-    const result = await runner({ provider, model, prompt, defaults });
+    const result = await runner({ provider, model, prompt, defaults, supports });
 
     if (result?.skipped) {
       setIsProcessing(false);
@@ -224,6 +236,8 @@ export const TranscriptionProvider = ({ children }) => {
     multiSpeaker,
     processingMode,
     useBatchMode,
+    supports,
+    reasons,
     startBatch,
     startRegular,
   ]);
@@ -235,6 +249,7 @@ export const TranscriptionProvider = ({ children }) => {
     setTargetLang,
     model,
     setModel,
+    disabledReasons: reasons,
     isProcessing,
     processingMode,
     setProcessingMode,

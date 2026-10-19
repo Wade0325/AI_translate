@@ -111,6 +111,40 @@ jobs:
             backend/requirements-dev.txt
       - name: 安裝依賴（base 與 dev，不裝 torch 系列）
         run: python -m pip install -r backend/requirements-base.txt -r backend/requirements-dev.txt
+      - name: 安裝 ffmpeg 與 ffprobe（BtbN 的 LGPL build，釘版並驗 SHA-256）
+        # 測試用真的 ffmpeg 處理合成音檔（#103）。來源與免安裝版相同（#80）：BtbN 的 LGPL
+        # build，用月底的日期 tag 釘版（BtbN 只承諾月底版保留兩年）。SHA-256 抄自 release 的
+        # checksums.sha256，並和 GitHub 的 asset digest 核對過。升版時兩個平台的檔名與雜湊一起換。
+        # 放在 PATH 最前面，蓋過 runner 映像可能自帶的 ffmpeg
+        shell: bash
+        env:
+          FFMPEG_TAG: autobuild-2026-09-30-13-08
+          FFMPEG_BUILD: ffmpeg-n9.0.2-17-g2a571b6068
+          SHA256_LINUX: 2d41cbea0ca1a15029b638330740f78d6f5aeb062355bf425433fc938705350a
+          SHA256_WINDOWS: 6b264b9e6019103f601d98c292bd332fd87acf1c5e941ddff4fb71760fe63432
+        run: |
+          set -euo pipefail
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            asset="$FFMPEG_BUILD-win64-lgpl-9.0.zip"; sha256="$SHA256_WINDOWS"
+          else
+            asset="$FFMPEG_BUILD-linux64-lgpl-9.0.tar.xz"; sha256="$SHA256_LINUX"
+          fi
+          cd "$RUNNER_TEMP"
+          curl -fsSL --retry 3 -o "$asset" \
+            "https://github.com/BtbN/FFmpeg-Builds/releases/download/$FFMPEG_TAG/$asset"
+          # 雜湊不符時 sha256sum -c 結束碼非 0，set -e 讓 job 失敗
+          echo "$sha256  $asset" | sha256sum -c -
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            unzip -q "$asset"
+            bin="$RUNNER_TEMP/${asset%.zip}/bin"
+            cygpath -w "$bin" >> "$GITHUB_PATH"
+          else
+            tar -xJf "$asset"
+            bin="$RUNNER_TEMP/${asset%.tar.xz}/bin"
+            echo "$bin" >> "$GITHUB_PATH"
+          fi
+          "$bin/ffmpeg" -hide_banner -version | sed -n 1p
+          "$bin/ffprobe" -hide_banner -version | sed -n 1p
       - name: ruff 與 pytest
         run: python tools/check.py ruff pytest
 

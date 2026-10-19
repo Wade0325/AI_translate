@@ -3,6 +3,8 @@ import { Card, Button, Input, Select, Switch, Typography, Row, Col, Spin, Divide
 import { Key, Bell, Save, Trash2, Cpu, Download, CheckCircle2 } from "lucide-react"
 import { useModelManager } from "../components/ModelManager"
 import { modelOptions } from "../constants/modelConfig"
+import { ReasonText } from "../components/disabled-reason"
+import { providerPromptDisabledReason, useProviderList } from "../hooks/useProviderList"
 import { api } from "../services/api"
 
 const { Text } = Typography
@@ -10,6 +12,7 @@ const { TextArea } = Input
 
 export default function SettingsPage() {
     const { getProviderConfig, saveProviderConfig, handleTestProvider } = useModelManager()
+    const providerList = useProviderList()
 
     const [providerForms, setProviderForms] = useState({})
     const [loading, setLoading] = useState(true)
@@ -151,15 +154,11 @@ export default function SettingsPage() {
                                     />
                                 </div>
 
-                                <div>
-                                    <Text style={{ color: '#e8e8e8', fontSize: 13, display: 'block', marginBottom: 6 }}>Global Prompt Template</Text>
-                                    <TextArea
-                                        value={providerForms[provider].prompt}
-                                        onChange={(e) => updateForm(provider, 'prompt', e.target.value)}
-                                        placeholder="System level instructions or prompts to guide the model..."
-                                        rows={4}
-                                    />
-                                </div>
+                                <PromptTemplateField
+                                    value={providerForms[provider].prompt}
+                                    onChange={(value) => updateForm(provider, 'prompt', value)}
+                                    disabledReason={providerPromptDisabledReason(providerList, provider)}
+                                />
 
                                 <Divider style={{ borderColor: '#3a3a5c', margin: '4px 0' }} />
 
@@ -334,6 +333,23 @@ function LocalModelsCard() {
                 </div>
             </Card>
         </Col>
+    )
+}
+
+/** 供應商的提示詞範本；這個供應商的模型都不支援提示詞時停用並顯示原因。 */
+function PromptTemplateField({ value, onChange, disabledReason }) {
+    return (
+        <div>
+            <Text style={{ color: '#e8e8e8', fontSize: 13, display: 'block', marginBottom: 6 }}>Global Prompt Template</Text>
+            <TextArea
+                value={value}
+                onChange={(e) => onChange(e.target.value)}
+                disabled={Boolean(disabledReason)}
+                placeholder="System level instructions or prompts to guide the model..."
+                rows={4}
+            />
+            <ReasonText reason={disabledReason} style={{ display: 'block', fontSize: 12, marginTop: 4 }} />
+        </div>
     )
 }
 

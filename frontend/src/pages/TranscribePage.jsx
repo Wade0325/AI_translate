@@ -1,5 +1,6 @@
 import { useState, useRef } from "react"
 import { Card, Typography, Button, Input, Modal, Pagination, Space, Tag, Dropdown, Popconfirm, message } from "antd"
+import { ReasonText, ReasonTooltip } from "@/components/disabled-reason"
 import { UploadZone } from "@/components/transcribe/upload-zone"
 import { GlobalDefaults } from "@/components/transcribe/global-defaults"
 import { FileConfigCard } from "@/components/transcribe/file-config-card"
@@ -8,6 +9,7 @@ import VadTestModal from "@/components/transcribe/VadTestModal"
 import { useTranscription } from "@/context/TranscriptionContext"
 import { useModelManager } from "@/components/ModelManager"
 import { modelOptions, findProviderForModel } from "@/constants/modelConfig"
+import { providerPromptDisabledReason, useProviderList } from "@/hooks/useProviderList"
 import { api } from "@/services/api"
 import { DownloadOutlined } from "@ant-design/icons"
 import { downloadFormatsLong } from "@/constants/downloadFormats"
@@ -26,6 +28,7 @@ export default function TranscribePage() {
         setTargetLang,
         model,
         setModel,
+        disabledReasons,
         isProcessing,
         processingMode,
         setProcessingMode,
@@ -56,6 +59,9 @@ export default function TranscribePage() {
     const fileInputRef = useRef(null)
 
     const currentProvider = findProviderForModel(model)
+    // 「編輯參數」改的是供應商的提示詞範本，和設定頁同一條規則：供應商的模型都不吃提示詞才停用
+    const providerList = useProviderList()
+    const promptTemplateDisabledReason = providerPromptDisabledReason(providerList, currentProvider)
 
     const [globalConfig, setGlobalConfig] = useState({
         language: targetLang || "zh-TW",
@@ -98,7 +104,7 @@ export default function TranscribePage() {
             )
         )
         setIsTextModalVisible(false)
-        message.success("文本已附加")
+        message.success("已附加使用者文稿")
     }
 
     const handleAttachTextFromFile = (fileUid) => {
@@ -255,24 +261,36 @@ export default function TranscribePage() {
                         >
                             <option value="standard">標準（即時）</option>
                             <option value="flex">Flex（50% 費用．分鐘級延遲）</option>
-                            <option value="batch">批次（50% 費用．非同步）</option>
+                            <option value="batch" disabled={Boolean(disabledReasons.batch)}>
+                                批次（50% 費用．非同步）
+                            </option>
                         </select>
-                        <Text style={{ fontSize: 10, color: "#8888a8" }}>
-                            {processingMode === "flex"
-                                ? "失敗時自動降級為標準層級"
-                                : processingMode === "batch"
-                                    ? "提交後可離線等待結果"
-                                    : "標準同步推論"}
-                        </Text>
+                        {processingMode === "batch" && disabledReasons.batch ? (
+                            <ReasonText reason={disabledReasons.batch} />
+                        ) : (
+                            <Text style={{ fontSize: 10, color: "#8888a8" }}>
+                                {processingMode === "flex"
+                                    ? "失敗時自動降級為標準層級"
+                                    : processingMode === "batch"
+                                        ? "提交後可離線等待結果"
+                                        : "標準同步推論"}
+                            </Text>
+                        )}
                     </div>
                     <div style={{ flex: 1 }} />
                     <Space size={6}>
                         <Button size="small" onClick={() => handleEditProvider(currentProvider)}>
                             編輯 API
                         </Button>
-                        <Button size="small" onClick={() => handleEditProviderParams(currentProvider)}>
-                            編輯參數
-                        </Button>
+                        <ReasonTooltip title={promptTemplateDisabledReason}>
+                            <Button
+                                size="small"
+                                disabled={Boolean(promptTemplateDisabledReason)}
+                                onClick={() => handleEditProviderParams(currentProvider)}
+                            >
+                                編輯參數
+                            </Button>
+                        </ReasonTooltip>
                         <Button size="small" onClick={() => handleTestProvider(currentProvider)}>
                             測試 API
                         </Button>
@@ -285,6 +303,7 @@ export default function TranscribePage() {
                 onChange={handleGlobalConfigChange}
                 onApplyAll={handleApplyAll}
                 fileCount={fileList.length}
+                promptDisabledReason={disabledReasons.prompt}
             />
 
             <UploadZone hasFiles={fileList.length > 0} onFilesAdded={handleFilesAdded} />
@@ -360,6 +379,7 @@ export default function TranscribePage() {
                         onVadTest={file.originFileObj ? handleVadTest : undefined}
                         onCancel={file.transcribeMode === 'single' ? cancelTranscription : undefined}
                         vadTesting={vadTestingUid === file.uid}
+                        disabledReasons={disabledReasons}
                     />
                 ))}
             </div>
@@ -413,7 +433,7 @@ export default function TranscribePage() {
             </Modal>
 
             <Modal
-                title="附加原始文本"
+                title="附加使用者文稿"
                 open={isTextModalVisible}
                 onOk={handleSaveText}
                 onCancel={() => setIsTextModalVisible(false)}
@@ -425,7 +445,7 @@ export default function TranscribePage() {
                     rows={8}
                     value={textModalContent}
                     onChange={(e) => setTextModalContent(e.target.value)}
-                    placeholder="貼上原始文本，讓 AI 對照修正轉錄結果..."
+                    placeholder="貼上完整的文字稿，模型只替它補上時間戳..."
                 />
             </Modal>
 
