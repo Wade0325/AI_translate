@@ -19,22 +19,13 @@ from app.core.default_prompt import build_prompt
 from app.core.task_status import TaskStatus
 from app.database.session import SessionLocal
 from app.exceptions import GeminiTransientError
-from app.provider.registry import model_capabilities
-from app.provider.google.gemini import (
-    GeminiClient,
-    upload_file_to_gemini,
-    cleanup_gemini_file,
-    create_batch_transcription_job,
-    poll_batch_job_status,
-    get_batch_job_state_name,
-    BATCH_COMPLETED_STATES,
-)
+from app.provider.registry import open_batch_provider, reopen_batch_provider
 from app.repositories.transcription_log_repository import TranscriptionLogRepository
 from app.repositories.batch_job_repository import BatchJobRepository
 from app.services.calculator.service import CalculatorService
 from app.services.calculator.models import CalculationItem
 from app.services.converter.service import convert_from_lrc
-from app.services.transcription.models import TranscriptionResponse
+from app.services.transcription.models import TranscriptionResponse, TranscriptionTaskResult
 from app.services.transcription.flows import remap_lrc_timestamps
 from app.services.vad.preprocess import run_vad_extraction
 from app.services.vad.artifacts import persist_speech_extraction
@@ -136,7 +127,7 @@ def _vad_preprocess_file(
 
 
 def _process_single_result(
-    inline_response,
+    result: TranscriptionTaskResult,
     file_item,
     task_params,
     file_task_uuid: str,
@@ -150,37 +141,20 @@ def _process_single_result(
     """處理批次中單一檔案的結果：時間戳重映射、格式轉換、計費、寫 DB。"""
     file_uid = file_item.file_uid
 
-    if not inline_response.response:
-        error_msg = str(getattr(inline_response, "error", "未知錯誤"))
-        logger.error(f"檔案 {file_item.original_filename} 批次轉錄失敗: {error_msg}")
-        update_fn(f"轉錄失敗: {error_msg}", status_code=TaskStatus.FAILED, file_uid=file_uid)
+    if not result.success:
+        logger.error(f"檔案 {file_item.original_filename} 批次轉錄失敗: {result.text}")
+        update_fn(result.text, status_code=TaskStatus.FAILED, file_uid=file_uid)
         log_repo.update_log(db, file_task_uuid, {
             "status": TaskStatus.FAILED,
-            "error_message": error_msg,
+            "error_message": result.text,
             "processing_time_seconds": time.time() - start_time,
         })
         return
 
-    response = inline_response.response
-
-    if not response.candidates:
-        error_text = "轉錄失敗：Gemini 回應被阻擋"
-        try:
-            error_text = f"轉錄失敗：請求被 Gemini 以 '{response.prompt_feedback.block_reason}' 原因阻擋"
-        except Exception:
-            pass
-        update_fn(error_text, status_code=TaskStatus.FAILED, file_uid=file_uid)
-        log_repo.update_log(db, file_task_uuid, {
-            "status": TaskStatus.FAILED,
-            "error_message": error_text,
-            "processing_time_seconds": time.time() - start_time,
-        })
-        return
-
-    raw_lrc_text = response.text
-    input_tokens = response.usage_metadata.prompt_token_count or 0
-    output_tokens = response.usage_metadata.candidates_token_count or 0
-    total_tokens = response.usage_metadata.total_token_count or 0
+    raw_lrc_text = result.text
+    input_tokens = result.input_tokens
+    output_tokens = result.output_tokens
+    total_tokens = result.total_tokens
 
     logger.info(
         f"檔案 {file_item.original_filename} 轉錄完成, "
@@ -276,18 +250,14 @@ def run_batch(task_params_dict: dict, task_uuid: str):
     db = SessionLocal()
     log_repo = TranscriptionLogRepository()
     batch_repo = BatchJobRepository()
-    gemini_files = []
     vad_cleanup_files = []
-    client = None
+    adapter = None
     start_time = time.time()
 
     try:
-        if not model_capabilities(task_params.provider, task_params.model).supports_batch:
-            raise ValueError(f"模型 {task_params.model} 不支援批次")
-
-        client = GeminiClient(task_params.api_keys).client
-        if not client:
-            raise ValueError("Failed to initialize Gemini Client. Check API key.")
+        # 模型不支援批次、金鑰無效都在這裡失敗
+        adapter = open_batch_provider(
+            task_params.provider, task_params.model, task_params.api_keys)
 
         def prompt_for(file_item) -> str:
             """組出單一檔案的 prompt：per-file 設定優先，未提供時退回批次層級 fallback。"""
@@ -369,8 +339,7 @@ def run_batch(task_params_dict: dict, task_uuid: str):
             vad_cleanup_files.extend(cleanup)
 
             try:
-                gemini_file = upload_file_to_gemini(upload_path, client)
-                gemini_files.append(gemini_file)
+                gemini_file = adapter.upload(upload_path)
                 file_gemini_mapping[i] = (file_item, gemini_file)
             except Exception as e:
                 logger.error(f"上傳檔案失敗 {file_item.original_filename}: {e}")
@@ -393,22 +362,11 @@ def run_batch(task_params_dict: dict, task_uuid: str):
         update_status(f"建立 Gemini 批次任務 ({len(file_gemini_mapping)} 個檔案)...")
 
         ordered_indices = sorted(file_gemini_mapping.keys())
-        ordered_gemini_files = [
-            file_gemini_mapping[i][1] for i in ordered_indices
-        ]
-        ordered_prompts = [
-            prompt_for(file_gemini_mapping[i][0]) for i in ordered_indices
-        ]
-
-        batch_job = create_batch_transcription_job(
-            client=client,
-            gemini_files=ordered_gemini_files,
-            model=task_params.model,
-            prompts=ordered_prompts,
+        job_name = adapter.submit_batch(
+            [(file_gemini_mapping[i][1], prompt_for(file_gemini_mapping[i][0]))
+             for i in ordered_indices],
             display_name=f"transcription-{batch_id[:8]}",
         )
-
-        job_name = batch_job.name
         logger.info(f"Gemini 批次任務已建立: {job_name}")
 
         # === 持久化節點 2：Gemini batch job 建立後，存入 job_name 和檔案映射 ===
@@ -438,23 +396,20 @@ def run_batch(task_params_dict: dict, task_uuid: str):
         poll_interval = 10
 
         while True:
-            batch_job = poll_batch_job_status(client, job_name)
-            state_name = get_batch_job_state_name(batch_job)
-
-            if state_name in BATCH_COMPLETED_STATES:
+            batch_status = adapter.poll_batch(job_name)
+            if batch_status.done:
                 break
 
             elapsed = int(time.time() - start_time)
-            update_status(f"Gemini 批次處理中... (已等待 {elapsed} 秒, 狀態: {state_name})")
+            update_status(f"Gemini 批次處理中... (已等待 {elapsed} 秒, 狀態: {batch_status.state})")
 
             time.sleep(poll_interval)
             poll_interval = min(poll_interval * 1.5, 60)
 
-        state_name = get_batch_job_state_name(batch_job)
-        logger.info(f"批次任務結束，狀態: {state_name}")
+        logger.info(f"批次任務結束，狀態: {batch_status.state}")
 
-        if state_name != "JOB_STATE_SUCCEEDED":
-            error_msg = f"批次任務失敗，狀態: {state_name}"
+        if not batch_status.succeeded:
+            error_msg = f"批次任務失敗，狀態: {batch_status.state}"
             logger.error(error_msg)
             for file_item in task_params.files:
                 file_uid = file_item.file_uid
@@ -481,10 +436,8 @@ def run_batch(task_params_dict: dict, task_uuid: str):
             if file_uid and result_data and status_code == TaskStatus.COMPLETED:
                 captured_results[file_uid] = result_data
 
-        if batch_job.dest and batch_job.dest.inlined_responses:
-            for response_idx, inline_response in enumerate(
-                batch_job.dest.inlined_responses
-            ):
+        if batch_status.results:
+            for response_idx, result in enumerate(batch_status.results):
                 if response_idx >= len(ordered_indices):
                     break
 
@@ -502,7 +455,7 @@ def run_batch(task_params_dict: dict, task_uuid: str):
 
                 try:
                     _process_single_result(
-                        inline_response=inline_response,
+                        result=result,
                         file_item=file_item,
                         task_params=task_params,
                         file_task_uuid=file_task_uuid,
@@ -568,13 +521,9 @@ def run_batch(task_params_dict: dict, task_uuid: str):
         raise e
 
     finally:
-        # 清理 Gemini 上的檔案
-        if client:
-            for gf in gemini_files:
-                try:
-                    cleanup_gemini_file(client, gf)
-                except Exception as e:
-                    logger.warning(f"清理 Gemini 檔案失敗: {e}")
+        # 刪掉上傳到供應商的遠端檔
+        if adapter:
+            adapter.release()
 
         # 清理本地暫存檔案
         for file_item in task_params.files:
@@ -599,6 +548,7 @@ def process_gemini_batch_results(batch_id: str, api_key: str, db, batch_repo, lo
     """
     from types import SimpleNamespace
 
+    adapter = None
     try:
         job = batch_repo.get_job(db, batch_id)
         if not job:
@@ -615,29 +565,39 @@ def process_gemini_batch_results(batch_id: str, api_key: str, db, batch_repo, lo
 
         update_status("正在從 Gemini 恢復批次任務結果...")
 
-        client = GeminiClient(api_key).client
-        if not client:
+        task_params_data = json.loads(job.task_params_json) if job.task_params_json else {}
+        task_params = SimpleNamespace(
+            model=task_params_data.get("model", ""),
+            provider=task_params_data.get("provider", "google"),
+            source_lang=task_params_data.get("source_lang", ""),
+            target_lang=task_params_data.get("target_lang"),
+            prompt=task_params_data.get("prompt", ""),
+        )
+        try:
+            adapter = reopen_batch_provider(task_params.provider, task_params.model, api_key)
+        except ValueError as e:
+            logger.warning(f"恢復任務 {batch_id} 無法建立供應商轉接器: {e}")
             update_status("API Key 無效", status_code=TaskStatus.BATCH_COMPLETED)
             batch_repo.update_job(db, batch_id, {"status": "POLLING"})
             return {"status": "POLLING", "files": []}
 
         try:
-            batch_job = poll_batch_job_status(client, job.gemini_job_name)
+            batch_status = adapter.poll_batch(job.gemini_job_name)
         except Exception as e:
             update_status(f"查詢 Gemini 失敗: {e}", status_code=TaskStatus.BATCH_COMPLETED)
             batch_repo.update_job(db, batch_id, {"status": "POLLING"})
             return {"status": "POLLING", "files": []}
 
-        state_name = get_batch_job_state_name(batch_job)
-        logger.info(f"恢復任務 {batch_id}: Gemini 狀態 = {state_name} (raw: {batch_job.state})")
+        state_name = batch_status.state
+        logger.info(f"恢復任務 {batch_id}: Gemini 狀態 = {state_name}")
 
-        if state_name not in BATCH_COMPLETED_STATES:
+        if not batch_status.done:
             logger.info(f"恢復任務 {batch_id}: 任務尚未完成，狀態={state_name}")
             update_status(f"任務仍在進行中 ({state_name})", status_code=TaskStatus.BATCH_COMPLETED)
             batch_repo.update_job(db, batch_id, {"status": "POLLING"})
             return {"status": "POLLING", "files": []}
 
-        if state_name != "JOB_STATE_SUCCEEDED":
+        if not batch_status.succeeded:
             logger.info(f"恢復任務 {batch_id}: 任務失敗，狀態={state_name}")
             batch_repo.update_job(db, batch_id, {"status": "FAILED"})
             update_status(f"任務失敗 ({state_name})", status_code=TaskStatus.BATCH_COMPLETED)
@@ -648,15 +608,6 @@ def process_gemini_batch_results(batch_id: str, api_key: str, db, batch_repo, lo
         file_mapping = json.loads(job.file_mapping_json) if job.file_mapping_json else {}
         file_durations = json.loads(job.file_durations_json) if job.file_durations_json else {}
         file_log_uuids = json.loads(job.file_log_uuids_json) if job.file_log_uuids_json else {}
-        task_params_data = json.loads(job.task_params_json) if job.task_params_json else {}
-
-        task_params = SimpleNamespace(
-            model=task_params_data.get("model", ""),
-            provider=task_params_data.get("provider", "google"),
-            source_lang=task_params_data.get("source_lang", ""),
-            target_lang=task_params_data.get("target_lang"),
-            prompt=task_params_data.get("prompt", ""),
-        )
 
         start_time = time.time()
         captured_results = {}
@@ -668,8 +619,8 @@ def process_gemini_batch_results(batch_id: str, api_key: str, db, batch_repo, lo
 
         ordered_indices = sorted(file_mapping.keys(), key=int)
 
-        if batch_job.dest and batch_job.dest.inlined_responses:
-            for response_idx, inline_response in enumerate(batch_job.dest.inlined_responses):
+        if batch_status.results:
+            for response_idx, result in enumerate(batch_status.results):
                 if response_idx >= len(ordered_indices):
                     break
 
@@ -688,7 +639,7 @@ def process_gemini_batch_results(batch_id: str, api_key: str, db, batch_repo, lo
 
                 try:
                     _process_single_result(
-                        inline_response=inline_response,
+                        result=result,
                         file_item=file_item,
                         task_params=task_params,
                         file_task_uuid=file_log_uuids.get(file_uid, ""),
@@ -720,6 +671,10 @@ def process_gemini_batch_results(batch_id: str, api_key: str, db, batch_repo, lo
         except Exception:
             pass
         return {"status": "ERROR", "files": []}
+    finally:
+        # 接手批次的轉接器一樣要釋放（見 BatchProvider）
+        if adapter:
+            adapter.release()
 
 
 def run_recover(batch_id: str, api_key: str):
