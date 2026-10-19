@@ -132,7 +132,7 @@ class TestFlex:
         (Reply(served="standard"), True, "standard"),  # API 端沒有套用 Flex
         (Reply(), False, "flex"),  # 讀不到 header：照請求端判定
     ], ids=["served-flex", "api-downgraded", "no-header"])
-    def test_reports_the_tier_actually_used(
+    def test_reports_the_processing_mode_actually_used(
             self, gemini, genai, audio, reply, tier_header, reported):
         genai.replies = [reply]
         genai.tier_header = tier_header

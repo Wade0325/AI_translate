@@ -84,3 +84,16 @@ def open_batch_provider(provider: str, model: str, api_key: str = "") -> BatchPr
         raise UnsupportedModelError(f"模型 {model} 不支援批次")
     # 模型能力標明支援批次的供應商，轉接器都實作 BatchProvider
     return cast(BatchProvider, _factory(provider)(model, api_key))
+
+
+def reopen_batch_provider(provider: str, model: str, api_key: str = "") -> BatchProvider:
+    """建立轉接器，接手一個已經送出的批次（重啟後復原）。
+
+    模型在送出時驗證過，這裡不再驗證：升級後模型清單拿掉了送出時的模型，
+    還在進行中的批次也收得回來。
+
+    Raises:
+        UnsupportedModelError: 供應商不存在。
+        ValueError: 供應商還不能使用（API 金鑰無效）。
+    """
+    return cast(BatchProvider, _factory(provider)(model, api_key))

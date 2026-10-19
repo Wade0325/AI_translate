@@ -95,14 +95,15 @@ class BatchStatus:
     succeeded: bool = False
     results: Tuple[TranscriptionTaskResult, ...] = ()
     """成功結束時每個請求一份轉錄結果，順序和送出時相同；
-    失敗的請求 ``success=False``，``text`` 是錯誤訊息。"""
+    失敗的請求 ``success=False``，``text`` 是給使用者看的失敗原因。"""
 
 
 class BatchProvider(Provider, Protocol):
     """支援批次（模型能力的 ``supports_batch``）的供應商轉接器。
 
     批次結束後同樣呼叫 :meth:`release` 刪掉遠端資源。
-    見 :func:`app.provider.registry.open_batch_provider`。
+    新的批次用 :func:`app.provider.registry.open_batch_provider` 建立，
+    重啟後復原用 :func:`app.provider.registry.reopen_batch_provider`。
     """
 
     def upload(self, audio_path: Path) -> Any:

@@ -133,14 +133,14 @@ def _served_tier(response: Any) -> Optional[str]:
         return None
 
 
-def _tier_used(response: Any, requested: Optional[str], sent: str) -> str:
+def _tier_used(response: Any, requested: Optional[str], sent_tier: str) -> str:
     """實際用到的處理模式：以回應 header 為準，讀不到時照送出的請求判定。"""
     served = _served_tier(response)
     if not served:
         logger.info(
             "[TIER] 無法從回應讀取 x-gemini-service-tier header"
-            f"（可能 google-genai SDK < 1.69.0），維持以請求端判定 tier_used={sent}")
-        return sent
+            f"（可能 google-genai SDK < 1.69.0），維持以請求端判定 tier_used={sent_tier}")
+        return sent_tier
     if requested == "flex" and served == "flex":
         logger.info("[FLEX VERIFIED] Gemini 回應 header x-gemini-service-tier=flex"
                     "（已確認使用 Flex API，享 50% 折扣）")
@@ -149,7 +149,7 @@ def _tier_used(response: Any, requested: Optional[str], sent: str) -> str:
                        f"x-gemini-service-tier={served}（API 端降級或未套用 Flex）")
     else:
         logger.info(f"[TIER] Gemini 回應 header x-gemini-service-tier={served}")
-    return served if served in ("flex", "standard", "priority") else sent
+    return served if served in ("flex", "standard", "priority") else sent_tier
 
 
 def _usage(response: Any) -> Tuple[int, int, int]:
@@ -216,7 +216,7 @@ def _batch_item_result(inline: Any) -> TranscriptionTaskResult:
     """批次裡一個請求的回應；失敗時 text 是要存進任務紀錄的錯誤訊息。"""
     response = inline.response
     if not response:
-        return _batch_failure(str(inline.error or "未知錯誤"))
+        return _batch_failure(f"轉錄失敗: {inline.error or '未知錯誤'}")
     if not response.candidates:
         text = "轉錄失敗：Gemini 回應被阻擋"
         try:
@@ -266,12 +266,13 @@ class GeminiProvider:
                     f"(requested service_tier={request.service_tier or 'standard'})")
         logger.info(f"Prompt fingerprint: {_prompt_fingerprint(request.prompt)}")
         contents = [request.prompt, gemini_file]
-        sent = "flex"
+        # 拿到回應的那次請求是以哪種處理模式送出的
+        sent_tier = "flex"
         response = self._generate_flex(request.model, contents) if request.service_tier == "flex" else None
         if response is None:
-            sent = "standard"
+            sent_tier = "standard"
             response = self._generate_standard(request.model, contents)
-        return _transcription_result(response, _tier_used(response, request.service_tier, sent))
+        return _transcription_result(response, _tier_used(response, request.service_tier, sent_tier))
 
     def _generate_flex(self, model: str, contents: List[Any]) -> Any:
         """Flex：429／503 以指數退避重試；用完或遇到其他錯誤回 None，由呼叫端退回標準。"""

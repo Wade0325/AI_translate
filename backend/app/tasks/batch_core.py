@@ -19,7 +19,7 @@ from app.core.default_prompt import build_prompt
 from app.core.task_status import TaskStatus
 from app.database.session import SessionLocal
 from app.exceptions import GeminiTransientError
-from app.provider.registry import open_batch_provider
+from app.provider.registry import open_batch_provider, reopen_batch_provider
 from app.repositories.transcription_log_repository import TranscriptionLogRepository
 from app.repositories.batch_job_repository import BatchJobRepository
 from app.services.calculator.service import CalculatorService
@@ -110,7 +110,7 @@ def _vad_preprocess_file(
             used_for_transcription=used_for_transcription,
         )
 
-    if used_for_transcription and result.speech_only_path:
+    if used_for_transcription:
         logger.info(
             f"VAD 前處理完成 ({file_path.name}): "
             f"語音佔比 {result.speech_ratio*100:.1f}%, "
@@ -548,6 +548,7 @@ def process_gemini_batch_results(batch_id: str, api_key: str, db, batch_repo, lo
     """
     from types import SimpleNamespace
 
+    adapter = None
     try:
         job = batch_repo.get_job(db, batch_id)
         if not job:
@@ -565,9 +566,15 @@ def process_gemini_batch_results(batch_id: str, api_key: str, db, batch_repo, lo
         update_status("正在從 Gemini 恢復批次任務結果...")
 
         task_params_data = json.loads(job.task_params_json) if job.task_params_json else {}
+        task_params = SimpleNamespace(
+            model=task_params_data.get("model", ""),
+            provider=task_params_data.get("provider", "google"),
+            source_lang=task_params_data.get("source_lang", ""),
+            target_lang=task_params_data.get("target_lang"),
+            prompt=task_params_data.get("prompt", ""),
+        )
         try:
-            adapter = open_batch_provider(
-                task_params_data.get("provider", "google"), task_params_data.get("model", ""), api_key)
+            adapter = reopen_batch_provider(task_params.provider, task_params.model, api_key)
         except ValueError as e:
             logger.warning(f"恢復任務 {batch_id} 無法建立供應商轉接器: {e}")
             update_status("API Key 無效", status_code=TaskStatus.BATCH_COMPLETED)
@@ -601,14 +608,6 @@ def process_gemini_batch_results(batch_id: str, api_key: str, db, batch_repo, lo
         file_mapping = json.loads(job.file_mapping_json) if job.file_mapping_json else {}
         file_durations = json.loads(job.file_durations_json) if job.file_durations_json else {}
         file_log_uuids = json.loads(job.file_log_uuids_json) if job.file_log_uuids_json else {}
-
-        task_params = SimpleNamespace(
-            model=task_params_data.get("model", ""),
-            provider=task_params_data.get("provider", "google"),
-            source_lang=task_params_data.get("source_lang", ""),
-            target_lang=task_params_data.get("target_lang"),
-            prompt=task_params_data.get("prompt", ""),
-        )
 
         start_time = time.time()
         captured_results = {}
@@ -672,6 +671,10 @@ def process_gemini_batch_results(batch_id: str, api_key: str, db, batch_repo, lo
         except Exception:
             pass
         return {"status": "ERROR", "files": []}
+    finally:
+        # 接手批次的轉接器一樣要釋放（見 BatchProvider）
+        if adapter:
+            adapter.release()
 
 
 def run_recover(batch_id: str, api_key: str):
