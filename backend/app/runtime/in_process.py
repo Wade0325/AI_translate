@@ -126,5 +126,6 @@ class InProcessRunMode:
             return self._task_ids.get(file_uid)
 
     # ── 生命週期 ──────────────────────────────────────────────────
-    def close(self) -> None:
-        self._executor.shutdown()
+    def close(self, wait: bool = False) -> None:
+        """``wait=True`` 等執行中的任務結束（測試收尾用）；關閉應用程式時不等。"""
+        self._executor.shutdown(wait=wait)

@@ -18,7 +18,8 @@ from app.core.default_prompt import build_prompt
 from app.core.task_status import TaskStatus
 from app.database.session import SessionLocal
 from app.exceptions import GeminiTransientError, TranscriptionCancelledError
-from app.provider.google.gemini import GeminiClient
+from app.provider.base import TranscribeRequest
+from app.provider.registry import open_provider
 from app.repositories.transcript_segment_repository import TranscriptSegmentRepository
 from app.repositories.transcription_log_repository import TranscriptionLogRepository
 from app.services import audio_store
@@ -123,25 +124,10 @@ def run_transcription(task_params_dict: dict, task_uuid: str):
             logger.warning(
                 f"Could not read audio duration for {local_path.name}.")
 
-        # 初始化供應商的 client（local 是本機，不需 API key）
-        provider = task_params.provider.lower()
-        if provider not in ('google', 'local'):
-            raise ValueError(
-                f"Provider '{task_params.provider}' is not supported. Only 'google' or 'local' is allowed.")
-
-        if provider == 'local' and get_settings().is_standalone:
-            # standalone 模式先確認 GPU 與所選模型的權重齊備，缺什麼直接以明確訊息失敗
-            from app.provider.local.weights import ensure_local_ready
-            ensure_local_ready(task_params.model)
-
-        client = None
-        if provider == 'google':
-            logger.info(
-                f"Initializing Gemini Client for model: {task_params.model}")
-            client = GeminiClient(task_params.api_keys).client
-            if not client:
-                raise ValueError(
-                    "Failed to initialize Gemini Client. Check API key.")
+        # 查出供應商轉接器：模型不屬於這個供應商、或供應商還不能轉錄
+        # （缺權重、金鑰無效）都在這裡以明確訊息失敗，不必等去靜音跑完
+        adapter = open_provider(
+            task_params.provider, task_params.model, task_params.api_keys)
 
         update_status("正在初始化模型...")
 
@@ -166,17 +152,18 @@ def run_transcription(task_params_dict: dict, task_uuid: str):
             )
 
         task_manager = TranscriptionTask(
-            client=client,
-            model=task_params.model,
-            prompt=user_prompt,
+            provider=adapter,
+            request=TranscribeRequest(
+                model=task_params.model,
+                prompt=user_prompt,
+                source_lang=task_params.source_lang,
+                service_tier=task_params.service_tier,
+                status_callback=update_status,
+                cancel_check=lambda: run_mode.get().is_cancel_requested(file_uid),
+            ),
             temp_dir=local_path.parent,
-            status_callback=update_status,
-            service_tier=task_params.service_tier,
             artifact_task_id=str(task_uuid),
             original_filename=task_params.original_filename,
-            provider=provider,
-            source_lang=task_params.source_lang,
-            cancel_check=lambda: run_mode.get().is_cancel_requested(file_uid),
         )
 
         logger.info(f"Starting transcription. Task ID : {task_uuid}")

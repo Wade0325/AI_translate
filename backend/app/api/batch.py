@@ -15,6 +15,7 @@ from app.runtime import run_mode
 from app.core.config import get_settings
 from app.core.task_status import TaskStatus
 from app.database.session import SessionLocal, get_db
+from app.provider.registry import UnsupportedModelError, model_capabilities
 from app.repositories.batch_job_repository import BatchJobRepository
 from app.services.api_keys import resolve_api_key
 from app.utils.logger import setup_logger
@@ -173,9 +174,22 @@ def start_batch_task_sync(payload_str: str, batch_id: str) -> list[dict]:
     在獨立執行緒中執行以避免阻塞事件迴圈。
 
     檔名不合法（不是 temp_uploads 內的單純檔名）的檔案不派發，其餘照常；
+    模型不屬於所選供應商或不支援批次時整批不派發。
     回傳被拒檔案的 FAILED 訊息，由 WS 端點送回前端。
     """
     request_data = WebSocketBatchRequest.model_validate_json(payload_str)
+
+    try:
+        if not model_capabilities(request_data.provider, request_data.model).supports_batch:
+            raise UnsupportedModelError(f"模型 {request_data.model} 不支援批次")
+    except UnsupportedModelError as e:
+        logger.warning(f"批次任務 {batch_id} 被拒: {e}")
+        return [{
+            "client_id": batch_id,
+            "file_uid": f.file_uid,
+            "status_code": TaskStatus.FAILED,
+            "status_text": str(e),
+        } for f in request_data.files]
 
     file_items = []
     rejected = []

@@ -1,4 +1,4 @@
-"""Local provider 的 MOSS 路徑：輸出解析、長度預算、權重對照、模型分流、切段門檻。
+"""本機的 MOSS 路徑：輸出解析、長度預算、權重對照、取消檢查，以及本機轉接器的模型能力。
 
 torch 在 conftest 已被 mock，這裡只測純邏輯；模型推論與 Windows 注意力的數值
 正確性在 lab/src/moss.py（attn-check、E7）以真實 GPU 驗證過。
@@ -9,9 +9,10 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.core.config import get_settings
 from app.exceptions import TranscriptionCancelledError
 from app.provider.local import asr, moss, weights
-from app.services.transcription import flows
+from app.provider.local.provider import LocalProvider
 
 
 # ─── 輸出解析 ────────────────────────────────────────────────────────────
@@ -286,76 +287,12 @@ class TestWeights:
             weights.ensure_local_ready()
 
 
-# ─── 模型分流 ────────────────────────────────────────────────────────────
+# ─── MOSS 執行 ────────────────────────────────────────────────────────────
 
 MOSS_SEGMENTS = [
     {"Start": 0.5, "End": 2.0, "Speaker": 0, "Content": "おはよう。"},
     {"Start": 3.0, "End": 4.5, "Speaker": 1, "Content": "  "},
 ]
-
-
-@pytest.fixture
-def pipeline(monkeypatch):
-    """把各階段換成記錄呼叫的假函式，回傳呼叫紀錄。"""
-    calls = {}
-
-    def to_mono(path, sample_rate):
-        calls["sample_rate"] = sample_rate
-        return Path("does-not-exist_mono.wav")
-
-    def run_moss(wav, cancel_check=None, status_callback=None):
-        calls["moss"] = True
-        return [dict(s) for s in MOSS_SEGMENTS]
-
-    def run_diarization(wav, cancel_check=None, status_callback=None):
-        calls["vibevoice"] = True
-        return [{"Start": 0.5, "End": 2.0, "Speaker": 0, "Content": "vv"}]
-
-    def transcribe_segments(wav, segments, language, status_callback=None, cancel_check=None):
-        calls["qwen_segments"] = segments
-        return [{"start": 0.5, "end": 2.0, "speaker": 0, "text": "qwen 文字",
-                 "text_alt": segments[0]["Content"]}]
-
-    def build_lrc_lines(wav, entries, status_callback=None, cancel_check=None):
-        calls["entries"] = entries
-        return [f"[00:00.50][S{e['speaker']}] {e['text']}" for e in entries]
-
-    monkeypatch.setattr(asr, "_to_mono", to_mono)
-    monkeypatch.setattr(asr, "_run_moss", run_moss)
-    monkeypatch.setattr(asr, "_run_diarization", run_diarization)
-    monkeypatch.setattr(asr, "_transcribe_segments", transcribe_segments)
-    monkeypatch.setattr(asr, "_build_lrc_lines", build_lrc_lines)
-    return calls
-
-
-class TestModelDispatch:
-    def test_moss_align_uses_moss_text_without_qwen(self, pipeline):
-        result = asr.transcribe_with_local_models(Path("in.wav"), "ja", model="moss-align")
-        assert pipeline["sample_rate"] == asr.MOSS_SAMPLE_RATE
-        assert pipeline.get("moss") and "qwen_segments" not in pipeline
-        assert "vibevoice" not in pipeline
-        # 空白片段不送對齊器；text_alt 為空（沒有第二份假設）
-        assert pipeline["entries"] == [
-            {"start": 0.5, "end": 2.0, "speaker": 0, "text": "おはよう。", "text_alt": None}]
-        assert result["success"] and result["text"] == "[00:00.50][S0] おはよう。"
-        assert result["segments"][0]["source"] == "moss"
-
-    def test_moss_qwen_feeds_moss_segments_to_qwen(self, pipeline):
-        result = asr.transcribe_with_local_models(Path("in.wav"), "ja", model="moss-qwen3-asr")
-        assert pipeline["sample_rate"] == asr.MOSS_SAMPLE_RATE
-        assert pipeline["qwen_segments"][0]["Content"] == "おはよう。"
-        assert result["segments"][0]["source"] == "qwen"
-        assert result["segments"][0]["text_alt"] == "おはよう。"
-
-    def test_vibevoice_keeps_legacy_path(self, pipeline):
-        asr.transcribe_with_local_models(Path("in.wav"), "ja", model="vibevoice-qwen3-asr")
-        assert pipeline["sample_rate"] == asr.DIARIZATION_SAMPLE_RATE
-        assert pipeline.get("vibevoice") and "moss" not in pipeline
-
-    @pytest.mark.parametrize("model", [None, "", "no-such-model"])
-    def test_missing_or_unknown_model_defaults_to_moss_align(self, pipeline, model):
-        asr.transcribe_with_local_models(Path("in.wav"), "ja", model=model)
-        assert pipeline.get("moss") and "qwen_segments" not in pipeline
 
 
 class TestRunMoss:
@@ -378,34 +315,44 @@ class TestRunMoss:
         assert asr._run_moss(Path("x.wav")) == MOSS_SEGMENTS
 
 
-# ─── 切段門檻 ────────────────────────────────────────────────────────────
+# ─── 模型能力 ────────────────────────────────────────────────────────────
 
-class TestSplitThreshold:
+class TestLocalCapabilities:
     @pytest.fixture(autouse=True)
-    def _no_vad(self, monkeypatch):
-        monkeypatch.setattr(flows, "get_vad_service", lambda: None)
+    def _vram(self, monkeypatch):
         monkeypatch.setattr(moss, "max_single_pass_seconds", lambda: 4200.0)
 
-    def _task(self, provider, model):
-        return flows.TranscriptionTask(
-            client=None, model=model, prompt="", temp_dir=Path("."), provider=provider)
+    def _capabilities(self):
+        return LocalProvider.capabilities()
 
-    def test_local_moss_models_use_single_pass_limit(self):
-        assert self._task("local", "moss-align").split_threshold_seconds == 4200.0
-        assert self._task("local", "moss-qwen3-asr").split_threshold_seconds == 4200.0
+    def test_lists_every_local_model(self):
+        assert set(self._capabilities()) == set(weights.MODEL_REPOS)
 
-    def test_unknown_local_model_matches_what_asr_runs(self):
-        # asr 會把不認得的名稱當成 moss-align 執行，門檻也要跟著用 MOSS 的
-        assert self._task("local", "no-such-model").split_threshold_seconds == 4200.0
+    def test_moss_models_use_single_pass_limit(self):
+        caps = self._capabilities()
+        assert caps["moss-align"].single_pass_seconds == 4200.0
+        assert caps["moss-qwen3-asr"].single_pass_seconds == 4200.0
 
-    def test_vibevoice_and_gemini_keep_global_setting(self):
-        expected = flows.LONG_AUDIO_SPLIT_THRESHOLD_SECONDS
-        assert self._task("local", "vibevoice-qwen3-asr").split_threshold_seconds == expected
-        assert self._task("google", "gemini-2.5-flash").split_threshold_seconds == expected
+    def test_vibevoice_uses_global_split_threshold(self):
+        expected = get_settings().long_audio_split_threshold_seconds
+        assert self._capabilities()["vibevoice-qwen3-asr"].single_pass_seconds == expected
 
-    def test_audio_within_threshold_is_not_split(self, monkeypatch):
-        task = self._task("local", "moss-align")
-        sentinel = object()
-        monkeypatch.setattr(task, "_attempt_transcription", lambda path: sentinel)
-        # 51.8 分鐘（舊門檻 900 秒會切成 4 段）在 MOSS 門檻內一次處理
-        assert task._transcribe_halved(Path("a.wav"), 3105.0, None) is sentinel
+    def test_runs_on_gpu_queue_and_cannot_be_terminated_or_split_retried(self):
+        for caps in self._capabilities().values():
+            assert caps.queue == "local_asr"
+            assert not caps.can_terminate
+            assert not caps.split_retry_on_failure
+
+
+class TestLocalReadiness:
+    def test_missing_gpu_fails_before_any_transcription(self, monkeypatch):
+        monkeypatch.setattr(weights, "cuda_status", lambda: (False, None))
+        with pytest.raises(ValueError, match="NVIDIA GPU"):
+            LocalProvider("moss-align")
+
+    def test_missing_weights_of_selected_model_fail(self, monkeypatch):
+        monkeypatch.setattr(weights, "cuda_status", lambda: (True, "GPU"))
+        monkeypatch.setattr(weights, "repo_is_ready", lambda repo: repo != weights.ASR_MODEL_ID)
+        LocalProvider("moss-align")  # 不需要 Qwen3-ASR
+        with pytest.raises(ValueError, match=weights.ASR_MODEL_ID):
+            LocalProvider("moss-qwen3-asr")

@@ -13,18 +13,21 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 # ─── 1. 在所有 app 模組被匯入之前，先 mock 重量級依賴 ──────────────────────
-# 避免 torch / torchaudio / silero_vad 在測試環境進行緩慢的首次匯入。
+# 避免 torch / torchaudio 在測試環境進行緩慢的首次匯入。
 # soundfile 用真的：它在 base 依賴裡，測試要用它產生合成音檔（#103）
 _HEAVY_MODULES = [
     "torch",
     "torchaudio",
     "torchaudio.transforms",
     "torchaudio.functional",
-    "silero_vad",
 ]
 for _mod in _HEAVY_MODULES:
     if _mod not in sys.modules:
         sys.modules[_mod] = MagicMock()
+
+# Silero 在測試環境明確視為無法使用：CI 不裝 ML 依賴，import 直接失敗，
+# 切點只來自去靜音找出的靜音邊界；Silero 這條後備路徑由本機的 GPU 驗證涵蓋
+sys.modules["silero_vad"] = None
 
 
 # ─── 2. SQLite In-Memory 測試資料庫 ─────────────────────────────────────────
