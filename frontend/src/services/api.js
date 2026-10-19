@@ -66,6 +66,10 @@ export const api = {
       return request(`/transcription/${fileUid}/cancel`, { method: 'POST' });
     },
   },
+  /** 供應商、它們的模型與每個模型的模型能力 */
+  providers() {
+    return request('/providers');
+  },
   history: {
     list({ page = 1, pageSize = 10, keyword, status, mode } = {}) {
       const params = new URLSearchParams({

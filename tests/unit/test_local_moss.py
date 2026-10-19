@@ -13,7 +13,7 @@ from app.core.config import get_settings
 from app.exceptions import TranscriptionCancelledError
 from app.provider.base import ProgressAndCancel
 from app.provider.local import asr, moss, weights
-from app.provider.local.provider import LocalProvider
+from app.provider.local.provider import LocalProvider, local_provider
 
 
 # ─── 輸出解析 ────────────────────────────────────────────────────────────
@@ -323,27 +323,40 @@ class TestRunMoss:
 # ─── 模型能力 ────────────────────────────────────────────────────────────
 
 class TestLocalCapabilities:
-    @pytest.fixture(autouse=True)
-    def _vram(self, monkeypatch):
-        monkeypatch.setattr(moss, "max_single_pass_seconds", lambda: 4200.0)
+    """registry 列的是不碰顯卡的上限；轉接器只在要轉錄的行程建立，單次長度再依顯存收斂。"""
 
-    def _capabilities(self):
-        return LocalProvider.capabilities()
+    @pytest.fixture(autouse=True)
+    def _setting_and_small_card(self, monkeypatch):
+        monkeypatch.setattr(moss, "get_settings",
+                            lambda: SimpleNamespace(local_moss_single_pass_max_seconds=4200.0))
+        monkeypatch.setattr(moss, "_total_vram_gib", lambda: 8.0)
+
+    def _declared(self):
+        return local_provider.capabilities()
 
     def test_lists_every_local_model(self):
-        assert set(self._capabilities()) == set(weights.MODEL_REPOS)
+        assert set(self._declared()) == set(weights.MODEL_REPOS)
 
-    def test_moss_models_use_single_pass_limit(self):
-        caps = self._capabilities()
+    def test_moss_models_declare_the_setting_limit_whatever_the_card(self):
+        caps = self._declared()
         assert caps["moss-align"].single_pass_seconds == 4200.0
         assert caps["moss-qwen3-asr"].single_pass_seconds == 4200.0
 
+    def test_adapter_narrows_moss_single_pass_by_vram(self, monkeypatch):
+        monkeypatch.setattr(weights, "ensure_local_ready", lambda model: None)
+
+        caps = local_provider("moss-align").capabilities()
+
+        # 8 GB 卡約 26 分；其餘模型能力照宣告的
+        assert 1500 < caps["moss-align"].single_pass_seconds < 2000
+        assert caps["moss-align"].accepts_prompt is False
+
     def test_vibevoice_uses_global_split_threshold(self):
         expected = get_settings().long_audio_split_threshold_seconds
-        assert self._capabilities()["vibevoice-qwen3-asr"].single_pass_seconds == expected
+        assert self._declared()["vibevoice-qwen3-asr"].single_pass_seconds == expected
 
     def test_runs_on_gpu_queue_and_cannot_be_terminated_or_split_retried(self):
-        for caps in self._capabilities().values():
+        for caps in self._declared().values():
             assert caps.queue == "local_asr"
             assert not caps.can_terminate
             assert not caps.split_retry_on_failure

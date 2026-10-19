@@ -12,7 +12,7 @@ from app.core.config import get_settings
 from app.core.task_status import TaskStatus
 from app.database.models import TranscriptionLog
 from app.database.session import SessionLocal
-from app.provider.registry import UnsupportedModelError, model_capabilities
+from app.provider.registry import UnsupportedModelError, check_request, model_capabilities
 from app.repositories.transcription_log_repository import TranscriptionLogRepository
 from app.services.api_keys import resolve_api_key
 from app.utils.logger import setup_logger
@@ -35,13 +35,16 @@ def start_transcription_task_sync(payload_str: str, file_uid: str) -> None:
 
     Raises:
         UnsafeUploadFilenameError: filename 不是 temp_uploads 內的單純檔名。
-        UnsupportedModelError: 模型不屬於所選的供應商。
+        UnsupportedModelError: 模型不屬於所選的供應商，或填了模型不吃的提示詞或使用者文稿
+            （:class:`~app.provider.registry.UnsupportedInputError`）。
     """
     request_data = WebSocketTranscriptionRequest.model_validate_json(
         payload_str)
 
-    # 先驗證再碰檔案：不符的組合不能默默跑到別的供應商
-    capabilities = model_capabilities(request_data.provider, request_data.model)
+    # 先驗證再碰檔案：不符的組合不能默默跑到別的供應商，模型不吃的輸入也不能默默丟掉
+    capabilities = check_request(
+        request_data.provider, request_data.model,
+        prompt=request_data.prompt, user_text=request_data.original_text)
 
     temp_file_path = resolve_upload_path(request_data.filename, TEMP_UPLOADS_DIR)
 
