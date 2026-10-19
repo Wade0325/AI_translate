@@ -1,8 +1,9 @@
-"""接縫 1：透過 API 跑完一個單檔任務，只把供應商換成假供應商（#106）。
+"""接縫 1：透過 API 跑完一個單檔任務，只把供應商換成假供應商（#106、#113）。
 
 其他都走真的：TestClient、sqlite、行程內執行模式、WebSocket 狀態廣播，以及
 用 numpy／soundfile 產生的合成音檔經真實的 ffmpeg 轉檔、去靜音、切音檔、取得長度。
-測試只從外部觀察：狀態廣播、API 回應、存下來的片段與可以下載的輸出格式。
+測試只從外部觀察：狀態廣播、API 回應、存下來的任務紀錄與片段、可以下載的輸出格式與
+保留音檔，以及暫存資料夾裡有沒有留下檔案。
 """
 import io
 import threading
@@ -270,10 +271,7 @@ class TestSingleFileTask:
 
     def test_provider_releases_its_resources(self, api, fake):
         transcribe(api, "uid-complete")
-        # 收尾在完成廣播之後才跑
-        deadline = time.monotonic() + TIMEOUT
-        while fake.released == 0 and time.monotonic() < deadline:
-            time.sleep(0.02)
+        # 宣告結果之前就已釋放
         assert (fake.opened, fake.released) == (1, 1)
 
     @pytest.mark.parametrize("step", [Fail("模型壞掉了"), RuntimeError("模型壞掉了")],
@@ -513,22 +511,23 @@ def cancel_while_transcribing(api, fake, file_uid: str) -> dict:
         return receive_until_terminal(ws)[-1]
 
 
-def completed(api, fake) -> dict:
+def run_to_completion(api, fake) -> dict:
     fake.script = list(SCRIPT)
     return transcribe(api, "uid-finish")[-1]
 
 
-def failed(api, fake) -> dict:
+def run_to_failure(api, fake) -> dict:
     fake.script = [Fail("模型壞掉了")]
     return transcribe(api, "uid-finish")[-1]
 
 
-def cancelled(api, fake) -> dict:
+def run_to_cancellation(api, fake) -> dict:
     return cancel_while_transcribing(api, fake, "uid-finish")
 
 
 class TestFinishing:
-    @pytest.mark.parametrize("run_task", [completed, failed, cancelled])
+    @pytest.mark.parametrize("run_task", [run_to_completion, run_to_failure, run_to_cancellation],
+                             ids=["completed", "failed", "cancelled"])
     def test_audio_is_retained_and_temp_files_cleaned_before_the_result(
             self, api, fake, data_dir, run_task):
         end = run_task(api, fake)
