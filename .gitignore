@@ -65,7 +65,7 @@ tests/test_gemini_integration.py
 .cursor/
 .DS_Store
 
-# Claude Code：settings.json 與 hooks/ 進版控；個人設定與 worktree 不進。
+# Claude Code：settings.json 進版控；個人設定與 worktree 不進。
 # 從子目錄啟動的 session 會把個人設定寫在那個目錄的 .claude/，一起忽略
 .claude/settings.local.json
 .claude/worktrees/
