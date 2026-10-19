@@ -1,7 +1,12 @@
-# 新 worktree 是全新 checkout，被 git ignore 的檔案不會跟著過去。
-# 這裡列出要複製進每個 worktree 的檔案（.gitignore 語法，只有「被 ignore 且符合」的才複製）。
+# Claude Code 自己建立 worktree 時（EnterWorktree(name)、`claude --worktree`、子代理隔離、桌面版），
+# 會把主 checkout 裡符合這裡的規則、而且被 git 忽略的檔案複製一份進去（.gitignore 語法）。
+# 複製的是當下的快照，之後主 checkout 改了也不會跟著更新。
 #
-# 只放小檔案：backend/.venv（7 GB）與 frontend/node_modules 走
-# .claude/settings.json 的 worktree.symlinkDirectories 連結過去，不複製。
-# models/hf_cache（24.8 GB）不用處理，config.py 裡是絕對路徑，自動共用。
-.env
+# 刻意不放任何規則，尤其不帶 .env：
+# - worktree 用不到：沒有 .env 時 config.py 的 _find_env_file() 找不到檔，全部欄位用預設值。
+# - 帶了會讓 worktree 裡原生執行的後端連上主 checkout 那套 Docker 模式的同一個資料庫，
+#   還會把機密留在每個 worktree，合併後也不會消失。
+#   要在 worktree 原生執行後端時，照 docs/agents/merging.md 第 3 步用免安裝模式起一個獨立的 app。
+#
+# backend/.venv 與 frontend/node_modules 不會連結或複製過去。
+# .claude/settings.local.json 不受這個檔控制：Claude Code 自己建立的 worktree 一律會複製一份。
