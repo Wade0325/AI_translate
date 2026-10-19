@@ -3,8 +3,19 @@
 資料來源：
 
 * 有片段的任務從片段產生，轉錄結果只有片段這一份。
-* 沒有片段的舊任務（片段上線前的任務、批次任務）退回解析存下來的 LRC，內容和以前相同。
+* 沒有片段的舊任務（片段上線前的任務、批次裡的任務）退回解析存下來的 LRC，內容和以前相同。
 * 存下來的 LRC 是凍結的原始轉錄副本（ADR-0007），有片段時下載不讀它。
+
+本機任務從片段產生的 LRC，和本機轉接器寫出的 LRC 逐字相同：同樣的斷行（見
+:func:`_segment_lines`）、同樣的時間戳。沒去靜音也沒切段的任務，存下來的副本就是那一份。
+去靜音或切段過的任務，副本另外經過分段轉錄對 LRC 文字做的時間處理（#110 拿掉），和這裡會有
+三種差異，都是那段處理造成的，這裡的時間比較準：
+
+* 時間戳差 0.01 秒：去靜音的時間還原把秒數捨去到 0.01，切段的後段平移時又四捨五入一次。
+  去靜音的任務很常見，約一半的行。
+* 一行的第一個詞若在被剪掉的靜音前 0.005 秒內開始，副本先四捨五入才還原時間，時間會跳到
+  那段靜音之後。
+* 一句中間剪掉的靜音，這裡會算進 12 秒的長度，本機當時沒算；長度在 12 秒上下的句子斷行可能不同。
 
 版本目前只有原始轉錄，校正後版本留給 v0.2。
 
@@ -19,7 +30,7 @@ import re
 import unicodedata
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, List, Mapping, Optional, Sequence, Tuple
 
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -67,7 +78,7 @@ def for_task(
     任務沒有轉錄結果（沒有片段，也沒有存下來的 LRC）時回傳 None；舊任務的 LRC 解析不出
     任何一行時，SRT／VTT／TXT 是空字串。版本目前只有原始轉錄一種。
     """
-    segments = _stored_segments(db, task)
+    segments = TranscriptSegmentRepository.segments_for_task(db, task.task_uuid)
     if segments:
         return _render(_lines(segments), fmt)
     stored_lrc = HistoryRepository().resolve_lrc_content(db, task, backfill=True)
@@ -139,16 +150,9 @@ class _Line:
     """帶說話者標記的文字。"""
 
 
-def _stored_segments(db: Session, task: TranscriptionLog) -> List[Dict[str, Any]]:
-    return [
-        {"start": row.start_sec, "end": row.end_sec, "speaker": row.speaker,
-         "text": row.text, "words": TranscriptSegmentRepository.words(row)}
-        for row in TranscriptSegmentRepository.list_for_task(db, task.task_uuid)
-    ]
-
-
 def _lines(segments: Sequence[Mapping[str, Any]]) -> List[_Line]:
-    """依開始時間排序（和存片段時相同）後，逐段斷行。"""
+    """依開始時間排序（和存下來的片段順序相同）後，逐段斷行。本機寫 LRC 時照模型給的順序，
+    模型給的片段不照時間時，兩者的行序才會不同。"""
     lines: List[_Line] = []
     for segment in sorted(segments, key=lambda s: s["start"]):
         lines.extend(_segment_lines(segment))

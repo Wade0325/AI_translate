@@ -252,27 +252,6 @@ class TestHistoryDelete:
 class TestHistoryDownload:
     _SAMPLE_LRC = "[00:01.00]Hello\n[00:03.00]World"
 
-    def test_download_lrc(self, client: TestClient, db_session: Session):
-        log = _create_log(
-            db_session,
-            status="COMPLETED",
-            original_filename="song.mp3",
-            lrc_content=self._SAMPLE_LRC,
-        )
-        response = client.get(f"/api/v1/history/{log.task_uuid}/download/lrc")
-        assert response.status_code == 200
-        assert "Hello" in response.text
-
-    def test_download_srt_converts_from_lrc(self, client: TestClient, db_session: Session):
-        log = _create_log(
-            db_session,
-            status="COMPLETED",
-            lrc_content=self._SAMPLE_LRC,
-        )
-        response = client.get(f"/api/v1/history/{log.task_uuid}/download/srt")
-        assert response.status_code == 200
-        assert "-->" in response.text
-
     def test_download_without_lrc_returns_404(self, client: TestClient, db_session: Session):
         log = _create_log(db_session, status="COMPLETED", lrc_content=None)
         response = client.get(f"/api/v1/history/{log.task_uuid}/download/lrc")
@@ -326,7 +305,7 @@ class TestDownloadFromSegments:
         assert response.text == FROM_SEGMENTS[fmt]
 
 
-# 片段功能上線前的任務與批次任務沒有片段，輸出要和以前從存下來的 LRC 轉換時一模一樣
+# 片段功能上線前的任務與批次裡的任務沒有片段，輸出要和以前從存下來的 LRC 轉換時一模一樣
 STORED_LRC = ("[00:01.50]Speaker A: Hello\n[00:03.123]Speaker B: World\n"
               "這行沒有時間戳\n[61:02.00]Final line")
 FROM_STORED_LRC = {
@@ -359,7 +338,7 @@ class TestDownloadWithoutSegments:
         assert response.text == FROM_STORED_LRC[fmt]
 
     @pytest.mark.parametrize("fmt", ["lrc", "srt", "vtt", "txt"])
-    def test_batch_task_without_stored_lrc_uses_the_batch_result(
+    def test_task_in_a_batch_without_stored_lrc_uses_the_batch_result(
             self, client: TestClient, db_session: Session, fmt):
         task_uuid = uuid.uuid4()
         batch_id = f"batch-{task_uuid.hex[:8]}"
