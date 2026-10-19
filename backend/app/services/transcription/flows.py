@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import List, Dict, Optional
 
 from app.core.config import get_settings
-from app.exceptions import TranscriptionCancelledError
+from app.exceptions import TranscriptionCancelledError, TransientError
 from app.utils.logger import setup_logger
 from app.utils.paths import is_temp_upload
 from app.utils.audio import (
@@ -350,8 +350,8 @@ class TranscriptionTask:
         """透過供應商轉錄一段音檔；一般錯誤轉成失敗結果，交給上層決定要不要切段重試。"""
         try:
             return self.provider.transcribe(audio_path, self.request, self.progress)
-        except TranscriptionCancelledError:
-            # 取消不是失敗：往上拋給任務標記為 CANCELLED
+        except (TranscriptionCancelledError, TransientError):
+            # 取消與暫時錯誤都不是這一段失敗：往上拋給任務生命週期
             raise
         except Exception as e:
             logger.error(f"轉錄過程發生錯誤: {e}")

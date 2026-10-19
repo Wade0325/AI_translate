@@ -18,7 +18,9 @@ from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from app.core.task_status import TaskStatus
+from app.exceptions import TransientError
 from app.provider import registry
+from app.runtime.run_mode import TRANSIENT_RETRIES
 from tests.support.fake_provider import FAKE_MODEL, Fail, FakeProvider
 
 SAMPLE_RATE = 16000
@@ -76,16 +78,19 @@ class RecordingRunMode:
     """包住行程內轉接器，記下 revoke 的參數，其餘照轉。
 
     行程內執行模式不能強制終止執行緒、會忽略 terminate，「依模型能力決定要不要強制終止」
-    只在執行模式的介面上看得到，所以在這個接縫上記錄。
+    只在執行模式的介面上看得到，所以在這個接縫上記錄。``revokes_delivered`` 設成 False
+    時 revoke 不轉給轉接器，模擬 Docker 模式的 worker 離線、收不到 revoke。
     """
 
     def __init__(self, inner):
         self._inner = inner
         self.revoked = []
+        self.revokes_delivered = True
 
     def revoke(self, task_id, terminate=False):
         self.revoked.append((task_id, terminate))
-        self._inner.revoke(task_id, terminate)
+        if self.revokes_delivered:
+            self._inner.revoke(task_id, terminate)
 
     def __getattr__(self, name):
         return getattr(self._inner, name)
@@ -199,6 +204,17 @@ def in_voiced_region(t: float) -> bool:
     return any(lo - 0.5 <= t <= hi + 0.5 for lo, hi in VOICED)
 
 
+def leftovers(data_dir) -> list[str]:
+    """暫存上傳資料夾裡還留著的檔案：上傳檔，以及去靜音、分段產生的暫存檔。"""
+    return sorted(p.name for p in (data_dir / "temp_uploads").iterdir())
+
+
+def retained_files(data_dir) -> list[str]:
+    """保留區裡的檔案。"""
+    store = data_dir / "audio_store"
+    return sorted(p.name for p in store.iterdir()) if store.exists() else []
+
+
 def codes(messages: list[dict]) -> list[str]:
     return [m["status_code"] for m in messages]
 
@@ -268,6 +284,42 @@ class TestSingleFileTask:
 
         assert codes(messages)[-1] == TaskStatus.FAILED
         assert "模型壞掉了" in messages[-1]["status_text"]
+        record = api.get(f"/api/v1/history/{messages[-1]['task_uuid']}").json()
+        assert record["status"] == TaskStatus.FAILED
+        assert "模型壞掉了" in record["error_message"]
+
+    def test_completed_task_is_recorded_and_priced(self, api, fake):
+        fake.usage = (200_000, 40_000)
+        done = transcribe(api, "uid-priced")[-1]
+
+        # 假模型套用預設價：音訊輸入每百萬 token 1.00 美元、輸出 2.50 美元 → 0.20 + 0.10
+        assert done["result"]["tokens_used"] == 240_000
+        assert done["result"]["cost"] == pytest.approx(0.30)
+        record = api.get(f"/api/v1/history/{done['task_uuid']}").json()
+        assert record["status"] == TaskStatus.COMPLETED
+        assert record["total_tokens"] == 240_000
+        assert record["cost"] == pytest.approx(0.30)
+        assert record["audio_duration_seconds"] == pytest.approx(12.0, abs=0.1)
+        assert record["service_tier_used"] == "standard"
+
+    def test_flex_tier_applies_the_discount(self, api, fake, settings, monkeypatch):
+        monkeypatch.setattr(settings, "flex_cost_discount", 0.5)
+        fake.usage = (200_000, 40_000)
+        fake.service_tier = "flex"
+        done = transcribe(api, "uid-flex")[-1]
+
+        assert done["result"]["cost"] == pytest.approx(0.15)
+        record = api.get(f"/api/v1/history/{done['task_uuid']}").json()
+        assert record["cost"] == pytest.approx(0.15)
+        assert record["service_tier_used"] == "flex"
+
+    def test_provider_progress_reaches_the_screen_before_the_result(self, api, fake):
+        fake.reports = ["假供應商：上傳中", "假供應商：轉錄中"]
+        messages = transcribe(api, "uid-progress")
+
+        texts = [m["status_text"] for m in messages]
+        assert texts.index("假供應商：上傳中") < texts.index("假供應商：轉錄中") < len(texts) - 1
+        assert messages[texts.index("假供應商：轉錄中")]["status_code"] == TaskStatus.PROCESSING
 
 
 # ─── 分段轉錄改讀模型能力 ───────────────────────────────────────────────────
@@ -417,3 +469,111 @@ class TestCancel:
         assert running_log["status"] == TaskStatus.CANCELLED
         assert stored_segments(api, task_end["task_uuid"]) == []
         assert api.get(f"/api/v1/history/{queued_end['task_uuid']}").status_code == 404
+
+    def test_cancelled_before_start_is_recorded_without_calling_the_provider(
+            self, api, fake, run_mode_spy, data_dir):
+        # worker 離線、收不到 revoke：佇列中的任務照樣會開始，開始時從取消旗標得知已取消
+        run_mode_spy.revokes_delivered = False
+        fake.hold = threading.Event()
+        fake.script = list(SCRIPT)
+        first_file, second_file = upload(api, "a.wav"), upload(api, "b.wav")
+
+        with api.websocket_connect("/api/v1/ws/uid-first") as first, \
+                api.websocket_connect("/api/v1/ws/uid-second") as second:
+            submit(first, first_file)
+            assert fake.started.wait(TIMEOUT)
+            submit(second, second_file)
+            cancel_when_dispatched(api, "uid-second")
+            receive_until_terminal(second)  # 取消端點的廣播
+            fake.hold.set()
+            assert receive_until_terminal(first)[-1]["status_code"] == TaskStatus.COMPLETED
+            second_end = receive_until_terminal(second)[-1]
+
+        # 任務紀錄是已取消、不是失敗；供應商只轉錄了第一個任務；上傳的音檔照樣保留
+        assert second_end["status_code"] == TaskStatus.CANCELLED
+        record = api.get(f"/api/v1/history/{second_end['task_uuid']}").json()
+        assert record["status"] == TaskStatus.CANCELLED
+        assert len(fake.calls) == 1
+        audio = api.get(f"/api/v1/transcripts/{second_end['task_uuid']}/audio")
+        assert audio.content == synthetic_audio()
+        assert leftovers(data_dir) == []
+
+
+# ─── 收尾 ────────────────────────────────────────────────────────────────────
+
+def cancel_while_transcribing(api, fake, file_uid: str) -> dict:
+    """上傳、送出，在供應商轉錄途中取消；回傳任務自己宣告的結果。"""
+    fake.hold = threading.Event()
+    filename = upload(api)
+    with api.websocket_connect(f"/api/v1/ws/{file_uid}") as ws:
+        submit(ws, filename)
+        assert fake.started.wait(TIMEOUT)
+        cancel_when_dispatched(api, file_uid)
+        receive_until_terminal(ws)  # 取消端點的廣播
+        return receive_until_terminal(ws)[-1]
+
+
+def completed(api, fake) -> dict:
+    fake.script = list(SCRIPT)
+    return transcribe(api, "uid-finish")[-1]
+
+
+def failed(api, fake) -> dict:
+    fake.script = [Fail("模型壞掉了")]
+    return transcribe(api, "uid-finish")[-1]
+
+
+def cancelled(api, fake) -> dict:
+    return cancel_while_transcribing(api, fake, "uid-finish")
+
+
+class TestFinishing:
+    @pytest.mark.parametrize("run_task", [completed, failed, cancelled])
+    def test_audio_is_retained_and_temp_files_cleaned_before_the_result(
+            self, api, fake, data_dir, run_task):
+        end = run_task(api, fake)
+
+        # 宣告結果時收尾已經做完：上傳的音檔原封不動搬進保留區、可以重播，暫存檔都清掉了
+        audio = api.get(f"/api/v1/transcripts/{end['task_uuid']}/audio")
+        assert audio.status_code == 200
+        assert audio.content == synthetic_audio()
+        assert leftovers(data_dir) == []
+
+
+# ─── 暫時錯誤 ────────────────────────────────────────────────────────────────
+
+class TestTransientError:
+    @pytest.fixture(autouse=True)
+    def _no_backoff(self, monkeypatch):
+        # 執行模式重試前會退避等待真實的時間；測試裡不等
+        monkeypatch.setattr("app.runtime.executor.time.sleep", lambda seconds: None)
+
+    @pytest.mark.parametrize("retain_audio", [True, False], ids=["retain", "no-retain"])
+    def test_retry_reads_the_kept_input_and_completes(
+            self, api, fake, settings, monkeypatch, data_dir, retain_audio):
+        monkeypatch.setattr(settings, "retain_audio", retain_audio)
+        fake.script = [TransientError("503 服務暫時無法使用"), list(SCRIPT[0])]
+        messages = transcribe(api, "uid-transient")
+
+        # 暫時錯誤不算失敗：執行模式重試，重試讀到同一份輸入音檔後完成
+        assert TaskStatus.FAILED not in codes(messages)
+        assert codes(messages)[-1] == TaskStatus.COMPLETED
+        assert len(fake.calls) == 2
+        task_uuid = messages[-1]["task_uuid"]
+        assert api.get(f"/api/v1/history/{task_uuid}").json()["status"] == TaskStatus.COMPLETED
+        # 任務結束時才照保留設定處理輸入音檔；兩次執行的暫存檔都沒留下來
+        assert retained_files(data_dir) == ([f"{task_uuid}.wav"] if retain_audio else [])
+        assert leftovers(data_dir) == []
+
+    def test_failed_when_retries_run_out(self, api, fake):
+        attempts = 1 + TRANSIENT_RETRIES
+        fake.script = [TransientError("503 服務暫時無法使用")] * attempts
+        messages = transcribe(api, "uid-transient-final")
+
+        # 最後一次也遇到暫時錯誤：照失敗處理，不會一直停在處理中
+        assert codes(messages)[-1] == TaskStatus.FAILED
+        assert "503" in messages[-1]["status_text"]
+        assert len(fake.calls) == attempts
+        record = api.get(f"/api/v1/history/{messages[-1]['task_uuid']}").json()
+        assert record["status"] == TaskStatus.FAILED
+        assert "503" in record["error_message"]

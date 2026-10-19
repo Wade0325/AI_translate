@@ -95,8 +95,9 @@ class Provider(Protocol):
     ) -> TranscriptionTaskResult:
         """轉錄一段音檔，時間軸是這段音檔本身。
 
-        進度經 ``progress`` 回報；使用者取消時拋
-        :class:`~app.exceptions.TranscriptionCancelledError`。
+        進度經 ``progress`` 回報。使用者取消時拋
+        :class:`~app.exceptions.TranscriptionCancelledError`；暫時錯誤（429、503 之類）拋
+        :class:`~app.exceptions.TransientError`，整個任務交給執行模式重試。
         其他錯誤由分段轉錄當成這一段失敗處理。
         """
 

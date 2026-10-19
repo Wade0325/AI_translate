@@ -9,6 +9,7 @@ Docker 模式由 `app.celery.task.transcribe_media_task` 包裝執行，免安�
 from pathlib import Path
 
 from app.celery.models import TranscriptionTaskParams
+from app.core.config import get_settings
 from app.core.default_prompt import build_prompt
 from app.provider.base import Progress, TranscribeRequest
 from app.provider.registry import open_provider
@@ -20,13 +21,14 @@ from app.utils.logger import setup_logger
 logger = setup_logger(__name__)
 
 
-def run_transcription(task_params_dict: dict, task_uuid: str) -> dict:
+def run_transcription(task_params_dict: dict, task_uuid: str, retries_left: int = 0) -> dict:
     """單檔轉錄：去靜音 → 轉錄 → 格式轉換 → 計費 → 寫 DB。
 
-    暫時錯誤會往上拋，由外層的重試機制處理（Celery autoretry 或 LocalExecutor 的 retry wrapper）。
+    暫時錯誤會往上拋，由執行模式重試（Celery autoretry 或 LocalExecutor 的 retry wrapper）；
+    ``retries_left`` 是這次之後還會重試幾次，0 時暫時錯誤照失敗處理。
     """
     params = TranscriptionTaskParams.model_validate(task_params_dict)
-    return TaskLifecycle(task_uuid, params).run(
+    return TaskLifecycle(task_uuid, params, retries_left=retries_left).run(
         lambda audio, progress: _transcribe(params, task_uuid, audio, progress))
 
 
@@ -47,7 +49,8 @@ def _transcribe(
             service_tier=params.service_tier,
         ),
         progress=progress,
-        temp_dir=audio.parent,
+        # 不用 audio.parent：重試時輸入音檔在保留區，暫存檔寫到那裡就清不掉
+        temp_dir=get_settings().temp_uploads_path,
         artifact_task_id=str(task_uuid),
         original_filename=params.original_filename,
     )

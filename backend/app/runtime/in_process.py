@@ -16,8 +16,9 @@ import threading
 import uuid
 from typing import AsyncIterator, Optional
 
-from app.exceptions import GeminiTransientError
+from app.exceptions import GeminiTransientError, TransientError
 from app.runtime.executor import LocalExecutor
+from app.runtime.run_mode import TRANSIENT_RETRIES
 from app.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -37,12 +38,19 @@ class InProcessRunMode:
 
         # task_id 須先於執行產生：呼叫端要先 register_task 供取消使用
         task_id = str(uuid.uuid4())
+        # 執行器遇到暫時錯誤會再呼叫一次；每次都告訴任務之後還會重試幾次，
+        # 對齊 Celery 的 request.retries
+        retries_left = iter(range(TRANSIENT_RETRIES, -1, -1))
+
+        def attempt():
+            return run_transcription(task_params_dict, task_id, next(retries_left))
+
         self._executor.submit(
-            run_transcription,
-            args=(task_params_dict, task_id),
+            attempt,
             task_id=task_id,
             queue=queue,
-            retry_on=(GeminiTransientError,),
+            retry_on=(TransientError,),
+            max_retries=TRANSIENT_RETRIES,
         )
         return task_id
 

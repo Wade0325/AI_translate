@@ -57,6 +57,11 @@ class FakeProvider:
         self.released = 0
         # 看到使用者取消而停下的次數
         self.cancelled = 0
+        # 每一段轉錄經進度與取消物件回報的進度文字
+        self.reports: List[str] = []
+        # 每一段轉錄成功時回報的用量（輸入、輸出 token）與實際用到的處理模式
+        self.usage: Tuple[int, int] = (0, 0)
+        self.service_tier: Optional[str] = None
         # hold 設定後，轉錄會停在這裡直到 hold 被 set 或使用者取消
         self.hold: Optional[threading.Event] = None
         self.started = threading.Event()
@@ -75,6 +80,8 @@ class FakeProvider:
     ) -> TranscriptionTaskResult:
         self.calls.append(audio_path)
         self.started.set()
+        for text in self.reports:
+            progress.report(text)
         if self.hold is not None:
             while not self.hold.wait(0.02) and not progress.cancel_requested():
                 pass
@@ -96,7 +103,11 @@ class FakeProvider:
         ]
         lrc = "\n".join(f"{_lrc(start)}[S{speaker}] {text}"
                         for start, _, speaker, text in step)
-        return TranscriptionTaskResult(success=bool(step), text=lrc, segments=segments)
+        input_tokens, output_tokens = self.usage
+        return TranscriptionTaskResult(
+            success=bool(step), text=lrc, segments=segments,
+            input_tokens=input_tokens, output_tokens=output_tokens,
+            total_tokens=input_tokens + output_tokens, service_tier_used=self.service_tier)
 
     def release(self) -> None:
         self.released += 1
