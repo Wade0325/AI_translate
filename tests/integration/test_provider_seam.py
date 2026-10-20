@@ -402,30 +402,32 @@ class TestOutputFormatsFromSegments:
         broadcast = completed["result"]["transcripts"][fmt]
         assert broadcast == self.download(api, completed["task_uuid"], fmt)
 
-    def test_silence_removed_inside_a_sentence_counts_toward_12_seconds(self, api, fake):
-        # 有聲 0–6 秒、靜音 6–14 秒、有聲 14–20 秒：去靜音剪掉 6.3–13.7 秒（有聲段前後各留 0.3 秒），
-        # 語音視圖 12.6 秒。送進供應商的「今日は、ありがとう。」從 1.0 到 8.0 秒，只有 7 秒；
-        # 還原回原音檔是 1.0 到 15.4 秒，超過 12 秒，在讀點斷開，第二行落在剪掉的靜音之後
+    @pytest.fixture
+    def across_cut_silence(self, api, fake):
+        """一句話跨過被剪掉的靜音的任務。
+
+        有聲 0–6 秒、靜音 6–14 秒、有聲 14–20 秒：去靜音剪掉 6.3–13.7 秒（有聲段前後各留 0.3 秒），
+        語音視圖 12.6 秒。送進供應商的「今日は、ありがとう。」從 1.0 到 8.0 秒，只有 7 秒；
+        還原回原音檔是 1.0 到 15.4 秒。
+        """
         fake.script = [[(0.8, 8.2, 0, "今日は、ありがとう。",
                          [("今", 1.0, 1.2), ("日", 1.2, 1.4), ("は", 1.4, 1.8),
                           ("ありがとう", 7.0, 8.0)])]]
         messages = transcribe(api, "uid-gap", voiced=[(0.0, 6.0), (14.0, 20.0)])
-
         assert codes(messages)[-1] == TaskStatus.COMPLETED
-        assert self.download(api, messages[-1]["task_uuid"], "lrc") == (
+        return messages[-1]
+
+    def test_silence_removed_inside_a_sentence_counts_toward_12_seconds(
+            self, api, across_cut_silence):
+        # 還原回原音檔超過 12 秒，在讀點斷開，第二行落在剪掉的靜音之後
+        assert self.download(api, across_cut_silence["task_uuid"], "lrc") == (
             "[00:01.00][S0] 今日は、\n[00:14.40][S0] ありがとう。")
 
-    def test_subtitle_end_times_are_restored_to_the_original_timeline(self, api, fake):
-        # 同上的錄音：「は」在 1.8 秒結束；「ありがとう」在語音視圖的 8.0 秒結束，還原回原音檔是
-        # 剪掉的 6.3–13.7 秒之後的 15.4 秒。結束時間和開始時間一樣取到 0.01 秒，不受還原時的
-        # 浮點誤差影響
-        fake.script = [[(0.8, 8.2, 0, "今日は、ありがとう。",
-                         [("今", 1.0, 1.2), ("日", 1.2, 1.4), ("は", 1.4, 1.8),
-                          ("ありがとう", 7.0, 8.0)])]]
-        messages = transcribe(api, "uid-gap-end", voiced=[(0.0, 6.0), (14.0, 20.0)])
-
-        assert codes(messages)[-1] == TaskStatus.COMPLETED
-        assert self.download(api, messages[-1]["task_uuid"], "srt") == (
+    def test_subtitle_end_times_are_restored_to_the_original_timeline(
+            self, api, across_cut_silence):
+        # 「は」在 1.8 秒結束；「ありがとう」在語音視圖的 8.0 秒結束，還原回原音檔是 15.4 秒。
+        # 結束時間和開始時間一樣取到 0.01 秒，不受還原時的浮點誤差影響
+        assert self.download(api, across_cut_silence["task_uuid"], "srt") == (
             "1\n00:00:01,000 --> 00:00:01,800\n[S0] 今日は、\n\n"
             "2\n00:00:14,400 --> 00:00:15,400\n[S0] ありがとう。\n")
 

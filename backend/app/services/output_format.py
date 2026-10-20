@@ -26,7 +26,7 @@
 版本目前只有原始轉錄，校正後版本留給 v0.2。
 
 四種格式由同一串行產生，說話者標記一律「[S0] 文字」：LRC 一行一個時間戳；SRT／VTT 另有
-結束時間，用片段的真實結束時間（規則見 :func:`_end_time`）；TXT 只留文字。SRT／VTT 的開始與
+結束時間，用片段的真實結束時間（規則見 :func:`_end_times`）；TXT 只留文字。SRT／VTT 的開始與
 結束時間都取 LRC 時間戳讀回來的值（開始時間和以前從 LRC 轉換時一樣）。斷行的規則見
 :func:`_segment_lines`。
 """
@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from bisect import bisect_right
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import Any, List, Mapping, Optional, Sequence, Tuple
@@ -156,7 +157,7 @@ class _Line:
     """原音檔時間軸上的秒數。"""
     text: str
     """帶說話者標記的文字。"""
-    end: Optional[float] = None
+    end: Optional[float]
     """真實結束時間（原音檔時間軸上的秒數），不知道時是 None。"""
 
 
@@ -224,7 +225,7 @@ def _segment_lines(
       讓每一行盡量不超過 12 秒。
     * 沒有詞的部分（例如「！？」中間斷出來的「？」）併到下一行的行首，片段結尾的併到最後一行。
 
-    每一行另外帶真實結束時間，給 SRT／VTT 用（見 :func:`_end_time`）：有逐字時間時是這一行
+    每一行另外帶真實結束時間，給 SRT／VTT 用（見 :func:`_end_times`）：有逐字時間時是這一行
     最後一個詞的結束，併進來的標點不改變它；整段一行時是片段的結束，片段沒有結束時間時是 None。
 
     逐字時間怎麼對到句子：詞是對齊器斷的，標點不算詞、直接丟掉，所以從詞裡看不出句子在哪裡
@@ -375,42 +376,50 @@ def _timestamp(seconds: float, separator: str) -> str:
     return f"{hours:02d}:{minutes:02d}:{secs:02d}{separator}{milliseconds:03d}"
 
 
-def _end_time(cues: Sequence[Cue], i: int) -> float:
-    """SRT／VTT 一行的結束時間（#96）：
+def _end_times(cues: Sequence[Cue]) -> List[float]:
+    """SRT／VTT 每一行的結束時間（#96）。
 
-    * 用真實結束時間：有逐字時間時是這一行最後一個詞的結束，整段一行時是片段的結束（見
-      :func:`_segment_lines`）。
-    * 晚於下一行的開始時截到下一行的開始，字幕不重疊。下一行沒有比這一行晚開始時（片段在時間
-      上交錯，例如另一位說話者插話或同時開口）不截：截了結束就不晚於開始。
-    * 沒有真實結束時間（沒有片段的任務、片段沒有結束時間），或它不晚於這一行的開始（零長度或
-      顛倒的片段）時，沿用以前的規則：下一行的開始，最後一行加 5 秒。
+    「下一個開始」是時間上在這一行之後最先開始的那一行的開始。行依片段的開始排序，片段在時間上
+    交錯時（例如另一位說話者插話），清單裡的下一行不一定比這一行晚開始；和這一行同時開始的行
+    （兩個人同時開口）也不算。
+
+    * 有真實結束時間（有逐字時間時是這一行最後一個詞的結束，整段一行時是片段的結束，見
+      :func:`_segment_lines`）：用它，但不晚於下一個開始，字幕不重疊。
+    * 真實結束時間不晚於這一行的開始（零長度或顛倒）時不能用：到下一個開始為止，沒有就加 5 秒。
+      所以有真實結束時間的行，結束一定晚於開始。
+    * 沒有真實結束時間（沒有片段的任務、片段沒有結束時間）：照以前，清單裡下一行的開始，
+      最後一行加 5 秒，和以前逐字相同。
 
     去靜音的任務，結束剛好落在有聲段交界時，還原後會跳到被剪掉的靜音之後（和行開頭同一個問題，
-    交給 #111）：這一行多顯示到那段靜音結束，或截到下一行的開始。
+    交給 #111）：這一行多顯示到那段靜音結束，或截到下一個開始。
     """
-    cue = cues[i]
-    following = cues[i + 1].time if i + 1 < len(cues) else None
-    if cue.end is None or cue.end <= cue.time:
-        return following if following is not None else cue.time + 5.0
-    if following is not None and cue.time < following < cue.end:
-        return following
-    return cue.end
+    starts = sorted(cue.time for cue in cues)
+    ends: List[float] = []
+    for i, cue in enumerate(cues):
+        if cue.end is None:
+            ends.append(cues[i + 1].time if i + 1 < len(cues) else cue.time + 5.0)
+            continue
+        later = bisect_right(starts, cue.time)
+        next_start = starts[later] if later < len(starts) else None
+        if cue.end <= cue.time:
+            ends.append(next_start if next_start is not None else cue.time + 5.0)
+        else:
+            ends.append(cue.end if next_start is None else min(cue.end, next_start))
+    return ends
 
 
 def _srt(cues: Sequence[Cue]) -> str:
     blocks: List[str] = []
-    for i, cue in enumerate(cues):
-        blocks += [str(i + 1),
-                   f"{_timestamp(cue.time, ',')} --> {_timestamp(_end_time(cues, i), ',')}",
+    for i, (cue, end) in enumerate(zip(cues, _end_times(cues), strict=True)):
+        blocks += [str(i + 1), f"{_timestamp(cue.time, ',')} --> {_timestamp(end, ',')}",
                    cue.text, ""]
     return "\n".join(blocks)
 
 
 def _vtt(cues: Sequence[Cue]) -> str:
     blocks = ["WEBVTT", ""]
-    for i, cue in enumerate(cues):
-        blocks += [f"{_timestamp(cue.time, '.')} --> {_timestamp(_end_time(cues, i), '.')}",
-                   cue.text, ""]
+    for cue, end in zip(cues, _end_times(cues), strict=True):
+        blocks += [f"{_timestamp(cue.time, '.')} --> {_timestamp(end, '.')}", cue.text, ""]
     return "\n".join(blocks)
 
 

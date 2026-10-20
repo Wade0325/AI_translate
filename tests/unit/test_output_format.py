@@ -38,7 +38,7 @@ def words(*items):
 # ─── 沒有逐字時間：一段一行 ──────────────────────────────────────────────────
 
 GREETINGS = [
-    {"start": 1.5, "end": 2.75, "speaker": "S0", "text": "おはよう。"},
+    {"start": 1.5, "end": 2.8, "speaker": "S0", "text": "おはよう。"},
     {"start": 3.25, "end": 4.0, "speaker": "S1", "text": "こんにちは。"},
     {"start": 3725.5, "end": 3727.0, "speaker": "S0", "text": "またね。"},
 ]
@@ -288,7 +288,7 @@ class TestSameLrcAsTheLocalProvider:
 class TestSubtitleFormats:
     def test_vtt_has_a_header_and_dot_milliseconds(self):
         assert formats(*GREETINGS).vtt == (
-            "WEBVTT\n\n00:00:01.500 --> 00:00:02.750\n[S0] おはよう。\n\n"
+            "WEBVTT\n\n00:00:01.500 --> 00:00:02.799\n[S0] おはよう。\n\n"
             "00:00:03.250 --> 00:00:04.000\n[S1] こんにちは。\n\n"
             "01:02:05.500 --> 01:02:07.000\n[S0] またね。\n")
 
@@ -297,7 +297,7 @@ class TestSubtitleFormats:
             "[S0] おはようございます。\n[S0] 今日は、いい天気ですね！\n"
             "[S1] ラーメン食べた？\n[S1] 人々も来た。")
 
-    def test_subtitle_times_are_the_lrc_line_times(self):
+    def test_subtitle_times_are_lrc_timestamps_read_back(self):
         # 開始時間和以前從 LRC 轉換時相同：取 LRC 時間戳讀回來的值（11.60 讀回來是 11.599…）。
         # 結束時間是每一行最後一個詞的結束，也取 LRC 時間戳讀回來的值（11.20 讀回來是 11.199…）
         assert formats(*SENTENCES).srt == (
@@ -316,8 +316,8 @@ def srt_times(*segments) -> list[str]:
 
 class TestSubtitleEndTimes:
     """SRT／VTT 的每一行在真實的結束時間結束：有逐字時間時是這一行最後一個詞的結束，沒有時是
-    片段的結束，但不晚於下一行的開始；沒有能用的結束時間時照以前，下一行的開始，最後一行加 5 秒。
-    LRC、TXT 沒有結束時間，上面各節的期望值不變。"""
+    片段的結束，但不晚於時間上下一個開始的行；不能用（不晚於開始）時到那一行為止。片段沒有結束
+    時間時照以前，下一行的開始，最後一行加 5 秒。LRC、TXT 沒有結束時間，上面各節的期望值不變。"""
 
     def test_sentence_broken_at_reading_marks_ends_each_line_at_its_own_last_word(self):
         segment = {
@@ -343,9 +343,16 @@ class TestSubtitleEndTimes:
                                       "00:00:41,250 --> 00:00:42,000"]
 
     def test_segment_without_word_timings_ends_at_the_segment_end(self):
-        assert srt_times(*GREETINGS) == ["00:00:01,500 --> 00:00:02,750",
+        # 和開始時間一樣取 LRC 時間戳讀回來的值：2.80 讀回來是 2.799…
+        assert srt_times(*GREETINGS) == ["00:00:01,500 --> 00:00:02,799",
                                          "00:00:03,250 --> 00:00:04,000",
                                          "01:02:05,500 --> 01:02:07,000"]
+
+    def test_segment_whose_word_timings_do_not_match_its_text_ends_at_the_segment_end(self):
+        # 逐字時間對不上文字就不用（整段一行），結束時間也是片段的結束
+        segment = {"start": 50.0, "end": 52.5, "speaker": "S0", "text": "おはよう。こんにちは。",
+                   "words": words(("おはよう", 50.25, 50.75), ("こんばんは", 51.0, 51.75))}
+        assert srt_times(segment) == ["00:00:50,000 --> 00:00:52,500"]
 
     def test_segment_without_an_end_ends_at_the_next_line_and_the_last_five_seconds_later(self):
         # 沒有逐字時間也沒有結束時間的片段照以前的規則，和以前逐字相同
@@ -362,14 +369,15 @@ class TestSubtitleEndTimes:
         assert srt_times(first, second) == ["00:00:01,000 --> 00:00:03,000",
                                             "00:00:03,000 --> 00:00:04,000"]
 
-    def test_end_not_later_than_the_start_keeps_the_old_rule(self):
-        # 零長度或顛倒的結束時間不能用，照以前：下一行的開始，最後一行加 5 秒
-        segments = [{"start": 1.0, "end": 1.75, "speaker": "S0", "text": "おはよう。"},
-                    {"start": 2.0, "end": 2.0, "speaker": "S1", "text": "こんにちは。"},
-                    {"start": 3.0, "end": 2.5, "speaker": "S0", "text": "またね。"}]
-        assert srt_times(*segments) == ["00:00:01,000 --> 00:00:01,750",
-                                        "00:00:02,000 --> 00:00:03,000",
-                                        "00:00:03,000 --> 00:00:08,000"]
+    def test_end_is_cut_at_the_next_line_in_time_even_when_it_is_listed_later(self):
+        # 行依片段的開始排序：另一位說話者 6.0 秒開始的「はい。」排在「またね。」後面，
+        # 「おはよう。」還是截到 6.0 秒
+        long = {"start": 0.0, "end": 9.0, "speaker": "S0", "text": "おはよう。またね。",
+                "words": words(("おはよう", 0.0, 6.5), ("またね", 8.0, 9.0))}
+        other = {"start": 6.0, "end": 7.0, "speaker": "S1", "text": "はい。"}
+        assert srt_times(long, other) == ["00:00:00,000 --> 00:00:06,000",
+                                          "00:00:08,000 --> 00:00:09,000",
+                                          "00:00:06,000 --> 00:00:07,000"]
 
     @pytest.mark.parametrize("segments, expected", [
         # 另一位說話者在這一段中間插話：行依片段的開始排序，「またね。」的下一行比它早開始
@@ -383,8 +391,28 @@ class TestSubtitleEndTimes:
           {"start": 1.0, "end": 1.75, "speaker": "S1", "text": "おはよう。"}],
          ["00:00:01,000 --> 00:00:02,500", "00:00:01,000 --> 00:00:01,750"]),
     ], ids=["interjection", "same-start"])
-    def test_line_whose_next_line_starts_no_later_keeps_its_own_end(self, segments, expected):
-        # 截到下一行的開始會讓結束不晚於開始，所以不截，兩行同時顯示
+    def test_lines_starting_no_later_do_not_cut_the_end(self, segments, expected):
+        # 同時或更早開始的行不算下一個開始：截到它們會讓結束不晚於開始，兩行同時顯示
+        assert srt_times(*segments) == expected
+
+    @pytest.mark.parametrize("segments, expected", [
+        # 零長度與顛倒的片段
+        ([{"start": 1.0, "end": 1.75, "speaker": "S0", "text": "おはよう。"},
+          {"start": 2.0, "end": 2.0, "speaker": "S1", "text": "こんにちは。"},
+          {"start": 3.0, "end": 2.5, "speaker": "S0", "text": "またね。"}],
+         ["00:00:01,000 --> 00:00:01,750", "00:00:02,000 --> 00:00:03,000",
+          "00:00:03,000 --> 00:00:08,000"]),
+        # 「またね」是零長度的詞，清單裡的下一行（12.0 秒的插話）卻比它早開始
+        ([{"start": 10.0, "end": 16.0, "speaker": "S0", "text": "おはよう。またね。",
+           "words": words(("おはよう", 10.0, 11.0), ("またね", 15.0, 15.0))},
+          {"start": 12.0, "end": 13.0, "speaker": "S1", "text": "はい。"}],
+         ["00:00:10,000 --> 00:00:11,000", "00:00:15,000 --> 00:00:20,000",
+          "00:00:12,000 --> 00:00:13,000"]),
+    ], ids=["zero-length-and-reversed", "interleaved"])
+    def test_unusable_end_lasts_until_the_next_line_in_time_or_five_seconds(
+            self, segments, expected):
+        # 不晚於開始的結束時間不能用：到之後最先開始的那一行為止，沒有這樣的行就加 5 秒，
+        # 結束一定晚於開始
         assert srt_times(*segments) == expected
 
 
