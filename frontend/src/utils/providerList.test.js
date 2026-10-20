@@ -26,7 +26,7 @@ const PROVIDERS = [
 
 describe('modelForProvider：選了供應商之後用哪個模型', () => {
   it('想用的模型（設定頁存的預設模型）屬於這個供應商就用它', () => {
-    assert.equal(modelForProvider(PROVIDERS, 'google', 'gemini-2.5-pro'), 'gemini-2.5-pro');
+    assert.equal(modelForProvider(PROVIDERS, 'google', 'gemini-2.5-pro'), 'gemini-3.5-flash');
   });
 
   it('存的是別的供應商的模型時，退回這個供應商的預設模型', () => {
