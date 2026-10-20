@@ -183,8 +183,8 @@ def start_batch_task_sync(payload_str: str, batch_id: str) -> list[dict]:
         # 批次層級與各檔案的提示詞串在一起檢查：任一個填了，串起來就不是空白
         all_prompts = "".join(p or "" for p in (
             request_data.prompt, *(f.prompt for f in request_data.files)))
-        check_request(request_data.provider, request_data.model,
-                      prompt=all_prompts, batch=True)
+        provider, _ = check_request(request_data.provider, request_data.model,
+                                    prompt=all_prompts, batch=True)
     except UnsupportedModelError as e:
         logger.warning(f"批次 {batch_id} 被拒: {e}")
         return [{
@@ -228,11 +228,11 @@ def start_batch_task_sync(payload_str: str, batch_id: str) -> list[dict]:
 
     # 前端不再送明文金鑰：缺少或只帶遮罩值時改用資料庫裡的金鑰
     with SessionLocal() as db:
-        api_key = resolve_api_key(db, request_data.provider, request_data.api_keys)
+        api_key = resolve_api_key(db, provider, request_data.api_keys)
 
     task_params = BatchTranscriptionTaskParams(
         files=file_items,
-        provider=request_data.provider,
+        provider=provider,
         model=request_data.model,
         api_keys=api_key,
         source_lang=request_data.source_lang,

@@ -2,12 +2,12 @@ import { Modal, Input, Button } from 'antd';
 import { MinusCircleOutlined } from '@ant-design/icons';
 
 /**
- * 編輯 Provider 的 API Keys Modal。
+ * 編輯供應商的 API Keys Modal；providerLabel 是畫面上的供應商名稱。
  * 邏輯仍在 ModelManagerProvider 中，這裡只負責呈現。
  */
 export default function ApiKeyModal({
     open,
-    provider,
+    providerLabel,
     apiKeys,
     onApiKeysChange,
     onOk,
@@ -26,7 +26,7 @@ export default function ApiKeyModal({
 
     return (
         <Modal
-            title={`編輯API - ${provider}`}
+            title={`編輯API - ${providerLabel}`}
             open={open}
             onOk={onOk}
             onCancel={onCancel}

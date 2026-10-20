@@ -34,7 +34,7 @@ REPO_REVISIONS = {
     DIARIZATION_MODEL_ID: "f22241c2062b3b25272bf117397e03d73381037a",
 }
 
-# 前端 Local provider 的模型選項（frontend/src/constants/modelConfig.js）→ 需要的權重
+# 本機的模型（畫面照這裡的順序列出，第一個是預設；見 GET /providers）→ 需要的權重
 MOSS_ALIGN = "moss-align"
 MOSS_QWEN = "moss-qwen3-asr"
 VIBEVOICE_QWEN = "vibevoice-qwen3-asr"

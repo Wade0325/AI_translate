@@ -1,22 +1,35 @@
 from typing import Optional
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from app.database.models import ModelConfiguration
 from app.schemas.schemas import ModelConfigurationSchema
 
 
+def find_provider_settings(db: Session, provider: str) -> Optional[ModelConfiguration]:
+    """這個供應商的設定列；名稱不分大小寫，完全相同的優先。
+
+    設定存在「Google」「Local」底下（舊版前端與空資料庫的預設資料都這樣存），畫面與任務
+    用的是模型能力端點的「google」「local」，要找到同一筆。
+    """
+    row = db.query(ModelConfiguration).filter(
+        ModelConfiguration.provider == provider).first()
+    if row is None:
+        row = db.query(ModelConfiguration).filter(
+            func.lower(ModelConfiguration.provider) == provider.lower()).first()
+    return row
+
+
 class ModelSettingsRepository:
     def get_by_name(self, db: Session, provider: str) -> Optional[ModelConfigurationSchema]:
-        """根據 provider 取得模型設定，無資料時回傳 None。"""
-        config = db.query(ModelConfiguration).filter(
-            ModelConfiguration.provider == provider).first()
+        """根據 provider 取得模型設定（名稱不分大小寫），無資料時回傳 None。"""
+        config = find_provider_settings(db, provider)
         if config:
             return ModelConfigurationSchema.model_validate(config)
         return None
 
     def save(self, db: Session, config_schema: ModelConfigurationSchema) -> ModelConfigurationSchema:
-        """保存或更新（upsert）模型設定。"""
-        db_config = db.query(ModelConfiguration).filter(
-            ModelConfiguration.provider == config_schema.provider).first()
+        """保存或更新（upsert）模型設定；已有的設定（名稱不分大小寫）原地更新，名稱照舊。"""
+        db_config = find_provider_settings(db, config_schema.provider)
 
         if db_config:
             db_config.api_keys = config_schema.api_keys
