@@ -2,6 +2,7 @@ from pathlib import Path
 
 from sqlalchemy import create_engine, event, select, text, inspect as sa_inspect
 from sqlalchemy.engine import make_url
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import sessionmaker
 from .models import Base, ModelConfiguration
 from app.core.config import get_settings
@@ -13,6 +14,9 @@ settings = get_settings()
 
 
 def _create_engine(url: str):
+    # 兩種執行模式都設 hide_parameters：SQLAlchemy 的例外文字預設附上 SQL 參數，裡面有
+    # 明文 API 金鑰、轉錄結果與檔名，例外一寫進 log 或回應就跟著出去（#157）。
+    # 排查只能靠使用者附上的 log（ADR-0005），log 會被貼到公開的 GitHub Issues
     if url.startswith("sqlite"):
         # SQLite（免安裝模式）：QueuePool 參數不適用；
         # check_same_thread=False 允許 API 與 worker 執行緒共用連線池
@@ -22,6 +26,7 @@ def _create_engine(url: str):
         sqlite_engine = create_engine(
             url,
             connect_args={"check_same_thread": False, "timeout": 30},
+            hide_parameters=True,
         )
 
         @event.listens_for(sqlite_engine, "connect")
@@ -40,11 +45,30 @@ def _create_engine(url: str):
         pool_size=settings.db_pool_size,
         max_overflow=settings.db_max_overflow,
         pool_pre_ping=True,  # 自動檢測斷線
+        hide_parameters=True,
     )
 
 
 engine = _create_engine(settings.sync_database_url)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+
+def describe_db_error(error: Exception) -> str:
+    """寫進 log 用的資料庫例外描述：例外類型與資料庫回報的原因，不含 SQL 參數與資料列。
+
+    給讀寫使用者資料（例如 API 金鑰）的地方記錯誤用；HTTP 回應則給固定的訊息，不轉述例外。
+    原因只取資料庫訊息的第一行：Postgres 在第一行之後附上的 DETAIL 可能是寫不進去的
+    整列資料（例如 ``Failing row contains (…)``），裡面有金鑰或轉錄結果。
+
+    不是資料庫回報的例外只記類型：它的訊息可能帶著請求的內容，例如 pydantic 的
+    ValidationError 附上輸入值。這是隱私優先於排查方便的取捨：排查只能靠 log（ADR-0005），
+    這類錯誤在 log 裡只看得到類型，要在本機重現才查得到位置。
+    """
+    if not isinstance(error, DBAPIError) or error.orig is None:
+        return type(error).__name__
+    cause = error.orig
+    reason = next(iter(str(cause).splitlines()), "").strip()
+    return f"{type(error).__name__}: ({type(cause).__module__}.{type(cause).__name__}) {reason}"
 
 
 def _migrate_add_missing_columns():
