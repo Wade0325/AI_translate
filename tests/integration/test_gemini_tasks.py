@@ -18,7 +18,7 @@ from google.genai import types
 from app.core.task_status import TaskStatus
 from app.provider import registry
 from app.provider.google.provider import GeminiProvider
-from tests.support.fake_genai import FakeGenaiClient, Reply, invalid_argument
+from tests.support.fake_genai import FakeGenaiClient, Reply, invalid_argument, unavailable
 
 MODEL = "gemini-2.5-flash"
 SAMPLE_RATE = 16000
@@ -229,6 +229,19 @@ def test_single_file_failure_still_deletes_its_remote_file(api, in_process_run_m
     assert end["status_code"] == TaskStatus.FAILED
     assert "音檔無法解碼" in end["status_text"]
     assert genai.stored == {}
+
+
+def test_single_file_is_retried_after_a_transient_error(api, in_process_run_mode, genai):
+    # 503 是暫時錯誤：分段轉錄不把它當成這一段失敗，交給執行模式重試整個任務
+    genai.replies = [unavailable(), Reply(text="[00:01.00]おはよう。")]
+
+    messages = transcribe(api, in_process_run_mode, "gemini-single-transient.wav")
+
+    assert TaskStatus.FAILED not in [m["status_code"] for m in messages]
+    assert messages[-1]["status_code"] == TaskStatus.COMPLETED
+    assert "おはよう。" in messages[-1]["result"]["transcripts"]["srt"]
+    assert history(api, "gemini-single-transient.wav")["status"] == TaskStatus.COMPLETED
+    assert genai.stored == {}  # 兩次執行上傳的遠端檔都刪掉了
 
 
 # ─── 批次 ────────────────────────────────────────────────────────────────────
