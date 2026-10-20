@@ -28,6 +28,7 @@ from app.provider.base import (
     DEFAULT_QUEUE,
     BatchStatus,
     ModelCapabilities,
+    ProgressAndCancel,
     TranscribeRequest,
 )
 from app.provider.google.gemini import GeminiClient
@@ -257,11 +258,13 @@ class GeminiProvider:
     def capabilities() -> Dict[str, ModelCapabilities]:
         return {model: _capabilities() for model in MODELS}
 
-    def transcribe(self, audio_path: Path, request: TranscribeRequest) -> TranscriptionTaskResult:
-        request.notify("上傳檔案至AI模型...")
+    def transcribe(
+        self, audio_path: Path, request: TranscribeRequest, progress: ProgressAndCancel,
+    ) -> TranscriptionTaskResult:
+        progress.report("上傳檔案至AI模型...")
         gemini_file = self.upload(audio_path)
 
-        request.notify("AI模型處理中...")
+        progress.report("AI模型處理中...")
         logger.info(f"正在使用 {request.model} 進行轉錄... "
                     f"(requested service_tier={request.service_tier or 'standard'})")
         logger.info(f"Prompt fingerprint: {_prompt_fingerprint(request.prompt)}")
@@ -343,7 +346,7 @@ class GeminiProvider:
 
     def submit_batch(self, requests: Sequence[Tuple[Any, str]], display_name: str) -> str:
         """用 Batch API 送出：費用是標準的一半，結果要輪詢。"""
-        logger.info(f"建立批次任務: {len(requests)} 個請求, 模型: {self._model}")
+        logger.info(f"建立批次: {len(requests)} 個請求, 模型: {self._model}")
         fingerprints = sorted({_prompt_fingerprint(prompt) for _, prompt in requests})
         logger.info(f"Batch prompt fingerprints ({len(fingerprints)} 種): {fingerprints}")
         try:
@@ -354,7 +357,7 @@ class GeminiProvider:
             )
         except Exception as e:
             raise _classify(e) from e
-        logger.info(f"批次任務已建立: {batch_job.name}")
+        logger.info(f"批次已建立: {batch_job.name}")
         return batch_job.name
 
     def poll_batch(self, name: str) -> BatchStatus:

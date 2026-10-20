@@ -11,8 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Sequence, Tuple, Union
 
-from app.exceptions import TranscriptionCancelledError
-from app.provider.base import LOCAL_QUEUE, ModelCapabilities, TranscribeRequest
+from app.provider.base import LOCAL_QUEUE, ModelCapabilities, ProgressAndCancel, TranscribeRequest
 from app.services.transcription.models import TranscriptionTaskResult
 
 FAKE_MODEL = "fake-model"
@@ -70,9 +69,21 @@ class FakeProvider:
         self.opened = 0
         self.calls: List[Path] = []
         self.released = 0
+        # 看到使用者取消而停下的次數
+        self.cancelled = 0
+        # 每一段轉錄經進度與取消物件回報的進度文字
+        self.reports: List[str] = []
+        # 每一段轉錄成功時回報的用量（輸入、輸出 token）與實際用到的處理模式
+        self.usage: Tuple[int, int] = (0, 0)
+        self.service_tier: Optional[str] = None
         # hold 設定後，轉錄會停在這裡直到 hold 被 set 或使用者取消
         self.hold: Optional[threading.Event] = None
         self.started = threading.Event()
+        # 不理會取消：照樣等到 hold 放行、回傳結果
+        self.ignores_cancel = False
+        # 看到取消時改丟這個例外：模擬 503 剛好在取消之後回來，或執行模式強制終止執行中的
+        # 任務（Docker 模式的 gevent worker 在任務裡丟 GreenletExit）
+        self.raises_when_cancelled: Optional[BaseException] = None
 
     # ── ProviderFactory ──────────────────────────────────────────
     def capabilities(self):
@@ -83,15 +94,23 @@ class FakeProvider:
         return self
 
     # ── Provider ─────────────────────────────────────────────────
-    def transcribe(self, audio_path: Path, request: TranscribeRequest) -> TranscriptionTaskResult:
+    def transcribe(
+        self, audio_path: Path, request: TranscribeRequest, progress: ProgressAndCancel,
+    ) -> TranscriptionTaskResult:
         self.calls.append(audio_path)
         self.started.set()
+        for text in self.reports:
+            progress.report(text)
         if self.hold is not None:
             while not self.hold.wait(0.02):
-                if request.cancel_requested():
+                if not self.ignores_cancel and progress.cancel_requested():
                     break
-            if request.cancel_requested():
-                raise TranscriptionCancelledError("使用者已取消任務")
+        # 取消只能從進度與取消物件得知
+        if not self.ignores_cancel and progress.cancel_requested():
+            self.cancelled += 1
+            if self.raises_when_cancelled is not None:
+                raise self.raises_when_cancelled
+            progress.raise_if_cancelled()
 
         step = self.script.pop(0) if self.script else []
         if isinstance(step, Exception):
@@ -102,7 +121,11 @@ class FakeProvider:
         segments = [_segment(i, line) for i, line in enumerate(step)]
         lrc = "\n".join(f"{_lrc(start)}[S{speaker}] {text}"
                         for start, _, speaker, text, *_ in step)
-        return TranscriptionTaskResult(success=bool(step), text=lrc, segments=segments)
+        input_tokens, output_tokens = self.usage
+        return TranscriptionTaskResult(
+            success=bool(step), text=lrc, segments=segments,
+            input_tokens=input_tokens, output_tokens=output_tokens,
+            total_tokens=input_tokens + output_tokens, service_tier_used=self.service_tier)
 
     def release(self) -> None:
         self.released += 1

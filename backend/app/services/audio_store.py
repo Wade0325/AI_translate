@@ -1,13 +1,13 @@
 """保留音檔的保管。
 
-校正介面必須能重播保留音檔，但轉錄流程原本會在結束時刪掉 ``temp_uploads`` 裡的上傳檔
-（``TranscriptionTask.cleanup``）。這裡把檔案**搬**到 audio_store，檔名以 task_uuid
+校正介面必須能重播保留音檔。任務生命週期收尾時（``app.tasks.lifecycle``）先把
+``temp_uploads`` 裡的上傳檔**搬**到 audio_store，沒保留下來的才刪掉；檔名以 task_uuid
 命名，之後靠 ``TranscriptionLog.audio_filename`` 找回來。
 
 失敗與取消的任務也保留：刪掉不可逆（使用者手機上的原檔可能已經清掉），而且
 暫時性錯誤的重試會回來找同一個檔案。
 
-搬移而非複製：同一份音檔不會同時存在兩個地方，cleanup 也不會再看到它。
+搬移而非複製：同一份音檔不會同時存在兩個地方。
 保留期限由 ``audio_retention_days`` 控制，啟動時清掃一次。
 
 只搬 temp_uploads 裡的上傳檔（以及重試時已經在 audio_store 的保留檔），
@@ -32,10 +32,18 @@ def store_path() -> Path:
     return get_settings().audio_store_path
 
 
+def enabled() -> bool:
+    """使用者有沒有開保留音檔。"""
+    return get_settings().retain_audio
+
+
 def retain(source: Path, task_uuid) -> Optional[str]:
-    """把音檔搬進 audio_store，回傳保存後的檔名；未啟用或失敗時回傳 None。"""
+    """把音檔搬進 audio_store，回傳保存後的檔名；未啟用或失敗時回傳 None。
+
+    開著卻回 None 時，來源檔還在原處：呼叫端不能把它當成可以刪的副本。
+    """
     settings = get_settings()
-    if not settings.retain_audio:
+    if not enabled():
         return None
     try:
         source = Path(source)

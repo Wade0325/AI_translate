@@ -104,7 +104,7 @@ def cancel_transcription(file_uid: str):
     with SessionLocal() as db:
         mode.revoke(task_id, terminate=_can_terminate(log_repo.get(db, task_id)))
         # 被 revoke/terminate 掉的任務不會再回報狀態：仍在 PROCESSING 的紀錄由此補寫。
-        # 合作式停止的任務會走 transcribe_core 的 CANCELLED 分支自行更新，此處條件式更新不衝突。
+        # 合作式停止的任務由任務生命週期自行記為 CANCELLED，此處條件式更新不衝突。
         log_repo.mark_cancelled_if_processing(db, task_id)
 
     publish_status(
@@ -140,7 +140,12 @@ async def websocket_endpoint(
         try:
             await run_in_threadpool(start_transcription_task_sync, payload_str=payload_str, file_uid=file_uid)
         except (UnsafeUploadFilenameError, UnsupportedModelError) as e:
-            logger.warning(f"拒絕轉錄請求 (file_uid: {file_uid}): {e}")
+            if isinstance(e, UnsafeUploadFilenameError):
+                # 錯誤訊息是固定的：可疑的檔名要另外記，排查只能靠使用者附上的 log（ADR-0005）。
+                # 用 repr，換行等控制字元才不會在 log 裡偽造出別的行
+                logger.warning(f"拒絕不合法的上傳檔名 (file_uid: {file_uid}): {e.filename!r}")
+            else:
+                logger.warning(f"拒絕轉錄請求 (file_uid: {file_uid}): {e}")
             await websocket.send_json({
                 "client_id": file_uid,
                 "file_uid": file_uid,

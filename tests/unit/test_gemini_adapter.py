@@ -9,7 +9,7 @@ import pytest
 from google.genai import types
 
 from app.exceptions import GeminiPermanentError, GeminiTransientError
-from app.provider.base import TranscribeRequest
+from app.provider.base import ProgressAndCancel, TranscribeRequest
 from app.provider.google.provider import GeminiProvider
 from tests.support.fake_genai import (
     Blocked,
@@ -21,6 +21,8 @@ from tests.support.fake_genai import (
 )
 
 MODEL = "gemini-2.5-flash"
+# 這裡不看進度，使用者也沒有取消
+PROGRESS = ProgressAndCancel(report=lambda text: None, cancel_requested=lambda: False)
 
 
 @pytest.fixture
@@ -48,7 +50,7 @@ class TestTranscribe:
     def test_returns_transcript_and_usage(self, gemini, genai, audio):
         genai.replies = [Reply(text="[00:01.00]こんにちは", input_tokens=1000, output_tokens=200)]
 
-        result = gemini.transcribe(audio, request())
+        result = gemini.transcribe(audio, request(), PROGRESS)
 
         assert result.success
         assert result.text == "[00:01.00]こんにちは"
@@ -59,12 +61,12 @@ class TestTranscribe:
         # 假用戶端和 Gemini 一樣：檔案還在處理中就拿來轉錄會回 400
         genai.processing_polls = 3
 
-        assert gemini.transcribe(audio, request()).success
+        assert gemini.transcribe(audio, request(), PROGRESS).success
 
     def test_blocked_response_is_a_failure(self, gemini, genai, audio):
         genai.replies = [Blocked()]
 
-        result = gemini.transcribe(audio, request())
+        result = gemini.transcribe(audio, request(), PROGRESS)
 
         assert not result.success
         assert "PROHIBITED_CONTENT" in result.text
@@ -83,10 +85,10 @@ class TestRemoteFilesAreDeletedWhenTheTaskEnds:
         processing_failed,
     ], ids=["succeeded", "blocked", "error", "processing-failed"])
     def test_release_deletes_every_uploaded_file(self, gemini, genai, audio, setup):
-        gemini.transcribe(audio, request())  # 分段轉錄的前一段
+        gemini.transcribe(audio, request(), PROGRESS)  # 分段轉錄的前一段
         setup(genai)
         with suppress(GeminiPermanentError):
-            gemini.transcribe(audio, request())
+            gemini.transcribe(audio, request(), PROGRESS)
         assert len(genai.stored) == 2  # 任務還沒結束：兩段的遠端檔都還在
 
         gemini.release()
@@ -100,7 +102,7 @@ class TestFlex:
         gemini = GeminiProvider(MODEL, client=genai, sleep=waits.append)
         genai.replies = [unavailable(), rate_limited(), Reply()]
 
-        result = gemini.transcribe(audio, request(service_tier="flex"))
+        result = gemini.transcribe(audio, request(service_tier="flex"), PROGRESS)
 
         assert result.success
         assert result.service_tier_used == "flex"
@@ -109,7 +111,7 @@ class TestFlex:
     def test_falls_back_to_standard_when_flex_stays_unavailable(self, gemini, genai, audio):
         genai.overloaded = {"flex"}
 
-        result = gemini.transcribe(audio, request(service_tier="flex"))
+        result = gemini.transcribe(audio, request(service_tier="flex"), PROGRESS)
 
         assert result.success
         assert result.service_tier_used == "standard"
@@ -118,14 +120,14 @@ class TestFlex:
         # 重試 Flex 的話，第二次 Flex 會拿到 Reply，回報的就會是 flex
         genai.replies = [invalid_argument(), Reply()]
 
-        result = gemini.transcribe(audio, request(service_tier="flex"))
+        result = gemini.transcribe(audio, request(service_tier="flex"), PROGRESS)
 
         assert result.service_tier_used == "standard"
 
     def test_transient_when_standard_is_unavailable_too(self, gemini, genai, audio):
         genai.overloaded = {"flex", "standard"}
         with pytest.raises(GeminiTransientError):
-            gemini.transcribe(audio, request(service_tier="flex"))
+            gemini.transcribe(audio, request(service_tier="flex"), PROGRESS)
 
     @pytest.mark.parametrize("reply, tier_header, reported", [
         (Reply(), True, "flex"),
@@ -137,7 +139,7 @@ class TestFlex:
         genai.replies = [reply]
         genai.tier_header = tier_header
 
-        result = gemini.transcribe(audio, request(service_tier="flex"))
+        result = gemini.transcribe(audio, request(service_tier="flex"), PROGRESS)
 
         assert result.service_tier_used == reported
 
@@ -147,17 +149,17 @@ class TestErrors:
     def test_transient_errors_are_reported_as_transient(self, gemini, genai, audio, error):
         genai.replies = [error]
         with pytest.raises(GeminiTransientError):
-            gemini.transcribe(audio, request())
+            gemini.transcribe(audio, request(), PROGRESS)
 
     def test_transient_upload_error_is_reported_as_transient(self, gemini, genai, audio):
         genai.failing["files.upload"] = rate_limited()
         with pytest.raises(GeminiTransientError):
-            gemini.transcribe(audio, request())
+            gemini.transcribe(audio, request(), PROGRESS)
 
     def test_other_errors_are_permanent(self, gemini, genai, audio):
         genai.replies = [invalid_argument("API key not valid.")]
         with pytest.raises(GeminiPermanentError, match="API key not valid"):
-            gemini.transcribe(audio, request())
+            gemini.transcribe(audio, request(), PROGRESS)
 
 
 def audio_file(tmp_path, name: str):

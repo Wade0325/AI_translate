@@ -34,7 +34,7 @@ def is_temp_upload(path) -> bool:
     """path 是否位於 temp_uploads 目錄下。
 
     刪除暫存檔前的安全鎖：防止路徑異常時誤刪其他位置的檔案。
-    temp 目錄改到 data/ 下（standalone 模式）時仍然有效。
+    temp 目錄改到 data/ 下（免安裝模式）時仍然有效。
     """
     return is_within(path, get_settings().temp_uploads_path)
 
@@ -47,7 +47,7 @@ def resolve_upload_path(filename, base_dir=None) -> Path:
     所以不能直接拼接；檢查完再以 resolve() 確認結果就在 temp_uploads 底下，
     擋掉符號連結與 Windows 路徑正規化（如結尾的 ``.``）的漏網之魚。
 
-    回傳 ``base_dir / filename``，保留 base_dir 原本的相對形式：docker 模式的
+    回傳 ``base_dir / filename``，保留 base_dir 原本的相對形式：Docker 模式的
     API 與主機端 GPU worker 靠 cwd 相對路徑共享上傳檔，不能換成容器內的絕對路徑。
     檔案是否存在由呼叫端判斷。
 
