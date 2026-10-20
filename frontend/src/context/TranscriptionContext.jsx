@@ -15,6 +15,7 @@ import {
   withModel,
   withProvider,
 } from '../utils/providerList';
+import { forRetranscription, requestDefaults } from '../utils/transcribeRequest';
 import { api } from '../services/api';
 
 const TranscriptionContext = createContext(null);
@@ -34,6 +35,8 @@ export const TranscriptionProvider = ({ children }) => {
   // 'standard' | 'flex' | 'batch'
   const [processingMode, setProcessingMode] = useState('batch');
   const [multiSpeaker, setMultiSpeaker] = useState(false);
+  // 轉錄頁的全域提示詞：送給沒有每檔設定提示詞的檔案（不必先按 Apply to All）
+  const [globalPrompt, setGlobalPrompt] = useState('');
 
   const useBatchMode = processingMode === 'batch';
 
@@ -55,6 +58,20 @@ export const TranscriptionProvider = ({ children }) => {
   const setModel = useCallback((nextModel) => {
     setSelection((current) => withModel(current, nextModel));
   }, []);
+
+  // 所選供應商的提示詞範本（設定頁）：檔案卡照送出時的規則顯示提示詞，要用到它。
+  // getProviderConfig 有快取，改了範本快取會換新，這裡跟著重讀
+  const [promptTemplate, setPromptTemplate] = useState(null);
+  useEffect(() => {
+    if (!provider) return undefined;
+    let active = true;
+    getProviderConfig(provider).then((config) => {
+      if (active) setPromptTemplate(config?.prompt ?? null);
+    });
+    return () => {
+      active = false;
+    };
+  }, [provider, getProviderConfig]);
 
   // 所選模型支援哪些輸入與處理方式；模型能力還沒載入時不限制，由後端把關
   const capabilities = findModelCapabilities(providerList, provider, model);
@@ -155,21 +172,7 @@ export const TranscriptionProvider = ({ children }) => {
       message.info(`任務 "${target.name}" 已重新加入佇列。`);
     }
     setFileList((current) =>
-      current.map((file) =>
-        file.uid === uidToReprocess
-          ? {
-              ...file,
-              status: 'waiting',
-              percent: 0,
-              tokens_used: 0,
-              cost: 0,
-              result: null,
-              statusText: '等待處理',
-              task_uuid: null,
-              error: null,
-            }
-          : file
-      )
+      current.map((file) => (file.uid === uidToReprocess ? forRetranscription(file) : file))
     );
   }, [fileList]);
 
@@ -220,7 +223,6 @@ export const TranscriptionProvider = ({ children }) => {
     }
 
     const config = await getProviderConfig(provider);
-    const prompt = config?.prompt;
     if (missingApiKey(providerList, provider, config)) {
       message.error(`請先在設定頁為 ${providerLabel(providerList, provider)} 設定 API 金鑰。`);
       return;
@@ -230,16 +232,12 @@ export const TranscriptionProvider = ({ children }) => {
       return;
     }
 
-    const defaults = {
-      sourceLang: targetLang,
-      multiSpeaker,
-      serviceTier: processingMode === 'flex' ? 'flex' : null,
-    };
+    const defaults = requestDefaults({ language: targetLang, multiSpeaker, processingMode, globalPrompt });
 
     setIsProcessing(true);
 
     const runner = useBatchMode ? startBatch : startRegular;
-    const result = await runner({ provider, model, prompt, defaults, supports });
+    const result = await runner({ provider, model, promptTemplate: config?.prompt, defaults, supports });
 
     if (result?.skipped) {
       setIsProcessing(false);
@@ -253,6 +251,7 @@ export const TranscriptionProvider = ({ children }) => {
     getProviderConfig,
     targetLang,
     multiSpeaker,
+    globalPrompt,
     processingMode,
     useBatchMode,
     supports,
@@ -273,12 +272,16 @@ export const TranscriptionProvider = ({ children }) => {
     selectProvider,
     model,
     setModel,
+    supports,
+    promptTemplate,
     disabledReasons: reasons,
     isProcessing,
     processingMode,
     setProcessingMode,
     multiSpeaker,
     setMultiSpeaker,
+    globalPrompt,
+    setGlobalPrompt,
     handleStartTranscription,
     downloadFile,
     downloadAllFiles,
