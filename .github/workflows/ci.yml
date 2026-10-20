@@ -112,8 +112,9 @@ jobs:
       - name: 安裝依賴（base 與 dev，不裝 torch 系列）
         run: python -m pip install -r backend/requirements-base.txt -r backend/requirements-dev.txt
       - name: 安裝 ffmpeg 與 ffprobe（BtbN 的 LGPL build，釘版並驗 SHA-256）
-        # 測試用真的 ffmpeg 處理合成音檔（#103）。來源與免安裝版相同（#80）：BtbN 的 LGPL
-        # build，用月底的日期 tag 釘版（BtbN 只承諾月底版保留兩年）。SHA-256 抄自 release 的
+        # 測試用真的 ffmpeg 處理合成音檔（#103）。採用 #80 研究建議的來源：BtbN 的 LGPL
+        # build，用月底的日期 tag 釘版（BtbN 只承諾月底版保留兩年）。注意免安裝版（build_release.ps1）
+        # 目前仍打包沒釘版的 GPL build，和這裡不同；要不要改由 #17 決定，見 #129。SHA-256 抄自 release 的
         # checksums.sha256，並和 GitHub 的 asset digest 核對過。升版時兩個平台的檔名與雜湊一起換。
         # 放在 PATH 最前面，蓋過 runner 映像可能自帶的 ffmpeg
         shell: bash
