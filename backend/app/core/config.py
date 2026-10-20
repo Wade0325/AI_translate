@@ -4,14 +4,14 @@ from pathlib import Path
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# 設定檔搜尋順序：standalone 的 data 目錄/.env → backend/.env → 專案根目錄/.env
+# 設定檔搜尋順序：免安裝模式的 data 目錄/.env → backend/.env → 專案根目錄/.env
 # Docker 啟動時環境變數由 docker-compose 直接注入，此處為原生執行的備援。
 _BACKEND_DIR = Path(__file__).resolve().parent.parent.parent
 _PROJECT_ROOT = _BACKEND_DIR.parent
 
 def _find_env_file() -> Path | None:
-    # standalone 模式（launcher 設定 APP_MODE）只讀 data 目錄的 .env：
-    # backend/.env 是 docker 導向設定（DATABASE_URL 指 Postgres 等），
+    # 免安裝模式（launcher 設定 APP_MODE）只讀 data 目錄的 .env：
+    # backend/.env 是給 Docker 模式的設定（DATABASE_URL 指 Postgres 等），
     # 一旦被免安裝模式讀到會蓋掉 SQLite 推導
     if os.environ.get("APP_MODE", "").lower() == "standalone":
         data_dir = os.environ.get("AIT_DATA_DIR")
@@ -34,11 +34,11 @@ class Settings(BaseSettings):
     優先順序：環境變數 > .env 檔案 > 預設值
     """
 
-    # 執行模式：docker（現行 Postgres + Redis + Celery 架構）或
+    # 執行模式：docker（Docker 模式：Postgres + Redis + Celery）或
     # standalone（免安裝模式：SQLite + 行程內執行緒 + asyncio queue，由 launcher 設定）
     app_mode: str = "docker"
 
-    # standalone 專用路徑（由 launcher 以 AIT_* 環境變數注入；未設時取套件相對位置）
+    # 免安裝模式專用的路徑（由 launcher 以 AIT_* 環境變數注入；未設時取套件相對位置）
     data_dir: str | None = Field(          # 可寫資料根目錄（db / 上傳檔 / 模型）
         default=None,
         validation_alias=AliasChoices("ait_data_dir", "data_dir"))
@@ -62,7 +62,7 @@ class Settings(BaseSettings):
 
     @property
     def static_path(self) -> Path | None:
-        """standalone 模式下 FastAPI 直接服務的前端靜態檔目錄。"""
+        """免安裝模式下 FastAPI 直接服務的前端靜態檔目錄。"""
         if self.static_dir:
             return Path(self.static_dir)
         if self.is_standalone:
@@ -115,7 +115,7 @@ class Settings(BaseSettings):
 
     # 允許跨來源呼叫 API 的前端來源（逗號分隔，例如 http://192.168.1.10:5173）。
     # 同一份清單也用於 WebSocket 的 Origin 檢查。預設只含開發用的 Vite dev server；
-    # standalone 模式前端由 FastAPI 同源提供，不需要另外設定。不支援萬用字元 *
+    # 免安裝模式的前端由 FastAPI 同源提供，不需要另外設定。不支援萬用字元 *
     cors_allowed_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
 
     @property
@@ -127,13 +127,13 @@ class Settings(BaseSettings):
                 origins.append(origin)
         return origins
 
-    # Local ASR 模型權重快取（standalone 模式下由 launcher 指向 data/models/hf_cache）
+    # 本機的模型權重快取（免安裝模式下由 launcher 指向 data/models/hf_cache）
     hf_home: str = r"D:\AI_translate\models\hf_cache"
 
     @property
     def temp_uploads_path(self) -> Path:
-        # docker 模式維持 cwd 相對路徑（容器 WORKDIR 與 local_worker.bat 都解析到 backend/，
-        # 這是兩個 worker 共享上傳檔的隱形契約）；standalone 集中到 data 目錄
+        # Docker 模式維持 cwd 相對路徑（容器 WORKDIR 與 local_worker.bat 都解析到 backend/，
+        # 這是兩個 worker 共享上傳檔的隱形契約）；免安裝模式集中到 data 目錄
         if self.is_standalone:
             return self.data_path / self.temp_uploads_dir
         return Path(self.temp_uploads_dir)
@@ -146,8 +146,8 @@ class Settings(BaseSettings):
 
     @property
     def audio_store_path(self) -> Path:
-        # 與 temp_uploads 同樣的規則：docker 用 cwd 相對路徑（容器 worker 與
-        # 主機 GPU worker 都解析到 backend/），standalone 集中到 data 目錄
+        # 與 temp_uploads 同樣的規則：Docker 模式用 cwd 相對路徑（容器 worker 與
+        # 主機 GPU worker 都解析到 backend/），免安裝模式集中到 data 目錄
         if self.is_standalone:
             return self.data_path / self.audio_store_dir
         return Path(self.audio_store_dir)

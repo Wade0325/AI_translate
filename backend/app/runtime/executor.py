@@ -1,4 +1,4 @@
-"""standalone 模式的行程內任務執行器（取代 Celery worker）。
+"""免安裝模式的行程內任務執行器（取代 Celery worker）。
 
 - 兩個執行緒池對齊 Docker 部署的 worker 配置：``local_asr``（max_workers=1，
   對齊主機 GPU worker 的 ``--pool=solo -c 1``，GPU 任務序列化）與 ``celery``

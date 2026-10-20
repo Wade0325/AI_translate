@@ -14,7 +14,7 @@ settings = get_settings()
 
 def _create_engine(url: str):
     if url.startswith("sqlite"):
-        # SQLite（standalone 模式）：QueuePool 參數不適用；
+        # SQLite（免安裝模式）：QueuePool 參數不適用；
         # check_same_thread=False 允許 API 與 worker 執行緒共用連線池
         db_path = make_url(url).database
         if db_path and db_path != ":memory:":

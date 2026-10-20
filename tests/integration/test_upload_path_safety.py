@@ -7,8 +7,11 @@
 
 漏洞重現：filename 帶絕對路徑或 ``..`` 時，``TEMP_UPLOADS_DIR / filename``
 會指向上傳目錄外的檔案，任務就拿那個檔案去轉錄（之後還會被搬進 audio_store）。
+
+被拒的檔名要用 repr 記進 log：排查只能靠使用者附上的 log（ADR-0005）。
 """
 import json
+import logging
 from pathlib import Path
 
 import pytest
@@ -86,7 +89,44 @@ def _traversal_names(root, secret):
         "absolute": str(secret),
         "dotdot": "../secret.txt",
         "absolute_via_uploads": str(root / ".." / "secret.txt"),
+        # 帶換行：照字面寫進 log 會多出一行假的 log
+        "forged_log_line": "../a.wav\n2026-10-20 12:00:00 - INFO - 偽造的一行",
     }
+
+
+class _Messages(logging.Handler):
+    def __init__(self):
+        super().__init__()
+        self.messages: list[str] = []
+
+    def emit(self, record):
+        self.messages.append(record.getMessage())
+
+
+@pytest.fixture
+def app_log():
+    """app 寫進 log 的訊息。
+
+    app 的 logger 不往上傳（app/utils/logger.py 設了 propagate=False），caplog 收不到，
+    所以在每個 app 的 logger 上直接接一個收集訊息的 handler。
+    """
+    handler = _Messages()
+    loggers = [logger for name, logger in logging.Logger.manager.loggerDict.items()
+               if name.startswith("app.") and isinstance(logger, logging.Logger)]
+    for logger in loggers:
+        logger.addHandler(handler)
+    yield handler.messages
+    for logger in loggers:
+        logger.removeHandler(handler)
+
+
+def _logged_as_repr(app_log, filename: str) -> bool:
+    """log 有沒有用 repr 記下這個檔名：換行等控制字元跳脫成看得見的字，混不進假的 log 行。"""
+    return any(repr(filename) in message for message in app_log)
+
+
+# 「被拒的檔名記進 log」測的幾種可疑檔名
+LOGGED_KINDS = ["absolute", "dotdot", "forged_log_line"]
 
 
 # ─── 單檔 WS ─────────────────────────────────────────────────────────────────
@@ -106,6 +146,16 @@ class TestSingleTranscription:
         assert "檔案名稱不合法" in message["status_text"]
         assert dispatched == []
         assert secret.exists()
+
+    @pytest.mark.parametrize("kind", LOGGED_KINDS)
+    def test_rejected_filename_is_logged(self, client: TestClient, uploads, app_log, kind):
+        filename = _traversal_names(*uploads)[kind]
+
+        with client.websocket_connect("/api/v1/ws/uid-traversal") as ws:
+            ws.send_json(_single_payload(filename))
+            ws.receive_json()
+
+        assert _logged_as_repr(app_log, filename)
 
     def test_plain_filename_is_dispatched(self, uploads, dispatched):
         root, _ = uploads
@@ -168,6 +218,19 @@ class TestBatchTranscription:
         assert dispatched == []
         assert secret.exists()
 
+    @pytest.mark.parametrize("kind", LOGGED_KINDS)
+    def test_rejected_filename_is_logged(self, client: TestClient, uploads, app_log, kind):
+        filename = _traversal_names(*uploads)[kind]
+        payload = _batch_payload([
+            {"filename": filename, "original_filename": "s.txt", "file_uid": "uid-bad"},
+        ])
+
+        with client.websocket_connect("/api/v1/batch/ws/batch-traversal") as ws:
+            ws.send_json(payload)
+            ws.receive_json()
+
+        assert _logged_as_repr(app_log, filename)
+
     def test_valid_files_still_dispatched_when_one_is_rejected(
             self, client: TestClient, uploads, dispatched):
         root, secret = uploads
@@ -203,6 +266,14 @@ class TestVadTest:
         assert response.status_code == 400
         assert "檔案名稱不合法" in response.json()["detail"]
         assert calls == []
+
+    @pytest.mark.parametrize("kind", LOGGED_KINDS)
+    def test_rejected_filename_is_logged(self, client: TestClient, uploads, app_log, kind):
+        filename = _traversal_names(*uploads)[kind]
+
+        client.post("/api/v1/vad/test", json={"filename": filename})
+
+        assert _logged_as_repr(app_log, filename)
 
     def test_plain_filename_runs_vad(self, client: TestClient, uploads, monkeypatch):
         root, _ = uploads

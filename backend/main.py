@@ -32,7 +32,7 @@ async def lifespan(app: FastAPI):
     init_db()
 
     # 清掃孤兒紀錄：worker 中途被終止時，單檔任務會留下永遠 PROCESSING 的紀錄。
-    # standalone 模式任務跑在本行程內，重啟後必死 → 全掃（max_age=0）
+    # 免安裝模式的任務跑在本行程內，重啟後必死 → 全掃（max_age=0）
     try:
         stale_hours = 0 if settings.is_standalone \
             else settings.stale_processing_max_age_hours
@@ -107,7 +107,7 @@ app.include_router(transcripts.router, prefix="/api/v1/transcripts",
 app.include_router(vad.router, prefix="/api/v1/vad", tags=["VAD"])
 
 # 只放行設定中的來源（預設為開發用的 Vite dev server），不再用 * 搭配 credentials。
-# docker 開發模式前端經 Vite proxy 呼叫 /api、standalone 由本服務同源提供，
+# Docker 模式開發時前端經 Vite proxy 呼叫 /api、免安裝模式由本服務同源提供，
 # 對瀏覽器而言都是同源請求，不靠 CORS；清單只影響真正跨來源的呼叫
 app.add_middleware(
     CORSMiddleware,
@@ -141,8 +141,8 @@ class _SPAStaticFiles(StaticFiles):
         return response
 
 
-# standalone 模式：FastAPI 同源直接服務 frontend/dist（前端 API/WS 都是
-# 相對路徑，無需任何前端修改）；docker 模式維持 Vite dev server，不掛載
+# 免安裝模式：FastAPI 同源直接服務 frontend/dist（前端 API/WS 都是
+# 相對路徑，無需任何前端修改）；Docker 模式維持 Vite dev server，不掛載
 _static_path = get_settings().static_path
 if _static_path is not None:
     if _static_path.is_dir():

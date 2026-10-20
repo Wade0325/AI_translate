@@ -1,4 +1,4 @@
-"""單檔轉錄 Celery 任務（docker 模式的入口 shim）。
+"""單檔轉錄 Celery 任務（Docker 模式的入口 shim）。
 
 任務本體在 `app.tasks.transcribe_core`；此處僅保留 Celery 裝飾器。
 Celery 任務名由 module + 函式名決定，shim 留在原處原名，
