@@ -3,14 +3,16 @@
 資料來源：
 
 * 有片段的任務從片段產生。
-* 沒有片段的任務（片段上線前的任務、Gemini 的任務、批次裡的任務）退回解析存下來的 LRC，
-  內容和以前相同。
-* 存下來的 LRC 是凍結的原始轉錄副本（ADR-0007），有片段時下載不讀它。
+* 沒有片段的任務（片段上線前的任務、#110 之前的 Gemini 任務、批次裡的任務）退回解析存下來的
+  LRC，內容和以前相同。
+* 存下來的 LRC 是凍結的原始轉錄副本（ADR-0007）：任務完成時從轉錄結果產生（:func:`for_result`），
+  和下載的 LRC 相同；有片段時下載不讀它。
 
-本機任務從片段產生的 LRC，和本機轉接器寫出的 LRC 逐字相同：同樣的斷行（見
-:func:`_segment_lines`）、同樣的時間戳；唯一刻意不同的是片段文字裡的換行收成空白（見
-:func:`_one_line`）。沒去靜音也沒切段的任務，存下來的副本就是本機寫出的那一份。去靜音或切段過
-的任務，副本另外經過分段轉錄對 LRC 文字做的時間處理（#110 拿掉），和這裡還有這些差異：
+#110 之前的副本是供應商自己寫的 LRC。Gemini 任務的副本就是 Gemini 寫的 LRC（「Speaker 1:」、
+三位小數的時間戳、沒有時間戳的行都在）。本機任務的副本和這裡斷行相同（見 :func:`_segment_lines`），
+唯一刻意不同的是片段文字裡的換行收成空白（見 :func:`_one_line`）；沒去靜音也沒切段的任務，副本
+和下載逐字相同。去靜音或切段過的任務，副本另外經過分段轉錄對 LRC 文字做的時間處理，和下載還有
+這些差異：
 
 * 時間戳差 0.01 秒：去靜音的時間還原把秒數捨去到 0.01，切段的後段平移時又四捨五入一次。
   去靜音的任務約一半的行。
@@ -94,14 +96,13 @@ def for_task(
 
 
 def for_result(result: TranscriptionTaskResult) -> OutputFiles:
-    """一份轉錄結果的四種輸出格式，任務完成時送給畫面；從轉錄結果寫凍結的原始轉錄副本時
-    （#110）也從這裡取 LRC。
+    """一份轉錄結果的四種輸出格式：任務完成時送給畫面，凍結的原始轉錄副本也是這裡的 LRC。
 
-    有片段時從片段產生，和之後下載的內容相同；沒有片段（Gemini）時轉換轉錄結果的 LRC 文字。
+    從片段產生，和之後下載的內容相同；轉錄結果的 text 不讀。沒有任何一行時四種都是空的。
     """
-    if not result.segments:
-        return convert_from_lrc(result.text)
     lines = _lines(result.segments)
+    if not lines:
+        return OutputFiles(lrc="", srt="", vtt="", txt="")
     return OutputFiles(**{fmt.value: _render(lines, fmt) for fmt in OutputFormat})
 
 
@@ -209,8 +210,8 @@ def _segment_lines(
     text: str,
     words: Optional[Sequence[Mapping[str, Any]]],
 ) -> List[_Line]:
-    """一個片段斷成的行，照本機原本產生 LRC 的規則（provider/local/asr.py 的
-    ``_entry_to_lines`` 與 ``_split_long_unit``；#110 讓供應商不再產生 LRC 後只剩這一份）：
+    """一個片段斷成的行，照本機原本產生 LRC 的規則（#110 之前本機轉接器自己寫 LRC，
+    現在斷行的規則只有這一份）：
 
     * 沒有逐字時間（或對不上文字，由呼叫端換成 None）：整段一行，時間是片段的開始。
     * 在句尾標點（。．！？!?…）後斷句，一句一行，時間是這一句第一個詞的開始。

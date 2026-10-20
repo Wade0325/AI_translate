@@ -173,7 +173,6 @@ def run_transcription(task_params_dict: dict, task_uuid: str):
             # 避免被標成 COMPLETED 並產出空字幕
             raise ValueError(f"轉錄失敗: {transcription_result.text}")
 
-        final_lrc_text = transcription_result.text
         input_tokens = transcription_result.input_tokens
         output_tokens = transcription_result.output_tokens
         total_tokens = transcription_result.total_tokens
@@ -182,7 +181,9 @@ def run_transcription(task_params_dict: dict, task_uuid: str):
 
         update_status("正在轉換字幕格式...")
         transcripts_model = output_format.for_result(transcription_result)
-        final_transcripts = transcripts_model.model_dump() if transcripts_model else {}
+        final_transcripts = transcripts_model.model_dump()
+        # 凍結的原始轉錄副本（ADR-0007）：和下載的 LRC 一樣由輸出格式模組從轉錄結果產生
+        final_lrc_text = transcripts_model.lrc
 
         update_status("正在計算費用...")
         items = []

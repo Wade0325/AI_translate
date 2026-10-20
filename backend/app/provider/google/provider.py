@@ -5,7 +5,10 @@
 - 轉錄：標準或 Flex（https://ai.google.dev/gemini-api/docs/flex-inference）。Flex 遇到
   429／503 以指數退避重試，用完或遇到其他錯誤就退回標準。實際用到的處理模式以回應的
   header 為準，回報在 ``service_tier_used``，計價據此決定要不要打折。
-- 批次：送出與輪詢；成功結束時把每個請求的回應換成轉錄結果。
+- LRC 解析：Gemini 寫的 LRC 在這裡解析一次就變成轉錄結果（片段，規則見 :func:`_segments_from_lrc`），
+  之後的流程不再碰 LRC 文字。
+- 批次：送出與輪詢；成功結束時把每個請求的回應換成轉錄結果。批次暫時還不解析，結果帶的是
+  Gemini 寫的 LRC 文字（#115 改）。
 - 錯誤：429／503 是暫時錯誤（:class:`~app.exceptions.GeminiTransientError`，外層會重試
   整個任務），其他是永久錯誤（:class:`~app.exceptions.GeminiPermanentError`）。
 
@@ -16,6 +19,7 @@ google-genai 用戶端與 sleep 可以從外面傳進來：測試用假的用戶
 from __future__ import annotations
 
 import hashlib
+import re
 import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
@@ -182,14 +186,53 @@ def _transcription_result(response: Any, tier: str) -> TranscriptionTaskResult:
     logger.info(f"  Output (Candidates) tokens: {output_tokens:>8,}")
     logger.info(f"  Thoughts tokens: {(thoughts_tokens if thoughts_tokens is not None else 'N/A'):>8}")
     logger.info(f"  Total tokens: {total_tokens:>8,}")
-    return TranscriptionTaskResult.model_validate({
-        "success": True,
-        "text": response.text,
-        "input_tokens": input_tokens,
-        "output_tokens": output_tokens,
-        "total_tokens": total_tokens,
-        "service_tier_used": tier,
-    })
+
+    segments = _segments_from_lrc(response.text or "")
+    if not segments:
+        # 當成成功的話，這一段的轉錄會默默不見（分段轉錄時就是掉尾）：和本機一樣回報失敗
+        error_text = "[[轉錄失敗：Gemini 的回應沒有任何帶時間戳的文字]]"
+        logger.warning(error_text)
+        return TranscriptionTaskResult(
+            success=False, text=error_text, input_tokens=input_tokens,
+            output_tokens=output_tokens, total_tokens=total_tokens, service_tier_used=tier)
+    return TranscriptionTaskResult(
+        success=True, input_tokens=input_tokens, output_tokens=output_tokens,
+        total_tokens=total_tokens, service_tier_used=tier, segments=segments)
+
+
+_LRC_LINE_RE = re.compile(r"\[(\d+):(\d{2}(?:\.\d+)?)\](.*)")
+_SPEAKER_LABEL_RE = re.compile(r"Speaker\s*([0-9]+|[A-Z])\s*[:：]\s*")
+
+
+def _segments_from_lrc(lrc_text: str) -> List[Dict[str, Any]]:
+    """把 Gemini 寫的 LRC 解析成片段，時間軸是送進去的這段音檔。
+
+    - 沒有時間戳的行丟掉；時間戳（和說話者標記）後面沒有文字的行也丟掉。
+    - 行首的說話者標記（「Speaker 1:」「Speaker A:」）轉成說話者編號：依標記第一次出現的
+      順序編成 S0、S1……，同一個標記一律同一個編號。沒有標記的行沒有說話者編號。
+    - Gemini 的 LRC 只有開始時間：片段沒有結束時間，不拿下一行的開始或只有時間戳的行來猜，
+      猜的值會被當成真實的結束時間。字幕的結束時間照輸出格式模組對沒有結束時間的片段的規則。
+    """
+    speakers: Dict[str, str] = {}
+    segments: List[Dict[str, Any]] = []
+    for line in lrc_text.splitlines():
+        match = _LRC_LINE_RE.match(line.strip())
+        if not match:
+            continue
+        minutes, seconds, text = match.groups()
+        text = text.strip()
+        label = _SPEAKER_LABEL_RE.match(text)
+        if label:
+            text = text[label.end():]
+        if not text:
+            continue
+        speaker = speakers.setdefault(label.group(1), f"S{len(speakers)}") if label else None
+        segments.append({
+            "seg_key": f"{len(segments):04d}", "seq": len(segments),
+            "start": int(minutes) * 60 + float(seconds), "end": None,
+            "speaker": speaker, "text": text, "source": "gemini",
+        })
+    return segments
 
 
 BATCH_DONE_STATES = frozenset({
@@ -213,7 +256,8 @@ def _batch_request(gemini_file: Any, prompt: str) -> Dict[str, Any]:
 
 
 def _batch_item_result(inline: Any) -> TranscriptionTaskResult:
-    """批次裡一個請求的回應；失敗時 text 是要存進任務紀錄的錯誤訊息。"""
+    """批次裡一個請求的回應；成功時 text 是 Gemini 寫的 LRC（#115 之前批次還處理 LRC 文字），
+    失敗時是要存進任務紀錄的錯誤訊息。"""
     response = inline.response
     if not response:
         return _batch_failure(f"轉錄失敗: {inline.error or '未知錯誤'}")

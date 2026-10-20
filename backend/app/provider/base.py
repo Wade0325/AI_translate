@@ -78,7 +78,7 @@ class Provider(Protocol):
         單次長度切。"""
 
     def transcribe(self, audio_path: Path, request: TranscribeRequest) -> TranscriptionTaskResult:
-        """轉錄一段音檔，時間軸是這段音檔本身。
+        """轉錄一段音檔，回傳轉錄結果（片段）與用量，不附著 LRC 文字；時間軸是這段音檔本身。
 
         使用者取消時拋 :class:`~app.exceptions.TranscriptionCancelledError`；
         其他錯誤由分段轉錄當成這一段失敗處理。
@@ -99,7 +99,8 @@ class BatchStatus:
     succeeded: bool = False
     results: Tuple[TranscriptionTaskResult, ...] = ()
     """成功結束時每個請求一份轉錄結果，順序和送出時相同；
-    失敗的請求 ``success=False``，``text`` 是給使用者看的失敗原因。"""
+    失敗的請求 ``success=False``，``text`` 是給使用者看的失敗原因。
+    成功的請求暫時還沒有片段，``text`` 是 Gemini 寫的 LRC 文字：批次改成處理轉錄結果是 #115。"""
 
 
 class BatchProvider(Provider, Protocol):

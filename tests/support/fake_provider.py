@@ -47,11 +47,6 @@ Step = Union[Sequence[Line], Fail, Exception]
 """劇本的一步：這一段的轉錄結果、回報失敗，或拋出這個例外。"""
 
 
-def _lrc(t: float) -> str:
-    minutes = int(t // 60)
-    return f"[{minutes:02d}:{t - minutes * 60:05.2f}]"
-
-
 def _segment(i: int, line: Line) -> dict:
     start, end, speaker, text, *timings = line
     segment = {"seg_key": f"{i:04d}", "seq": i, "start": start, "end": end,
@@ -98,10 +93,9 @@ class FakeProvider:
         if isinstance(step, Fail):
             return TranscriptionTaskResult(success=False, text=f"[[{step.message}]]")
 
+        # 和真的轉接器一樣，轉錄結果只有片段與用量，不附著 LRC 文字
         segments = [_segment(i, line) for i, line in enumerate(step)]
-        lrc = "\n".join(f"{_lrc(start)}[S{speaker}] {text}"
-                        for start, _, speaker, text, *_ in step)
-        return TranscriptionTaskResult(success=bool(step), text=lrc, segments=segments)
+        return TranscriptionTaskResult(success=bool(step), segments=segments)
 
     def release(self) -> None:
         self.released += 1

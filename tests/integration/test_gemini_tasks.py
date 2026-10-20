@@ -204,6 +204,22 @@ def test_single_file_completes_and_its_remote_file_is_deleted(api, in_process_ru
     assert genai.stored == {}  # 任務結束時刪掉上傳到 Gemini 的檔案
 
 
+def test_single_file_stores_segments_labelled_like_the_local_provider(api, in_process_run_mode, genai):
+    # Gemini 的 LRC 在轉接器裡解析一次就變成片段：任務存下片段，字幕的說話者標記和本機一樣
+    genai.replies = [Reply(text="[00:00.50]Speaker 1: おはよう。\n[00:03.00]Speaker 2: こんにちは。")]
+
+    end = transcribe(api, in_process_run_mode, "gemini-single-speakers.wav")[-1]
+
+    assert end["status_code"] == TaskStatus.COMPLETED
+    segments = api.get(f"/api/v1/transcripts/{end['task_uuid']}").json()["segments"]
+    assert [(s["speaker"], s["text"]) for s in segments] == [("S0", "おはよう。"), ("S1", "こんにちは。")]
+    # 去靜音之後的時間還原回原音檔：第二句落在第二個有聲段（5–7 秒），不在被剪掉的靜音裡
+    assert 4.5 <= segments[1]["start"] <= 7.5
+    srt = api.get(f"/api/v1/history/{end['task_uuid']}/download/srt").text
+    assert "[S0] おはよう。" in srt and "[S1] こんにちは。" in srt
+    assert "Speaker" not in srt
+
+
 def test_single_file_failure_still_deletes_its_remote_file(api, in_process_run_mode, genai):
     # 假用戶端只在檔案已經上傳、處理完時才回這個錯：失敗之前遠端確實有檔案
     genai.replies = [invalid_argument("音檔無法解碼")]

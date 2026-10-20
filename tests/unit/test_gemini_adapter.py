@@ -1,6 +1,6 @@
-"""接縫 3：Gemini 轉接器，用假的 google-genai 用戶端（#107）。
+"""接縫 3：Gemini 轉接器，用假的 google-genai 用戶端（#107、#110）。
 
-只從轉接器的公開介面觀察：轉錄結果、用量、實際用到的處理模式、拋出的錯誤，
+只從轉接器的公開介面觀察：轉錄結果（片段）、用量、實際用到的處理模式、拋出的錯誤，
 以及遠端還留著哪些檔案（假用戶端的 ``stored``，等同去 Gemini 查）。
 """
 from contextlib import suppress
@@ -44,6 +44,11 @@ def request(**overrides) -> TranscribeRequest:
     return TranscribeRequest(model=MODEL, prompt="請轉錄這段音檔", **overrides)
 
 
+def transcript(result) -> list[tuple]:
+    """轉錄結果的片段，只看（開始, 說話者編號, 文字）。"""
+    return [(s["start"], s["speaker"], s["text"]) for s in result.segments]
+
+
 class TestTranscribe:
     def test_returns_transcript_and_usage(self, gemini, genai, audio):
         genai.replies = [Reply(text="[00:01.00]こんにちは", input_tokens=1000, output_tokens=200)]
@@ -51,7 +56,7 @@ class TestTranscribe:
         result = gemini.transcribe(audio, request())
 
         assert result.success
-        assert result.text == "[00:01.00]こんにちは"
+        assert transcript(result) == [(1.0, None, "こんにちは")]
         assert (result.input_tokens, result.output_tokens, result.total_tokens) == (1000, 200, 1200)
         assert result.service_tier_used == "standard"
 
@@ -68,6 +73,96 @@ class TestTranscribe:
 
         assert not result.success
         assert "PROHIBITED_CONTENT" in result.text
+
+
+class TestLrcIsParsedOnce:
+    """Gemini 寫的 LRC 在轉接器裡解析一次就變成轉錄結果（片段）；之後的流程不再碰 LRC 文字。"""
+
+    def test_each_timestamped_line_is_a_segment_and_other_lines_are_dropped(
+            self, gemini, genai, audio):
+        # 時間戳的小數兩位、三位或省略都算有時間戳
+        genai.replies = [Reply(text=(
+            "```lrc\n"
+            "[00:01.500]おはよう。\n"
+            "這一行沒有時間戳\n"
+            "\n"
+            "[01:02.25]こんにちは。\n"
+            "[01:05]またね。\n"
+            "```"))]
+
+        result = gemini.transcribe(audio, request())
+
+        assert transcript(result) == [
+            (1.5, None, "おはよう。"), (62.25, None, "こんにちは。"), (65.0, None, "またね。")]
+        assert result.text == ""  # 不再附著 LRC 文字
+
+    @pytest.mark.parametrize("first, second", [
+        ("Speaker 1:", "Speaker 2:"),
+        ("Speaker A:", "Speaker B:"),
+        ("Speaker 1：", "Speaker 2："),
+    ], ids=["numbers", "letters", "full-width-colon"])
+    def test_speaker_labels_become_speaker_ids(self, gemini, genai, audio, first, second):
+        # 同一個標記一律同一個說話者編號；沒有標記的行（例如聲響描述）沒有說話者編號
+        genai.replies = [Reply(text=(
+            f"[00:01.00]{first} おはよう。\n"
+            f"[00:02.00]{second} こんにちは。\n"
+            f"[00:03.00]{first} またね。\n"
+            "[00:04.00][拍手]"))]
+
+        result = gemini.transcribe(audio, request())
+
+        assert transcript(result) == [
+            (1.0, "S0", "おはよう。"), (2.0, "S1", "こんにちは。"), (3.0, "S0", "またね。"),
+            (4.0, None, "[拍手]")]
+
+    def test_speaker_ids_follow_the_order_labels_first_appear(self, gemini, genai, audio):
+        # 不照標記上的數字：先開口的是 S0，和本機一樣；標記從 0 起算或跳號也不會缺號、撞號
+        genai.replies = [Reply(text=(
+            "[00:01.00]Speaker 2: おはよう。\n"
+            "[00:02.00]Speaker 0: はい。\n"
+            "[00:03.00]Speaker 2: またね。"))]
+
+        result = gemini.transcribe(audio, request())
+
+        assert transcript(result) == [
+            (1.0, "S0", "おはよう。"), (2.0, "S1", "はい。"), (3.0, "S0", "またね。")]
+
+    def test_line_without_text_is_dropped(self, gemini, genai, audio):
+        # 只有時間戳或只有說話者標記的行不成為片段，也不佔說話者編號
+        genai.replies = [Reply(text=(
+            "[00:01.00]Speaker 1: おはよう。\n"
+            "[00:02.00]\n"
+            "[00:03.00]Speaker 3: \n"
+            "[00:04.00]Speaker 2: はい。"))]
+
+        result = gemini.transcribe(audio, request())
+
+        assert transcript(result) == [(1.0, "S0", "おはよう。"), (4.0, "S1", "はい。")]
+
+    def test_segments_have_no_end_time(self, gemini, genai, audio):
+        # Gemini 的 LRC 只有開始時間：不拿下一行的開始、也不拿只有時間戳的行來猜。字幕的結束時間
+        # 照輸出格式模組對沒有結束時間的片段的規則，猜的值會被當成真實的結束時間
+        genai.replies = [Reply(text="[00:01.00]おはよう。\n[00:02.50]\n[00:04.00]はい。")]
+
+        result = gemini.transcribe(audio, request())
+
+        assert [s["end"] for s in result.segments] == [None, None]
+
+    @pytest.mark.parametrize("text", [
+        "",
+        "這段音檔聽不出任何語音。",
+        "[00:05.00]\n[00:06.00]Speaker 1:",
+    ], ids=["empty", "no-timestamps", "no-text"])
+    def test_response_without_any_line_is_a_failure(self, gemini, genai, audio, text):
+        # 當成成功的話，這一段的轉錄會默默不見（分段轉錄時就是掉尾）：和本機一樣回報失敗，
+        # 讓外層切段重試，或讓使用者看到原因
+        genai.replies = [Reply(text=text, input_tokens=1000, output_tokens=200)]
+
+        result = gemini.transcribe(audio, request())
+
+        assert not result.success
+        assert "沒有任何帶時間戳" in result.text
+        assert result.total_tokens == 1200  # 用量照樣回報
 
 
 def processing_failed(genai):
