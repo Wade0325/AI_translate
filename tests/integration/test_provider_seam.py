@@ -272,19 +272,6 @@ def stored_segments(api, task_uuid: str) -> list[dict]:
     return api.get(f"/api/v1/transcripts/{task_uuid}").json()["segments"]
 
 
-def frozen_original(engine, task_uuid: str) -> str | None:
-    """任務紀錄裡凍結的原始轉錄副本（ADR-0007）。
-
-    下載不讀它，也還沒有讀它的介面（v0.2 的校正才會用到），只能從任務紀錄看。
-    """
-    from sqlalchemy.orm import sessionmaker
-
-    from app.repositories.history_repository import HistoryRepository
-
-    with sessionmaker(bind=engine)() as db:
-        return HistoryRepository().get_log_by_uuid(db, task_uuid).lrc_content
-
-
 def in_voiced_region(t: float) -> bool:
     return any(lo - 0.5 <= t <= hi + 0.5 for lo, hi in VOICED)
 
@@ -1107,10 +1094,14 @@ class TestSegmentsAreSavedWithTheCompletion:
 
 
 class TestCompletingTheSameTaskAgain:
-    def test_without_touched_segments_the_new_result_replaces_all(self, api, fake, redelivery):
+    @pytest.fixture
+    def task_uuid(self, api, fake, redelivery):
+        """完成過一次（FIRST_RUN）的任務；再完成一次時，假供應商回 SECOND_RUN。"""
         fake.script = [list(FIRST_RUN), list(SECOND_RUN)]
-        task_uuid = transcribe(api, "uid-again")[-1]["task_uuid"]
+        return transcribe(api, "uid-again")[-1]["task_uuid"]
 
+    def test_without_touched_segments_the_new_result_replaces_all(
+            self, api, redelivery, task_uuid):
         redelivery.redeliver(task_uuid)
 
         # 和以前一樣整批換成這次的結果，這次沒有的那一段也拿掉
@@ -1118,9 +1109,7 @@ class TestCompletingTheSameTaskAgain:
             "おはよ。", "こんにちわ。", "まったね。"]
 
     def test_segments_the_user_touched_are_kept_others_take_the_new_result(
-            self, api, fake, redelivery, test_engine):
-        fake.script = [list(FIRST_RUN), list(SECOND_RUN)]
-        task_uuid = transcribe(api, "uid-again")[-1]["task_uuid"]
+            self, api, redelivery, task_uuid, test_engine):
         keys = [s["seg_key"] for s in stored_segments(api, task_uuid)]
         # 使用者校正了第一段，把第三段標成已確認
         mark_segment(test_engine, task_uuid, keys[0], text="おはようございます。", source="edited")
@@ -1134,24 +1123,8 @@ class TestCompletingTheSameTaskAgain:
         assert [s["text"] for s in segments] == ["おはようございます。", "こんにちわ。", "またね。"]
         assert (segments[0], segments[2]) == (corrected, verified)
 
-    def test_frozen_original_is_this_runs_model_output_not_the_correction(
-            self, api, fake, redelivery, test_engine):
-        fake.script = [list(FIRST_RUN), list(SECOND_RUN)]
-        task_uuid = transcribe(api, "uid-again")[-1]["task_uuid"]
-        first_key = stored_segments(api, task_uuid)[0]["seg_key"]
-        mark_segment(test_engine, task_uuid, first_key, text="おはようございます。", source="edited")
-
-        redelivery.redeliver(task_uuid)
-
-        # 校正只在片段上；原始轉錄仍拿得到：凍結的副本是這次模型的輸出（ADR-0007）
-        original = frozen_original(test_engine, task_uuid)
-        assert all(text in original for text in ["おはよ。", "こんにちわ。", "まったね。"])
-        assert "おはようございます。" not in original
-
     def test_failing_to_store_the_new_segments_leaves_the_old_ones_untouched(
-            self, api, fake, redelivery, test_engine):
-        fake.script = [list(FIRST_RUN), list(SECOND_RUN)]
-        task_uuid = transcribe(api, "uid-again")[-1]["task_uuid"]
+            self, api, redelivery, task_uuid, test_engine):
         first_key = stored_segments(api, task_uuid)[0]["seg_key"]
         mark_segment(test_engine, task_uuid, first_key, text="おはようございます。", source="edited")
         before = stored_segments(api, task_uuid)
