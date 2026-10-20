@@ -8,8 +8,15 @@ class AppError(Exception):
     """所有自訂例外的基底。"""
 
 
-class GeminiTransientError(AppError):
-    """Gemini API 暫時性錯誤（429/503/網路抖動）。Celery 應自動重試。"""
+class TransientError(AppError):
+    """供應商的暫時錯誤（429/503/網路抖動）：不是失敗，整個任務交給執行模式重試。
+
+    任務生命週期不寫 FAILED、保留輸入音檔給重試；分段轉錄不把它當成這一段失敗。
+    """
+
+
+class GeminiTransientError(TransientError):
+    """Gemini API 暫時性錯誤（429/503/網路抖動）。"""
 
 
 class GeminiPermanentError(AppError):
@@ -17,4 +24,4 @@ class GeminiPermanentError(AppError):
 
 
 class TranscriptionCancelledError(AppError):
-    """使用者取消轉錄任務。task.py 據此把任務標記為 CANCELLED 而非 FAILED。"""
+    """使用者取消轉錄任務。任務生命週期據此把任務記為 CANCELLED 而非 FAILED。"""
