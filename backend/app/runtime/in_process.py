@@ -37,7 +37,7 @@ class InProcessRunMode:
 
     # ── 派送與控制 ────────────────────────────────────────────────
     def submit_transcription(self, task_id: str, task_params_dict: dict, queue: str) -> None:
-        from app.tasks.transcribe_core import run_transcription
+        from app.tasks.transcribe_core import abandon_transcription, run_transcription
 
         # 執行器遇到暫時錯誤會再呼叫一次；每次都告訴任務之後還會重試幾次，
         # 對齊 Celery 的 request.retries
@@ -46,6 +46,10 @@ class InProcessRunMode:
         def attempt():
             return run_transcription(task_params_dict, task_id, next(retries_left))
 
+        def abandoned(revoked: bool) -> None:
+            # 在佇列中被撤銷、或關閉時還在排隊：任務不會執行，照樣收尾
+            abandon_transcription(task_params_dict, task_id, cancelled=revoked)
+
         self._executor.submit(
             attempt,
             task_id=task_id,
@@ -53,6 +57,7 @@ class InProcessRunMode:
             retry_on=(TransientError,),
             max_retries=TRANSIENT_RETRIES,
             backoff_max=self._retry_backoff_max,
+            on_abandoned=abandoned,
         )
 
     def submit_batch(self, task_params_dict: dict) -> str:

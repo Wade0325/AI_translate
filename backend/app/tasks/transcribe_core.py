@@ -32,6 +32,16 @@ def run_transcription(task_params_dict: dict, task_uuid: str, retries_left: int 
         lambda audio, progress: _transcribe(params, task_uuid, audio, progress))
 
 
+def abandon_transcription(task_params_dict: dict, task_uuid: str, *, cancelled: bool) -> None:
+    """收尾一個不會再執行的單檔任務（見 :meth:`TaskLifecycle.abandon`）。
+
+    執行模式在任務不會再執行時呼叫：在佇列中或等重試時被撤銷（``cancelled``），
+    或應用程式關閉時還在排隊。
+    """
+    params = TranscriptionTaskParams.model_validate(task_params_dict)
+    TaskLifecycle(task_uuid, params).abandon(cancelled=cancelled)
+
+
 def _transcribe(
     params: TranscriptionTaskParams, task_uuid: str, audio: Path, progress: ProgressAndCancel,
 ) -> TranscriptionTaskResult:

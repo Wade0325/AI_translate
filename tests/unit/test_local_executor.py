@@ -108,6 +108,7 @@ def test_retry_exhausted_marks_failure(executor, monkeypatch):
 def test_revoke_before_start_skips_execution(executor):
     blocker_release = threading.Event()
     ran = []
+    abandoned = []
 
     def blocker():
         blocker_release.wait(5)
@@ -117,7 +118,7 @@ def test_revoke_before_start_skips_execution(executor):
 
     # local_asr 只有一個 worker：blocker 佔住後 victim 停在佇列中
     executor.submit(blocker, task_id="blocker", queue="local_asr")
-    executor.submit(victim, task_id="victim", queue="local_asr")
+    executor.submit(victim, task_id="victim", queue="local_asr", on_abandoned=abandoned.append)
     executor.revoke("victim")
     blocker_release.set()
 
@@ -128,6 +129,54 @@ def test_revoke_before_start_skips_execution(executor):
     assert ran == []
     assert executor.state("victim") == REVOKED
     assert executor.is_alive("victim") is False
+    # 不執行的任務照樣收尾：被撤銷的收尾只呼叫一次
+    assert abandoned == [True]
+
+
+def test_revoking_a_started_task_lets_it_stop_by_itself(executor, monkeypatch):
+    """開始之後才撤銷：執行緒不可 kill，照常重試，由任務自己看取消旗標停下、收尾。"""
+    monkeypatch.setattr("app.runtime.executor.time.sleep", lambda _: None)
+    attempts, alive, abandoned = [], [], []
+
+    def cancelled_while_running():
+        attempts.append(1)
+        if len(attempts) == 1:
+            # 使用者在第一次執行途中取消，接著剛好遇到暫時錯誤
+            executor.revoke("t-started")
+            alive.append(executor.is_alive("t-started"))
+            raise TransientError("503")
+        return "任務看到取消、自己收尾"
+
+    executor.submit(cancelled_while_running, task_id="t-started", retry_on=(TransientError,),
+                    on_abandoned=abandoned.append)
+
+    deadline = time.time() + 5
+    while time.time() < deadline and executor.state("t-started") not in (SUCCESS, FAILURE):
+        time.sleep(0.05)
+    assert executor.state("t-started") == SUCCESS
+    assert len(attempts) == 2
+    assert alive == [True]  # 停下之前都還算存活
+    assert abandoned == []
+
+
+def test_shutdown_abandons_tasks_still_queued():
+    executor = LocalExecutor(default_concurrency=1)
+    release = threading.Event()
+    abandoned = []
+    executor.submit(lambda: release.wait(5), task_id="running", queue="local_asr",
+                    on_abandoned=abandoned.append)
+    executor.submit(lambda: None, task_id="queued", queue="local_asr",
+                    on_abandoned=abandoned.append)
+    deadline = time.time() + 5
+    while time.time() < deadline and executor.state("running") != "STARTED":
+        time.sleep(0.01)
+
+    executor.shutdown()
+    release.set()
+
+    # 還在排隊的任務不再執行，以「不是被撤銷」收尾；執行中的照常跑完
+    assert abandoned == [False]
+    assert executor.is_alive("queued") is False
 
 
 def test_unknown_task_id_is_not_alive(executor):

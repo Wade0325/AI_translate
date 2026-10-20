@@ -808,7 +808,68 @@ class TestCancel:
         running_log = api.get(f"/api/v1/history/{task_end['task_uuid']}").json()
         assert running_log["status"] == TaskStatus.CANCELLED
         assert stored_segments(api, task_end["task_uuid"]) == []
-        assert api.get(f"/api/v1/history/{queued_end['task_uuid']}").status_code == 404
+        queued_log = api.get(f"/api/v1/history/{queued_end['task_uuid']}").json()
+        assert queued_log["status"] == TaskStatus.CANCELLED
+
+    @pytest.mark.parametrize("retain_audio", [True, False], ids=["retain", "no-retain"])
+    def test_cancelled_in_the_queue_is_recorded_and_its_upload_handled(
+            self, api, fake, settings, monkeypatch, data_dir, retain_audio):
+        monkeypatch.setattr(settings, "retain_audio", retain_audio)
+        fake.hold = threading.Event()
+        fake.script = list(SCRIPT)
+        running_file, queued_file = upload(api, "a.wav"), upload(api, "b.wav")
+
+        with api.websocket_connect("/api/v1/ws/uid-running") as running, \
+                api.websocket_connect("/api/v1/ws/uid-queued") as queued:
+            submit(running, running_file)
+            assert fake.started.wait(TIMEOUT)
+            # GPU 佇列只有一個 worker：第二個任務排在佇列裡，撤銷之後就不會開始
+            submit(queued, queued_file)
+            cancel_when_dispatched(api, "uid-queued")
+            queued_end = receive_until_terminal(queued)[-1]
+            fake.hold.set()
+            receive_until_terminal(running)
+
+        # 沒開始的任務照樣收尾，和開始前才發現被取消的任務一樣：記成已取消，
+        # 上傳檔照保留設定搬進保留區或刪掉，不留在暫存區；取消旗標與登記也清掉
+        assert queued_end["status_code"] == TaskStatus.CANCELLED
+        assert len(fake.calls) == 1
+        task_uuid = queued_end["task_uuid"]
+        assert api.get(f"/api/v1/history/{task_uuid}").json()["status"] == TaskStatus.CANCELLED
+        audio = api.get(f"/api/v1/transcripts/{task_uuid}/audio")
+        if retain_audio:
+            assert audio.content == synthetic_audio()
+        else:
+            assert audio.status_code == 404
+        assert leftovers(data_dir) == []
+        assert run_mode.get().is_cancel_requested("uid-queued") is False
+        assert run_mode.get().registered_task("uid-queued") is None
+
+    def test_task_still_queued_when_the_app_closes_is_recorded_as_failed(
+            self, api, fake, data_dir, in_process_run_mode):
+        fake.hold = threading.Event()
+        fake.script = list(SCRIPT)
+        running_file, queued_file = upload(api, "a.wav"), upload(api, "b.wav")
+
+        with api.websocket_connect("/api/v1/ws/uid-open") as running, \
+                api.websocket_connect("/api/v1/ws/uid-waiting") as queued:
+            submit(running, running_file)
+            assert fake.started.wait(TIMEOUT)
+            submit(queued, queued_file)
+            wait_until(lambda: run_mode.get().registered_task("uid-waiting") is not None)
+            task_uuid = run_mode.get().registered_task("uid-waiting").task_id
+            # 應用程式關閉（lifespan 關掉執行模式）：還在排隊的任務不會再執行
+            in_process_run_mode.close()
+            fake.hold.set()
+            receive_until_terminal(running)
+
+        # 和開始前就被取消的任務一樣有紀錄、上傳檔照保留設定處理，只是記成失敗並寫明原因
+        record = api.get(f"/api/v1/history/{task_uuid}").json()
+        assert record["status"] == TaskStatus.FAILED
+        assert "關閉" in record["error_message"]
+        assert api.get(f"/api/v1/transcripts/{task_uuid}/audio").content == synthetic_audio()
+        assert leftovers(data_dir) == []
+        assert len(fake.calls) == 1
 
     def test_provider_that_ignores_the_cancel_does_not_complete_the_task(self, api, fake):
         fake.ignores_cancel = True

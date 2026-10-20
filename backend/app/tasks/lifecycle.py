@@ -123,6 +123,31 @@ class TaskLifecycle:
             raise outcome.error
         return outcome.return_value or {}
 
+    def abandon(self, *, cancelled: bool) -> None:
+        """收尾一個不會再執行的任務：在佇列中或等重試時被撤銷（``cancelled``），或應用程式
+        關閉時還在排隊。
+
+        和開始前就取消的任務一樣留下任務紀錄（被撤銷的記成已取消，關閉時還在排隊的記成
+        失敗），再照一般的收尾保留或清理上傳檔、清掉登記與取消旗標。不宣告結果：撤銷時
+        取消端點已經宣告過了，關閉時也沒有畫面在聽。
+        """
+        with SessionLocal() as db:
+            try:
+                if cancelled:
+                    self._cancel_before_start(db)
+                else:
+                    logger.warning(f"應用程式關閉時任務 {self._task_uuid} 還在排隊，記成失敗")
+                    self._records.insert_log(db, {
+                        **self._record_fields(),
+                        "status": TaskStatus.FAILED,
+                        "error_message": "應用程式關閉時任務還在排隊，沒有開始轉錄",
+                        "completed_at": datetime.now(),
+                    })
+            except Exception as e:
+                logger.error(f"任務 {self._task_uuid} 無法更新任務紀錄: {e}")
+            finally:
+                self._finish(db, retry=False)
+
     # ── 狀態轉換 ──────────────────────────────────────────────────
     def _attempt(self, db: Session, transcribe: Transcribe) -> _Outcome:
         try:
