@@ -208,7 +208,8 @@ export const TranscriptionProvider = ({ children }) => {
     }
   }, [fileList]);
 
-  const handleStartTranscription = useCallback(async () => {
+  // globalPrompt：轉錄頁的全域提示詞，送給沒有每檔設定提示詞的檔案（不必先按 Apply to All）
+  const handleStartTranscription = useCallback(async ({ globalPrompt = '' } = {}) => {
     if (!provider || !model) {
       message.error(providerListFailed ? PROVIDER_LIST_FAILED : '供應商清單還在載入，請稍後再試');
       return;
@@ -217,7 +218,6 @@ export const TranscriptionProvider = ({ children }) => {
     const config = await getProviderConfig(provider);
     // 設定裡只有遮罩後的金鑰：這裡只確認已設定，實際金鑰由後端從資料庫取用、不隨任務送出
     const hasApiKey = Boolean(config?.apiKeys?.[0]);
-    const prompt = config?.prompt;
     if (requiresApiKey(providerList, provider) && !hasApiKey) {
       message.error(`請先在設定頁為 ${providerLabel(providerList, provider)} 設定 API 金鑰。`);
       return;
@@ -231,12 +231,13 @@ export const TranscriptionProvider = ({ children }) => {
       sourceLang: targetLang,
       multiSpeaker,
       serviceTier: processingMode === 'flex' ? 'flex' : null,
+      prompt: globalPrompt,
     };
 
     setIsProcessing(true);
 
     const runner = useBatchMode ? startBatch : startRegular;
-    const result = await runner({ provider, model, prompt, defaults, supports });
+    const result = await runner({ provider, model, promptTemplate: config?.prompt, defaults, supports });
 
     if (result?.skipped) {
       setIsProcessing(false);

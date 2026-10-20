@@ -10,6 +10,7 @@ import { useTranscription } from "@/context/TranscriptionContext"
 import { useModelManager } from "@/components/ModelManager"
 import { PROVIDER_LIST_FAILED } from "@/hooks/useProviderList"
 import { providerModels, providerPromptDisabledReason } from "@/utils/providerList"
+import { filePrompt } from "@/utils/transcribeRequest"
 import { api } from "@/services/api"
 import { DownloadOutlined } from "@ant-design/icons"
 import { downloadFormatsLong } from "@/constants/downloadFormats"
@@ -376,7 +377,8 @@ export default function TranscribePage() {
                             language: file.language || globalConfig.language,
                             isMultiSpeaker: file.isMultiSpeaker ?? globalConfig.isMultiSpeaker,
                             speakerCount: file.speakerCount ?? globalConfig.speakerCount,
-                            prompt: file.prompt ?? globalConfig.prompt,
+                            // 送出的也是這一個（utils/transcribeRequest.js）
+                            prompt: filePrompt(file, globalConfig.prompt),
                             includeTimestamps: file.includeTimestamps ?? globalConfig.includeTimestamps,
                             hasOverride: file.hasOverride || false,
                             status: file.status,
@@ -424,7 +426,7 @@ export default function TranscribePage() {
                         totalSizeMB={totalSizeMB}
                         model={model}
                         isSubmitting={isProcessing}
-                        onSubmit={handleStartTranscription}
+                        onSubmit={() => handleStartTranscription({ globalPrompt: globalConfig.prompt })}
                     />
                 </Card>
             )}
