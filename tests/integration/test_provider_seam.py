@@ -14,7 +14,7 @@ import textwrap
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import replace
 from pathlib import Path
 
@@ -270,6 +270,19 @@ def batch_rejection(api, file_fields: dict | None = None, **fields) -> str:
 
 def stored_segments(api, task_uuid: str) -> list[dict]:
     return api.get(f"/api/v1/transcripts/{task_uuid}").json()["segments"]
+
+
+def frozen_original(engine, task_uuid: str) -> str | None:
+    """任務紀錄裡凍結的原始轉錄副本（ADR-0007）。
+
+    下載不讀它，也還沒有讀它的介面（v0.2 的校正才會用到），只能從任務紀錄看。
+    """
+    from sqlalchemy.orm import sessionmaker
+
+    from app.repositories.history_repository import HistoryRepository
+
+    with sessionmaker(bind=engine)() as db:
+        return HistoryRepository().get_log_by_uuid(db, task_uuid).lrc_content
 
 
 def in_voiced_region(t: float) -> bool:
@@ -999,3 +1012,153 @@ class TestTransientError:
         record = api.get(f"/api/v1/history/{messages[-1]['task_uuid']}").json()
         assert record["status"] == TaskStatus.FAILED
         assert "503" in record["error_message"]
+
+
+# ─── 存片段：和完成一起寫，同一個任務再完成一次時不刪校正（#114） ───────────
+
+class Redelivers:
+    """Docker 模式的 Celery 重派：同一個任務（同一個 task id、同一份參數）再執行一次，
+    其餘照轉；用 ``run_mode.use`` 換上。行程內執行模式不會重派任務。"""
+
+    def __init__(self, inner):
+        self._inner = inner
+        self._params = {}
+
+    def submit_transcription(self, task_params_dict, queue):
+        task_id = self._inner.submit_transcription(task_params_dict, queue)
+        self._params[task_id] = task_params_dict
+        return task_id
+
+    def redeliver(self, task_id: str) -> None:
+        """同一個任務再執行一次，跑完才回來。"""
+        from app.tasks.transcribe_core import run_transcription
+
+        run_transcription(self._params[task_id], task_id)
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
+@pytest.fixture
+def redelivery(run_mode_spy):
+    mode = Redelivers(run_mode.get())
+    previous = run_mode.use(mode)
+    yield mode
+    run_mode.use(previous)
+
+
+def mark_segment(engine, task_uuid: str, seg_key: str, **fields) -> None:
+    """使用者在一個片段上校正或標確認狀態：校正介面是 v0.2，還沒有端點，直接寫進片段。"""
+    from sqlalchemy.orm import sessionmaker
+
+    from app.database.models import TranscriptSegment
+    from app.utils.identifiers import coerce_uuid
+
+    with sessionmaker(bind=engine)() as db:
+        marked = db.query(TranscriptSegment).filter(
+            TranscriptSegment.task_uuid == coerce_uuid(task_uuid),
+            TranscriptSegment.seg_key == seg_key,
+        ).update(fields)
+        db.commit()
+    assert marked == 1
+
+
+@contextmanager
+def segments_unwritable(engine):
+    """這段期間資料庫寫不進片段（例如磁碟剛好滿了），任務紀錄照樣寫得進去。"""
+    from sqlalchemy import text
+
+    with engine.begin() as conn:
+        conn.execute(text(
+            "CREATE TRIGGER segments_unwritable BEFORE INSERT ON transcript_segments "
+            "BEGIN SELECT RAISE(ABORT, 'database or disk is full'); END"))
+    try:
+        yield
+    finally:
+        with engine.begin() as conn:
+            conn.execute(text("DROP TRIGGER segments_unwritable"))
+
+
+# 第一次完成有四個片段；再完成一次時，模型聽成不一樣的文字，而且少了最後一段
+FIRST_RUN = [
+    (0.2, 1.5, 0, "おはよう。"),
+    (2.3, 3.6, 1, "こんにちは。"),
+    (4.4, 5.6, 0, "またね。"),
+    (6.0, 6.8, 1, "じゃあね。"),
+]
+SECOND_RUN = [
+    (0.2, 1.5, 0, "おはよ。"),
+    (2.3, 3.6, 1, "こんにちわ。"),
+    (4.4, 5.6, 0, "まったね。"),
+]
+
+
+class TestSegmentsAreSavedWithTheCompletion:
+    def test_task_whose_segments_cannot_be_stored_fails(self, api, fake, test_engine):
+        fake.script = [list(FIRST_RUN)]
+        with segments_unwritable(test_engine):
+            messages = transcribe(api, "uid-unwritable")
+
+        # 片段和「完成」一起寫進去：片段寫不進去，任務就沒有完成，不會只記警告就宣告完成
+        assert codes(messages)[-1] == TaskStatus.FAILED
+        task_uuid = messages[-1]["task_uuid"]
+        assert api.get(f"/api/v1/history/{task_uuid}").json()["status"] == TaskStatus.FAILED
+        assert stored_segments(api, task_uuid) == []
+
+
+class TestCompletingTheSameTaskAgain:
+    def test_without_touched_segments_the_new_result_replaces_all(self, api, fake, redelivery):
+        fake.script = [list(FIRST_RUN), list(SECOND_RUN)]
+        task_uuid = transcribe(api, "uid-again")[-1]["task_uuid"]
+
+        redelivery.redeliver(task_uuid)
+
+        # 和以前一樣整批換成這次的結果，這次沒有的那一段也拿掉
+        assert [s["text"] for s in stored_segments(api, task_uuid)] == [
+            "おはよ。", "こんにちわ。", "まったね。"]
+
+    def test_segments_the_user_touched_are_kept_others_take_the_new_result(
+            self, api, fake, redelivery, test_engine):
+        fake.script = [list(FIRST_RUN), list(SECOND_RUN)]
+        task_uuid = transcribe(api, "uid-again")[-1]["task_uuid"]
+        keys = [s["seg_key"] for s in stored_segments(api, task_uuid)]
+        # 使用者校正了第一段，把第三段標成已確認
+        mark_segment(test_engine, task_uuid, keys[0], text="おはようございます。", source="edited")
+        mark_segment(test_engine, task_uuid, keys[2], review_state="verified")
+        corrected, _, verified, _ = stored_segments(api, task_uuid)
+
+        redelivery.redeliver(task_uuid)
+
+        # 這兩段不刪、不覆寫；其他片段換成這次的結果，這次沒有的第四段拿掉
+        segments = stored_segments(api, task_uuid)
+        assert [s["text"] for s in segments] == ["おはようございます。", "こんにちわ。", "またね。"]
+        assert (segments[0], segments[2]) == (corrected, verified)
+
+    def test_frozen_original_is_this_runs_model_output_not_the_correction(
+            self, api, fake, redelivery, test_engine):
+        fake.script = [list(FIRST_RUN), list(SECOND_RUN)]
+        task_uuid = transcribe(api, "uid-again")[-1]["task_uuid"]
+        first_key = stored_segments(api, task_uuid)[0]["seg_key"]
+        mark_segment(test_engine, task_uuid, first_key, text="おはようございます。", source="edited")
+
+        redelivery.redeliver(task_uuid)
+
+        # 校正只在片段上；原始轉錄仍拿得到：凍結的副本是這次模型的輸出（ADR-0007）
+        original = frozen_original(test_engine, task_uuid)
+        assert all(text in original for text in ["おはよ。", "こんにちわ。", "まったね。"])
+        assert "おはようございます。" not in original
+
+    def test_failing_to_store_the_new_segments_leaves_the_old_ones_untouched(
+            self, api, fake, redelivery, test_engine):
+        fake.script = [list(FIRST_RUN), list(SECOND_RUN)]
+        task_uuid = transcribe(api, "uid-again")[-1]["task_uuid"]
+        first_key = stored_segments(api, task_uuid)[0]["seg_key"]
+        mark_segment(test_engine, task_uuid, first_key, text="おはようございます。", source="edited")
+        before = stored_segments(api, task_uuid)
+
+        with segments_unwritable(test_engine), pytest.raises(Exception, match="disk is full"):
+            redelivery.redeliver(task_uuid)
+
+        # 這次的片段寫不進去：任務記成失敗，使用者的校正和上一次的結果都原封不動
+        assert api.get(f"/api/v1/history/{task_uuid}").json()["status"] == TaskStatus.FAILED
+        assert stored_segments(api, task_uuid) == before
