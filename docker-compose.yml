@@ -3,7 +3,7 @@
 # 一鍵啟動全部服務（Postgres / Redis / FastAPI / Celery / Vite）。
 # 原始碼以 volume 掛載，改程式即生效：
 #   - backend-service : uvicorn --reload，改後端自動重啟
-#   - celery-worker   : 改完 celery 程式需手動  .\dc.bat restart celery-worker
+#   - celery-worker   : watchfiles 監看 backend/app 的 .py，改後自動重啟（執行中的任務會中斷）
 #   - frontend        : Vite dev server + HMR，改前端即時熱更新
 #
 # 用法：.\dc.bat            （等同 docker compose --env-file .env up -d --build）
@@ -63,7 +63,9 @@ services:
     build:
       context: ./backend
     container_name: ait-celery
-    command: celery -A app.celery.celery:celery_app worker --loglevel=info -P gevent -c 20
+    # watchfiles 隨 uvicorn[standard] 安裝。只看 app/ 底下的 .py：上傳檔、保留音檔與切割產物
+    # 也寫在 /app（temp_uploads/、audio_store/、vad_artifacts/），寫入時不能讓 worker 重啟
+    command: watchfiles --filter python "celery -A app.celery.celery:celery_app worker --loglevel=info -P gevent -c 20" app
     volumes:
       - ./backend:/app
     env_file:

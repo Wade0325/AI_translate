@@ -101,14 +101,14 @@ copy .env.example .env
 .\dc.bat                            # 第一次 / 改程式後：build + up -d
 .\dc.bat start                      # 只是要執行（不 build、秒起，最常用）
 .\dc.bat stop                       # 收工：停止但保留容器，下次 start 秒起
-.\dc.bat restart celery-worker      # 改 celery 程式後重啟
+.\dc.bat restart celery-worker      # 手動重啟單一服務（例如 worker 卡住或停掉時）
 .\dc.bat logs backend-service       # 看單一服務 log
 .\dc.bat rebuild                    # --no-cache 重新 build 並重啟
 .\dc.bat down                       # 停止並移除全部容器
 .\dc.bat help                       # 看全部用法
 ```
 
-程式碼以 volume 掛載：改後端（FastAPI `--reload`）與前端（Vite HMR）會自動熱更新；改 celery 需 `.\dc.bat restart celery-worker`。
+程式碼以 volume 掛載：改後端（FastAPI `--reload`）與前端（Vite HMR）會自動熱更新；改 `backend/app/` 底下的 `.py` 檔時，celery-worker 容器裡的 worker 也會自動重啟（watchfiles），執行中的任務會因此中斷。主機的 GPU worker（`local_worker.bat`）不會自動重啟，改了程式要關掉視窗重開。
 
 若想直接用原生 docker compose 指令：
 
