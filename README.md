@@ -247,7 +247,7 @@ export const modelOptions = {
 ### 執行測試
 
 ```powershell
-backend\.venv\Scripts\python.exe tools/check.py           # 依序跑 ruff → pytest → ESLint
+backend\.venv\Scripts\python.exe tools/check.py           # 依序跑 ruff → pytest → ESLint → vitest
 backend\.venv\Scripts\python.exe tools/check.py pytest    # 只跑指定的項目
 ```
 
@@ -257,7 +257,7 @@ clone 之後執行一次下面這行，讓 git 在每次 commit 前跑快的檢�
 git config core.hooksPath .githooks
 ```
 
-> `tools/check.py` 是唯一的檢查清單，CI 與 pre-commit 跑的也是它。Python 的檢查要先安裝 `backend/requirements-dev.txt`，ESLint 要先在 `frontend/` 執行 `npm ci`。`pytest.ini` 已設定 `pythonpath = backend`，測試可直接 `from app.api import ...` 匯入；測試自帶暫存的 SQLite 資料庫與 mock，不需 Postgres/Redis。
+> `tools/check.py` 是唯一的檢查清單，CI 與 pre-commit 跑的也是它。Python 的檢查要先安裝 `backend/requirements-dev.txt`，ESLint 與 vitest 要先在 `frontend/` 執行 `npm ci`。`pytest.ini` 已設定 `pythonpath = backend`，測試可直接 `from app.api import ...` 匯入；測試自帶暫存的 SQLite 資料庫與 mock，不需 Postgres/Redis。
 
 ### 建置 Windows 免安裝發布包
 
