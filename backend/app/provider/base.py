@@ -101,6 +101,9 @@ class Provider(Protocol):
     ) -> TranscriptionTaskResult:
         """轉錄一段音檔，回傳轉錄結果（片段）與用量，不附著 LRC 文字；時間軸是這段音檔本身。
 
+        這一段沒有任何內容（例如沒人說話）時可以回傳成功、沒有片段，``text`` 寫為什麼：
+        分段轉錄照樣合併其他段，整個任務都沒有片段時才由任務生命週期回報失敗。
+
         進度經 ``progress`` 回報。使用者取消時拋
         :class:`~app.exceptions.TranscriptionCancelledError`；暫時錯誤（429、503 之類）拋
         :class:`~app.exceptions.TransientError`，整個任務交給執行模式重試。

@@ -10,8 +10,10 @@ class TranscriptionTaskResult(BaseModel):
     success: bool = Field(..., description="轉錄是否成功")
     text: str = Field(
         "",
-        description="失敗時是給使用者看的原因。成功時是空的：轉錄結果就是 segments；"
-                    "只有批次的結果還放 Gemini 寫的 LRC 文字（#115 改掉）。",
+        description="給使用者看的說明：失敗時是原因；成功但沒有片段時是為什麼沒有（例如 Gemini "
+                    "的回應沒有任何帶時間戳的文字），整個任務都沒有片段時任務生命週期拿它回報失敗。"
+                    "有片段時是空的：轉錄結果就是 segments。只有批次的結果還放 Gemini 寫的 LRC "
+                    "文字（#115 改掉）。",
     )
     input_tokens: int = Field(0, description="輸入 token 數量")
     output_tokens: int = Field(0, description="輸出 token 數量")
@@ -22,7 +24,8 @@ class TranscriptionTaskResult(BaseModel):
     segments: List[Dict[str, Any]] = Field(
         default_factory=list,
         description="轉錄結果的片段：說話者編號、開始與結束時間、文字，本機另有逐字時間。"
-                    "Gemini 的片段只有開始時間，沒有說話者標記的行也沒有說話者編號。"
+                    "Gemini 的片段只有 Gemini 寫明結束的才有結束時間，沒有說話者標記的行也沒有"
+                    "說話者編號。"
                     "供應商回傳時的時間軸是送進去的那段音檔，分段轉錄負責平移與還原回原音檔；"
                     "四種輸出格式都從這裡產生。",
     )

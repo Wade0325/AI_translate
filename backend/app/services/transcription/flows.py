@@ -142,6 +142,14 @@ def shift_segments(
     return out
 
 
+def _why_no_segments(segments: List[Dict], results: List[TranscriptionTaskResult]) -> str:
+    """合併之後的 text：有片段時是空的；一段都沒有時，取第一個寫了原因的段的說明，
+    整個任務都沒有片段時由任務生命週期拿它回報失敗。"""
+    if segments:
+        return ""
+    return next((result.text for result in results if result.text), "")
+
+
 def order_segments(segments: List[Dict]) -> List[Dict]:
     """依時間排序並重編 seq；跨切段合併之後 seq 才會連續。"""
     ordered = sorted(segments, key=lambda s: s.get("start", 0.0))
@@ -254,14 +262,8 @@ class TranscriptionTask:
         # --- 時間戳重映射 ---
         if result.success and speech_segments:
             self.progress.report("校正時間軸...")
-            result = TranscriptionTaskResult(
-                success=True,
-                input_tokens=result.input_tokens,
-                output_tokens=result.output_tokens,
-                total_tokens=result.total_tokens,
-                service_tier_used=result.service_tier_used,
-                segments=remap_segments(result.segments, speech_segments),
-            )
+            result = result.model_copy(
+                update={"segments": remap_segments(result.segments, speech_segments)})
             logger.info("時間戳已重映射回原始時間軸")
 
         # 如果成功或檔案很短，直接返回結果
@@ -425,6 +427,7 @@ class TranscriptionTask:
                              + shift_segments(second.segments, split_point, prefix="b"))
         return TranscriptionTaskResult(
             success=True,
+            text=_why_no_segments(combined_segments, [first, second]),
             input_tokens=first.input_tokens + second.input_tokens,
             output_tokens=first.output_tokens + second.output_tokens,
             total_tokens=first.total_tokens + second.total_tokens,
@@ -457,25 +460,28 @@ class TranscriptionTask:
             )
 
         all_segments: List[Dict] = []
+        piece_results: List[TranscriptionTaskResult] = []
         total_input_tokens = 0
         total_output_tokens = 0
         total_tokens = 0
-        all_flex = True  # 所有片段皆用 flex 才回報 "flex"，只要有一段 fallback 就視為 standard
+        all_flex = True  # 每一段都用 flex 才回報 "flex"，只要有一段退回標準就算 standard
 
         for i, segment in enumerate(segments):
-            logger.info(f"轉錄片段 {i+1}/{len(segments)}: {segment}")
+            logger.info(f"轉錄第 {i+1}/{len(segments)} 段: {segment}")
 
-            # 遞迴轉錄每個片段（如果片段仍然太長，會再次分割）
+            # 遞迴轉錄每一段（還是太長時會再切）
             segment_result = self.transcribe_audio(segment.path)
 
             if not segment_result.success:
-                logger.error(f"片段 {i+1} 轉錄失敗")
+                reason = segment_result.text.strip().removeprefix("[[").removesuffix("]]")
+                logger.error(f"切段重試的第 {i+1} 段轉錄失敗: {reason}")
                 return TranscriptionTaskResult(
                     success=False,
-                    text=f"[[片段 {i+1} 轉錄失敗]]",
+                    text=f"[[切段重試的第 {i+1} 段轉錄失敗：{reason}]]",
                     total_tokens=total_tokens
                 )
 
+            piece_results.append(segment_result)
             all_segments.extend(shift_segments(
                 segment_result.segments, segment.start_time, prefix=f"s{i}"))
             total_input_tokens += segment_result.input_tokens
@@ -488,6 +494,7 @@ class TranscriptionTask:
 
         return TranscriptionTaskResult(
             success=True,
+            text=_why_no_segments(all_segments, piece_results),
             input_tokens=total_input_tokens,
             output_tokens=total_output_tokens,
             total_tokens=total_tokens,

@@ -103,7 +103,7 @@ class TranscriptSegment(Base):
     有片段的任務，四種輸出格式都從這裡產生（app.services.output_format），
     ``TranscriptionLog.lrc_content`` 只是凍結的原始轉錄副本；批次裡的任務目前還沒有片段
     （#115）。說話者分離給出的每一段各一列，可逐段更新、可標記、可回溯；Gemini 的片段是它
-    LRC 的一行，只有開始時間。
+    LRC 的一行，Gemini 寫明結束的才有結束時間。
 
     ``seg_key`` 是確定性的（切段序號 + 片段序號），所以任務被重派或重新轉錄時是
     覆寫同一列而不是產生重複資料。``text_alt`` 存另一個模型對同一段的轉錄

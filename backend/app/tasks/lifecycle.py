@@ -136,6 +136,10 @@ class TaskLifecycle:
             if not result.success:
                 # 失敗結果的 text 是錯誤描述而非 LRC，不能標成完成、產出空字幕
                 raise ValueError(f"轉錄失敗: {result.text}")
+            if not result.segments:
+                # 每一段都沒有內容（例如 Gemini 沒寫出任何帶時間戳的行）：沒有轉錄結果，一樣不能
+                # 標成完成；text 是供應商寫的原因
+                raise ValueError(f"轉錄失敗: {result.text or '沒有轉錄出任何內容'}")
             return self._complete(db, result)
         except Exception as e:
             # 失敗的寫入可能讓 session 停在 pending rollback，先復原才寫得進紀錄

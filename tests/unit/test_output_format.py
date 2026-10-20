@@ -3,9 +3,13 @@
 期望值是本機原本會產生的輸出：LRC 照本機的斷行規則（#110 之前由本機轉接器自己寫 LRC，搭配
 真的 Qwen3-ForcedAligner 斷詞）手算，SRT／VTT／TXT 是舊的 LRC 轉換器從那份 LRC 轉出的結果。
 逐字時間的 text 是對齊器的詞：標點被丟掉，漢字一字一詞，連續的假名、英數字是一詞。
-「本機的逐字時間都用得上」那一節用真的對齊器斷詞，確認本機存下來的逐字時間都對得上文字。
+「本機的逐字時間都用得上」那一節用真的對齊器斷詞，確認本機存下來的逐字時間都對得上文字；
+「和 #110 之前本機寫的 LRC 逐字相同」那一節比對隨機片段和存下來的舊輸出。
 """
 import importlib.util
+import json
+import random
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -223,6 +227,81 @@ class TestLocalWordTimingsAreUsed:
         result = subprocess.run([sys.executable, str(ALIGNER_PARITY)], capture_output=True,
                                 text=True, encoding="utf-8", errors="replace", timeout=120)
         assert result.returncode == 0, result.stdout + result.stderr
+
+
+# ─── 和 #110 之前本機寫的 LRC 逐字相同 ───────────────────────────────────────
+
+# #110 之前，本機轉接器自己寫 LRC（asr._entry_to_lines）。期望值是那份程式對下面產生器的 300 組
+# 隨機片段算出來、存成 fixture 的 LRC。產生器（字元、時間、亂數種子）一改，期望值就得用 git 歷史
+# 裡 #110 之前的 asr.py 整份重算
+LOCAL_LRC_BEFORE_110 = (Path(__file__).resolve().parents[1] / "fixtures" / "output_format"
+                        / "local_lrc_before_110.json")
+
+# 隨機片段的字元：漢字一字一詞；假名、英數字連在一起是一詞；斷行標點與這幾個符號不算詞，
+# 符號也不會讓詞斷開（「そう♡ね」是一詞）
+KANJI = "今日本当天気時程預算先定再談人来食待"
+LETTERS = ("おはよう", "ございます", "そう", "なの", "ラーメン", "ASMR", "2024", "ー")
+BREAK_MARKS = "。．！？!?…、，,"
+SYMBOLS = "「」♡～"
+# 對齊器的時間 80 毫秒一格；修正過順序的時間不一定在格上（37、113）
+GAPS_MS = (0, 0, 80, 160, 400, 1200, 4000, 9600, 37)
+LENGTHS_MS = (80, 160, 320, 640, 1600, 6000, 113)
+
+
+def aligner_words(text: str) -> list[str]:
+    """對齊器（不指定語言）在這組字元上斷出的詞；和本機一樣，先在斷行標點後補空白。"""
+    with_breaks = re.sub(f"([{BREAK_MARKS}])", r"\1 ", text)
+    kept = "".join(c for c in with_breaks if c not in BREAK_MARKS + SYMBOLS)
+    return re.findall(f"[{KANJI}]|[^{KANJI}\\s]+", kept)
+
+
+def random_entry(rng: random.Random) -> dict:
+    """本機轉錄出的一段：MOSS 的時間（兩位小數）與文字，加上對齊器給的段內相對時間。"""
+    text = ""
+    while not text:
+        pools = rng.choices([KANJI, LETTERS, BREAK_MARKS, SYMBOLS, " "],
+                            weights=[7, 6, 4, 1, 1], k=rng.randint(1, 30))
+        text = "".join(rng.choice(pool) for pool in pools).strip()
+    ms, timings = 0, []
+    for word in aligner_words(text):
+        ms += rng.choice(GAPS_MS)
+        start_ms = ms
+        ms += rng.choice(LENGTHS_MS)
+        timings.append({"text": word, "start_time": round(start_ms / 1000.0, 3),
+                        "end_time": round(ms / 1000.0, 3)})
+    start = round(rng.uniform(0, 5000), 2)
+    return {"start": start, "end": round(start + ms / 1000 + 0.5, 2),
+            "speaker": rng.randint(0, 2), "text": text, "text_alt": None,
+            # 強制對齊失敗的段沒有逐字時間
+            "words": timings if rng.random() > 0.1 else None}
+
+
+def random_cases() -> list[list[dict]]:
+    """300 組隨機片段，每組 1 到 4 段、依開始時間排序。"""
+    rng = random.Random(109)
+    return [sorted((random_entry(rng) for _ in range(rng.randint(1, 4))),
+                   key=lambda entry: entry["start"])
+            for _ in range(300)]
+
+
+def stored_segment(entry: dict) -> dict:
+    """本機轉接器存下來的片段：說話者編號寫成 S0，逐字時間是片段開頭加上對齊器的段內時間。"""
+    timings = [{"text": w["text"], "start": entry["start"] + w["start_time"],
+                "end": entry["start"] + w["end_time"]} for w in entry["words"] or []]
+    return {"start": entry["start"], "end": entry["end"], "speaker": f"S{entry['speaker']}",
+            "text": entry["text"], "words": timings or None}
+
+
+class TestSameLrcAsTheLocalProviderBefore110:
+    def test_random_segments_break_into_the_same_lines_at_the_same_times(self):
+        expected = json.loads(LOCAL_LRC_BEFORE_110.read_text(encoding="utf-8"))
+        actual = [formats(*map(stored_segment, entries)).lrc for entries in random_cases()]
+
+        assert len(actual) == len(expected)
+        different = [(i, want, got)
+                     for i, (want, got) in enumerate(zip(expected, actual, strict=True))
+                     if want != got]
+        assert not different, f"{len(different)} 組不同，第一組（序號, 期望, 實際）：{different[0]}"
 
 
 # ─── SRT／VTT／TXT ───────────────────────────────────────────────────────────
