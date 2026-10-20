@@ -22,7 +22,10 @@ export function formatDuration(seconds) {
   return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${ss}` : `${m}:${ss}`;
 }
 
-/** ISO/timestamp → zh-TW MM/DD HH:mm；解析失敗時原樣回傳。 */
+/**
+ * ISO/timestamp → zh-TW 的「MM/DD 上午/下午hh:mm」（12 小時制），例如 01/05 上午12:30、
+ * 10/20 下午01:05；解析失敗時原樣回傳。
+ */
 export function formatDateTime(dateStr) {
   if (!dateStr) return '';
   const d = new Date(dateStr);
@@ -40,18 +43,27 @@ export function formatDateTime(dateStr) {
  * Date → 本地日期字串 YYYY-MM-DD。
  * 後端 /history/usage 的 daily[].date 是伺服器本地日期（後端以 datetime.now() 寫入本地時間），
  * 前後端同機部署，所以用瀏覽器本地日期即可對齊；勿改用 toISOString()（那是 UTC）。
+ * 無效的日期（Invalid Date）回傳 null。
  */
 export function localDateKey(date) {
+  if (Number.isNaN(date.getTime())) return null;
   const y = date.getFullYear();
   const m = String(date.getMonth() + 1).padStart(2, '0');
   const d = String(date.getDate()).padStart(2, '0');
   return `${y}-${m}-${d}`;
 }
 
-/** 圖表 Y 軸 token 刻度：1.2M / 12k / 3.5k / 400。 */
+/**
+ * 圖表 Y 軸 token 刻度：1.2M / 12k / 3.5k / 400。
+ * 先四捨五入到要顯示的位數，再決定單位：9,999 進位成 10.0k 就顯示成 10k，
+ * 999,999 進位成 1000k 就顯示成 1.0M。
+ */
 export function formatTokensTick(v) {
-  if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(1)}M`;
-  if (v >= 10_000) return `${Math.round(v / 1000)}k`;
-  if (v >= 1_000) return `${(v / 1000).toFixed(1)}k`;
-  return String(v);
+  if (v < 1_000) return String(v);
+  const thousands = Math.round(v / 100) / 10; // 四捨五入到小數一位
+  if (thousands < 10) return `${thousands.toFixed(1)}k`;
+  const wholeThousands = Math.round(v / 1_000);
+  if (wholeThousands < 1_000) return `${wholeThousands}k`;
+  const millions = Math.round(v / 100_000) / 10; // 四捨五入到小數一位
+  return `${millions.toFixed(1)}M`;
 }

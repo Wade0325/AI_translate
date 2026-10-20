@@ -20,7 +20,7 @@ def test_default_mode_is_docker():
     assert s.app_mode == "docker"
     assert s.is_standalone is False
     assert s.sync_database_url.startswith("postgresql://")
-    # docker 模式維持 cwd 相對路徑（容器與 host worker 共享上傳檔的契約）
+    # Docker 模式維持 cwd 相對路徑（容器與 host worker 共享上傳檔的契約）
     assert s.temp_uploads_path == Path("temp_uploads")
     assert s.vad_artifacts_path == Path("vad_artifacts")
     assert s.static_path is None
@@ -47,7 +47,7 @@ def test_standalone_static_dir_override():
 
 
 def test_cors_origins_default_to_vite_dev_server():
-    """預設只放行開發用的 Vite dev server；standalone 同源不需要 CORS。"""
+    """預設只放行開發用的 Vite dev server；免安裝模式同源不需要 CORS。"""
     s = Settings(_env_file=None)
     assert s.cors_origins == ["http://localhost:5173", "http://127.0.0.1:5173"]
 

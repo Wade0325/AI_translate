@@ -114,6 +114,15 @@ describe('buildTaskSessions：任務頁把同一次開始的任務分成一組',
       ]);
       expect(groups(sessions)).toEqual([['task-1'], ['task-2']]);
     });
+
+    it('時間無法解析的任務當成沒有時間：自己一組，排在最後', () => {
+      const sessions = buildTaskSessions([], [
+        single({ task_uuid: 'task-1', request_timestamp: 'not a date' }),
+        single({ task_uuid: 'task-2', request_timestamp: '2026-10-20T10:00:00' }),
+        single({ task_uuid: 'task-3', request_timestamp: '2026-10-20T10:01:00' }),
+      ]);
+      expect(groups(sessions)).toEqual([['task-2', 'task-3'], ['task-1']]);
+    });
   });
 
   it('每組的開始時間取組裡最早的時間', () => {

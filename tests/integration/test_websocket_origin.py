@@ -69,7 +69,7 @@ class TestAcceptsTrustedOrigin:
 
     @pytest.mark.parametrize("path", WS_PATHS)
     def test_same_origin_standalone_launcher(self, client: TestClient, path):
-        """standalone：launcher 開 http://127.0.0.1:<port>，頁面與 WS 同源。"""
+        """免安裝模式：launcher 開 http://127.0.0.1:<port>，頁面與 WS 同源。"""
         _assert_accepted(client, path, {
             "Host": "127.0.0.1:53123",
             "Origin": "http://127.0.0.1:53123",
@@ -77,7 +77,7 @@ class TestAcceptsTrustedOrigin:
 
     @pytest.mark.parametrize("path", WS_PATHS)
     def test_allowlisted_origin_through_vite_proxy(self, client: TestClient, path):
-        """docker 開發模式：瀏覽器在 Vite dev server，Host 被 proxy 改成後端位址，
+        """Docker 模式開發時：瀏覽器在 Vite dev server，Host 被 proxy 改成後端位址，
         靠允許清單放行。"""
         origins = get_settings().cors_origins
         assert origins, "預設允許清單不應為空"

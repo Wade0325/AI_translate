@@ -23,6 +23,16 @@ export default defineConfig([
       // 以下兩條是 HMR／效能建議而非 bug：保留可見度，但不擋閘門
       'react-refresh/only-export-components': ['warn', { allowConstantExport: true }],
       'react-hooks/set-state-in-effect': 'warn',
+      // API 金鑰只存在後端；舊版曾把含明文金鑰的設定寫進 localStorage（#44）。
+      // 擋 localStorage.setItem，也擋經 window.、globalThis. 的寫法
+      'no-restricted-syntax': ['error', {
+        selector: "MemberExpression[property.name='setItem']"
+          + ":matches([object.name='localStorage'], [object.property.name='localStorage'])",
+        message: 'API 金鑰只存在後端，前端不用 localStorage.setItem 存資料：它以明文存在瀏覽器的'
+          + '設定檔裡，同源的任何腳本都讀得到，關掉瀏覽器也不會清掉。暫時的狀態放 React state；'
+          + '確定要存的不是金鑰時，在那一行上面加 '
+          + '`// eslint-disable-next-line no-restricted-syntax -- <存什麼、為什麼不是金鑰>`，列入允許清單。',
+      }],
     },
   },
   {

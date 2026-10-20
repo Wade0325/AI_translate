@@ -10,10 +10,13 @@ import {
     Loader2,
 } from "lucide-react"
 import { downloadFormats } from "@/constants/downloadFormats"
+import { TASK_STATUS } from "@/constants/taskStatus"
 import { formatDateTime, formatElapsed } from "@/utils/formatters"
 
 const { Text } = Typography
 
+// 批次紀錄本身的狀態，屬於批次的狀態機（#116），和任務狀態清單是兩回事（COMPLETED 只是同名）；
+// 取回後逐檔結果的 status 才是任務狀態，用 TASK_STATUS 比對
 const statusConfig = {
     POLLING: { icon: Loader2, color: "#d4a72d", label: "Gemini 處理中", spin: true },
     UPLOADING: { icon: Loader2, color: "#47b8d4", label: "上傳中", spin: true },
@@ -175,17 +178,17 @@ export default function TaskCard({
                                 borderBottom: idx < taskResult.files.length - 1 ? "1px solid #2a2a4820" : "none",
                             }}
                         >
-                            <FileAudio size={14} color={file.status === "COMPLETED" ? "#2dd4a8" : "#e05252"} />
+                            <FileAudio size={14} color={file.status === TASK_STATUS.COMPLETED ? "#2dd4a8" : "#e05252"} />
                             <Text ellipsis style={{ flex: 1, fontSize: 12, color: "#e8e8e8" }}>
                                 {file.original_filename}
                             </Text>
                             <Tag
-                                color={file.status === "COMPLETED" ? "green" : "red"}
+                                color={file.status === TASK_STATUS.COMPLETED ? "green" : "red"}
                                 style={{ fontSize: 11, margin: 0 }}
                             >
-                                {file.status === "COMPLETED" ? "完成" : "失敗"}
+                                {file.status === TASK_STATUS.COMPLETED ? "完成" : "失敗"}
                             </Tag>
-                            {file.status === "COMPLETED" && (
+                            {file.status === TASK_STATUS.COMPLETED && (
                                 <Dropdown
                                     menu={{
                                         items: downloadFormats.map(f => ({

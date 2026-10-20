@@ -115,7 +115,7 @@ def get_history(
     page: int = Query(1, ge=1, description="頁碼"),
     page_size: int = Query(20, ge=1, le=100, description="每頁筆數"),
     status: Optional[str] = Query(None, description="篩選狀態 (COMPLETED/FAILED/PROCESSING)"),
-    is_batch: Optional[bool] = Query(None, description="篩選是否為批次任務"),
+    is_batch: Optional[bool] = Query(None, description="篩選是否屬於批次"),
     keyword: Optional[str] = Query(None, description="搜尋關鍵字 (檔名/模型)"),
     db: Session = Depends(get_db),
 ):
