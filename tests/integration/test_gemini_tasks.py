@@ -25,12 +25,16 @@ SAMPLE_RATE = 16000
 TIMEOUT = 30
 
 
+VOICED = [(0, 2), (5, 7), (10, 12)]
+"""合成音檔的有聲段（秒）：有聲 2 秒、靜音 3 秒交錯，共 12 秒。"""
+
+
 def synthetic_audio() -> bytes:
-    """有聲 2 秒、靜音 3 秒交錯的合成 wav，共 12 秒。"""
-    samples = np.zeros(12 * SAMPLE_RATE, dtype=np.float32)
-    for start in (0, 5, 10):
-        t = np.arange(2 * SAMPLE_RATE) / SAMPLE_RATE
-        samples[start * SAMPLE_RATE:(start + 2) * SAMPLE_RATE] = 0.3 * np.sin(2 * np.pi * 440 * t)
+    """有聲段見 VOICED，其餘是靜音的合成 wav。"""
+    samples = np.zeros(VOICED[-1][1] * SAMPLE_RATE, dtype=np.float32)
+    for start, end in VOICED:
+        t = np.arange((end - start) * SAMPLE_RATE) / SAMPLE_RATE
+        samples[start * SAMPLE_RATE:end * SAMPLE_RATE] = 0.3 * np.sin(2 * np.pi * 440 * t)
     buffer = io.BytesIO()
     sf.write(buffer, samples, SAMPLE_RATE, format="WAV")
     return buffer.getvalue()
@@ -246,10 +250,6 @@ def test_single_file_is_retried_after_a_transient_error(api, in_process_run_mode
 
 # ─── 分段轉錄 ────────────────────────────────────────────────────────────────
 
-VOICED = [(0.0, 2.0), (5.0, 7.0), (10.0, 12.0)]
-"""合成音檔的有聲段（秒），見 synthetic_audio。"""
-
-
 @pytest.fixture
 def three_chunks(monkeypatch):
     """單次只能處理 3 秒：去靜音後約 7.2 秒的語音視圖在有聲段的交界切成三段，依序送進 Gemini，
@@ -282,7 +282,7 @@ def test_chunk_without_any_line_is_skipped_and_the_others_are_kept(
 
 
 def test_speaker_ids_are_consistent_across_chunks(api, in_process_run_mode, genai, three_chunks):
-    # 同一個 Gemini 標記在同一個任務的各段對到同一個說話者編號，依整個任務第一次出現的順序編號
+    # Gemini 的同一個說話者代號在同一個任務的各段對到同一個說話者編號，依整個任務第一次出現的順序
     genai.replies = [
         Reply(text="[00:00.50]Speaker 2: おはよう。"),
         Reply(text="[00:00.50]Speaker 1: こんにちは。\n[00:01.50]Speaker 2: はい。"),

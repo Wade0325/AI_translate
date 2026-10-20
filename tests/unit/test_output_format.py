@@ -255,31 +255,59 @@ def aligner_words(text: str) -> list[str]:
     return re.findall(f"[{KANJI}]|[^{KANJI}\\s]+", kept)
 
 
-def random_entry(rng: random.Random) -> dict:
+class Draws:
+    """亂數只用 ``random.Random.random()``：Python 只保證它在同一個種子下跨版本不變，
+    ``choice``、``choices``、``randint`` 的算法可能改，存下來的期望值就對不上了。"""
+
+    def __init__(self, seed: int):
+        self._rng = random.Random(seed)
+
+    def fraction(self) -> float:
+        return self._rng.random()
+
+    def below(self, n: int) -> int:
+        return int(self._rng.random() * n)
+
+    def between(self, low: int, high: int) -> int:
+        return low + self.below(high - low + 1)
+
+    def choice(self, items):
+        return items[self.below(len(items))]
+
+    def weighted(self, items, weights):
+        point = self._rng.random() * sum(weights)
+        for item, weight in zip(items, weights, strict=True):
+            if point < weight:
+                return item
+            point -= weight
+        return items[-1]
+
+
+def random_entry(draws: Draws) -> dict:
     """本機轉錄出的一段：MOSS 的時間（兩位小數）與文字，加上對齊器給的段內相對時間。"""
     text = ""
     while not text:
-        pools = rng.choices([KANJI, LETTERS, BREAK_MARKS, SYMBOLS, " "],
-                            weights=[7, 6, 4, 1, 1], k=rng.randint(1, 30))
-        text = "".join(rng.choice(pool) for pool in pools).strip()
+        pools = [draws.weighted([KANJI, LETTERS, BREAK_MARKS, SYMBOLS, " "], [7, 6, 4, 1, 1])
+                 for _ in range(draws.between(1, 30))]
+        text = "".join(draws.choice(pool) for pool in pools).strip()
     ms, timings = 0, []
     for word in aligner_words(text):
-        ms += rng.choice(GAPS_MS)
+        ms += draws.choice(GAPS_MS)
         start_ms = ms
-        ms += rng.choice(LENGTHS_MS)
+        ms += draws.choice(LENGTHS_MS)
         timings.append({"text": word, "start_time": round(start_ms / 1000.0, 3),
                         "end_time": round(ms / 1000.0, 3)})
-    start = round(rng.uniform(0, 5000), 2)
+    start = round(draws.fraction() * 5000, 2)
     return {"start": start, "end": round(start + ms / 1000 + 0.5, 2),
-            "speaker": rng.randint(0, 2), "text": text, "text_alt": None,
+            "speaker": draws.between(0, 2), "text": text, "text_alt": None,
             # 強制對齊失敗的段沒有逐字時間
-            "words": timings if rng.random() > 0.1 else None}
+            "words": timings if draws.fraction() > 0.1 else None}
 
 
 def random_cases() -> list[list[dict]]:
     """300 組隨機片段，每組 1 到 4 段、依開始時間排序。"""
-    rng = random.Random(109)
-    return [sorted((random_entry(rng) for _ in range(rng.randint(1, 4))),
+    draws = Draws(109)
+    return [sorted((random_entry(draws) for _ in range(draws.between(1, 4))),
                    key=lambda entry: entry["start"])
             for _ in range(300)]
 

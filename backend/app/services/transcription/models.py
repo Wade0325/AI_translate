@@ -24,7 +24,7 @@ class TranscriptionTaskResult(BaseModel):
     segments: List[Dict[str, Any]] = Field(
         default_factory=list,
         description="轉錄結果的片段：說話者編號、開始與結束時間、文字，本機另有逐字時間。"
-                    "Gemini 的片段只有 Gemini 寫明結束的才有結束時間，沒有說話者標記的行也沒有"
+                    "Gemini 的片段只有 Gemini 寫明結束的才有結束時間，沒有說話者代號的行也沒有"
                     "說話者編號。"
                     "供應商回傳時的時間軸是送進去的那段音檔，分段轉錄負責平移與還原回原音檔；"
                     "四種輸出格式都從這裡產生。",

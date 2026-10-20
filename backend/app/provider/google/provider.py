@@ -168,9 +168,9 @@ def _usage(response: Any) -> Tuple[int, int, int]:
 
 
 def _transcription_result(
-    response: Any, tier: str, speakers: Dict[str, str],
+    response: Any, tier: str, speaker_ids: _SpeakerIds,
 ) -> TranscriptionTaskResult:
-    """``speakers`` 是這個任務到目前為止的說話者標記 → 說話者編號，見 :func:`_segments_from_lrc`。"""
+    """``speaker_ids`` 是這個任務的說話者代號 → 說話者編號，見 :class:`_SpeakerIds`。"""
     input_tokens, output_tokens, total_tokens = _usage(response)
 
     # 被安全機制阻擋的回應沒有 candidates：回報失敗，不能把空結果當成功
@@ -192,9 +192,18 @@ def _transcription_result(
     logger.info(f"  Thoughts tokens: {(thoughts_tokens if thoughts_tokens is not None else 'N/A'):>8}")
     logger.info(f"  Total tokens: {total_tokens:>8,}")
 
-    segments = _segments_from_lrc(response.text or "", speakers)
-    # 沒有任何帶時間戳、有文字的行（例如這一段沒人說話）也算成功、沒有片段，不必切段重試；
-    # text 寫為什麼沒有，整個任務合併完都沒有片段時，任務用它回報失敗
+    segments = _segments_from_lrc(response.text or "", speaker_ids)
+    stopped = _abnormal_finish(response)
+    if not segments and stopped:
+        # 沒有內容又不是正常結束（例如 SAFETY、RECITATION）：不是那段沒人說話，當成功的話
+        # 那一段會默默不見
+        error_text = f"[[轉錄失敗：Gemini 沒有寫出任何內容就停止（{stopped}）]]"
+        logger.warning(error_text)
+        return TranscriptionTaskResult(
+            success=False, text=error_text, input_tokens=input_tokens,
+            output_tokens=output_tokens, total_tokens=total_tokens, service_tier_used=tier)
+    # 正常結束卻沒有任何帶時間戳、有文字的行（例如這一段沒人說話）：算成功、沒有片段，不必切段
+    # 重試；text 寫為什麼沒有，整個任務合併完都沒有片段時，任務用它回報失敗
     reason = "" if segments else "[[Gemini 的回應沒有任何帶時間戳的文字]]"
     if reason:
         logger.warning("Gemini 的回應沒有任何帶時間戳的文字，這一段沒有片段")
@@ -203,60 +212,85 @@ def _transcription_result(
         total_tokens=total_tokens, service_tier_used=tier, segments=segments)
 
 
+_NORMAL_FINISH = frozenset({"STOP", "FINISH_REASON_UNSPECIFIED"})
+
+
+def _abnormal_finish(response: Any) -> Optional[str]:
+    """回應不是正常結束時，停止的原因（例如 SAFETY）；正常結束或沒寫時是 None。"""
+    reason = getattr(response.candidates[0], "finish_reason", None)
+    if reason is None:
+        return None
+    name = getattr(reason, "name", None) or str(reason)
+    return None if name in _NORMAL_FINISH else name
+
+
 _LIST_MARKER_RE = re.compile(r"(?:[-+•・]|\*(?!\*))\s*")
 _TIMESTAMP_RE = re.compile(r"\[(?:(\d+):)?(\d+):(\d{2}(?:\.\d+)?)\]\s*")
 _BOLD = r"(?:\*\*|__)?"
-# 字母標記前面要有空白，「Speakers:」才不會被當成說話者「S」
-_SPEAKER_LABEL_RE = re.compile(
+# 字母代號前面要有空白，「Speakers:」才不會被當成說話者「S」
+_SPEAKER_CODE_RE = re.compile(
     rf"{_BOLD}\s*speaker(?:\s*([0-9０-９]+)|\s+([a-zａ-ｚ]))\s*{_BOLD}\s*[:：]\s*{_BOLD}\s*",
     re.IGNORECASE)
 
 
-def _speaker_key(label: str) -> str:
-    """說話者標記正規化：全形轉半形、不分大小寫、數字去掉前導零（「Speaker 01」就是「Speaker 1」）。"""
-    key = unicodedata.normalize("NFKC", label).upper()
+def _normalized_code(code: str) -> str:
+    """說話者代號正規化：全形轉半形、不分大小寫、數字去掉前導零（「Speaker 01」就是「Speaker 1」）。"""
+    key = unicodedata.normalize("NFKC", code).upper()
     return str(int(key)) if key.isdigit() else key
 
 
-def _parse_line(line: str) -> Optional[Tuple[float, Optional[str], str]]:
-    """一行 LRC → （開始秒數, 說話者標記, 文字）；沒有時間戳時是 None。
+class _SpeakerIds:
+    """Gemini 寫的說話者代號（「Speaker 1:」「Speaker A:」）→ 說話者編號，一個任務一份。
 
-    行首可以有空白或項目符號；說話者標記可以寫在時間戳前面或後面。
+    依代號在這個任務第一次送進來的順序編成 S0、S1……，同一個代號一律同一個編號，分段轉錄的
+    各段也一樣；切段重試時，被放棄的那次轉錄裡出現過的代號也算進順序。各段是 Gemini 分開標的，
+    同一個代號不保證是同一個人：跨段一致的說話者編號是 #93。
+    """
+
+    def __init__(self) -> None:
+        self._ids: Dict[str, str] = {}
+
+    def of(self, code: str) -> str:
+        return self._ids.setdefault(code, f"S{len(self._ids)}")
+
+
+def _parse_line(line: str) -> Optional[Tuple[float, Optional[str], str]]:
+    """一行 LRC → （開始秒數, 說話者代號, 文字）；沒有時間戳時是 None。
+
+    行首可以有空白或項目符號；說話者代號可以寫在時間戳前面或後面。
     """
     rest = line.strip()
     marker = _LIST_MARKER_RE.match(rest)
     if marker:
         rest = rest[marker.end():]
-    label = _SPEAKER_LABEL_RE.match(rest)
-    if label:
-        rest = rest[label.end():]
+    code = _SPEAKER_CODE_RE.match(rest)
+    if code:
+        rest = rest[code.end():]
     stamp = _TIMESTAMP_RE.match(rest)
     if not stamp:
         return None
     rest = rest[stamp.end():]
-    if not label:
-        label = _SPEAKER_LABEL_RE.match(rest)
-        if label:
-            rest = rest[label.end():]
+    if not code:
+        code = _SPEAKER_CODE_RE.match(rest)
+        if code:
+            rest = rest[code.end():]
     hours, minutes, seconds = stamp.groups()
     start = int(hours or 0) * 3600 + int(minutes) * 60 + float(seconds)
-    return start, _speaker_key(label.group(1) or label.group(2)) if label else None, rest.strip()
+    return start, _normalized_code(code.group(1) or code.group(2)) if code else None, rest.strip()
 
 
-def _segments_from_lrc(lrc_text: str, speakers: Dict[str, str]) -> List[Dict[str, Any]]:
+def _segments_from_lrc(lrc_text: str, speaker_ids: _SpeakerIds) -> List[Dict[str, Any]]:
     """把 Gemini 寫的 LRC 解析成片段，時間軸是送進去的這段音檔。
 
     - 只在換行斷開。行首可以有空白或項目符號；時間戳可以帶小時，小數兩位、三位或省略。
-    - 沒有時間戳的行丟掉；時間戳（和說話者標記）後面沒有文字的行也丟掉。log 只記丟掉幾行，
+    - 沒有時間戳的行丟掉；時間戳（和說話者代號）後面沒有文字的行也丟掉。log 只記丟掉幾行，
       不記內容。
-    - 說話者標記（「Speaker 1:」「Speaker A:」，寫在時間戳前面或後面都可以）轉成說話者編號：
-      依標記在整個任務第一次出現的順序編成 S0、S1……，同一個標記一律同一個編號，分段轉錄的
-      各段也一樣。標記不分大小寫、可以加 markdown 粗體，全形數字與前導零正規化（見
-      :func:`_speaker_key`）。``speakers`` 是到目前為止的對照，新出現的標記加進去。沒有標記的行
-      沒有說話者編號。
-    - 結束時間只用 Gemini 明寫的：照 LRC 的慣例，緊接在文字行後、只有時間戳的行是那一行的結束，
-      晚於它的開始才算。其他片段沒有結束時間，不拿下一行的開始來猜：猜的值會被字幕當成真實的
-      結束時間。
+    - 說話者代號（「Speaker 1:」「Speaker A:」，寫在時間戳前面或後面都可以）轉成說話者編號，
+      規則見 :class:`_SpeakerIds`。代號不分大小寫、可以加 markdown 粗體，全形數字與前導零
+      正規化（見 :func:`_normalized_code`）。沒有代號的行沒有說話者編號。
+    - 結束時間只用 Gemini 明寫的：照 LRC 的慣例，緊接在文字行後（中間只能有空行）、只有時間戳
+      的行是那一行的結束，晚於它的開始才算。其他片段沒有結束時間，不拿下一行的開始來猜：猜的值
+      會被字幕當成真實的結束時間。
     """
     segments: List[Dict[str, Any]] = []
     after_text = False  # 上一個帶時間戳的行是文字行
@@ -266,17 +300,20 @@ def _segments_from_lrc(lrc_text: str, speakers: Dict[str, str]) -> List[Dict[str
     for line in lrc_text.split("\n"):
         parsed = _parse_line(line)
         if parsed is None:
-            dropped += bool(line.strip())
+            if line.strip():
+                # 沒有時間戳的文字擋在中間：後面的只有時間戳的行就不是緊接在文字行後；空行不算
+                dropped += 1
+                after_text = False
             continue
-        start, label, text = parsed
+        start, code, text = parsed
         if not text:
-            if after_text and label is None and start > segments[-1]["start"]:
+            if after_text and code is None and start > segments[-1]["start"]:
                 segments[-1]["end"] = start
             else:
                 dropped += 1
             after_text = False
             continue
-        speaker = speakers.setdefault(label, f"S{len(speakers)}") if label else None
+        speaker = speaker_ids.of(code) if code else None
         segments.append({
             "seg_key": f"{len(segments):04d}", "seq": len(segments),
             "start": start, "end": None,
@@ -350,9 +387,9 @@ class GeminiProvider:
         self._model = model
         self._sleep = sleep
         self._uploaded: List[Any] = []
-        # 這個任務的說話者標記 → 說話者編號：一個轉接器只給一個任務用，分段轉錄的各段依時間
-        # 先後送進來，同一個標記在各段才會對到同一個編號
-        self._speakers: Dict[str, str] = {}
+        # 一個轉接器只給一個任務用：分段轉錄的各段依時間先後送進來，同一個說話者代號在各段才會
+        # 對到同一個說話者編號
+        self._speaker_ids = _SpeakerIds()
 
     @staticmethod
     def capabilities() -> Dict[str, ModelCapabilities]:
@@ -376,7 +413,7 @@ class GeminiProvider:
             sent_tier = "standard"
             response = self._generate_standard(request.model, contents)
         return _transcription_result(
-            response, _tier_used(response, request.service_tier, sent_tier), self._speakers)
+            response, _tier_used(response, request.service_tier, sent_tier), self._speaker_ids)
 
     def _generate_flex(self, model: str, contents: List[Any]) -> Any:
         """Flex：429／503 以指數退避重試；用完或遇到其他錯誤回 None，由呼叫端退回標準。"""

@@ -48,6 +48,8 @@ class Reply:
     output_tokens: int = 200
     served: Optional[str] = None
     """實際用到的處理模式；None 表示照請求的處理模式。"""
+    finish_reason: Optional[types.FinishReason] = None
+    """模型為什麼停止產生；例如 SAFETY、RECITATION 時文字常常是空的。None 表示沒有寫。"""
 
 
 @dataclass
@@ -74,8 +76,9 @@ def _response(outcome: Union[Reply, Blocked], tier: Optional[str]) -> types.Gene
             sdk_http_response=types.HttpResponse(headers=headers),
         )
     return types.GenerateContentResponse(
-        candidates=[types.Candidate(content=types.Content(
-            role="model", parts=[types.Part(text=outcome.text)]))],
+        candidates=[types.Candidate(
+            content=types.Content(role="model", parts=[types.Part(text=outcome.text)]),
+            finish_reason=outcome.finish_reason)],
         usage_metadata=types.GenerateContentResponseUsageMetadata(
             prompt_token_count=outcome.input_tokens,
             candidates_token_count=outcome.output_tokens,

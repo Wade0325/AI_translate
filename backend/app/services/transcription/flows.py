@@ -449,9 +449,9 @@ class TranscriptionTask:
         if wav_path != audio_path:
             self.local_cleanup_list.append(wav_path)
 
-        segments = self._split_audio_file(wav_path)
+        chunks = self._split_audio_file(wav_path)
 
-        if not segments or len(segments) < 2:
+        if not chunks or len(chunks) < 2:
             logger.error("無法分割音訊檔案")
             return TranscriptionTaskResult(
                 success=False,
@@ -460,41 +460,42 @@ class TranscriptionTask:
             )
 
         all_segments: List[Dict] = []
-        piece_results: List[TranscriptionTaskResult] = []
+        chunk_results: List[TranscriptionTaskResult] = []
         total_input_tokens = 0
         total_output_tokens = 0
         total_tokens = 0
         all_flex = True  # 每一段都用 flex 才回報 "flex"，只要有一段退回標準就算 standard
 
-        for i, segment in enumerate(segments):
-            logger.info(f"轉錄第 {i+1}/{len(segments)} 段: {segment}")
+        for i, chunk in enumerate(chunks):
+            logger.info(f"轉錄第 {i+1}/{len(chunks)} 段: {chunk}")
 
             # 遞迴轉錄每一段（還是太長時會再切）
-            segment_result = self.transcribe_audio(segment.path)
+            chunk_result = self.transcribe_audio(chunk.path)
 
-            if not segment_result.success:
-                reason = segment_result.text.strip().removeprefix("[[").removesuffix("]]")
-                logger.error(f"切段重試的第 {i+1} 段轉錄失敗: {reason}")
+            if not chunk_result.success:
+                # 內層的原因原樣接在後面（去掉外層的 [[ ]]），使用者看得到是哪一段、為什麼
+                reason = chunk_result.text.strip().removeprefix("[[").removesuffix("]]")
+                logger.error(f"分段轉錄的第 {i+1} 段失敗: {reason}")
                 return TranscriptionTaskResult(
                     success=False,
-                    text=f"[[切段重試的第 {i+1} 段轉錄失敗：{reason}]]",
+                    text=f"[[分段轉錄的第 {i+1} 段：{reason}]]",
                     total_tokens=total_tokens
                 )
 
-            piece_results.append(segment_result)
+            chunk_results.append(chunk_result)
             all_segments.extend(shift_segments(
-                segment_result.segments, segment.start_time, prefix=f"s{i}"))
-            total_input_tokens += segment_result.input_tokens
-            total_output_tokens += segment_result.output_tokens
-            total_tokens += segment_result.total_tokens
-            if segment_result.service_tier_used != "flex":
+                chunk_result.segments, chunk.start_time, prefix=f"s{i}"))
+            total_input_tokens += chunk_result.input_tokens
+            total_output_tokens += chunk_result.output_tokens
+            total_tokens += chunk_result.total_tokens
+            if chunk_result.service_tier_used != "flex":
                 all_flex = False
 
         final_tier = "flex" if (self.request.service_tier == "flex" and all_flex) else "standard"
 
         return TranscriptionTaskResult(
             success=True,
-            text=_why_no_segments(all_segments, piece_results),
+            text=_why_no_segments(all_segments, chunk_results),
             input_tokens=total_input_tokens,
             output_tokens=total_output_tokens,
             total_tokens=total_tokens,

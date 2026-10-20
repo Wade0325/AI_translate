@@ -4,6 +4,7 @@
 - SQLite 檔案資料庫（取代 PostgreSQL），引擎設定與免安裝模式相同
 - 輕量 lifespan（略過 Redis / VAD 初始化）
 """
+import logging
 import sys
 import pytest
 from contextlib import asynccontextmanager
@@ -66,7 +67,35 @@ def db_session(test_engine):
         session.close()
 
 
-# ─── 3. 執行模式 ─────────────────────────────────────────────────────────────
+# ─── 3. app 寫進 log 的訊息 ─────────────────────────────────────────────────
+
+class _Messages(logging.Handler):
+    def __init__(self):
+        super().__init__()
+        self.messages: list[str] = []
+
+    def emit(self, record):
+        self.messages.append(record.getMessage())
+
+
+@pytest.fixture
+def app_log():
+    """app 寫進 log 的訊息。
+
+    app 的 logger 不往上傳（app/utils/logger.py 設了 propagate=False），caplog 收不到，
+    所以在每個 app 的 logger 上直接接一個收集訊息的 handler。
+    """
+    handler = _Messages()
+    loggers = [logger for name, logger in logging.Logger.manager.loggerDict.items()
+               if name.startswith("app.") and isinstance(logger, logging.Logger)]
+    for logger in loggers:
+        logger.addHandler(handler)
+    yield handler.messages
+    for logger in loggers:
+        logger.removeHandler(handler)
+
+
+# ─── 4. 執行模式 ─────────────────────────────────────────────────────────────
 
 @pytest.fixture
 def in_process_run_mode():
@@ -82,7 +111,7 @@ def in_process_run_mode():
     mode.close()
 
 
-# ─── 4. FastAPI TestClient ───────────────────────────────────────────────────
+# ─── 5. FastAPI TestClient ───────────────────────────────────────────────────
 
 def _make_override_get_db(test_engine):
     """建立一個覆蓋 get_db 的 generator，綁定到測試 SQLite engine。"""

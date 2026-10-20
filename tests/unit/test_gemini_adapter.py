@@ -3,7 +3,6 @@
 只從轉接器的公開介面觀察：轉錄結果（片段）、用量、實際用到的處理模式、拋出的錯誤，
 以及遠端還留著哪些檔案（假用戶端的 ``stored``，等同去 Gemini 查）。
 """
-import logging
 from contextlib import suppress
 
 import pytest
@@ -102,11 +101,11 @@ class TestLrcIsParsedOnce:
     def test_lines_break_only_at_newlines(self, gemini, genai, audio):
         # 只在換行斷開、去掉行尾的 \r：行裡的 U+2028 之類的分隔字元留著，不會把一行拆成兩半、
         # 丟掉後半（輸出格式模組會把它收成空白）
-        genai.replies = [Reply(text="[00:01.00]おはよう ございます。\r\n[00:02.00]はい。\r\n")]
+        genai.replies = [Reply(text="[00:01.00]おはよう\u2028ございます。\r\n[00:02.00]はい。\r\n")]
 
         result = gemini.transcribe(audio, request(), PROGRESS)
 
-        assert transcript(result) == [(1.0, None, "おはよう ございます。"), (2.0, None, "はい。")]
+        assert transcript(result) == [(1.0, None, "おはよう\u2028ございます。"), (2.0, None, "はい。")]
 
     def test_timestamp_may_have_hours(self, gemini, genai, audio):
         genai.replies = [Reply(text="[00:00:01.500]おはよう。\n[01:02:03.25]またね。")]
@@ -120,8 +119,8 @@ class TestLrcIsParsedOnce:
         ("Speaker A:", "Speaker B:"),
         ("Speaker 1：", "Speaker 2："),
     ], ids=["numbers", "letters", "full-width-colon"])
-    def test_speaker_labels_become_speaker_ids(self, gemini, genai, audio, first, second):
-        # 同一個標記一律同一個說話者編號；沒有標記的行（例如聲響描述）沒有說話者編號
+    def test_speaker_codes_become_speaker_ids(self, gemini, genai, audio, first, second):
+        # Gemini 寫的同一個說話者代號一律同一個說話者編號；沒有代號的行（例如聲響描述）沒有編號
         genai.replies = [Reply(text=(
             f"[00:01.00]{first} おはよう。\n"
             f"[00:02.00]{second} こんにちは。\n"
@@ -134,8 +133,8 @@ class TestLrcIsParsedOnce:
             (1.0, "S0", "おはよう。"), (2.0, "S1", "こんにちは。"), (3.0, "S0", "またね。"),
             (4.0, None, "[拍手]")]
 
-    def test_label_before_the_timestamp_and_list_markers(self, gemini, genai, audio):
-        # 標記也可能寫在時間戳前面；行首可以有空白或項目符號
+    def test_code_before_the_timestamp_and_list_markers(self, gemini, genai, audio):
+        # 說話者代號也可能寫在時間戳前面；行首可以有空白或項目符號
         genai.replies = [Reply(text=(
             "Speaker 1: [00:01.00]おはよう。\n"
             "- [00:02.00]Speaker 2: こんにちは。\n"
@@ -148,7 +147,7 @@ class TestLrcIsParsedOnce:
             (1.0, "S0", "おはよう。"), (2.0, "S1", "こんにちは。"), (3.0, "S0", "またね。"),
             (4.0, None, "はい。")]
 
-    @pytest.mark.parametrize("label, variant", [
+    @pytest.mark.parametrize("code, variant", [
         ("Speaker 1:", "speaker 1:"),
         ("Speaker 1:", "SPEAKER 1:"),
         ("Speaker 1:", "**Speaker 1:**"),
@@ -158,10 +157,10 @@ class TestLrcIsParsedOnce:
         ("Speaker A:", "speaker a:"),
     ], ids=["lower", "upper", "bold", "bold-before-colon", "leading-zero", "full-width-digit",
             "lower-letter"])
-    def test_variants_of_a_label_are_the_same_speaker(self, gemini, genai, audio, label, variant):
-        # 不分大小寫、去掉 markdown 粗體，全形數字與前導零正規化
+    def test_variants_of_a_code_are_the_same_speaker(self, gemini, genai, audio, code, variant):
+        # 說話者代號不分大小寫、去掉 markdown 粗體，全形數字與前導零正規化
         genai.replies = [Reply(text=(
-            f"[00:01.00]{label} おはよう。\n"
+            f"[00:01.00]{code} おはよう。\n"
             "[00:02.00]Speaker 9: はい。\n"
             f"[00:03.00]{variant} またね。"))]
 
@@ -170,16 +169,16 @@ class TestLrcIsParsedOnce:
         assert transcript(result) == [
             (1.0, "S0", "おはよう。"), (2.0, "S1", "はい。"), (3.0, "S0", "またね。")]
 
-    def test_words_that_only_look_like_a_label_stay_in_the_text(self, gemini, genai, audio):
-        # 字母標記前面要有空白：「Speakers:」是文字，不是說話者「S」
+    def test_words_that_only_look_like_a_code_stay_in_the_text(self, gemini, genai, audio):
+        # 字母代號前面要有空白：「Speakers:」是文字，不是說話者「S」
         genai.replies = [Reply(text="[00:01.00]Speakers: are loud.\n[00:02.00]Speaker1: はい。")]
 
         result = gemini.transcribe(audio, request(), PROGRESS)
 
         assert transcript(result) == [(1.0, None, "Speakers: are loud."), (2.0, "S0", "はい。")]
 
-    def test_speaker_ids_follow_the_order_labels_first_appear(self, gemini, genai, audio):
-        # 不照標記上的數字：先開口的是 S0，和本機一樣；標記從 0 起算或跳號也不會缺號、撞號
+    def test_speaker_ids_follow_the_order_codes_first_appear(self, gemini, genai, audio):
+        # 不照代號上的數字：先開口的是 S0，和本機一樣；代號從 0 起算或跳號也不會缺號、撞號
         genai.replies = [Reply(text=(
             "[00:01.00]Speaker 2: おはよう。\n"
             "[00:02.00]Speaker 0: はい。\n"
@@ -191,7 +190,7 @@ class TestLrcIsParsedOnce:
             (1.0, "S0", "おはよう。"), (2.0, "S1", "はい。"), (3.0, "S0", "またね。")]
 
     def test_line_without_text_is_dropped(self, gemini, genai, audio):
-        # 只有時間戳或只有說話者標記的行不成為片段，也不佔說話者編號
+        # 只有時間戳或只有說話者代號的行不成為片段，也不佔說話者編號
         genai.replies = [Reply(text=(
             "[00:01.00]Speaker 1: おはよう。\n"
             "[00:02.00]\n"
@@ -203,23 +202,36 @@ class TestLrcIsParsedOnce:
         assert transcript(result) == [(1.0, "S0", "おはよう。"), (4.0, "S1", "はい。")]
 
     def test_end_time_only_from_a_timestamp_line_right_after_the_text(self, gemini, genai, audio):
-        # Gemini 明寫的結束時間：緊接在文字行後、只有時間戳的行，晚於那一行的開始才算。其他片段
-        # 沒有結束時間，不拿下一行的開始來猜：猜的值會被字幕當成真實的結束時間
+        # Gemini 明寫的結束時間：緊接在文字行後（中間只能有空行）、只有時間戳的行，晚於那一行的
+        # 開始才算。其他片段沒有結束時間，不拿下一行的開始來猜：猜的值會被字幕當成真實的結束時間
         genai.replies = [Reply(text=(
             "[00:01.00]おはよう。\n"
+            "\n"
             "[00:02.50]\n"
             "[00:03.00]\n"
             "[00:04.00]はい。\n"
             "[00:03.50]\n"
-            "[00:06.00]またね。"))]
+            "[00:06.00]またね。\n"
+            "（笑い）\n"
+            "[00:07.00]"))]
 
         result = gemini.transcribe(audio, request(), PROGRESS)
 
         assert [(s["text"], s["end"]) for s in result.segments] == [
             ("おはよう。", 2.5), ("はい。", None), ("またね。", None)]
 
+    @pytest.mark.parametrize("reason", [types.FinishReason.SAFETY, types.FinishReason.RECITATION])
+    def test_empty_response_that_stopped_early_is_a_failure(self, gemini, genai, audio, reason):
+        # 沒有內容但不是正常結束：不是「那段沒人說話」，當成功的話那一段會默默不見
+        genai.replies = [Reply(text="", finish_reason=reason)]
+
+        result = gemini.transcribe(audio, request(), PROGRESS)
+
+        assert not result.success
+        assert reason.name in result.text
+
     def test_dropped_lines_are_logged_as_a_count_without_their_content(
-            self, gemini, genai, audio, caplog):
+            self, gemini, genai, audio, app_log):
         # 排查只能靠使用者附上的日誌（ADR-0005）：記下丟掉幾行，不記轉錄的內容
         genai.replies = [Reply(text=(
             "```lrc\n"
@@ -229,16 +241,10 @@ class TestLrcIsParsedOnce:
             "[00:02.00]Speaker 3:\n"
             "```"))]
 
-        # app 的 logger 不往上傳，caplog 要直接掛在轉接器的 logger 上
-        adapter_log = logging.getLogger("app.provider.google.provider")
-        adapter_log.addHandler(caplog.handler)
-        try:
-            gemini.transcribe(audio, request(), PROGRESS)
-        finally:
-            adapter_log.removeHandler(caplog.handler)
+        gemini.transcribe(audio, request(), PROGRESS)
 
-        assert "丟掉 4 行" in caplog.text
-        assert "秘密の話" not in caplog.text
+        assert any("丟掉 4 行" in message for message in app_log)
+        assert not any("秘密の話" in message for message in app_log)
 
     @pytest.mark.parametrize("text", [
         "",

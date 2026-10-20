@@ -429,7 +429,9 @@ def transcribe_with_local_models(
         records = _build_segment_records(entries, source)
 
         return {
+            # 本機沒有內容時照舊算失敗（分段轉錄時整個任務失敗），只是寫明原因
             "success": bool(records),
+            "text": "" if records else "[[本機的模型沒有轉錄出任何內容]]",
             "input_tokens": 0,
             "output_tokens": 0,
             "total_tokens": 0,
