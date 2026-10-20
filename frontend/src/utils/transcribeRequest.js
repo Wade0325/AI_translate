@@ -9,8 +9,24 @@
 
 const blankToNull = (text) => (typeof text === 'string' && text.trim() ? text : null);
 
-/** 檔案卡顯示、也是送出的提示詞：每檔設定過（包括清成空白）就是它自己的，否則是全域的。 */
-export const filePrompt = (file, globalPrompt) => file.prompt ?? globalPrompt;
+/** 跟著全域提示詞：沒在每檔設定填過提示詞。填過（包括清成空白）就用自己的。 */
+export const followsGlobalPrompt = (file) => file.prompt === undefined;
+
+/** 每檔設定裡可以編輯的提示詞：跟著全域時是全域的，否則是自己的。 */
+export const filePrompt = (file, globalPrompt) =>
+  (followsGlobalPrompt(file) ? globalPrompt : file.prompt);
+
+/**
+ * 按 Start 時的全域預設（buildSinglePayload／buildBatchPayload 的 defaults）：檔案沒有每檔
+ * 設定的欄位用它補上。globalPrompt 是轉錄頁的全域提示詞；processingMode 是 'standard'、
+ * 'flex' 或 'batch'，只有 Flex 要帶 service_tier。
+ */
+export const requestDefaults = ({ language, multiSpeaker, processingMode, globalPrompt }) => ({
+  sourceLang: language,
+  multiSpeaker,
+  serviceTier: processingMode === 'flex' ? 'flex' : null,
+  prompt: globalPrompt,
+});
 
 /**
  * 把一個檔案的每檔設定改回全域預設（Apply to All、Reset to global）時要更新的欄位。
@@ -25,7 +41,8 @@ export const globalSettingsPatch = (globalConfig) => ({
   hasOverride: false,
 });
 
-function promptToSend(file, globalPrompt, promptTemplate, supports) {
+/** 這個檔案送出時帶的提示詞（規則見檔頭），檔案卡也照這個顯示；不帶時是 null。 */
+export function promptToSend(file, globalPrompt, promptTemplate, supports) {
   if (!supports.prompt) return null;
   return blankToNull(filePrompt(file, globalPrompt)) ?? blankToNull(promptTemplate);
 }

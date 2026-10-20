@@ -121,7 +121,6 @@ export function useUploadQueue({ fileList, setFileList, socketManager, onBatchSu
     const openTranscriptionSocket = (file, serverFilename) => {
       socketManager.openSocket(file.uid, WS_URLS.transcription(file.uid), {
         onOpen: () => {
-          updateFile(file.uid, { statusText: '連線成功，正在提交任務...', serverFilename });
           const payload = buildSinglePayload({
             serverFilename: serverFilename ?? file.name,
             file,
@@ -131,6 +130,12 @@ export function useUploadQueue({ fileList, setFileList, socketManager, onBatchSu
             defaults,
             supports,
             sessionId,
+          });
+          // sentPrompt：送出的提示詞，已送出的檔案卡照這個顯示
+          updateFile(file.uid, {
+            statusText: '連線成功，正在提交任務...',
+            serverFilename,
+            sentPrompt: payload.prompt,
           });
           socketManager.sendMessage(file.uid, payload);
         },
@@ -203,14 +208,6 @@ export function useUploadQueue({ fileList, setFileList, socketManager, onBatchSu
 
     socketManager.openSocket(batchId, WS_URLS.batch(batchId), {
       onOpen: () => {
-        setFileList((current) =>
-          current.map((f) =>
-            uploadedUidSet.has(f.uid)
-              ? { ...f, statusText: '批次任務已提交，等待處理...' }
-              : f
-          )
-        );
-
         const payload = buildBatchPayload({
           files: uploaded,
           provider,
@@ -220,6 +217,15 @@ export function useUploadQueue({ fileList, setFileList, socketManager, onBatchSu
           supports,
           sessionId,
         });
+        // sentPrompt：每個檔案送出的提示詞，已送出的檔案卡照這個顯示
+        const sentPrompts = new Map(payload.files.map((f) => [f.file_uid, f.prompt]));
+        setFileList((current) =>
+          current.map((f) =>
+            sentPrompts.has(f.uid)
+              ? { ...f, statusText: '批次任務已提交，等待處理...', sentPrompt: sentPrompts.get(f.uid) }
+              : f
+          )
+        );
         socketManager.sendMessage(batchId, payload);
       },
       onMessage: (event) => {

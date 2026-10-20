@@ -84,16 +84,22 @@ export function FileConfigCard({
     const submittable = ["waiting", "error", "cancelled"].includes(config.status)
     const notSentReason = (reason) => (submittable ? reason : null)
 
+    // 提示詞標籤顯示會送出的那一個，和請求用同一個函式算（包括提示詞範本）；已送出的檔案
+    // 顯示當初送出的。所選的模型不吃提示詞時，填了的值照 #108 劃掉並寫出原因
+    const shownPrompt = submittable ? config.promptToSend : config.sentPrompt
+    const typedPrompt = (config.prompt ?? "").trim().length > 0
+
     const tags = [
         { label: formatLang(config.language), icon: Languages, overridden: isOverridden("language") },
         { label: config.isMultiSpeaker ? `${config.speakerCount} speakers` : "Single", icon: Users, overridden: isOverridden("isMultiSpeaker") || isOverridden("speakerCount") },
         { label: config.includeTimestamps ? "Timestamps" : "No timestamps", icon: Clock, overridden: isOverridden("includeTimestamps") },
-        ...((config.prompt ?? "").length > 0
+        ...(shownPrompt || (typedPrompt && notSentReason(disabledReasons.prompt))
             ? [{
                 label: "Prompt",
                 icon: MessageSquareText,
-                overridden: config.prompt !== globalConfig.prompt,
-                notSentReason: notSentReason(disabledReasons.prompt),
+                overridden: !config.followsGlobalPrompt,
+                title: shownPrompt,
+                notSentReason: shownPrompt ? null : notSentReason(disabledReasons.prompt),
             }]
             : []),
         ...(config.original_text
@@ -165,26 +171,27 @@ export function FileConfigCard({
                         {tags.map((tag) => {
                             const highlighted = tag.overridden && !tag.notSentReason
                             return (
-                                <Tag
-                                    key={tag.label}
-                                    style={{
-                                        display: "inline-flex",
-                                        alignItems: "center",
-                                        gap: 4,
-                                        fontSize: 10,
-                                        padding: "1px 6px",
-                                        borderRadius: 4,
-                                        lineHeight: "16px",
-                                        margin: 0,
-                                        background: highlighted ? "rgba(45, 212, 168, 0.1)" : "rgba(42, 42, 72, 0.6)",
-                                        border: highlighted ? "1px solid rgba(45, 212, 168, 0.2)" : "1px solid transparent",
-                                        color: highlighted ? "#2dd4a8" : "#8888a8",
-                                        textDecoration: tag.notSentReason ? "line-through" : undefined,
-                                    }}
-                                >
-                                    <tag.icon size={10} />
-                                    {tag.label}
-                                </Tag>
+                                <Tooltip key={tag.label} title={tag.title}>
+                                    <Tag
+                                        style={{
+                                            display: "inline-flex",
+                                            alignItems: "center",
+                                            gap: 4,
+                                            fontSize: 10,
+                                            padding: "1px 6px",
+                                            borderRadius: 4,
+                                            lineHeight: "16px",
+                                            margin: 0,
+                                            background: highlighted ? "rgba(45, 212, 168, 0.1)" : "rgba(42, 42, 72, 0.6)",
+                                            border: highlighted ? "1px solid rgba(45, 212, 168, 0.2)" : "1px solid transparent",
+                                            color: highlighted ? "#2dd4a8" : "#8888a8",
+                                            textDecoration: tag.notSentReason ? "line-through" : undefined,
+                                        }}
+                                    >
+                                        <tag.icon size={10} />
+                                        {tag.label}
+                                    </Tag>
+                                </Tooltip>
                             )
                         })}
                         {isCompleted && config.tokens_used > 0 && (
@@ -400,7 +407,7 @@ export function FileConfigCard({
                         <Text style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, color: "#8888a8" }}>
                             <MessageSquareText size={12} />
                             Custom Prompt
-                            {config.prompt === globalConfig.prompt && (
+                            {config.followsGlobalPrompt && (
                                 <span style={{ fontSize: 10, color: "rgba(136, 136, 168, 0.5)", marginLeft: 4 }}>(same as global)</span>
                             )}
                         </Text>

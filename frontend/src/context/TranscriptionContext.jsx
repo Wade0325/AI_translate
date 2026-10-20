@@ -15,6 +15,7 @@ import {
   withModel,
   withProvider,
 } from '../utils/providerList';
+import { requestDefaults } from '../utils/transcribeRequest';
 import { api } from '../services/api';
 
 const TranscriptionContext = createContext(null);
@@ -57,6 +58,20 @@ export const TranscriptionProvider = ({ children }) => {
   const setModel = useCallback((nextModel) => {
     setSelection((current) => withModel(current, nextModel));
   }, []);
+
+  // 所選供應商的提示詞範本（設定頁）：檔案卡照送出時的規則顯示提示詞，要用到它。
+  // getProviderConfig 有快取，改了範本快取會換新，這裡跟著重讀
+  const [promptTemplate, setPromptTemplate] = useState(null);
+  useEffect(() => {
+    if (!provider) return undefined;
+    let active = true;
+    getProviderConfig(provider).then((config) => {
+      if (active) setPromptTemplate(config?.prompt ?? null);
+    });
+    return () => {
+      active = false;
+    };
+  }, [provider, getProviderConfig]);
 
   // 所選模型支援哪些輸入與處理方式；模型能力還沒載入時不限制，由後端把關
   const capabilities = findModelCapabilities(providerList, provider, model);
@@ -231,12 +246,7 @@ export const TranscriptionProvider = ({ children }) => {
       return;
     }
 
-    const defaults = {
-      sourceLang: targetLang,
-      multiSpeaker,
-      serviceTier: processingMode === 'flex' ? 'flex' : null,
-      prompt: globalPrompt,
-    };
+    const defaults = requestDefaults({ language: targetLang, multiSpeaker, processingMode, globalPrompt });
 
     setIsProcessing(true);
 
@@ -276,6 +286,8 @@ export const TranscriptionProvider = ({ children }) => {
     selectProvider,
     model,
     setModel,
+    supports,
+    promptTemplate,
     disabledReasons: reasons,
     isProcessing,
     processingMode,

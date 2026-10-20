@@ -10,7 +10,7 @@ import { useTranscription } from "@/context/TranscriptionContext"
 import { useModelManager } from "@/components/ModelManager"
 import { PROVIDER_LIST_FAILED } from "@/hooks/useProviderList"
 import { modelOptions, providerOptions, providerPromptDisabledReason } from "@/utils/providerList"
-import { filePrompt, globalSettingsPatch } from "@/utils/transcribeRequest"
+import { filePrompt, followsGlobalPrompt, globalSettingsPatch, promptToSend } from "@/utils/transcribeRequest"
 import { api } from "@/services/api"
 import { DownloadOutlined } from "@ant-design/icons"
 import { downloadFormatsLong } from "@/constants/downloadFormats"
@@ -43,6 +43,8 @@ export default function TranscribePage() {
         selectProvider,
         model,
         setModel,
+        supports,
+        promptTemplate,
         disabledReasons,
         isProcessing,
         processingMode,
@@ -378,8 +380,13 @@ export default function TranscribePage() {
                             language: file.language || globalConfig.language,
                             isMultiSpeaker: file.isMultiSpeaker ?? globalConfig.isMultiSpeaker,
                             speakerCount: file.speakerCount ?? globalConfig.speakerCount,
-                            // 送出的也是這一個（utils/transcribeRequest.js）
+                            // 每檔設定裡可以編輯的提示詞（跟著全域時是全域的）
                             prompt: filePrompt(file, globalConfig.prompt),
+                            followsGlobalPrompt: followsGlobalPrompt(file),
+                            // 檔案卡顯示的提示詞：還沒送出的照送出時的規則算（包括提示詞範本），
+                            // 已送出的顯示當初送出的（utils/transcribeRequest.js）
+                            promptToSend: promptToSend(file, globalConfig.prompt, promptTemplate, supports),
+                            sentPrompt: file.sentPrompt ?? null,
                             includeTimestamps: file.includeTimestamps ?? globalConfig.includeTimestamps,
                             hasOverride: file.hasOverride || false,
                             status: file.status,

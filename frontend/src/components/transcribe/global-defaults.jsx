@@ -180,7 +180,7 @@ export function GlobalDefaults({ config, onChange, onApplyAll, fileCount = 0, pr
                             <ReasonText reason={promptDisabledReason} />
                         ) : (
                             <Text style={{ fontSize: 10, color: '#8888a8' }}>
-                                This prompt will be sent with every transcription request
+                                Sent with every file that has no prompt of its own. Replaces the prompt template.
                             </Text>
                         )}
                         <Text style={{ fontSize: 10, color: '#8888a8', fontVariantNumeric: 'tabular-nums' }}>

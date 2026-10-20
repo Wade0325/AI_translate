@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { buildBatchPayload, buildSinglePayload, globalSettingsPatch } from './transcribeRequest.js';
+import {
+  buildBatchPayload,
+  buildSinglePayload,
+  followsGlobalPrompt,
+  globalSettingsPatch,
+  promptToSend,
+  requestDefaults,
+} from './transcribeRequest.js';
 
 // 轉錄頁按 Start 時的設定：全域預設（含全域提示詞）與所選的模型支援的輸入
 const DEFAULTS = { sourceLang: 'ja-JP', multiSpeaker: false, serviceTier: null, prompt: '人名照寫：佐藤' };
@@ -74,6 +81,40 @@ describe('批次送出的提示詞', () => {
   it('所選的模型不吃提示詞時，檔案與批次層級都不帶（#108）', () => {
     const payload = batch({ supports: { ...NO_PROMPT, batch: true } });
     expect([...payload.files.map((f) => f.prompt), payload.prompt]).toEqual([null, null, null]);
+  });
+});
+
+describe('檔案卡顯示的提示詞', () => {
+  it('跟著全域：沒在每檔設定填過提示詞；填過（包括清成空白）就不跟，套用全域設定後又跟', () => {
+    const globalConfig = { language: 'ja-JP', isMultiSpeaker: false, speakerCount: 2, includeTimestamps: true };
+    expect([
+      followsGlobalPrompt(untouched()),
+      followsGlobalPrompt(untouched({ prompt: '這個檔案是關西腔' })),
+      followsGlobalPrompt(untouched({ prompt: '' })),
+      followsGlobalPrompt({ ...untouched({ prompt: '' }), ...globalSettingsPatch(globalConfig) }),
+    ]).toEqual([true, false, false, true]);
+  });
+
+  it('和送出的一樣：全域與自己的都沒填時，顯示會送出的提示詞範本', () => {
+    expect(promptToSend(untouched(), '', '設定頁的範本', TAKES_PROMPT)).toBe('設定頁的範本');
+  });
+});
+
+describe('按 Start 時的全域預設', () => {
+  const onPage = { language: 'ja-JP', multiSpeaker: true, processingMode: 'standard', globalPrompt: '人名照寫：佐藤' };
+
+  it('全域提示詞會進到送出的內容：沒有自己提示詞的檔案帶它', () => {
+    const payload = buildSinglePayload({
+      serverFilename: 'srv-a.wav', file: untouched(), provider: 'google', model: 'gemini-2.5-flash',
+      promptTemplate: '設定頁的範本', defaults: requestDefaults(onPage), supports: TAKES_PROMPT, sessionId: 's1',
+    });
+    expect([payload.prompt, payload.source_lang, payload.multi_speaker])
+      .toEqual(['人名照寫：佐藤', 'ja-JP', true]);
+  });
+
+  it('只有 Flex 帶 service_tier', () => {
+    expect(['standard', 'flex', 'batch'].map((mode) => requestDefaults({ ...onPage, processingMode: mode }).serviceTier))
+      .toEqual([null, 'flex', null]);
   });
 });
 
