@@ -17,6 +17,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from pathlib import Path
+from urllib.parse import unquote
 
 import numpy as np
 import pytest
@@ -999,3 +1000,50 @@ class TestTransientError:
         record = api.get(f"/api/v1/history/{messages[-1]['task_uuid']}").json()
         assert record["status"] == TaskStatus.FAILED
         assert "503" in record["error_message"]
+
+
+# ─── 非 ASCII 檔名 ───────────────────────────────────────────────────────────
+
+def download_filename(response) -> str:
+    """Content-Disposition 標頭給的檔名；非 ASCII 的檔名照 RFC 5987 寫成 filename*=utf-8''…。"""
+    header = response.headers["content-disposition"]
+    match = re.search(r"filename\*=utf-8''([^;]+)", header, re.IGNORECASE)
+    assert match, header
+    return unquote(match.group(1))
+
+
+class TestNonAsciiFilename:
+    """日文、中文檔名的音檔走完上傳 → ffmpeg → 下載。
+
+    CI 的 Windows job 刻意不開 UTF-8 模式（PYTHONUTF8），和使用者的電腦一樣用系統碼頁：
+    檔名經過暫存路徑、ffmpeg 的參數與輸出、任務紀錄與下載，哪一處用了系統碼頁就會在那裡出錯。
+    """
+
+    @pytest.mark.parametrize("name, srt_name", [
+        ("おはようの録音.flac", "おはようの録音.srt"),
+        ("會議錄音.flac", "會議錄音.srt"),
+    ], ids=["ja", "zh"])
+    def test_goes_through_ffmpeg_and_downloads(self, api, fake, data_dir, name, srt_name):
+        # FLAC 先經 ffmpeg 轉成 wav 再去靜音；單次只能處理 5 秒，再由 ffmpeg 在靜音處切成兩段
+        fake.model_capabilities = replace(fake.model_capabilities, single_pass_seconds=5.0)
+        fake.script = [
+            [(0.2, 1.5, 0, "一つ目。")],
+            [(0.2, 0.9, 1, "二つ目。"), (1.2, 2.0, 0, "三つ目。")],
+        ]
+        done = transcribe(api, "uid-non-ascii", name)[-1]
+
+        assert done["status_code"] == TaskStatus.COMPLETED
+        assert len(fake.calls) == 2
+        assert done["result"]["audio_duration_seconds"] == pytest.approx(12.0, abs=0.1)
+        # 歷史紀錄列出原本的檔名，輸出格式照它命名下載
+        task_uuid = done["task_uuid"]
+        assert api.get(f"/api/v1/history/{task_uuid}").json()["original_filename"] == name
+        srt = api.get(f"/api/v1/history/{task_uuid}/download/srt")
+        assert srt.status_code == 200
+        assert all(text in srt.text for text in ["一つ目。", "二つ目。", "三つ目。"])
+        assert download_filename(srt) == srt_name
+        # 上傳的音檔原封不動保留下來、可以重播，轉檔與切段的暫存檔都清掉了
+        audio = api.get(f"/api/v1/transcripts/{task_uuid}/audio")
+        assert audio.content == synthetic_audio("FLAC")
+        assert download_filename(audio) == name
+        assert leftovers(data_dir) == []
