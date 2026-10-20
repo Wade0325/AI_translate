@@ -29,7 +29,7 @@ class TestAcceptsPlainFilename:
         assert resolve_upload_path(name, uploads) == uploads / name
 
     def test_keeps_relative_base_unresolved(self, uploads, monkeypatch):
-        """docker 模式 API 與主機 GPU worker 靠 cwd 相對路徑共享上傳檔，回傳值不能變成絕對路徑。"""
+        """Docker 模式的 API 與主機 GPU worker 靠 cwd 相對路徑共享上傳檔，回傳值不能變成絕對路徑。"""
         monkeypatch.chdir(uploads.parent)
         assert resolve_upload_path("a.mp3", Path("uploads")) == Path("uploads") / "a.mp3"
 

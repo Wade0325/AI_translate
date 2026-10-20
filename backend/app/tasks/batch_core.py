@@ -1,7 +1,7 @@
 """批次轉錄任務本體（純同步 Python，與任務框架無關）。
 
-docker 模式由 `app.celery.batch_task` 的 Celery shim 包裝執行，
-standalone 模式由 `app.runtime.in_process.InProcessRunMode.submit_batch / submit_recover`
+Docker 模式由 `app.celery.batch_task` 的 Celery shim 包裝執行，
+免安裝模式由 `app.runtime.in_process.InProcessRunMode.submit_batch / submit_recover`
 丟進行程內執行緒池；兩邊共用這裡的同一份流程。
 """
 
@@ -367,7 +367,7 @@ def run_batch(task_params_dict: dict, task_uuid: str):
              for i in ordered_indices],
             display_name=f"transcription-{batch_id[:8]}",
         )
-        logger.info(f"Gemini 批次任務已建立: {job_name}")
+        logger.info(f"Gemini 批次已建立: {job_name}")
 
         # === 持久化節點 2：Gemini batch job 建立後，存入 job_name 和檔案映射 ===
         file_mapping = {
@@ -406,7 +406,7 @@ def run_batch(task_params_dict: dict, task_uuid: str):
             time.sleep(poll_interval)
             poll_interval = min(poll_interval * 1.5, 60)
 
-        logger.info(f"批次任務結束，狀態: {batch_status.state}")
+        logger.info(f"批次結束，狀態: {batch_status.state}")
 
         if not batch_status.succeeded:
             error_msg = f"批次任務失敗，狀態: {batch_status.state}"
@@ -480,7 +480,7 @@ def run_batch(task_params_dict: dict, task_uuid: str):
                         "processing_time_seconds": time.time() - start_time,
                     })
         else:
-            logger.warning("批次任務成功但沒有回傳結果")
+            logger.warning("批次成功但沒有回傳結果")
 
         # --- 批次完成 ---
         # === 持久化節點 3a：任務完成，同時存入結果 ===
@@ -493,16 +493,16 @@ def run_batch(task_params_dict: dict, task_uuid: str):
         update_status(
             f"批次任務全部完成 (耗時 {elapsed:.1f} 秒)", status_code=TaskStatus.BATCH_COMPLETED
         )
-        logger.info(f"批次任務完成: {batch_id}, 耗時 {elapsed:.1f} 秒")
+        logger.info(f"批次完成: {batch_id}, 耗時 {elapsed:.1f} 秒")
 
     except GeminiTransientError as e:
         # 暫時性錯誤：交給外層重試機制，狀態保留 POLLING/UPLOADING 以便恢復
-        logger.warning(f"批次任務 {batch_id} hit transient Gemini error, will retry: {e}")
+        logger.warning(f"批次 {batch_id} 遇到 Gemini 的暫時性錯誤，將重試: {e}")
         update_status(f"暫時性錯誤，將重試: {e}", status_code=TaskStatus.PROCESSING)
         raise
     except Exception as e:
         error_message = traceback.format_exc()
-        logger.error(f"批次任務發生嚴重錯誤: {error_message}")
+        logger.error(f"批次發生嚴重錯誤: {error_message}")
 
         # === 持久化節點 3b：任務失敗 ===
         batch_repo.update_job(db, batch_id, {"status": "FAILED"})
