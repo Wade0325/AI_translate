@@ -390,7 +390,7 @@ class GeminiProvider:
 
     def submit_batch(self, requests: Sequence[Tuple[Any, str]], display_name: str) -> str:
         """用 Batch API 送出：費用是標準的一半，結果要輪詢。"""
-        logger.info(f"建立批次任務: {len(requests)} 個請求, 模型: {self._model}")
+        logger.info(f"建立批次: {len(requests)} 個請求, 模型: {self._model}")
         fingerprints = sorted({_prompt_fingerprint(prompt) for _, prompt in requests})
         logger.info(f"Batch prompt fingerprints ({len(fingerprints)} 種): {fingerprints}")
         try:
@@ -401,7 +401,7 @@ class GeminiProvider:
             )
         except Exception as e:
             raise _classify(e) from e
-        logger.info(f"批次任務已建立: {batch_job.name}")
+        logger.info(f"批次已建立: {batch_job.name}")
         return batch_job.name
 
     def poll_batch(self, name: str) -> BatchStatus:

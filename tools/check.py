@@ -1,4 +1,4 @@
-"""唯一的檢查清單：ruff → pytest → ESLint。
+"""唯一的檢查清單：ruff → pytest → ESLint → vitest。
 
 用法（在哪個目錄執行都可以，一律以 repo 根目錄為基準）：
 
@@ -9,8 +9,9 @@
 
 CI（.github/workflows/ci.yml）的 python 與 frontend job、git 的 pre-commit、README 與
 .vscode/tasks.json 都呼叫這支腳本，不另寫檢查指令。要加檢查（例如 #34 的型別檢查）
-就加在 checks()，各處會一起跑；快到可以每次 commit 都跑的，標上 pre_commit。它決定
-閘門跑哪些檢查，屬於單向門（docs/agents/merging.md）。
+就加在 checks()；CI 的 job 是照名稱挑要跑的項目，新項目的名稱也要加進對應 job 的指令，
+CI 才會跑。快到可以每次 commit 都跑的，標上 pre_commit。它決定閘門跑哪些檢查，屬於
+單向門（docs/agents/merging.md）。
 
 幾個刻意的取捨：
   * 只用標準函式庫：CI 的 frontend job 用 runner 內建的 Python 執行，不裝任何套件
@@ -36,6 +37,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 ESLINT_JS = Path("node_modules") / "eslint" / "bin" / "eslint.js"
+VITEST_JS = Path("node_modules") / "vitest" / "vitest.mjs"
 
 # 改到這些路徑要跑 Python 的檢查：任何 .py，或這些目錄底下的任何檔案（含
 # backend/requirements*.txt 與測試資料），或這些設定檔。改設定或依賴檔一樣可能讓
@@ -76,15 +78,15 @@ def _python_module_missing(module: str) -> Callable[[], str | None]:
     return missing
 
 
-def _eslint_missing(frontend: Path) -> Callable[[], str | None]:
+def _frontend_tool_missing(frontend: Path, entry: Path) -> Callable[[], str | None]:
     def missing() -> str | None:
         problems = []
         if shutil.which("node") is None:
             problems.append("找不到 node：先安裝 frontend/.nvmrc 指定的 Node 版本"
                             "（Windows：winget install OpenJS.NodeJS.LTS），再重開終端機或"
                             " Claude Code，讓 PATH 生效")
-        if not (frontend / ESLINT_JS).is_file():
-            problems.append(f"{frontend / ESLINT_JS} 不存在（這個 checkout 還沒裝前端依賴）："
+        if not (frontend / entry).is_file():
+            problems.append(f"{frontend / entry} 不存在（這個 checkout 還沒裝前端依賴）："
                             f'照 package-lock.json 安裝：npm ci --prefix "{frontend}"')
         return "\n".join(problems) or None
     return missing
@@ -101,7 +103,11 @@ def checks(root: Path = ROOT) -> tuple[Check, ...]:
         # 直接用 node 跑 eslint 的入口，避開 Windows 上 npx.cmd／npm.cmd 得經過 shell 的問題。
         # --quiet 只印 error：warning 不擋合併，react-hooks 的 warning 一則十幾行，會把 error 淹掉
         Check("eslint", ("node", str(ESLINT_JS), ".", "--quiet"), frontend,
-              _eslint_missing(frontend), _frontend_related, pre_commit=True),
+              _frontend_tool_missing(frontend, ESLINT_JS), _frontend_related, pre_commit=True),
+        # 前端的測試：和 pytest 一樣交給 CI，不在 commit 前跑。加 run 才會跑完就結束，
+        # 不加的話在終端機裡會進監看模式
+        Check("vitest", ("node", str(VITEST_JS), "run"), frontend,
+              _frontend_tool_missing(frontend, VITEST_JS), _frontend_related),
     )
 
 

@@ -1,6 +1,6 @@
 """執行模式的 Celery＋Redis 轉接器（Docker 模式）。
 
-- 派送與撤銷：Celery（docker 的 gevent worker、主機端 GPU worker 的 ``local_asr`` 佇列）
+- 派送與撤銷：Celery（Docker 模式的 gevent worker、主機端 GPU worker 的 ``local_asr`` 佇列）
 - 狀態廣播：Redis pub/sub 的 ``transcription_updates`` 頻道，訂閱端斷線時指數退避重連
 - 取消旗標與任務登記：存 Redis，橫跨 FastAPI、gevent worker 與主機端 solo GPU worker
   三個行程共享；TTL 大於 celery visibility_timeout

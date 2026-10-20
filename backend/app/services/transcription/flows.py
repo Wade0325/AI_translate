@@ -353,7 +353,7 @@ class TranscriptionTask:
         遞迴呼叫自身，直到每段低於 ``self.split_threshold_seconds``。
         silence_boundaries 是音檔內已知的靜音位置（秒）——去靜音後的純語音檔
         以有聲區間的交界為準；無資訊（跳過去靜音）時改用 VAD 服務在檔案上找。
-        注意：local provider 兩半的說話者編號各自獨立（前半的 S0 未必是
+        注意：本機的模型分段轉錄時，兩半的說話者編號各自獨立（前半的 S0 未必是
         後半的 S0），多人對話的長檔請自行斟酌（MOSS 的門檻較長，多數檔案不會切）。
         """
         threshold = self.split_threshold_seconds
@@ -400,7 +400,7 @@ class TranscriptionTask:
                 self.local_cleanup_list.append(p)
 
         logger.info(
-            f"長檔切半: {audio_path.name} ({duration:.0f}s) 於 {split_point:.2f}s 切割")
+            f"分段轉錄: {audio_path.name} ({duration:.0f}s) 於 {split_point:.2f}s 切開")
         self.progress.report(
             f"音檔較長（{duration / 60:.1f} 分鐘），於靜音處切半分段處理...")
 
