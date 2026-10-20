@@ -140,7 +140,12 @@ async def websocket_endpoint(
         try:
             await run_in_threadpool(start_transcription_task_sync, payload_str=payload_str, file_uid=file_uid)
         except (UnsafeUploadFilenameError, UnsupportedModelError) as e:
-            logger.warning(f"拒絕轉錄請求 (file_uid: {file_uid}): {e}")
+            if isinstance(e, UnsafeUploadFilenameError):
+                # 錯誤訊息是固定的：可疑的檔名要另外記，排查只能靠使用者附上的 log（ADR-0005）。
+                # 用 repr，換行等控制字元才不會在 log 裡偽造出別的行
+                logger.warning(f"拒絕不合法的上傳檔名 (file_uid: {file_uid}): {e.filename!r}")
+            else:
+                logger.warning(f"拒絕轉錄請求 (file_uid: {file_uid}): {e}")
             await websocket.send_json({
                 "client_id": file_uid,
                 "file_uid": file_uid,

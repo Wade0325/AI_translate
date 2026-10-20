@@ -2,7 +2,8 @@
 
 這裡不換供應商，只換掉 google-genai 用戶端：批次目前只有 Gemini 支援，遠端檔也只有
 Gemini 會留下。其他都走真的：TestClient、sqlite、行程內執行模式、WebSocket 狀態廣播、
-ffmpeg 與去靜音。測試只從外部觀察：狀態廣播、API 回應，以及遠端還留著哪些檔案。
+ffmpeg 與去靜音。測試只從外部觀察：狀態廣播、API 回應、送給 Gemini 的提示詞，以及
+遠端還留著哪些檔案。
 """
 import io
 import time
@@ -23,6 +24,10 @@ from tests.support.fake_genai import FakeGenaiClient, Reply, invalid_argument, u
 MODEL = "gemini-2.5-flash"
 SAMPLE_RATE = 16000
 TIMEOUT = 30
+
+# 使用者的提示詞照樣代入變數，裡面的 JSON 之類的大括號原樣送給 Gemini（#143）
+JSON_PROMPT = '請轉錄{source_lang}音檔，每一行寫成 {"speaker": "S0", "text": "…"}'
+JSON_PROMPT_SENT = '請轉錄日文音檔，每一行寫成 {"speaker": "S0", "text": "…"}'
 
 
 def synthetic_audio() -> bytes:
@@ -135,31 +140,40 @@ def api(test_engine, data_dir, task_db, in_process_run_mode, gemini):
 _reader = ThreadPoolExecutor(max_workers=2)
 
 
-def transcribe(api: TestClient, run_mode, name: str) -> list[dict]:
-    """上傳、送出單檔任務，收下所有廣播直到任務結束。file_uid 就是檔名。"""
+def transcribe(api: TestClient, run_mode, name: str, **fields) -> list[dict]:
+    """上傳、送出單檔任務，收下所有廣播直到任務結束。file_uid 就是檔名。
+
+    fields 是請求的其他欄位，例如提示詞。
+    """
     response = api.post("/api/v1/upload", files={"file": (name, synthetic_audio(), "audio/wav")})
     assert response.status_code == 200, response.text
 
     with api.websocket_connect(f"/api/v1/ws/{name}") as ws:
         ws.send_json({"filename": response.json()["filename"], "original_filename": name,
-                      "provider": "Google", "model": MODEL, "source_lang": "ja"})
+                      "provider": "Google", "model": MODEL, "source_lang": "ja", **fields})
         messages = receive_until(ws, TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED)
     # 結束的廣播之後任務還在收尾（刪遠端檔就在這裡），等它整個跑完
     wait_until(lambda: not run_mode.is_alive(messages[-1]["task_uuid"]))
     return messages
 
 
-def run_batch(api: TestClient, run_mode, batch_id: str, names: list[str]) -> list[dict]:
-    """上傳、送出批次，收下所有廣播直到批次結束。檔案的 file_uid 就是檔名。"""
+def run_batch(api: TestClient, run_mode, batch_id: str, names: list[str],
+              fields_per_file: dict[str, dict] | None = None, **fields) -> list[dict]:
+    """上傳、送出批次，收下所有廣播直到批次結束。檔案的 file_uid 就是檔名。
+
+    fields 是批次層級的其他欄位，fields_per_file 是個別檔案的欄位（以檔名為 key），
+    例如提示詞。
+    """
     files = []
     for name in names:
         response = api.post("/api/v1/upload", files={"file": (name, synthetic_audio(), "audio/wav")})
         assert response.status_code == 200, response.text
         files.append({"filename": response.json()["filename"], "original_filename": name,
-                      "file_uid": name})
+                      "file_uid": name, **(fields_per_file or {}).get(name, {})})
 
     with api.websocket_connect(f"/api/v1/batch/ws/{batch_id}") as ws:
-        ws.send_json({"files": files, "provider": "Google", "model": MODEL, "source_lang": "ja"})
+        ws.send_json({"files": files, "provider": "Google", "model": MODEL, "source_lang": "ja",
+                      **fields})
         messages = receive_until(ws, TaskStatus.BATCH_COMPLETED)
     # 結束的廣播之後批次還在收尾。等它整個跑完再查 API：
     # 測試的 sqlite 只有一條連線，和 worker 同時用會互相蓋掉交易
@@ -230,6 +244,16 @@ def test_single_file_is_retried_after_a_transient_error(api, in_process_run_mode
     assert genai.stored == {}  # 兩次執行上傳的遠端檔都刪掉了
 
 
+def test_single_file_prompt_with_braces_reaches_gemini_as_written(api, in_process_run_mode, genai):
+    genai.replies = [Reply(text="[00:01.00]おはよう。")]
+
+    end = transcribe(api, in_process_run_mode, "gemini-single-braces.wav",
+                     prompt=JSON_PROMPT, source_lang="ja-JP")[-1]
+
+    assert end["status_code"] == TaskStatus.COMPLETED
+    assert genai.prompts == [JSON_PROMPT_SENT]
+
+
 # ─── 批次 ────────────────────────────────────────────────────────────────────
 
 def test_every_file_completes_and_remote_files_are_deleted(api, in_process_run_mode, genai):
@@ -273,6 +297,20 @@ def test_a_failed_file_does_not_stop_the_others(api, in_process_run_mode, genai)
     failed = history(api, "gemini-bad.wav")
     assert failed["status"] == TaskStatus.FAILED
     assert "音檔無法解碼" in failed["error_message"]
+
+
+def test_prompts_with_braces_reach_gemini_as_written(api, in_process_run_mode, genai):
+    # 第一個檔案沿用批次的提示詞，第二個檔案有自己的提示詞（#143）
+    own_prompt = "這一檔有兩位說話者，分別標成 {A} 與 {B}"
+
+    messages = run_batch(api, in_process_run_mode, "batch-gemini-braces",
+                         ["gemini-braces-a.wav", "gemini-braces-b.wav"],
+                         fields_per_file={"gemini-braces-b.wav": {"prompt": own_prompt}},
+                         prompt=JSON_PROMPT, source_lang="ja-JP")
+
+    assert {uid: m["status_code"] for uid, m in final_status(messages).items()} == {
+        "gemini-braces-a.wav": TaskStatus.COMPLETED, "gemini-braces-b.wav": TaskStatus.COMPLETED}
+    assert genai.prompts == [JSON_PROMPT_SENT, own_prompt]
 
 
 @pytest.mark.parametrize("model_withdrawn", [False, True], ids=["model-offered", "model-withdrawn"])

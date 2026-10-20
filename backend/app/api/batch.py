@@ -186,7 +186,7 @@ def start_batch_task_sync(payload_str: str, batch_id: str) -> list[dict]:
         provider, _ = check_request(request_data.provider, request_data.model,
                                     prompt=all_prompts, batch=True)
     except UnsupportedModelError as e:
-        logger.warning(f"批次任務 {batch_id} 被拒: {e}")
+        logger.warning(f"批次 {batch_id} 被拒: {e}")
         return [{
             "client_id": batch_id,
             "file_uid": f.file_uid,
@@ -200,7 +200,7 @@ def start_batch_task_sync(payload_str: str, batch_id: str) -> list[dict]:
         try:
             temp_file_path = resolve_upload_path(f.filename, TEMP_UPLOADS_DIR)
         except UnsafeUploadFilenameError as e:
-            logger.warning(f"批次任務拒絕不合法的上傳檔名 (file_uid: {f.file_uid}): {f.filename!r}")
+            logger.warning(f"批次拒絕不合法的上傳檔名 (file_uid: {f.file_uid}): {f.filename!r}")
             rejected.append({
                 "client_id": batch_id,
                 "file_uid": f.file_uid,
@@ -209,7 +209,7 @@ def start_batch_task_sync(payload_str: str, batch_id: str) -> list[dict]:
             })
             continue
         if not temp_file_path.is_file():
-            logger.error(f"批次任務檔案不存在: {f.filename}")
+            logger.error(f"批次的檔案不存在: {f.filename!r}")
             continue
 
         file_items.append(BatchFileItemParams(
@@ -223,7 +223,7 @@ def start_batch_task_sync(payload_str: str, batch_id: str) -> list[dict]:
         ))
 
     if not file_items:
-        logger.error(f"批次任務 {batch_id} 沒有有效的檔案，取消任務")
+        logger.error(f"批次 {batch_id} 沒有有效的檔案，不派送")
         return rejected
 
     # 前端不再送明文金鑰：缺少或只帶遮罩值時改用資料庫裡的金鑰

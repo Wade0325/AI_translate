@@ -1,4 +1,4 @@
-"""批次轉錄 Celery 任務（docker 模式的入口 shim）。
+"""批次轉錄 Celery 任務（Docker 模式的入口 shim）。
 
 任務本體在 `app.tasks.batch_core`；此處僅保留 Celery 裝飾器與原任務名。
 """

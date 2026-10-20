@@ -7,6 +7,7 @@ import { downloadBlob, renameExtension } from "../utils/download"
 import TaskCard from "@/components/task/TaskCard"
 import SingleTaskRow from "@/components/task/SingleTaskRow"
 import TaskSessionDivider from "@/components/task/TaskSessionDivider"
+import { TASK_STATUS } from "@/constants/taskStatus"
 import {
     buildTaskSessions,
     isBatchProcessing,
@@ -59,7 +60,7 @@ export default function TaskPage() {
                 setTasks(prev => prev.map(t =>
                     t.batch_id === batchId ? { ...t, status: "RETRIEVED" } : t
                 ))
-                const completed = result.files.filter(f => f.status === "COMPLETED").length
+                const completed = result.files.filter(f => f.status === TASK_STATUS.COMPLETED).length
                 message.success(`已取回 ${completed} / ${result.files.length} 個檔案的結果`)
             } else {
                 message.info("此批次仍在處理中，請稍後再試")

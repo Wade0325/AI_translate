@@ -1,4 +1,4 @@
-"""standalone 模式 SPA 靜態檔服務測試：未知路徑退回 index.html。"""
+"""免安裝模式的 SPA 靜態檔服務測試：未知路徑退回 index.html。"""
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 

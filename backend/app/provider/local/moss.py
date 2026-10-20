@@ -5,7 +5,7 @@
 
 模型程式碼來自固定 commit 的 ``moss-transcribe-diarize`` 套件（不走
 ``trust_remote_code``），權重固定 HF revision（``weights.REPO_REVISIONS``）。
-torch / transformers 一律延遲匯入：只有主機 GPU worker 與 standalone 執行緒池會用到。
+torch / transformers 一律延遲匯入：只有主機 GPU worker 與免安裝模式的執行緒池會用到。
 
 Windows：torch 沒有 Flash SDPA，memory-efficient kernel 又不接受 ``enable_gqa``，
 transformers 5.x 在無遮罩時送 GQA → 退回 math kernel，prefill 顯存 O(L²)
