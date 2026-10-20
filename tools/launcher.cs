@@ -1,4 +1,4 @@
-// AI_Translate 免安裝啟動器（standalone 模式）。
+// AI_Translate 免安裝版的啟動器：以免安裝模式執行整套服務。
 //
 // 以 Windows 內建 csc 編譯（.NET Framework 4.x，各 Windows 10/11 皆預裝）：
 //   C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe /nologo /optimize
@@ -7,7 +7,7 @@
 //
 // 職責：
 //   1. 首次啟動時以隨包 uv.exe 佈建 Python 依賴（含 torch，約 3.5 GB 下載）
-//   2. 設定 standalone 環境變數 → 以隨包 Python 啟動 uvicorn
+//   2. 設定免安裝模式的環境變數 → 以隨包 Python 啟動 uvicorn
 //   3. 探活 /api/v1/health 後開啟預設瀏覽器
 //   4. 以 Job Object 綁定子行程：關閉視窗（或啟動器被殺）時 uvicorn 一併結束
 

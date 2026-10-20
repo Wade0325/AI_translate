@@ -1,5 +1,5 @@
 /**
- * 將 Task 頁的批次任務與單檔任務依 session_id 分組（同一次 Start = 同一組）。
+ * 將 Task 頁的批次與單檔任務依 session_id 分組（同一次 Start = 同一組）。
  */
 
 import { resolveSessionIdFromStorage } from './transcribeSessions'
