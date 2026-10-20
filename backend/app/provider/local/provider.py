@@ -15,7 +15,13 @@ from pathlib import Path
 from typing import Dict
 
 from app.core.config import get_settings
-from app.provider.base import LOCAL_QUEUE, ModelCapabilities, ProviderInfo, TranscribeRequest
+from app.provider.base import (
+    LOCAL_QUEUE,
+    ModelCapabilities,
+    ProgressAndCancel,
+    ProviderInfo,
+    TranscribeRequest,
+)
 from app.provider.local import weights
 from app.services.transcription.models import TranscriptionTaskResult
 
@@ -79,13 +85,14 @@ class LocalProvider:
                                single_pass_seconds=_single_pass_seconds_on_this_gpu(model))
                 for model, capabilities in _declared_capabilities().items()}
 
-    def transcribe(self, audio_path: Path, request: TranscribeRequest) -> TranscriptionTaskResult:
+    def transcribe(
+        self, audio_path: Path, request: TranscribeRequest, progress: ProgressAndCancel,
+    ) -> TranscriptionTaskResult:
         # 延遲 import：見模組說明
         from app.provider.local.asr import transcribe_with_local_models
 
         return TranscriptionTaskResult.model_validate(transcribe_with_local_models(
-            audio_path, request.source_lang, request.status_callback,
-            cancel_check=request.cancel_check, model=request.model))
+            audio_path, request.source_lang, progress, model=request.model))
 
     def release(self) -> None:
         # 模型與暫存 wav 在每次轉錄結束時就已釋放

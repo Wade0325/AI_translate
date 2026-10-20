@@ -1,16 +1,14 @@
 """保留音檔：成功給校正介面重播，失敗／取消留給再開任務與診斷。
 
-重點是重試路徑：上一輪的 finally 已把檔案搬離 temp_uploads，
-``resolve_input_path`` 沒有 fallback 的話，重試必定以「檔案不存在」收場。
+暫時錯誤重試時從保留區找回輸入音檔，這條路徑透過 API 測試
+（tests/integration/test_provider_seam.py 的暫時錯誤）。
 """
 import os
 import time
-import uuid
 
 import pytest
 
 from app.services import audio_store
-from app.tasks.transcribe_core import resolve_input_path
 
 TASK_UUID = "3f2a1b4c-0000-4000-8000-000000000001"
 
@@ -99,25 +97,6 @@ class TestRetainSourceGuard:
         assert audio_store.retain(tmp_path / name, TASK_UUID) == name
         assert (tmp_path / name).read_bytes() == b"audio-bytes"
         assert warnings == []
-
-
-class TestResolveInputPath:
-    def test_prefers_existing_upload(self, store, upload):
-        assert resolve_input_path(str(upload), TASK_UUID) == upload
-
-    def test_falls_back_to_retained_file(self, store, upload, tmp_path):
-        name = audio_store.retain(upload, TASK_UUID)
-        # 重試時 file_path 仍指向已被搬走的 temp_uploads 路徑
-        assert resolve_input_path(str(upload), TASK_UUID) == tmp_path / name
-
-    def test_returns_original_when_nothing_found(self, store, upload):
-        upload.unlink()
-        assert resolve_input_path(str(upload), TASK_UUID) == upload
-
-    def test_other_task_uuid_does_not_match(self, store, upload):
-        audio_store.retain(upload, TASK_UUID)
-        other = str(uuid.uuid4())
-        assert resolve_input_path(str(upload), other) == upload
 
 
 class TestResolveAndDelete:

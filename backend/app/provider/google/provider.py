@@ -28,6 +28,7 @@ from app.provider.base import (
     DEFAULT_QUEUE,
     BatchStatus,
     ModelCapabilities,
+    ProgressAndCancel,
     ProviderInfo,
     TranscribeRequest,
 )
@@ -261,11 +262,13 @@ class GeminiProvider:
     def capabilities() -> Dict[str, ModelCapabilities]:
         return {model: _capabilities() for model in MODELS}
 
-    def transcribe(self, audio_path: Path, request: TranscribeRequest) -> TranscriptionTaskResult:
-        request.notify("上傳檔案至AI模型...")
+    def transcribe(
+        self, audio_path: Path, request: TranscribeRequest, progress: ProgressAndCancel,
+    ) -> TranscriptionTaskResult:
+        progress.report("上傳檔案至AI模型...")
         gemini_file = self.upload(audio_path)
 
-        request.notify("AI模型處理中...")
+        progress.report("AI模型處理中...")
         logger.info(f"正在使用 {request.model} 進行轉錄... "
                     f"(requested service_tier={request.service_tier or 'standard'})")
         logger.info(f"Prompt fingerprint: {_prompt_fingerprint(request.prompt)}")
