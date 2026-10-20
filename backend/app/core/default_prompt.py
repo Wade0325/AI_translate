@@ -6,8 +6,12 @@
   {speaker_instruction}   — 多人模式指令（可為空）
   {translate_instruction} — 翻譯指令（可為空）
 
+使用者的提示詞也當成模板代入這三個變數；其他大括號（例如 JSON）照寫的送出，見 _fill。
+
 修改此檔案即可同步影響前後端所有行為。
 """
+
+import re
 
 # 語言代碼 → 顯示名稱對照表
 LANG_MAP = {
@@ -48,7 +52,7 @@ def build_prompt(
         source_lang:   音訊語言代碼 (如 "ja-JP")
         target_lang:   翻譯目標語言代碼 (如 "zh-TW")，None 表示不翻譯
         multi_speaker: 是否為多人對話模式
-        template:      自訂 Prompt 模板（來自 DB），None 時使用 DEFAULT_PROMPT_TEMPLATE
+        template:      使用者的提示詞（全域或每檔），當成模板代入；None 時使用 DEFAULT_PROMPT_TEMPLATE
     """
     base_template = template if template is not None else DEFAULT_PROMPT_TEMPLATE
 
@@ -66,8 +70,27 @@ def build_prompt(
     else:
         translate_instruction = ""
 
-    return base_template.format(
-        source_lang=source_name,
-        speaker_instruction=speaker_instruction,
-        translate_instruction=translate_instruction,
-    ).rstrip("\n")
+    return _fill(base_template, {
+        "source_lang": source_name,
+        "speaker_instruction": speaker_instruction,
+        "translate_instruction": translate_instruction,
+    }).rstrip("\n")
+
+
+def _fill(template: str, values: dict[str, str]) -> str:
+    """把模板裡的變數換成值。
+
+    str.format 代入得了的模板照舊由它代入（``{{``、``}}`` 收成單一大括號），以前能用的
+    提示詞送出的字串逐字不變。
+
+    代入不了的模板（使用者寫了 JSON、單獨的大括號或不認得的 ``{名稱}``，以前會讓任務
+    失敗）只把寫成 ``{名稱}`` 的已知變數換成值，其他字元照寫的送出（#143）。這時
+    ``{{``、``}}`` 不收成單一大括號，巢狀 JSON 結尾的 ``}}`` 才不會被改掉；但它們仍算
+    跳脫，``{{source_lang}}`` 不會被代入。
+    """
+    try:
+        return template.format(**values)
+    except (KeyError, IndexError, ValueError, AttributeError, TypeError):
+        # {{、}} 先比對到就照寫的保留，裡面的名稱不會被當成變數；不認得的 {名稱} 也照寫的保留
+        return re.sub(r"\{\{|\}\}|\{(\w+)\}",
+                      lambda m: values.get(m.group(1), m.group(0)), template)
