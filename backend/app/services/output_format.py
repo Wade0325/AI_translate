@@ -2,20 +2,26 @@
 
 資料來源：
 
-* 有片段的任務從片段產生，轉錄結果只有片段這一份。
-* 沒有片段的舊任務（片段上線前的任務、批次裡的任務）退回解析存下來的 LRC，內容和以前相同。
+* 有片段的任務從片段產生。
+* 沒有片段的任務（片段上線前的任務、Gemini 的任務、批次裡的任務）退回解析存下來的 LRC，
+  內容和以前相同。
 * 存下來的 LRC 是凍結的原始轉錄副本（ADR-0007），有片段時下載不讀它。
 
 本機任務從片段產生的 LRC，和本機轉接器寫出的 LRC 逐字相同：同樣的斷行（見
-:func:`_segment_lines`）、同樣的時間戳。沒去靜音也沒切段的任務，存下來的副本就是那一份。
-去靜音或切段過的任務，副本另外經過分段轉錄對 LRC 文字做的時間處理（#110 拿掉），和這裡會有
-三種差異，都是那段處理造成的，這裡的時間比較準：
+:func:`_segment_lines`）、同樣的時間戳；唯一刻意不同的是片段文字裡的換行收成空白（見
+:func:`_one_line`）。沒去靜音也沒切段的任務，存下來的副本就是本機寫出的那一份。去靜音或切段過
+的任務，副本另外經過分段轉錄對 LRC 文字做的時間處理（#110 拿掉），和這裡還有這些差異：
 
 * 時間戳差 0.01 秒：去靜音的時間還原把秒數捨去到 0.01，切段的後段平移時又四捨五入一次。
-  去靜音的任務很常見，約一半的行。
-* 一行的第一個詞若在被剪掉的靜音前 0.005 秒內開始，副本先四捨五入才還原時間，時間會跳到
-  那段靜音之後。
-* 一句中間剪掉的靜音，這裡會算進 12 秒的長度，本機當時沒算；長度在 12 秒上下的句子斷行可能不同。
+  去靜音的任務約一半的行。
+* 在讀點多斷一行：一句中間有讀點、又有被剪掉的靜音時，這裡量的是原音檔時間軸上的長度，
+  靜音讓它超過 12 秒就在讀點斷開；本機量的是剪掉之後的長度。和句子實際講多久無關。
+* 有聲段交界的整段跳動：行開頭落在交界時，時間可能跳過一整段被剪掉的靜音，往前往後都會。
+  副本先四捨五入才還原時間，交界前 0.005 秒內就跳到靜音之後；這裡的時間也可能因為浮點誤差
+  落在交界的另一邊。交界的修正交給 #111。
+* 換行後的文字：副本還原時間時只留有時間戳的行，換行後的文字被丟掉；這裡收成空白留著。
+
+除了交界的跳動，這些差異都出在舊的處理，這裡的結果比較準。
 
 版本目前只有原始轉錄，校正後版本留給 v0.2。
 
@@ -75,8 +81,8 @@ def for_task(
 ) -> Optional[str]:
     """給定任務、輸出格式與版本，回傳檔案內容。
 
-    任務沒有轉錄結果（沒有片段，也沒有存下來的 LRC）時回傳 None；舊任務的 LRC 解析不出
-    任何一行時，SRT／VTT／TXT 是空字串。版本目前只有原始轉錄一種。
+    任務沒有轉錄結果（沒有片段，也沒有存下來的 LRC）時回傳 None；沒有片段的任務，存下來的
+    LRC 解析不出任何一行時，SRT／VTT／TXT 是空字串。版本目前只有原始轉錄一種。
     """
     segments = TranscriptSegmentRepository.segments_for_task(db, task.task_uuid)
     if segments:
@@ -152,22 +158,61 @@ class _Line:
 
 def _lines(segments: Sequence[Mapping[str, Any]]) -> List[_Line]:
     """依開始時間排序（和存下來的片段順序相同）後，逐段斷行。本機寫 LRC 時照模型給的順序，
-    模型給的片段不照時間時，兩者的行序才會不同。"""
+    模型給的片段不照時間時，兩者的行序才會不同。沒有文字的片段不產生行。
+
+    逐字時間對不上文字的片段整段一行（見 :func:`_words_match`），一個任務只記一條警告。
+    """
     lines: List[_Line] = []
+    unmatched: List[float] = []
     for segment in sorted(segments, key=lambda s: s["start"]):
-        lines.extend(_segment_lines(segment))
+        text = _one_line(segment.get("text") or "")
+        if not text:
+            continue
+        words = segment.get("words") or None
+        if words and not _words_match(text, words):
+            unmatched.append(segment["start"])
+            words = None
+        lines.extend(_segment_lines(segment["start"], segment.get("speaker"), text, words))
+    if unmatched:
+        logger.warning(f"{len(unmatched)} 個片段的逐字時間對不上文字，這些片段整段一行"
+                       f"（第一個從 {unmatched[0]:.2f} 秒開始）")
     return lines
+
+
+_LINE_BREAK_RE = re.compile(r"\s*[\n\r\v\f\x1c-\x1e\x85  ]\s*")
+
+
+def _one_line(text: str) -> str:
+    """片段文字收成一行：換行（連同空行與前後的空白）換成一個空白。
+
+    換行會讓 LRC 多出沒有時間戳的行，空行會把 SRT／VTT 的 cue 切斷。本機的 LRC 當時把換行
+    原樣寫進去，這是和它唯一刻意不同的地方。對齊器斷詞時換行和空白一樣只是把詞隔開，換成空白
+    不影響詞的對應。
+    """
+    return _LINE_BREAK_RE.sub(" ", text).strip()
+
+
+def _words_match(text: str, words: Sequence[Mapping[str, Any]]) -> bool:
+    """逐字時間的詞和整段文字斷出來的詞（:func:`_aligner_words`）一個一個相同，每個詞也都有
+    起訖時間。不同時（例如對齊器的規則改了）就不知道哪個時間屬於哪一句。"""
+    return ([w.get("text") for w in words] == _aligner_words(text)
+            and all(w.get("start") is not None and w.get("end") is not None for w in words))
 
 
 def _labelled(speaker: Optional[str], text: str) -> str:
     return f"[{speaker}] {text}" if speaker else text
 
 
-def _segment_lines(segment: Mapping[str, Any]) -> List[_Line]:
+def _segment_lines(
+    segment_start: float,
+    speaker: Optional[str],
+    text: str,
+    words: Optional[Sequence[Mapping[str, Any]]],
+) -> List[_Line]:
     """一個片段斷成的行，照本機原本產生 LRC 的規則（provider/local/asr.py 的
     ``_entry_to_lines`` 與 ``_split_long_unit``；#110 讓供應商不再產生 LRC 後只剩這一份）：
 
-    * 沒有逐字時間，或逐字時間對不上文字：整段一行，時間是片段的開始。
+    * 沒有逐字時間（或對不上文字，由呼叫端換成 None）：整段一行，時間是片段的開始。
     * 在句尾標點（。．！？!?…）後斷句，一句一行，時間是這一句第一個詞的開始。
     * 一句從第一個詞的開始到最後一個詞的結束超過 12 秒時，在讀點（、，,）後再斷開，
       讓每一行盡量不超過 12 秒。
@@ -176,28 +221,19 @@ def _segment_lines(segment: Mapping[str, Any]) -> List[_Line]:
     逐字時間怎麼對到句子：詞是對齊器斷的，標點不算詞、直接丟掉，所以從詞裡看不出句子在哪裡
     結束。本機先在斷行標點後面補空白再斷詞，詞就不會跨過任何斷行處；斷句以後，每一句各自斷詞
     數出有幾個詞，再依序從逐字時間取那麼多個。這裡用同樣的規則斷詞與計數（:func:`_aligner_words`），
-    而且先確認整段文字斷出來的詞和存下來的詞一個一個相同；不同（例如對齊器的規則改了）就不知道
-    哪個時間屬於哪一句，整段一行。
+    呼叫端也先確認過整段文字斷出來的詞和存下來的詞一個一個相同。
 
     一句有多長，用對齊器給的相對時間判斷：存下來的是加上片段開頭、再換回原音檔時間軸的時間，
     減回片段開頭並取到毫秒，就是本機當時用的同一個值，剛好 12 秒時也做一樣的決定（直接拿兩個
     絕對時間相減會多出浮點誤差）。去靜音剪掉的靜音若落在一句中間，量到的長度包含那段靜音，
     本機當時量的是剪掉之後的長度。
     """
-    speaker = segment.get("speaker")
-    text = segment.get("text") or ""
-    whole = [_Line(segment["start"], _labelled(speaker, text))]
-    words = segment.get("words")
+    whole = [_Line(segment_start, _labelled(speaker, text))]
     if not words:
         return whole
-    if ([w.get("text") for w in words] != _aligner_words(text)
-            or any(w.get("start") is None or w.get("end") is None for w in words)):
-        logger.warning(f"逐字時間對不上片段文字，整段一行（{segment['start']:.2f}s）")
-        return whole
 
-    origin = segment["start"]
-    starts = [round(w["start"] - origin, 3) for w in words]
-    ends = [round(w["end"] - origin, 3) for w in words]
+    starts = [round(w["start"] - segment_start, 3) for w in words]
+    ends = [round(w["end"] - segment_start, 3) for w in words]
 
     lines: List[_Line] = []
     offset = 0

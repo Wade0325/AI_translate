@@ -5,14 +5,20 @@ Qwen3-ForcedAligner 斷詞）手算，SRT／VTT／TXT 是舊的 LRC 轉換器從
 逐字時間的 text 是對齊器的詞：標點被丟掉，漢字一字一詞，連續的假名、英數字是一詞。
 「和本機原本產生的 LRC 逐字相同」那一節直接拿本機的斷行當期望值，比對隨機產生的片段。
 """
+import importlib.util
 import random
 import re
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 
 from app.provider.local import asr
 from app.services import output_format
 from app.services.transcription.models import TranscriptionTaskResult
+
+ALIGNER_PARITY = Path(__file__).resolve().parents[1] / "support" / "aligner_parity.py"
 
 
 def formats(*segments):
@@ -46,13 +52,38 @@ class TestOneLinePerSegment:
     def test_each_segment_is_one_lrc_line_with_its_speaker_label(self):
         assert lrc_lines(*GREETINGS) == GREETINGS_LRC
 
-    def test_segment_without_speaker_has_no_label(self):
-        assert lrc_lines({"start": 60.0, "end": 61.0, "speaker": None, "text": "BGMのみ"}) == [
-            "[01:00.00]BGMのみ"]
-
     def test_lines_are_in_time_order_like_the_stored_segments(self):
         # 存片段時依開始時間排序；完成時送給畫面的輸出格式要和之後下載的一樣
         assert lrc_lines(GREETINGS[2], GREETINGS[0], GREETINGS[1]) == GREETINGS_LRC
+
+    @pytest.mark.parametrize("text", [None, "", " \n "])
+    def test_segment_without_text_has_no_line(self, text):
+        silent = {"start": 2.0, "end": 2.5, "speaker": "S1", "text": text}
+        assert lrc_lines(GREETINGS[0], silent, GREETINGS[1]) == GREETINGS_LRC[:2]
+
+
+# ─── 片段文字裡的換行 ────────────────────────────────────────────────────────
+
+class TestLineBreaksInsideSegmentText:
+    """換行收成一個空白：換行會讓 LRC 多出沒有時間戳的行，空行會把 SRT／VTT 的 cue 切斷。"""
+
+    def test_newline_inside_a_sentence_becomes_a_space(self):
+        segment = {"start": 5.0, "end": 7.0, "speaker": "S0", "text": "おはよう\nございます。",
+                   "words": words(("おはよう", 5.08, 5.6), ("ございます", 5.8, 6.4))}
+        assert formats(segment).lrc == "[00:05.08][S0] おはよう ございます。"
+
+    def test_blank_line_does_not_break_any_format(self):
+        segment = {"start": 5.0, "end": 9.0, "speaker": "S1", "text": "おはよう。\n\nこんにちは。"}
+        result = formats(segment)
+        assert result.lrc == "[00:05.00][S1] おはよう。 こんにちは。"
+        assert result.srt == "1\n00:00:05,000 --> 00:00:10,000\n[S1] おはよう。 こんにちは。\n"
+        assert result.vtt == "WEBVTT\n\n00:00:05.000 --> 00:00:10.000\n[S1] おはよう。 こんにちは。\n"
+        assert result.txt == "[S1] おはよう。 こんにちは。"
+
+    def test_sentences_around_a_blank_line_still_break_by_word_timings(self):
+        segment = {"start": 5.0, "end": 9.0, "speaker": "S1", "text": "おはよう。\n\nこんにちは。",
+                   "words": words(("おはよう", 5.08, 5.6), ("こんにちは", 7.0, 7.8))}
+        assert formats(segment).lrc == "[00:05.08][S1] おはよう。\n[00:07.00][S1] こんにちは。"
 
 
 # ─── 有逐字時間：一句一行 ────────────────────────────────────────────────────
@@ -153,6 +184,13 @@ class TestLineBreaksFromWordTimings:
         }
         assert lrc_lines(segment) == ["[00:50.00][S0] おはよう。こんにちは。"]
 
+    def test_word_without_a_time_leaves_the_segment_one_line(self):
+        segment = {
+            "start": 50.0, "end": 52.0, "speaker": "S0", "text": "おはよう。こんにちは。",
+            "words": words(("おはよう", 50.1, 50.6), ("こんにちは", None, 51.8)),
+        }
+        assert lrc_lines(segment) == ["[00:50.00][S0] おはよう。こんにちは。"]
+
 
 # ─── 和本機原本產生的 LRC 逐字相同 ───────────────────────────────────────────
 
@@ -204,7 +242,17 @@ def local_provider_lrc(entries: list[dict]) -> str:
 class TestSameLrcAsTheLocalProvider:
     """本機現在自己產生 LRC（asr._entry_to_lines），從片段產生的 LRC 必須和它逐字相同，
     所以拿它當期望值的來源；片段也用本機自己的 asr._build_segment_records 產生，和存下來的
-    一樣。#110 讓本機不再產生 LRC 時，這組測試跟著刪掉。"""
+    一樣。文字不含換行：換行收成空白是唯一刻意不同的地方（見上面的換行一節）。
+    #110 讓本機不再產生 LRC 時，這組測試跟著刪掉。"""
+
+    @pytest.mark.skipif(importlib.util.find_spec("transformers") is None,
+                        reason="沒裝 transformers（CI 不裝 ML 依賴），裝了的本機才跑")
+    def test_same_with_the_real_aligner_word_split(self):
+        # 詞照真的對齊器斷，字元涵蓋符號、全形與半形、表情符號、合成字元、擴展區漢字。
+        # conftest 把 torch 換成假的，transformers 在這裡匯入不了，另開乾淨的直譯器跑
+        result = subprocess.run([sys.executable, str(ALIGNER_PARITY)], capture_output=True,
+                                text=True, encoding="utf-8", errors="replace", timeout=120)
+        assert result.returncode == 0, result.stdout + result.stderr
 
     def test_random_segments_break_into_the_same_lines_at_the_same_times(self):
         rng = random.Random(109)

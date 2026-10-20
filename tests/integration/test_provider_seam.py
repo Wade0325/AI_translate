@@ -34,10 +34,10 @@ TERMINAL = {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED}
 VOICED = [(0.0, 2.0), (5.0, 7.0), (10.0, 12.0)]
 
 
-def synthetic_audio(fmt: str = "WAV") -> bytes:
-    """有聲段（正弦波）與靜音段交錯的合成音檔，見 VOICED。"""
-    samples = np.zeros(12 * SAMPLE_RATE, dtype=np.float32)
-    for start, end in VOICED:
+def synthetic_audio(fmt: str = "WAV", voiced=VOICED) -> bytes:
+    """有聲段（正弦波）與靜音段交錯的合成音檔，到最後一個有聲段結束；預設見 VOICED。"""
+    samples = np.zeros(int(voiced[-1][1] * SAMPLE_RATE), dtype=np.float32)
+    for start, end in voiced:
         t = np.arange(int((end - start) * SAMPLE_RATE)) / SAMPLE_RATE
         samples[int(start * SAMPLE_RATE):int(end * SAMPLE_RATE)] = 0.3 * np.sin(2 * np.pi * 440 * t)
     buffer = io.BytesIO()
@@ -171,10 +171,10 @@ def receive_until_terminal(ws) -> list[dict]:
             return messages
 
 
-def upload(api: TestClient, name: str = "voice.wav") -> str:
+def upload(api: TestClient, name: str = "voice.wav", voiced=VOICED) -> str:
     fmt, content_type = ("FLAC", "audio/flac") if name.endswith(".flac") else ("WAV", "audio/wav")
     response = api.post(
-        "/api/v1/upload", files={"file": (name, synthetic_audio(fmt), content_type)})
+        "/api/v1/upload", files={"file": (name, synthetic_audio(fmt, voiced), content_type)})
     assert response.status_code == 200, response.text
     return response.json()["filename"]
 
@@ -191,9 +191,10 @@ def submit(ws, filename: str, provider: str = "fake", model: str = FAKE_MODEL, *
     })
 
 
-def transcribe(api, file_uid: str, name: str = "voice.wav", **fields) -> list[dict]:
-    """上傳、送出，收下這個任務的所有廣播直到結束。"""
-    filename = upload(api, name)
+def transcribe(api, file_uid: str, name: str = "voice.wav", voiced=VOICED,
+               **fields) -> list[dict]:
+    """上傳（音檔的有聲段見 synthetic_audio）、送出，收下這個任務的所有廣播直到結束。"""
+    filename = upload(api, name, voiced)
     with api.websocket_connect(f"/api/v1/ws/{file_uid}") as ws:
         submit(ws, filename, **fields)
         return receive_until_terminal(ws)
@@ -399,6 +400,31 @@ class TestOutputFormatsFromSegments:
     def test_completion_broadcast_matches_the_download(self, api, completed, fmt):
         broadcast = completed["result"]["transcripts"][fmt]
         assert broadcast == self.download(api, completed["task_uuid"], fmt)
+
+    def test_silence_removed_inside_a_sentence_counts_toward_12_seconds(self, api, fake):
+        # 有聲 0–6 秒、靜音 6–14 秒、有聲 14–20 秒：去靜音剪掉 6.3–13.7 秒（有聲段前後各留 0.3 秒），
+        # 語音視圖 12.6 秒。送進供應商的「今日は、ありがとう。」從 1.0 到 8.0 秒，只有 7 秒；
+        # 還原回原音檔是 1.0 到 15.4 秒，超過 12 秒，在讀點斷開，第二行落在剪掉的靜音之後
+        fake.script = [[(0.8, 8.2, 0, "今日は、ありがとう。",
+                         [("今", 1.0, 1.2), ("日", 1.2, 1.4), ("は", 1.4, 1.8),
+                          ("ありがとう", 7.0, 8.0)])]]
+        messages = transcribe(api, "uid-gap", voiced=[(0.0, 6.0), (14.0, 20.0)])
+
+        assert codes(messages)[-1] == TaskStatus.COMPLETED
+        assert self.download(api, messages[-1]["task_uuid"], "lrc") == (
+            "[00:01.00][S0] 今日は、\n[00:14.40][S0] ありがとう。")
+
+    def test_segment_without_text_and_word_without_a_time(self, api, fake):
+        # 沒有文字的片段不產生行；有詞缺時間的片段不知道怎麼對到句子，整段一行
+        fake.model_capabilities = replace(fake.model_capabilities, remove_silence=False)
+        fake.script = [[(0.2, 0.9, 0, None),
+                        (1.0, 2.6, 1, "おはよう。こんにちは。",
+                         [("おはよう", 1.04, 1.6), ("こんにちは", None, 2.56)])]]
+        messages = transcribe(api, "uid-untimed")
+
+        assert codes(messages)[-1] == TaskStatus.COMPLETED
+        assert self.download(api, messages[-1]["task_uuid"], "lrc") == (
+            "[00:01.00][S1] おはよう。こんにちは。")
 
 
 # ─── 模型不屬於供應商 ───────────────────────────────────────────────────────

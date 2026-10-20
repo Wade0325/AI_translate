@@ -305,7 +305,8 @@ class TestDownloadFromSegments:
         assert response.text == FROM_SEGMENTS[fmt]
 
 
-# 片段功能上線前的任務與批次裡的任務沒有片段，輸出要和以前從存下來的 LRC 轉換時一模一樣
+# 沒有片段的任務（片段功能上線前的任務、Gemini 的任務、批次裡的任務），輸出要和以前從
+# 存下來的 LRC 轉換時一模一樣
 STORED_LRC = ("[00:01.50]Speaker A: Hello\n[00:03.123]Speaker B: World\n"
               "這行沒有時間戳\n[61:02.00]Final line")
 FROM_STORED_LRC = {
@@ -329,7 +330,7 @@ FROM_BATCH_LRC = {
 
 class TestDownloadWithoutSegments:
     @pytest.mark.parametrize("fmt", ["lrc", "srt", "vtt", "txt"])
-    def test_old_task_converts_the_stored_lrc_as_before(
+    def test_task_without_segments_converts_the_stored_lrc_as_before(
             self, client: TestClient, db_session: Session, fmt):
         log = _create_log(db_session, lrc_content=STORED_LRC)
 
