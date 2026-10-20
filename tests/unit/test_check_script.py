@@ -1,4 +1,4 @@
-"""tools/check.py：唯一的檢查清單（ruff → pytest → ESLint）。
+"""tools/check.py：唯一的檢查清單（ruff → pytest → ESLint → vitest）。
 
 CI 的 job 與本機都經由它跑檢查，所以最要緊的性質是：任何一項失敗或跑不起來，
 結束碼就不是 0，而且其餘項目照樣跑完，一次看到全部的紅燈。
@@ -37,8 +37,8 @@ def _ran(tmp_path):
     return log.read_text(encoding="utf-8") if log.exists() else ""
 
 
-def test_checks_are_ruff_pytest_eslint_in_order(check):
-    assert [c.name for c in check.CHECKS] == ["ruff", "pytest", "eslint"]
+def test_checks_are_ruff_pytest_eslint_vitest_in_order(check):
+    assert [c.name for c in check.CHECKS] == ["ruff", "pytest", "eslint", "vitest"]
 
 
 def test_python_checks_use_running_interpreter_from_repo_root(check):
@@ -47,6 +47,15 @@ def test_python_checks_use_running_interpreter_from_repo_root(check):
         assert by_name[name].cmd[0] == sys.executable
         assert by_name[name].cwd == ROOT
     assert by_name["eslint"].cwd == ROOT / "frontend"
+
+
+def test_vitest_runs_once_with_node_from_frontend(check):
+    # 不加 run 時，vitest 在終端機裡會進監看模式，check.py 就停不下來；直接用 node 跑入口，
+    # 理由和 eslint 一樣：Windows 上的 npx.cmd／npm.cmd 得經過 shell
+    vitest = {c.name: c for c in check.CHECKS}["vitest"]
+    assert vitest.cmd[0] == "node"
+    assert vitest.cmd[-1] == "run"
+    assert vitest.cwd == ROOT / "frontend"
 
 
 def test_no_arguments_runs_every_check(check, monkeypatch, tmp_path):
@@ -92,9 +101,10 @@ def test_unknown_check_name_is_rejected(check):
 
 
 
-def test_missing_eslint_names_the_fix_for_that_checkout(check, tmp_path):
-    eslint = {c.name: c for c in check.checks(tmp_path)}["eslint"]
-    remedy = eslint.missing()
+@pytest.mark.parametrize("name", ["eslint", "vitest"])
+def test_missing_frontend_tool_names_the_fix_for_that_checkout(check, tmp_path, name):
+    tool = {c.name: c for c in check.checks(tmp_path)}[name]
+    remedy = tool.missing()
     assert remedy is not None
     assert "npm ci" in remedy
     assert str(tmp_path / "frontend") in remedy
