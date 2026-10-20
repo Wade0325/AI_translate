@@ -510,10 +510,11 @@ class TestOutputFormatsFromSegments:
 
     @pytest.mark.parametrize("fmt, expected", [
         ("lrc", "[00:00.24][S0] おはよう。\n[00:01.50][S0] こんにちは。"),
-        # SRT／VTT 的每一行在它最後一個詞的結束時結束（#96），不是下一行的開始或片段的結束
-        ("srt", "1\n00:00:00,240 --> 00:00:00,900\n[S0] おはよう。\n\n"
+        # SRT／VTT 的每一行在它最後一個詞的結束時結束（#96），不是下一行的開始或片段的結束；
+        # 「おはよう」只講 0.66 秒，至少顯示 0.8 秒（ADR-0008）
+        ("srt", "1\n00:00:00,240 --> 00:00:01,040\n[S0] おはよう。\n\n"
                 "2\n00:00:01,500 --> 00:00:02,560\n[S0] こんにちは。\n"),
-        ("vtt", "WEBVTT\n\n00:00:00.240 --> 00:00:00.900\n[S0] おはよう。\n\n"
+        ("vtt", "WEBVTT\n\n00:00:00.240 --> 00:00:01.040\n[S0] おはよう。\n\n"
                 "00:00:01.500 --> 00:00:02.560\n[S0] こんにちは。\n"),
         ("txt", "[S0] おはよう。\n[S0] こんにちは。"),
     ])
@@ -554,6 +555,29 @@ class TestOutputFormatsFromSegments:
         assert self.download(api, across_cut_silence["task_uuid"], "srt") == (
             "1\n00:00:01,000 --> 00:00:01,800\n[S0] 今日は、\n\n"
             "2\n00:00:14,400 --> 00:00:15,400\n[S0] ありがとう。\n")
+
+    @pytest.mark.parametrize("fmt, expected", [
+        ("srt", "1\n00:00:00,500 --> 00:00:03,500\n[S1] 你拉不拉货。\n\n"
+                "2\n00:00:03,000 --> 00:00:03,800\n[S0] 对\n\n"
+                "3\n00:00:04,000 --> 00:00:06,500\n[S1] 但是。\n"),
+        ("vtt", "WEBVTT\n\n00:00:00.500 --> 00:00:03.500\n[S1] 你拉不拉货。\n\n"
+                "00:00:03.000 --> 00:00:03.800\n[S0] 对\n\n"
+                "00:00:04.000 --> 00:00:06.500\n[S1] 但是。\n"),
+    ])
+    def test_interjection_overlaps_and_subtitles_follow_start_times(
+            self, api, fake, fmt, expected):
+        # 像 AISHELL-4 會議錄音 4:07.6 的插話（ADR-0008）：S1 講到 3.5 秒，S0 在 3.0 秒插一句
+        # 「对」，兩行同時顯示；「对」的詞是零長度，顯示最短的 0.8 秒。字幕依開始時間排序，
+        # S1 的片段斷成的第二行排在「对」後面
+        fake.model_capabilities = replace(fake.model_capabilities, remove_silence=False)
+        fake.script = [[(0.5, 6.5, 1, "你拉不拉货。但是。",
+                         [("你", 0.5, 1.0), ("拉", 1.0, 1.5), ("不", 1.5, 2.0), ("拉", 2.0, 2.5),
+                          ("货", 2.5, 3.5), ("但", 4.0, 4.5), ("是", 4.5, 6.5)]),
+                        (3.0, 3.25, 0, "对", [("对", 3.0, 3.0)])]]
+        messages = transcribe(api, "uid-interjection")
+
+        assert codes(messages)[-1] == TaskStatus.COMPLETED
+        assert self.download(api, messages[-1]["task_uuid"], fmt) == expected
 
     @pytest.mark.parametrize("fmt, expected", [
         ("srt", "1\n00:00:00,250 --> 00:00:02,500\n[S0] おはよう。\n\n"
