@@ -3,11 +3,11 @@
 這裡不換供應商，只換掉 google-genai 用戶端：批次目前只有 Gemini 支援，遠端檔也只有
 Gemini 會留下。其他都走真的：TestClient、sqlite、行程內執行模式、WebSocket 狀態廣播、
 ffmpeg 與去靜音。測試只從外部觀察：狀態廣播、API 回應、送給 Gemini 的提示詞，以及
-遠端還留著哪些檔案。
+遠端與上傳的暫存資料夾還留著哪些檔案。
 """
 import io
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait
 from contextlib import asynccontextmanager
 
 import numpy as np
@@ -57,12 +57,16 @@ class _GeminiWithFakeClient:
         self._genai = genai
         self.withdrawn: set[str] = set()
         """不再提供的模型，例如升級後從模型清單拿掉的。"""
+        self.open_error: Exception | None = None
+        """建立轉接器時拋的錯，例如金鑰無效時的 ValueError。"""
 
     def capabilities(self):
         return {model: capabilities for model, capabilities in GeminiProvider.capabilities().items()
                 if model not in self.withdrawn}
 
     def __call__(self, model: str, api_key: str) -> GeminiProvider:
+        if self.open_error is not None:
+            raise self.open_error
         return GeminiProvider(model, api_key, client=self._genai, sleep=lambda seconds: None)
 
 
@@ -89,6 +93,7 @@ def data_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(upload, "TEMP_UPLOADS_DIR", uploads)
     monkeypatch.setattr(transcription, "TEMP_UPLOADS_DIR", uploads)
     monkeypatch.setattr(batch, "TEMP_UPLOADS_DIR", uploads)
+    return tmp_path
 
 
 @pytest.fixture
@@ -158,11 +163,12 @@ def transcribe(api: TestClient, run_mode, name: str, **fields) -> list[dict]:
 
 
 def run_batch(api: TestClient, run_mode, batch_id: str, names: list[str],
-              fields_per_file: dict[str, dict] | None = None, **fields) -> list[dict]:
+              fields_per_file: dict[str, dict] | None = None, timeout: float = TIMEOUT,
+              **fields) -> list[dict]:
     """上傳、送出批次，收下所有廣播直到批次結束。檔案的 file_uid 就是檔名。
 
     fields 是批次層級的其他欄位，fields_per_file 是個別檔案的欄位（以檔名為 key），
-    例如提示詞。
+    例如提示詞。timeout 是每則廣播最多等幾秒。
     """
     files = []
     for name in names:
@@ -174,18 +180,23 @@ def run_batch(api: TestClient, run_mode, batch_id: str, names: list[str],
     with api.websocket_connect(f"/api/v1/batch/ws/{batch_id}") as ws:
         ws.send_json({"files": files, "provider": "Google", "model": MODEL, "source_lang": "ja",
                       **fields})
-        messages = receive_until(ws, TaskStatus.BATCH_COMPLETED)
+        messages = receive_until(ws, TaskStatus.BATCH_COMPLETED, timeout=timeout)
     # 結束的廣播之後批次還在收尾。等它整個跑完再查 API：
     # 測試的 sqlite 只有一條連線，和 worker 同時用會互相蓋掉交易
     wait_until(lambda: not run_mode.is_alive(messages[-1]["task_uuid"]))
     return messages
 
 
-def receive_until(ws, *end: TaskStatus) -> list[dict]:
-    """收廣播直到收到其中一種結束狀態；逾時直接失敗，不讓 CI 卡住。"""
+def receive_until(ws, *end: TaskStatus, timeout: float = TIMEOUT) -> list[dict]:
+    """收廣播直到收到其中一種結束狀態。
+
+    等一則廣播超過 timeout 秒就斷言失敗，附上已經收到的廣播，不讓 CI 卡住。
+    """
     messages = []
     while not messages or messages[-1]["status_code"] not in end:
-        messages.append(_reader.submit(ws.receive_json).result(timeout=TIMEOUT))
+        done, _ = wait([_reader.submit(ws.receive_json)], timeout=timeout)
+        assert done, f"{timeout} 秒內沒有新的廣播，還沒收到 {'、'.join(end)}；已經收到：{messages}"
+        messages.append(done.pop().result())
     return messages
 
 
@@ -297,6 +308,23 @@ def test_a_failed_file_does_not_stop_the_others(api, in_process_run_mode, genai)
     failed = history(api, "gemini-bad.wav")
     assert failed["status"] == TaskStatus.FAILED
     assert "音檔無法解碼" in failed["error_message"]
+
+
+def test_every_file_fails_when_the_provider_cannot_be_opened(
+        api, in_process_run_mode, gemini, data_dir):
+    # 開供應商時就失敗，這時還沒建立任務紀錄（#156）
+    gemini.open_error = ValueError("API 金鑰無效")
+
+    # 失敗得這麼早，廣播馬上就到：每則只等 5 秒，收不到就斷言失敗
+    messages = run_batch(api, in_process_run_mode, "batch-gemini-bad-key",
+                         ["gemini-bad-key-a.wav", "gemini-bad-key-b.wav"], timeout=5)
+
+    # 畫面靠每個檔案自己的失敗廣播離開處理中，批次結束的廣播不會改檔案的狀態
+    results = final_status(messages)
+    assert {uid: m["status_code"] for uid, m in results.items()} == {
+        "gemini-bad-key-a.wav": TaskStatus.FAILED, "gemini-bad-key-b.wav": TaskStatus.FAILED}
+    assert all("API 金鑰無效" in m["status_text"] for m in results.values())
+    assert [p.name for p in (data_dir / "temp_uploads").iterdir()] == []  # 上傳的暫存檔照樣清掉
 
 
 def test_prompts_with_braces_reach_gemini_as_written(api, in_process_run_mode, genai):
