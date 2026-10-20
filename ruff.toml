@@ -1,4 +1,4 @@
-# Ruff：Python lint 閘門（backend/、tests/、tools/、.claude/hooks/）。lab/ 與其他被 .gitignore 忽略的路徑自動略過。
+# Ruff：Python lint 閘門（backend/、tests/、tools/）。lab/ 與其他被 .gitignore 忽略的路徑自動略過。
 #
 # 只抓 bug，不管風格：select 明確列出，ruff 升級時預設規則變動也不影響結果。
 # 不跑 `ruff format --check`——現有程式碼有 67 個檔案會被重排，等要統一格式時再開。
