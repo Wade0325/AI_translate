@@ -25,16 +25,17 @@
 
 版本目前只有原始轉錄，校正後版本留給 v0.2。
 
-四種格式由同一串行產生，說話者標記一律「[S0] 文字」：LRC 一行一個時間戳；SRT／VTT 的
-結束時間是下一行的開始，最後一行加 5 秒（#96 改用真實結束時間）；TXT 只留文字。SRT／VTT
-的時間取 LRC 時間戳讀回來的值，和以前從 LRC 轉換時一樣。斷行的規則見 :func:`_segment_lines`。
+四種格式由同一串行產生，說話者標記一律「[S0] 文字」：LRC 一行一個時間戳；SRT／VTT 另有
+結束時間，用片段的真實結束時間（規則見 :func:`_end_time`）；TXT 只留文字。SRT／VTT 的開始與
+結束時間都取 LRC 時間戳讀回來的值（開始時間和以前從 LRC 轉換時一樣）。斷行的規則見
+:func:`_segment_lines`。
 """
 
 from __future__ import annotations
 
 import re
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import Any, List, Mapping, Optional, Sequence, Tuple
 
@@ -119,10 +120,11 @@ def convert_from_lrc(lrc_text: str) -> OutputFiles:
 
 @dataclass(frozen=True)
 class Cue:
-    """字幕的一行：開始時間（秒）與文字。"""
+    """字幕的一行：開始時間（秒）、文字與真實結束時間（秒，不知道時是 None）。"""
 
     time: float
     text: str
+    end: Optional[float] = None
 
 
 _LRC_LINE_RE = re.compile(r"\[(\d{2,3}):(\d{2})\.(\d{2,3})\](.*)")
@@ -154,6 +156,8 @@ class _Line:
     """原音檔時間軸上的秒數。"""
     text: str
     """帶說話者標記的文字。"""
+    end: Optional[float] = None
+    """真實結束時間（原音檔時間軸上的秒數），不知道時是 None。"""
 
 
 def _lines(segments: Sequence[Mapping[str, Any]]) -> List[_Line]:
@@ -172,7 +176,8 @@ def _lines(segments: Sequence[Mapping[str, Any]]) -> List[_Line]:
         if words and not _words_match(text, words):
             unmatched.append(segment["start"])
             words = None
-        lines.extend(_segment_lines(segment["start"], segment.get("speaker"), text, words))
+        lines.extend(_segment_lines(segment["start"], segment.get("end"),
+                                    segment.get("speaker"), text, words))
     if unmatched:
         logger.warning(f"{len(unmatched)} 個片段的逐字時間對不上文字，這些片段整段一行"
                        f"（第一個從 {unmatched[0]:.2f} 秒開始）")
@@ -205,6 +210,7 @@ def _labelled(speaker: Optional[str], text: str) -> str:
 
 def _segment_lines(
     segment_start: float,
+    segment_end: Optional[float],
     speaker: Optional[str],
     text: str,
     words: Optional[Sequence[Mapping[str, Any]]],
@@ -218,6 +224,9 @@ def _segment_lines(
       讓每一行盡量不超過 12 秒。
     * 沒有詞的部分（例如「！？」中間斷出來的「？」）併到下一行的行首，片段結尾的併到最後一行。
 
+    每一行另外帶真實結束時間，給 SRT／VTT 用（見 :func:`_end_time`）：有逐字時間時是這一行
+    最後一個詞的結束，併進來的標點不改變它；整段一行時是片段的結束，片段沒有結束時間時是 None。
+
     逐字時間怎麼對到句子：詞是對齊器斷的，標點不算詞、直接丟掉，所以從詞裡看不出句子在哪裡
     結束。本機先在斷行標點後面補空白再斷詞，詞就不會跨過任何斷行處；斷句以後，每一句各自斷詞
     數出有幾個詞，再依序從逐字時間取那麼多個。這裡用同樣的規則斷詞與計數（:func:`_aligner_words`），
@@ -228,7 +237,7 @@ def _segment_lines(
     絕對時間相減會多出浮點誤差）。去靜音剪掉的靜音若落在一句中間，量到的長度包含那段靜音，
     本機當時量的是剪掉之後的長度。
     """
-    whole = [_Line(segment_start, _labelled(speaker, text))]
+    whole = [_Line(segment_start, _labelled(speaker, text), segment_end)]
     if not words:
         return whole
 
@@ -247,11 +256,14 @@ def _segment_lines(
         pending = ""
         if ends[offset + count - 1] - starts[offset] > MAX_LINE_SECONDS:
             pieces = _split_at_clauses(pieces[0][0], offset, starts, ends)
-        for piece, first in pieces:
-            lines.append(_Line(words[first]["start"], _labelled(speaker, piece.strip())))
+        # 每一段的最後一個詞在下一段的第一個詞前面；最後一段的是這一句的最後一個詞
+        lasts = [first - 1 for _, first in pieces[1:]] + [offset + count - 1]
+        for (piece, first), last in zip(pieces, lasts, strict=True):
+            lines.append(_Line(words[first]["start"], _labelled(speaker, piece.strip()),
+                               words[last]["end"]))
         offset += count
     if pending and lines:
-        lines[-1] = _Line(lines[-1].start, lines[-1].text + pending)
+        lines[-1] = replace(lines[-1], text=lines[-1].text + pending)
     return lines or whole
 
 
@@ -331,7 +343,8 @@ def _is_cjk_ideograph(char: str) -> bool:
 def _render(lines: Sequence[_Line], fmt: OutputFormat) -> str:
     if fmt == OutputFormat.LRC:
         return "\n".join(_lrc_timestamp(line.start) + line.text for line in lines)
-    cues = [Cue(_lrc_seconds(line.start), line.text.strip()) for line in lines]
+    cues = [Cue(_lrc_seconds(line.start), line.text.strip(),
+                None if line.end is None else _lrc_seconds(line.end)) for line in lines]
     renderers = {OutputFormat.SRT: _srt, OutputFormat.VTT: _vtt, OutputFormat.TXT: _txt}
     return renderers[OutputFormat(fmt)](cues)
 
@@ -363,8 +376,25 @@ def _timestamp(seconds: float, separator: str) -> str:
 
 
 def _end_time(cues: Sequence[Cue], i: int) -> float:
-    """沿用現行規則：下一行的開始，最後一行加 5 秒。"""
-    return cues[i + 1].time if i + 1 < len(cues) else cues[i].time + 5.0
+    """SRT／VTT 一行的結束時間（#96）：
+
+    * 用真實結束時間：有逐字時間時是這一行最後一個詞的結束，整段一行時是片段的結束（見
+      :func:`_segment_lines`）。
+    * 晚於下一行的開始時截到下一行的開始，字幕不重疊。下一行沒有比這一行晚開始時（片段在時間
+      上交錯，例如另一位說話者插話或同時開口）不截：截了結束就不晚於開始。
+    * 沒有真實結束時間（沒有片段的任務、片段沒有結束時間），或它不晚於這一行的開始（零長度或
+      顛倒的片段）時，沿用以前的規則：下一行的開始，最後一行加 5 秒。
+
+    去靜音的任務，結束剛好落在有聲段交界時，還原後會跳到被剪掉的靜音之後（和行開頭同一個問題，
+    交給 #111）：這一行多顯示到那段靜音結束，或截到下一行的開始。
+    """
+    cue = cues[i]
+    following = cues[i + 1].time if i + 1 < len(cues) else None
+    if cue.end is None or cue.end <= cue.time:
+        return following if following is not None else cue.time + 5.0
+    if following is not None and cue.time < following < cue.end:
+        return following
+    return cue.end
 
 
 def _srt(cues: Sequence[Cue]) -> str:

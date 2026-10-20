@@ -33,8 +33,9 @@ CAPABILITIES = ModelCapabilities(
 Word = Tuple[str, float, float]
 """(詞, 起, 迄)：對齊器的一個詞，時間軸和所屬的那一行相同。"""
 
-Line = Union[Tuple[float, float, int, str], Tuple[float, float, int, str, Sequence[Word]]]
-"""(起, 迄, 說話者編號, 文字[, 逐字時間])，時間軸是送進來的這段音檔。"""
+Line = Union[Tuple[float, Optional[float], int, str],
+             Tuple[float, Optional[float], int, str, Sequence[Word]]]
+"""(起, 迄, 說話者編號, 文字[, 逐字時間])，時間軸是送進來的這段音檔；迄是 None 時片段沒有結束時間。"""
 
 
 @dataclass
