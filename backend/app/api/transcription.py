@@ -104,7 +104,7 @@ def cancel_transcription(file_uid: str):
     with SessionLocal() as db:
         mode.revoke(task_id, terminate=_can_terminate(log_repo.get(db, task_id)))
         # 被 revoke/terminate 掉的任務不會再回報狀態：仍在 PROCESSING 的紀錄由此補寫。
-        # 合作式停止的任務會走 transcribe_core 的 CANCELLED 分支自行更新，此處條件式更新不衝突。
+        # 合作式停止的任務由任務生命週期自行記為 CANCELLED，此處條件式更新不衝突。
         log_repo.mark_cancelled_if_processing(db, task_id)
 
     publish_status(

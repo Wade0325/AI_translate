@@ -69,11 +69,49 @@ class TranscriptionLogRepository:
         return db.query(TranscriptionLog).filter(
             TranscriptionLog.task_uuid == uuid_val).first()
 
-    def mark_cancelled_if_processing(self, db: Session, task_uuid) -> bool:
-        """僅當紀錄仍在 PROCESSING 時標記為 CANCELLED，回傳是否有更新。
+    def current_status(self, db: Session, task_uuid) -> Optional[str]:
+        """這筆紀錄在資料庫裡現在的狀態；沒有紀錄時回 None。
 
-        供取消端點使用：被 revoke/terminate 掉的任務不會再回報狀態，
-        由端點直接補寫；條件式更新避免與剛完成的任務競爭時覆寫結果。
+        直接查欄位，不經過 session 裡已經載入的物件：別的 session（例如取消端點）
+        改了狀態，已經載入的物件不會自己更新。
+        """
+        uuid_val = self._coerce_task_uuid(task_uuid)
+        if uuid_val is None:
+            return None
+        return db.query(TranscriptionLog.status).filter(
+            TranscriptionLog.task_uuid == uuid_val).scalar()
+
+    def update_log_unless_cancelled(
+        self, db: Session, task_uuid, update_data: Dict[str, Any]
+    ) -> bool:
+        """紀錄不是已取消時更新，回傳是否有更新（沒有紀錄或已取消時回 False）。
+
+        任務記下結果用：使用者取消之後（取消端點已經記成 CANCELLED），任務才跑完或失敗，
+        不能把取消蓋掉；其他狀態照實改寫，例如啟動清掃把還在跑的任務當成中斷、記成
+        FAILED，任務之後跑完就記成完成。
+        """
+        uuid_val = self._coerce_task_uuid(task_uuid)
+        if uuid_val is None:
+            return False
+        updated = (
+            db.query(TranscriptionLog)
+            .filter(
+                TranscriptionLog.task_uuid == uuid_val,
+                TranscriptionLog.status.is_distinct_from(TaskStatus.CANCELLED),
+            )
+            .update(update_data, synchronize_session=False)
+        )
+        if updated:
+            db.commit()
+        return bool(updated)
+
+    def update_log_if_processing(
+        self, db: Session, task_uuid, update_data: Dict[str, Any]
+    ) -> bool:
+        """僅當紀錄仍在 PROCESSING 時更新，回傳是否有更新。
+
+        已經結束的紀錄不再改寫：例如取消端點已經記成 CANCELLED，任務之後才跑完，
+        不能把它蓋回 COMPLETED。
         """
         uuid_val = self._coerce_task_uuid(task_uuid)
         if uuid_val is None:
@@ -84,18 +122,23 @@ class TranscriptionLogRepository:
                 TranscriptionLog.task_uuid == uuid_val,
                 TranscriptionLog.status == TaskStatus.PROCESSING,
             )
-            .update(
-                {
-                    TranscriptionLog.status: TaskStatus.CANCELLED,
-                    TranscriptionLog.error_message: "使用者取消任務",
-                    TranscriptionLog.completed_at: datetime.now(),
-                },
-                synchronize_session=False,
-            )
+            .update(update_data, synchronize_session=False)
         )
         if updated:
             db.commit()
         return bool(updated)
+
+    def mark_cancelled_if_processing(self, db: Session, task_uuid) -> bool:
+        """僅當紀錄仍在 PROCESSING 時標記為 CANCELLED，回傳是否有更新。
+
+        供取消端點使用：被 revoke/terminate 掉的任務不會再回報狀態，
+        由端點直接補寫；條件式更新避免與剛完成的任務競爭時覆寫結果。
+        """
+        return self.update_log_if_processing(db, task_uuid, {
+            "status": TaskStatus.CANCELLED,
+            "error_message": "使用者取消任務",
+            "completed_at": datetime.now(),
+        })
 
     def mark_stale_processing_failed(self, db: Session, max_age_hours: int) -> int:
         """把卡在 PROCESSING 超過 max_age_hours 的單檔紀錄標記為 FAILED，回傳筆數。

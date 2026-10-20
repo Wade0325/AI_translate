@@ -11,6 +11,7 @@ import pytest
 
 from app.core.config import get_settings
 from app.exceptions import TranscriptionCancelledError
+from app.provider.base import ProgressAndCancel
 from app.provider.local import asr, moss, weights
 from app.provider.local.provider import LocalProvider, local_provider
 
@@ -295,24 +296,28 @@ MOSS_SEGMENTS = [
 ]
 
 
+def _progress(cancelled: bool) -> ProgressAndCancel:
+    return ProgressAndCancel(report=lambda text: None, cancel_requested=lambda: cancelled)
+
+
 class TestRunMoss:
     @pytest.fixture(autouse=True)
     def _no_transformers(self, monkeypatch):
         # 真的 StoppingCriteria 需要匯入 transformers（torch 已被 mock）；這裡只測取消檢查
-        monkeypatch.setattr(asr, "_make_cancel_stopping_criteria", lambda cancel_check: None)
+        monkeypatch.setattr(asr, "_make_cancel_stopping_criteria", lambda progress: None)
 
     def test_cancel_after_generate_raises(self, monkeypatch):
         monkeypatch.setattr(moss, "transcribe",
                             lambda wav, stopping_criteria=None, status_callback=None:
                             (list(MOSS_SEGMENTS), "raw"))
         with pytest.raises(TranscriptionCancelledError):
-            asr._run_moss(Path("x.wav"), cancel_check=lambda: True)
+            asr._run_moss(Path("x.wav"), _progress(cancelled=True))
 
     def test_returns_segments(self, monkeypatch):
         monkeypatch.setattr(moss, "transcribe",
                             lambda wav, stopping_criteria=None, status_callback=None:
                             (list(MOSS_SEGMENTS), "raw"))
-        assert asr._run_moss(Path("x.wav")) == MOSS_SEGMENTS
+        assert asr._run_moss(Path("x.wav"), _progress(cancelled=False)) == MOSS_SEGMENTS
 
 
 # ─── 模型能力 ────────────────────────────────────────────────────────────
