@@ -15,6 +15,7 @@ from app.core.task_status import TaskStatus
 from app.database.session import SessionLocal
 from app.provider.registry import UnsupportedModelError, check_request
 from app.repositories.transcription_log_repository import TranscriptionLogRepository
+from app.services import audio_store
 from app.services.api_keys import resolve_api_key
 from app.utils.logger import setup_logger
 from app.utils.paths import UnsafeUploadFilenameError, resolve_upload_path
@@ -43,9 +44,14 @@ def start_transcription_task_sync(payload_str: str, file_uid: str) -> None:
         payload_str)
 
     # 先驗證再碰檔案：不符的組合不能默默跑到別的供應商，模型不吃的輸入也不能默默丟掉
-    capabilities = check_request(
-        request_data.provider, request_data.model,
-        prompt=request_data.prompt, user_text=request_data.original_text)
+    try:
+        capabilities = check_request(
+            request_data.provider, request_data.model,
+            prompt=request_data.prompt, user_text=request_data.original_text)
+    except UnsupportedModelError:
+        # 被拒絕的請求不會變成任務：上傳檔不留在電腦上（前端重新送出時會重新上傳）
+        audio_store.discard_upload(request_data.filename, TEMP_UPLOADS_DIR)
+        raise
 
     temp_file_path = resolve_upload_path(request_data.filename, TEMP_UPLOADS_DIR)
 

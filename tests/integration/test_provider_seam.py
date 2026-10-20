@@ -61,7 +61,7 @@ def settings():
 @pytest.fixture
 def data_dir(tmp_path, monkeypatch, settings):
     """上傳檔、保留音檔、去靜音產物都寫進暫存資料夾。"""
-    from app.api import transcription, upload
+    from app.api import batch, transcription, upload
 
     uploads = tmp_path / "temp_uploads"
     uploads.mkdir()
@@ -70,6 +70,7 @@ def data_dir(tmp_path, monkeypatch, settings):
     monkeypatch.setattr(settings, "vad_artifacts_dir", str(tmp_path / "vad_artifacts"))
     monkeypatch.setattr(transcription, "TEMP_UPLOADS_DIR", uploads)
     monkeypatch.setattr(upload, "TEMP_UPLOADS_DIR", uploads)
+    monkeypatch.setattr(batch, "TEMP_UPLOADS_DIR", uploads)
     return tmp_path
 
 
@@ -605,6 +606,30 @@ class TestModelMustBelongToProvider:
     def test_batch_rejected_with_clear_error(self, api, fake, provider, model, reason):
         assert reason in batch_rejection(api, provider=provider, model=model)
         assert fake.opened == 0
+
+    @pytest.mark.parametrize("submit_args", [
+        {"provider": "fake", "model": "gemini-2.5-flash"},
+        {"provider": "local", "model": "moss-align", "prompt": "語助詞也要寫出來"},
+    ], ids=["model-mismatch", "unsupported-input"])
+    def test_rejected_task_leaves_no_upload_behind(self, api, data_dir, submit_args):
+        # 被拒絕的任務不會執行，也沒有任務紀錄可以掛保留音檔：上傳檔不留在電腦上
+        task_rejection(api, "uid-reject-upload", **submit_args)
+
+        assert leftovers(data_dir) == []
+
+    def test_rejected_batch_leaves_no_upload_behind(self, api, data_dir):
+        files = [upload(api, "a.wav"), upload(api, "b.wav")]
+        with api.websocket_connect("/api/v1/batch/ws/batch-reject-uploads") as ws:
+            ws.send_json({
+                "files": [{"filename": f, "original_filename": f, "file_uid": f} for f in files],
+                "provider": "local",
+                "model": "gemini-2.5-flash",
+                "source_lang": "ja",
+            })
+            messages = [receive(ws) for _ in files]
+
+        assert {m["status_code"] for m in messages} == {TaskStatus.FAILED}
+        assert leftovers(data_dir) == []
 
 
 # ─── 模型能力端點（#108） ───────────────────────────────────────────────────

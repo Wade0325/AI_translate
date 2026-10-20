@@ -108,6 +108,10 @@ class Settings(BaseSettings):
     retain_audio: bool = True
     audio_store_dir: str = "audio_store"
     audio_retention_days: int = 30
+    # 暫存上傳區裡超過此時數的檔案在啟動時刪除：沒機會收尾的任務（例如應用程式被直接關掉時
+    # 還在排隊）留下的上傳檔。Docker 模式重啟 API 時 worker 可能還在排隊或轉錄，需大於最長的
+    # 排隊加轉錄時間（取消旗標與任務登記也只留 24 小時）；0 = 停用
+    temp_uploads_max_age_hours: int = 24
 
     # 允許跨來源呼叫 API 的前端來源（逗號分隔，例如 http://192.168.1.10:5173）。
     # 同一份清單也用於 WebSocket 的 Origin 檢查。預設只含開發用的 Vite dev server；

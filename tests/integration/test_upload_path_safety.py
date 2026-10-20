@@ -114,6 +114,21 @@ class TestSingleTranscription:
         assert len(dispatched) == 1
         assert dispatched[0]["file_path"] == str(root / "ok.mp3")
 
+    @pytest.mark.parametrize("kind", ["absolute", "dotdot", "absolute_via_uploads"])
+    def test_rejected_request_does_not_delete_files_outside_uploads(
+            self, client: TestClient, uploads, dispatched, kind):
+        # 被拒絕的請求會刪掉它的上傳檔：檔名指向上傳目錄外時一律不動
+        root, secret = uploads
+        payload = {**_single_payload(_traversal_names(root, secret)[kind]), "provider": "Local"}
+
+        with client.websocket_connect("/api/v1/ws/uid-rejected-traversal") as ws:
+            ws.send_json(payload)
+            message = ws.receive_json()
+
+        assert message["status_code"] == "FAILED"
+        assert dispatched == []
+        assert secret.exists()
+
 
 # ─── 批次 WS ─────────────────────────────────────────────────────────────────
 
@@ -134,6 +149,24 @@ class TestBatchTranscription:
         assert message["file_uid"] == "uid-bad"
         assert "檔案名稱不合法" in message["status_text"]
         assert dispatched == []
+
+    @pytest.mark.parametrize("kind", ["absolute", "dotdot", "absolute_via_uploads"])
+    def test_rejected_batch_does_not_delete_files_outside_uploads(
+            self, client: TestClient, uploads, dispatched, kind):
+        # 被拒絕的批次會刪掉它的上傳檔：檔名指向上傳目錄外時一律不動
+        root, secret = uploads
+        payload = {**_batch_payload([
+            {"filename": _traversal_names(root, secret)[kind], "original_filename": "s.txt",
+             "file_uid": "uid-bad"},
+        ]), "provider": "Local"}
+
+        with client.websocket_connect("/api/v1/batch/ws/batch-rejected-traversal") as ws:
+            ws.send_json(payload)
+            message = ws.receive_json()
+
+        assert message["status_code"] == "FAILED"
+        assert dispatched == []
+        assert secret.exists()
 
     def test_valid_files_still_dispatched_when_one_is_rejected(
             self, client: TestClient, uploads, dispatched):
