@@ -1,5 +1,4 @@
-import { describe, it } from 'node:test';
-import assert from 'node:assert/strict';
+import { describe, expect, it } from 'vitest';
 import { modelForProvider, requiresApiKey } from './providerList.js';
 
 // 後端 GET /providers 回的形狀，只留測試用得到的欄位
@@ -26,31 +25,29 @@ const PROVIDERS = [
 
 describe('modelForProvider：選了供應商之後用哪個模型', () => {
   it('想用的模型（設定頁存的預設模型）屬於這個供應商就用它', () => {
-    assert.equal(modelForProvider(PROVIDERS, 'google', 'gemini-2.5-pro'), 'gemini-2.5-pro');
+    expect(modelForProvider(PROVIDERS, 'google', 'gemini-2.5-pro')).toBe('gemini-2.5-pro');
   });
 
   it('存的是別的供應商的模型時，退回這個供應商的預設模型', () => {
-    assert.equal(modelForProvider(PROVIDERS, 'google', 'moss-align'), 'gemini-3.5-flash');
+    expect(modelForProvider(PROVIDERS, 'google', 'moss-align')).toBe('gemini-3.5-flash');
   });
 
   it('存的是已經不在清單上的舊模型時，退回預設模型', () => {
-    assert.equal(modelForProvider(PROVIDERS, 'local', 'gemini-1.5-pro'), 'moss-align');
+    expect(modelForProvider(PROVIDERS, 'local', 'gemini-1.5-pro')).toBe('moss-align');
   });
 
   it('沒存過模型時用預設模型', () => {
-    assert.equal(modelForProvider(PROVIDERS, 'local', null), 'moss-align');
+    expect(modelForProvider(PROVIDERS, 'local', null)).toBe('moss-align');
   });
 
   it('清單還沒載入時沒有模型可選', () => {
-    assert.equal(modelForProvider(null, 'google', 'gemini-2.5-pro'), null);
+    expect(modelForProvider(null, 'google', 'gemini-2.5-pro')).toBeNull();
   });
 });
 
 describe('requiresApiKey：送出前要不要確認設定了 API 金鑰', () => {
   it('照端點說的：Gemini 要，本機不用', () => {
-    assert.deepEqual(
-      [requiresApiKey(PROVIDERS, 'google'), requiresApiKey(PROVIDERS, 'local')],
-      [true, false],
-    );
+    expect([requiresApiKey(PROVIDERS, 'google'), requiresApiKey(PROVIDERS, 'local')])
+      .toEqual([true, false]);
   });
 });
