@@ -2,19 +2,36 @@
  * 轉錄頁送出的請求內容（單檔任務與批次）。純函式，不碰 React 與網路。
  *
  * 每個檔案送出的提示詞，依序取第一個有字的：
- *   1. 檔案卡顯示的提示詞：每檔設定過就是它自己的，沒設定過就是全域的；
+ *   1. 這個檔案自己的提示詞（每檔設定）；沒有自己的（沒填過，或清空、只剩空白）就跟著全域的；
  *   2. 供應商的提示詞範本（設定頁）。
  * 都沒有時不帶，由後端用系統預設範本；只有空白算沒填。所選的模型不吃提示詞時一律不帶（#108）。
  */
 
 const blankToNull = (text) => (typeof text === 'string' && text.trim() ? text : null);
 
-/** 跟著全域提示詞：沒在每檔設定填過提示詞。填過（包括清成空白）就用自己的。 */
-export const followsGlobalPrompt = (file) => file.prompt === undefined;
+/** 跟著全域提示詞：這個檔案沒有自己的提示詞（沒填過，或清空、只剩空白）。 */
+export const followsGlobalPrompt = (file) => blankToNull(file.prompt) === null;
 
-/** 每檔設定裡可以編輯的提示詞：跟著全域時是全域的，否則是自己的。 */
+/** 這個檔案用的提示詞（還沒輪到提示詞範本）：跟著全域時是全域的，否則是自己的。 */
 export const filePrompt = (file, globalPrompt) =>
   (followsGlobalPrompt(file) ? globalPrompt : file.prompt);
+
+/**
+ * 重新轉錄：把已經結束的檔案改回等待處理，清掉上一次的結果與送出的提示詞。每檔設定照舊，
+ * 所以之後送出的提示詞照現在的設定算。
+ */
+export const forRetranscription = (file) => ({
+  ...file,
+  status: 'waiting',
+  percent: 0,
+  tokens_used: 0,
+  cost: 0,
+  result: null,
+  statusText: '等待處理',
+  task_uuid: null,
+  error: null,
+  sentPrompt: undefined,
+});
 
 /**
  * 按 Start 時的全域預設（buildSinglePayload／buildBatchPayload 的 defaults）：檔案沒有每檔

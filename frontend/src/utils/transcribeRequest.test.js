@@ -3,6 +3,7 @@ import {
   buildBatchPayload,
   buildSinglePayload,
   followsGlobalPrompt,
+  forRetranscription,
   globalSettingsPatch,
   promptToSend,
   requestDefaults,
@@ -32,9 +33,11 @@ describe('單檔任務送出的提示詞', () => {
     expect(singlePrompt({ file: untouched({ prompt: '這個檔案是關西腔' }) })).toBe('這個檔案是關西腔');
   });
 
-  it('自己的提示詞清成空白時不會被全域的補上，和檔案卡顯示的一樣：改帶提示詞範本', () => {
-    expect(singlePrompt({ file: untouched({ prompt: '' }), promptTemplate: '設定頁的範本' }))
-      .toBe('設定頁的範本');
+  it('自己的提示詞清空（只剩空白也算）就回到跟著全域：帶全域提示詞', () => {
+    for (const cleared of ['', ' \n']) {
+      expect(singlePrompt({ file: untouched({ prompt: cleared }), promptTemplate: '設定頁的範本' }))
+        .toBe('人名照寫：佐藤');
+    }
   });
 
   it('全域與自己的都沒填時，帶供應商的提示詞範本；只有空白也算沒填', () => {
@@ -67,15 +70,15 @@ describe('批次送出的提示詞', () => {
     expect(batch().files.map((f) => f.prompt)).toEqual(['人名照寫：佐藤', '這個檔案是關西腔']);
   });
 
-  it('批次層級的備用值是提示詞範本：清成空白的檔案和單檔一樣，不會被全域的補回去', () => {
+  it('清空自己提示詞的檔案和單檔一樣跟著全域；批次層級的備用值是提示詞範本', () => {
     // 後端拿批次層級的值補沒帶提示詞的檔案（batch_core 的 file.prompt or 批次層級）
     const payload = buildBatchPayload({
-      files: [uploaded({ uid: 'f1', prompt: '' })],
-      provider: 'google', model: 'gemini-2.5-flash', promptTemplate: '',
+      files: [uploaded({ uid: 'f1', prompt: '' }), uploaded({ uid: 'f2', prompt: '這個檔案是關西腔' })],
+      provider: 'google', model: 'gemini-2.5-flash', promptTemplate: '設定頁的範本',
       defaults: DEFAULTS, supports: TAKES_PROMPT, sessionId: 's1',
     });
-    expect([payload.files[0].prompt, payload.prompt]).toEqual([null, null]);
-    expect(batch().prompt).toBe('設定頁的範本');
+    expect([...payload.files.map((f) => f.prompt), payload.prompt])
+      .toEqual(['人名照寫：佐藤', '這個檔案是關西腔', '設定頁的範本']);
   });
 
   it('所選的模型不吃提示詞時，檔案與批次層級都不帶（#108）', () => {
@@ -85,18 +88,38 @@ describe('批次送出的提示詞', () => {
 });
 
 describe('檔案卡顯示的提示詞', () => {
-  it('跟著全域：沒在每檔設定填過提示詞；填過（包括清成空白）就不跟，套用全域設定後又跟', () => {
+  it('跟著全域：沒有自己的提示詞（沒填過，或清空、只剩空白），套用全域設定之後也是', () => {
     const globalConfig = { language: 'ja-JP', isMultiSpeaker: false, speakerCount: 2, includeTimestamps: true };
     expect([
       followsGlobalPrompt(untouched()),
       followsGlobalPrompt(untouched({ prompt: '這個檔案是關西腔' })),
       followsGlobalPrompt(untouched({ prompt: '' })),
-      followsGlobalPrompt({ ...untouched({ prompt: '' }), ...globalSettingsPatch(globalConfig) }),
-    ]).toEqual([true, false, false, true]);
+      followsGlobalPrompt(untouched({ prompt: '  ' })),
+      followsGlobalPrompt({ ...untouched({ prompt: '這個檔案是關西腔' }), ...globalSettingsPatch(globalConfig) }),
+    ]).toEqual([true, false, true, true, true]);
   });
 
   it('和送出的一樣：全域與自己的都沒填時，顯示會送出的提示詞範本', () => {
     expect(promptToSend(untouched(), '', '設定頁的範本', TAKES_PROMPT)).toBe('設定頁的範本');
+  });
+});
+
+describe('重新轉錄', () => {
+  it('上一次送了自己的提示詞，清空之後重新轉錄：卡片與送出的都是全域提示詞', () => {
+    const sent = {
+      ...untouched({ prompt: '這個檔案是關西腔' }),
+      status: 'completed', sentPrompt: '這個檔案是關西腔', result: { txt: '上一次的結果' },
+    };
+
+    const again = forRetranscription({ ...sent, prompt: '' });
+
+    expect([
+      again.status,
+      again.result,
+      followsGlobalPrompt(again),
+      promptToSend(again, '人名照寫：佐藤', '設定頁的範本', TAKES_PROMPT),
+      singlePrompt({ file: again, promptTemplate: '設定頁的範本' }),
+    ]).toEqual(['waiting', null, true, '人名照寫：佐藤', '人名照寫：佐藤']);
   });
 });
 

@@ -87,7 +87,7 @@ export function FileConfigCard({
     // 提示詞標籤顯示會送出的那一個，和請求用同一個函式算（包括提示詞範本）；已送出的檔案
     // 顯示當初送出的。所選的模型不吃提示詞時，填了的值照 #108 劃掉並寫出原因
     const shownPrompt = submittable ? config.promptToSend : config.sentPrompt
-    const typedPrompt = (config.prompt ?? "").trim().length > 0
+    const typedPrompt = (config.filePrompt ?? "").trim().length > 0
 
     const tags = [
         { label: formatLang(config.language), icon: Languages, overridden: isOverridden("language") },
@@ -411,11 +411,14 @@ export function FileConfigCard({
                                 <span style={{ fontSize: 10, color: "rgba(136, 136, 168, 0.5)", marginLeft: 4 }}>(same as global)</span>
                             )}
                         </Text>
+                        {/* 欄位只放這個檔案自己的提示詞；清空就回到跟著全域，placeholder 顯示全域的 */}
                         <TextArea
                             value={config.prompt}
                             onChange={(e) => update({ prompt: e.target.value })}
                             disabled={Boolean(disabledReasons.prompt)}
-                            placeholder="Override the global prompt for this file..."
+                            placeholder={config.followsGlobalPrompt && (globalConfig.prompt ?? "").trim()
+                                ? `Same as global: ${globalConfig.prompt}`
+                                : "Override the global prompt for this file..."}
                             autoSize={{ minRows: 2 }}
                             style={{ fontSize: 12 }}
                         />

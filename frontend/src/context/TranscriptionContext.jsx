@@ -15,7 +15,7 @@ import {
   withModel,
   withProvider,
 } from '../utils/providerList';
-import { requestDefaults } from '../utils/transcribeRequest';
+import { forRetranscription, requestDefaults } from '../utils/transcribeRequest';
 import { api } from '../services/api';
 
 const TranscriptionContext = createContext(null);
@@ -172,21 +172,7 @@ export const TranscriptionProvider = ({ children }) => {
       message.info(`任務 "${target.name}" 已重新加入佇列。`);
     }
     setFileList((current) =>
-      current.map((file) =>
-        file.uid === uidToReprocess
-          ? {
-              ...file,
-              status: 'waiting',
-              percent: 0,
-              tokens_used: 0,
-              cost: 0,
-              result: null,
-              statusText: '等待處理',
-              task_uuid: null,
-              error: null,
-            }
-          : file
-      )
+      current.map((file) => (file.uid === uidToReprocess ? forRetranscription(file) : file))
     );
   }, [fileList]);
 

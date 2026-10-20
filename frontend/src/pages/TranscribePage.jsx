@@ -380,9 +380,11 @@ export default function TranscribePage() {
                             language: file.language || globalConfig.language,
                             isMultiSpeaker: file.isMultiSpeaker ?? globalConfig.isMultiSpeaker,
                             speakerCount: file.speakerCount ?? globalConfig.speakerCount,
-                            // 每檔設定裡可以編輯的提示詞（跟著全域時是全域的）
-                            prompt: filePrompt(file, globalConfig.prompt),
+                            // 這個檔案自己的提示詞（每檔設定裡編輯的就是它）；清空就回到跟著全域
+                            prompt: file.prompt ?? "",
                             followsGlobalPrompt: followsGlobalPrompt(file),
+                            // 這個檔案用的提示詞：自己的，沒有就是全域的（還沒輪到提示詞範本）
+                            filePrompt: filePrompt(file, globalConfig.prompt),
                             // 檔案卡顯示的提示詞：還沒送出的照送出時的規則算（包括提示詞範本），
                             // 已送出的顯示當初送出的（utils/transcribeRequest.js）
                             promptToSend: promptToSend(file, globalConfig.prompt, promptTemplate, supports),
