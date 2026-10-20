@@ -5,6 +5,9 @@ import { api } from '../services/api';
  * 讀供應商清單（後端 GET /providers）；清單的內容怎麼讀見 utils/providerList.js。
  */
 
+/** 載入失敗時顯示的訊息。 */
+export const PROVIDER_LIST_FAILED = '讀取供應商清單失敗，請重新整理頁面';
+
 // 整個頁面共用一次請求；失敗時清掉，下次掛載再試
 let providerListRequest = null;
 

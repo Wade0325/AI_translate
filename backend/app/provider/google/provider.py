@@ -18,8 +18,7 @@ from __future__ import annotations
 import hashlib
 import time
 from pathlib import Path
-from types import MappingProxyType
-from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from google.genai import types
 
@@ -29,6 +28,7 @@ from app.provider.base import (
     DEFAULT_QUEUE,
     BatchStatus,
     ModelCapabilities,
+    ProviderInfo,
     TranscribeRequest,
 )
 from app.provider.google.gemini import GeminiClient
@@ -238,11 +238,8 @@ def _batch_failure(text: str) -> TranscriptionTaskResult:
 
 
 class GeminiProvider:
-    label = "Gemini"
-    model_labels: Mapping[str, str] = MappingProxyType({})
-    """畫面直接顯示模型名稱。"""
-    requires_api_key = True
-    """轉錄用的是使用者自備的 Gemini API 金鑰。"""
+    # 畫面直接顯示模型名稱；轉錄用的是使用者自備的 Gemini API 金鑰
+    info = ProviderInfo(label="Gemini", requires_api_key=True)
 
     def __init__(
         self,

@@ -46,9 +46,7 @@ def genai():
 class _GeminiWithFakeClient:
     """供應商「google」：建立的 Gemini 轉接器都接上同一個假用戶端，也不真的等。"""
 
-    label = GeminiProvider.label
-    model_labels = GeminiProvider.model_labels
-    requires_api_key = GeminiProvider.requires_api_key
+    info = GeminiProvider.info
 
     def __init__(self, genai: FakeGenaiClient):
         self._genai = genai

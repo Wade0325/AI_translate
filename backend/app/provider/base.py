@@ -12,7 +12,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Literal, Mapping, Optional, Protocol, Sequence, Tuple
 
@@ -44,6 +44,16 @@ class ModelCapabilities:
     pricing: Literal["per_token", "free"]
     remove_silence: bool
     """轉錄前要不要剪掉靜音。"""
+
+
+@dataclass(frozen=True)
+class ProviderInfo:
+    """畫面怎麼列出一個供應商：名稱、模型的名稱，以及轉錄要不要使用者的 API 金鑰。"""
+
+    label: str
+    requires_api_key: bool
+    model_labels: Mapping[str, str] = field(default_factory=dict)
+    """畫面上的模型名稱；沒列的模型直接顯示模型名稱。"""
 
 
 @dataclass

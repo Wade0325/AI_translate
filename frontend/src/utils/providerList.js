@@ -13,9 +13,9 @@
  * 默默全部開放，要靠那個測試擋下。
  */
 
-// 供應商名稱不分大小寫，和後端一致
+/** provider 是清單上的名稱（例如 local）；查不到時是 null。 */
 export const findProvider = (providerList, provider) =>
-  providerList?.find((p) => p.provider.toLowerCase() === provider?.toLowerCase()) ?? null;
+  providerList?.find((p) => p.provider === provider) ?? null;
 
 /** 畫面上的供應商名稱；查不到時直接顯示傳進來的名稱。 */
 export const providerLabel = (providerList, provider) =>

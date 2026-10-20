@@ -1,7 +1,8 @@
 """依名稱找出供應商轉接器，驗證請求用得了所選的模型（模型屬於這個供應商、支援請求要的
 處理方式、吃得下請求裡填了的輸入），並列出每個供應商的模型與模型能力。
 
-供應商名稱不分大小寫（前端送 ``Google``／``Local``，紀錄裡存的也是原樣）。
+供應商名稱不分大小寫：畫面送的是清單上的小寫名稱（``google``／``local``），改版前的
+紀錄存的是 ``Google``／``Local``。
 """
 
 from __future__ import annotations
@@ -10,7 +11,7 @@ import threading
 from dataclasses import dataclass
 from typing import List, Mapping, Optional, Protocol, Tuple, cast
 
-from app.provider.base import BatchProvider, ModelCapabilities, Provider
+from app.provider.base import BatchProvider, ModelCapabilities, Provider, ProviderInfo
 from app.provider.google.provider import GeminiProvider
 from app.provider.local.provider import local_provider
 
@@ -19,12 +20,7 @@ class ProviderFactory(Protocol):
     """一個供應商：查模型能力不必建立轉接器，也不碰顯卡之類的硬體（API 行程與模型能力
     端點都會查）；建立的轉接器專給一個任務用。"""
 
-    label: str
-    """畫面上的供應商名稱。"""
-    model_labels: Mapping[str, str]
-    """畫面上的模型名稱；沒列的模型直接顯示模型名稱。"""
-    requires_api_key: bool
-    """轉錄要不要使用者的 API 金鑰。"""
+    info: ProviderInfo
 
     def capabilities(self) -> Mapping[str, ModelCapabilities]:
         """每個模型的模型能力，依畫面列出的順序；第一個是這個供應商的預設模型。"""
@@ -42,6 +38,8 @@ class UnsupportedInputError(UnsupportedModelError):
     """請求填了模型不吃的輸入（提示詞、使用者文稿）。"""
 
 
+# 順序就是畫面的順序，第一個是轉錄頁預設的供應商。沿用改版前的預設（Gemini）：和 ADR-0003
+# 「預設本機」不一致，沒有 GPU 時預設什麼還在 #11 待決定，決定後改這裡的順序
 _factories: dict[str, ProviderFactory] = {"google": GeminiProvider, "local": local_provider}
 _lock = threading.Lock()
 
@@ -89,14 +87,19 @@ def providers() -> List[ListedProvider]:
     """每個供應商（小寫名稱）與它的每個模型，不建立轉接器、不碰顯卡。"""
     with _lock:
         factories = list(_factories.items())
-    return [ListedProvider(
+    return [_listed(name, factory.info, factory.capabilities()) for name, factory in factories]
+
+
+def _listed(name: str, info: ProviderInfo,
+            models: Mapping[str, ModelCapabilities]) -> ListedProvider:
+    return ListedProvider(
         provider=name,
-        label=factory.label,
-        requires_api_key=factory.requires_api_key,
-        models=tuple(ListedModel(model=model, label=factory.model_labels.get(model, model),
+        label=info.label,
+        requires_api_key=info.requires_api_key,
+        models=tuple(ListedModel(model=model, label=info.model_labels.get(model, model),
                                  capabilities=capabilities)
-                     for model, capabilities in factory.capabilities().items()),
-    ) for name, factory in factories]
+                     for model, capabilities in models.items()),
+    )
 
 
 def model_capabilities(provider: str, model: str) -> ModelCapabilities:

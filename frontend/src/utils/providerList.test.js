@@ -41,10 +41,6 @@ describe('modelForProvider：選了供應商之後用哪個模型', () => {
     assert.equal(modelForProvider(PROVIDERS, 'local', null), 'moss-align');
   });
 
-  it('舊版存的大寫供應商名稱也對得上', () => {
-    assert.equal(modelForProvider(PROVIDERS, 'Local', 'vibevoice-qwen3-asr'), 'vibevoice-qwen3-asr');
-  });
-
   it('清單還沒載入時沒有模型可選', () => {
     assert.equal(modelForProvider(null, 'google', 'gemini-2.5-pro'), null);
   });

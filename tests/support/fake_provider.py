@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import List, Optional, Sequence, Tuple, Union
 
 from app.exceptions import TranscriptionCancelledError
-from app.provider.base import LOCAL_QUEUE, ModelCapabilities, TranscribeRequest
+from app.provider.base import LOCAL_QUEUE, ModelCapabilities, ProviderInfo, TranscribeRequest
 from app.services.transcription.models import TranscriptionTaskResult
 
 FAKE_MODEL = "fake-model"
@@ -63,9 +63,7 @@ def _segment(i: int, line: Line) -> dict:
 
 
 class FakeProvider:
-    label = "假供應商"
-    model_labels: dict = {}
-    requires_api_key = False
+    info = ProviderInfo(label="假供應商", requires_api_key=False)
 
     def __init__(self, script: Sequence[Step] = ()):
         self.script: List[Step] = list(script)

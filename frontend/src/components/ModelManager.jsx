@@ -43,6 +43,12 @@ const ModelManagerProvider = ({ children }) => {
     // provider 是供應商清單（GET /providers）的名稱；畫面上顯示它的 label
     const { providerList } = useProviderList();
     const labelOf = useCallback((provider) => providerLabel(providerList, provider), [providerList]);
+    // 存回設定的模型：存的模型屬於這個供應商就照舊，對不上（舊版的值、已經不在清單上）就改存
+    // 預設模型；清單還沒載入時照舊
+    const modelToStore = useCallback(
+        (provider, storedModel) => modelForProvider(providerList, provider, storedModel) ?? storedModel ?? '',
+        [providerList],
+    );
 
     useEffect(() => {
         purgeLegacyStoredConfigs();
@@ -81,7 +87,7 @@ const ModelManagerProvider = ({ children }) => {
             ...partialConfig,
             provider: provider,
             apiKeys: partialConfig.apiKeys || latestConfig.apiKeys || [''],
-            model: partialConfig.model || latestConfig.model || modelForProvider(providerList, provider, null) || '',
+            model: partialConfig.model || modelToStore(provider, latestConfig.model),
         };
 
         try {
@@ -113,18 +119,17 @@ const ModelManagerProvider = ({ children }) => {
         message.success({ content: '設定保存成功！', key: 'saveConfig' });
         // 回傳遮罩後的設定（讀回失敗時回傳 true），失敗時回傳 false
         return savedConfig || true;
-    }, [getProviderConfig, providerList, labelOf]);
+    }, [getProviderConfig, modelToStore, labelOf]);
 
     const handleEditProvider = useCallback(async (provider) => {
         setEditingProvider(provider);
         const config = await getProviderConfig(provider);
 
         setApiKeys(config?.apiKeys?.length > 0 ? config.apiKeys : ['']);
-        // 存的模型不屬於這個供應商（或已經不在清單上）時，存回預設模型
-        setSelectedModel(modelForProvider(providerList, provider, config?.model) ?? config?.model);
+        setSelectedModel(modelToStore(provider, config?.model));
 
         setIsModalOpen(true);
-    }, [getProviderConfig, providerList]);
+    }, [getProviderConfig, modelToStore]);
 
     const handleOk = async () => {
         const validApiKeys = apiKeys.filter(key => key.trim() !== '');
@@ -221,7 +226,7 @@ const ModelManagerProvider = ({ children }) => {
 
             <ApiKeyModal
                 open={isModalOpen}
-                provider={labelOf(editingProvider)}
+                providerLabel={labelOf(editingProvider)}
                 apiKeys={apiKeys}
                 onApiKeysChange={setApiKeys}
                 onOk={handleOk}
@@ -230,7 +235,7 @@ const ModelManagerProvider = ({ children }) => {
 
             <PromptModal
                 open={isParamsModalOpen}
-                provider={labelOf(editingParamsProvider)}
+                providerLabel={labelOf(editingParamsProvider)}
                 value={promptText}
                 onChange={setPromptText}
                 onOk={handleParamsOk}

@@ -4,7 +4,7 @@ import { useModelManager } from '../components/ModelManager';
 import { useTranscriptionSocket } from '../hooks/useTranscriptionSocket';
 import { useUploadQueue } from '../hooks/useUploadQueue';
 import { useDownloadBundle } from '../hooks/useDownloadBundle';
-import { useProviderList } from '../hooks/useProviderList';
+import { PROVIDER_LIST_FAILED, useProviderList } from '../hooks/useProviderList';
 import {
   disabledReasonsFor,
   findModelCapabilities,
@@ -37,32 +37,19 @@ export const TranscriptionProvider = ({ children }) => {
 
   const { getProviderConfig } = useModelManager();
 
-  // 先選供應商、再選它的模型；兩者都照供應商清單的值送出，後端會驗證模型屬於這個供應商
+  // 先選供應商、再選它的模型；兩者都照供應商清單的值送出，後端會驗證模型屬於這個供應商。
+  // 還沒選時用預設：清單上的第一個供應商；換供應商時模型回到它的預設模型（第一個）
   const { providerList, failed: providerListFailed } = useProviderList();
   const [selection, setSelection] = useState({ provider: null, model: null });
-  const { provider, model } = selection;
+  const provider = selection.provider ?? providerList?.[0]?.provider ?? null;
+  const model = modelForProvider(providerList, provider, selection.model);
 
-  // 選供應商時，模型用設定頁存的預設模型；存的不屬於這個供應商（或已經不在清單上）就用預設
-  const latestProviderChoice = useRef(0);
-  const selectProvider = useCallback(async (nextProvider) => {
-    const choice = ++latestProviderChoice.current;
-    const config = await getProviderConfig(nextProvider);
-    if (choice !== latestProviderChoice.current) return; // 使用者已經改選別的供應商
-    setSelection({
-      provider: nextProvider,
-      model: modelForProvider(providerList, nextProvider, config?.model),
-    });
-  }, [providerList, getProviderConfig]);
-
+  const selectProvider = useCallback((nextProvider) => {
+    setSelection({ provider: nextProvider, model: null });
+  }, []);
   const setModel = useCallback((nextModel) => {
     setSelection((current) => ({ ...current, model: nextModel }));
   }, []);
-
-  // 清單載入後先選預設的供應商（清單上的第一個）
-  const defaultProvider = providerList?.[0]?.provider;
-  useEffect(() => {
-    if (defaultProvider && !provider) selectProvider(defaultProvider);
-  }, [defaultProvider, provider, selectProvider]);
 
   // 所選模型支援哪些輸入與處理方式；模型能力還沒載入時不限制，由後端把關
   const capabilities = findModelCapabilities(providerList, provider, model);
@@ -223,9 +210,7 @@ export const TranscriptionProvider = ({ children }) => {
 
   const handleStartTranscription = useCallback(async () => {
     if (!provider || !model) {
-      message.error(providerListFailed
-        ? '讀取供應商清單失敗，請重新整理頁面。'
-        : '供應商清單還在載入，請稍後再試。');
+      message.error(providerListFailed ? PROVIDER_LIST_FAILED : '供應商清單還在載入，請稍後再試');
       return;
     }
 

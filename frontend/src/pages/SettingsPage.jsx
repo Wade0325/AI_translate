@@ -3,7 +3,7 @@ import { Card, Button, Input, Select, Switch, Typography, Row, Col, Spin, Divide
 import { Key, Bell, Save, Trash2, Cpu, Download, CheckCircle2 } from "lucide-react"
 import { useModelManager } from "../components/ModelManager"
 import { ReasonText } from "../components/disabled-reason"
-import { useProviderList } from "../hooks/useProviderList"
+import { PROVIDER_LIST_FAILED, useProviderList } from "../hooks/useProviderList"
 import { modelForProvider, providerPromptDisabledReason } from "../utils/providerList"
 import { api } from "../services/api"
 
@@ -90,9 +90,7 @@ export default function SettingsPage() {
 
     return (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 24, padding: 24 }}>
-            {providerListFailed && (
-                <Alert type="error" showIcon message="讀取供應商清單失敗，請重新整理頁面" />
-            )}
+            {providerListFailed && <Alert type="error" showIcon message={PROVIDER_LIST_FAILED} />}
             <Row gutter={[24, 24]}>
                 {!providerListFailed && providerList.map(({ provider, label, models }) => (
                     <Col xs={24} lg={12} key={provider}>
@@ -101,7 +99,7 @@ export default function SettingsPage() {
                                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                                         <Key size={16} color="#2dd4a8" />
-                                        <span style={{ color: '#e8e8e8' }}>{label} Configuration</span>
+                                        <span style={{ color: '#e8e8e8' }}>{label}</span>
                                     </div>
                                     {providerForms[provider].isDirty && (
                                         <Text style={{ fontSize: 12, color: '#d4a72d' }}>Unsaved changes</Text>

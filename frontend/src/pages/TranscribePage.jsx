@@ -8,6 +8,7 @@ import { CostEstimator } from "@/components/transcribe/cost-estimator"
 import VadTestModal from "@/components/transcribe/VadTestModal"
 import { useTranscription } from "@/context/TranscriptionContext"
 import { useModelManager } from "@/components/ModelManager"
+import { PROVIDER_LIST_FAILED } from "@/hooks/useProviderList"
 import { providerModels, providerPromptDisabledReason } from "@/utils/providerList"
 import { api } from "@/services/api"
 import { DownloadOutlined } from "@ant-design/icons"
@@ -264,7 +265,7 @@ export default function TranscribePage() {
                                 </option>
                             ))}
                         </select>
-                        {providerListFailed && <ReasonText reason="讀取供應商清單失敗，請重新整理頁面" />}
+                        {providerListFailed && <ReasonText reason={PROVIDER_LIST_FAILED} />}
                     </div>
                     <div style={{ height: 32, width: 1, background: "#3a3a5c" }} />
                     <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
