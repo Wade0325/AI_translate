@@ -32,10 +32,18 @@ def store_path() -> Path:
     return get_settings().audio_store_path
 
 
+def enabled() -> bool:
+    """使用者有沒有開保留音檔。"""
+    return get_settings().retain_audio
+
+
 def retain(source: Path, task_uuid) -> Optional[str]:
-    """把音檔搬進 audio_store，回傳保存後的檔名；未啟用或失敗時回傳 None。"""
+    """把音檔搬進 audio_store，回傳保存後的檔名；未啟用或失敗時回傳 None。
+
+    開著卻回 None 時，來源檔還在原處：呼叫端不能把它當成可以刪的副本。
+    """
     settings = get_settings()
-    if not settings.retain_audio:
+    if not enabled():
         return None
     try:
         source = Path(source)

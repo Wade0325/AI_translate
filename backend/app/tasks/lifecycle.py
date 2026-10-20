@@ -6,10 +6,12 @@
 計價、狀態廣播、取消旗標、保留音檔與清理輸入音檔都在這裡，每條規則只寫一次：
 
 - 取消不是失敗：任務紀錄寫 CANCELLED。開始前就取消的任務也有紀錄，不呼叫供應商；
-  使用者取消之後，供應商才跑完或才出錯，都不蓋掉取消。
+  使用者取消之後，供應商才跑完或才出錯，都不蓋掉取消。其他狀態照實改寫：啟動清掃把
+  還在跑的任務記成失敗，任務之後跑完就記成完成。
 - 暫時錯誤不寫 FAILED：輸入音檔與取消旗標留給執行模式的重試；沒有重試了才照失敗處理。
-- 先保留音檔，再清理：不論結果（連被強制終止也一樣），輸入音檔先搬進保留區，沒保留
-  下來的才刪掉；收尾的每一步各自保護，失敗只記 log。
+- 先保留音檔，再清理：不論結果（連被強制終止也一樣），輸入音檔先搬進保留區。關掉保留
+  音檔時刪掉上傳檔；開著卻保留不成時，上傳檔是唯一的一份，留在暫存區。收尾的每一步
+  各自保護，失敗只記 log。
 - 收尾之後才宣告結果：畫面收到完成、失敗或取消時，紀錄、片段與保留音檔都已就緒。
 
 狀態廣播與查詢取消只經由執行模式模組（:mod:`app.runtime.run_mode`）。
@@ -179,7 +181,7 @@ class TaskLifecycle:
         elapsed = self._elapsed()
         tokens, cost = self._price(result, elapsed)
 
-        completed = self._records.update_log_if_processing(db, self._task_uuid, {
+        completed = self._records.update_log_unless_cancelled(db, self._task_uuid, {
             "status": TaskStatus.COMPLETED,
             "audio_duration_seconds": self._duration,
             "processing_time_seconds": elapsed,
@@ -189,13 +191,14 @@ class TaskLifecycle:
             "lrc_content": result.text or None,
             "service_tier_used": result.service_tier_used or "standard",
         })
-        if not completed and self._record_cancelled(db):
+        # 只有取消不蓋掉；其他狀態照實記成完成（例如啟動清掃把還在跑的任務記成了失敗）
+        if not completed and self._is_record_cancelled(db):
             # 取消端點剛好先把紀錄記成已取消：完成不蓋掉取消，也不宣告完成
             return self._cancel(db)
         if completed:
             logger.info(f"Task status updated to COMPLETED. Task ID: {self._task_uuid}")
         else:
-            logger.warning(f"無法更新 transcription_log（可能 task_uuid 不符）: {self._task_uuid}")
+            logger.warning(f"找不到任務紀錄（可能在處理中被刪掉了）: {self._task_uuid}")
         self._save_segments(db, result)
 
         response = TranscriptionResponse(
@@ -239,12 +242,12 @@ class TaskLifecycle:
         """失敗：任務紀錄寫 FAILED 與錯誤訊息。"""
         logger.error(
             f"Transcription task failed for log ID: {self._task_uuid}\n{traceback.format_exc()}")
-        failed = self._records.update_log_if_processing(db, self._task_uuid, {
+        failed = self._records.update_log_unless_cancelled(db, self._task_uuid, {
             "status": TaskStatus.FAILED,
             "error_message": str(error),
             "processing_time_seconds": self._elapsed(),
         })
-        if not failed and self._record_cancelled(db):
+        if not failed and self._is_record_cancelled(db):
             # 取消端點剛好先把紀錄記成已取消：失敗不蓋掉取消
             return self._cancel(db)
         return _Outcome(TaskStatus.FAILED, f"任務失敗: {error}", error=error)
@@ -270,8 +273,14 @@ class TaskLifecycle:
             # 使用者在兩次執行之間的取消，重試開始時才看得到
             return
         if not retained:
-            with self._best_effort("清理上傳檔"):
-                _delete_upload(self._input)
+            if audio_store.enabled():
+                # 開著保留音檔卻沒保留成（例如保留區寫不進去）：上傳檔是唯一的一份，不刪，
+                # 留在暫存區，之後由啟動清掃處理
+                logger.warning(
+                    f"音檔沒保留成，上傳檔留在暫存區 (task={self._task_uuid}): {self._input}")
+            else:
+                with self._best_effort("清理上傳檔"):
+                    _delete_upload(self._input)
         # 任務結束後旗標已無作用，清掉以免影響同一檔案之後再開的任務
         # （之後再派送同一個檔案時也會先清一次）
         with self._best_effort("清除取消旗標"):
@@ -328,7 +337,7 @@ class TaskLifecycle:
             "completed_at": datetime.now(),
         }
 
-    def _record_cancelled(self, db: Session) -> bool:
+    def _is_record_cancelled(self, db: Session) -> bool:
         return self._records.current_status(db, self._task_uuid) == TaskStatus.CANCELLED
 
     def _price(self, result: TranscriptionTaskResult, elapsed: float) -> tuple[int, float]:
@@ -350,11 +359,11 @@ class TaskLifecycle:
         if self._pricing() == "free":
             return metrics.total_tokens, 0.0
         cost = metrics.cost
-        # 實際以 Flex 層級完成（不是退回 Standard）才打折
+        # 實際以 Flex 完成（不是退回標準）才打折
         if result.service_tier_used == "flex":
             discount = get_settings().flex_cost_discount
             cost *= discount
-            logger.info(f"Flex 層級生效，費用套用 {int(discount * 100)}% 折扣")
+            logger.info(f"Flex 處理模式生效，費用套用 {int(discount * 100)}% 折扣")
         logger.info(f"Metrics calculated. Task ID: {self._task_uuid}. Cost: ${cost:.6f}")
         return metrics.total_tokens, cost
 

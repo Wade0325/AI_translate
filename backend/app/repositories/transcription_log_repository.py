@@ -81,6 +81,30 @@ class TranscriptionLogRepository:
         return db.query(TranscriptionLog.status).filter(
             TranscriptionLog.task_uuid == uuid_val).scalar()
 
+    def update_log_unless_cancelled(
+        self, db: Session, task_uuid, update_data: Dict[str, Any]
+    ) -> bool:
+        """紀錄不是已取消時更新，回傳是否有更新（沒有紀錄或已取消時回 False）。
+
+        任務記下結果用：使用者取消之後（取消端點已經記成 CANCELLED），任務才跑完或失敗，
+        不能把取消蓋掉；其他狀態照實改寫，例如啟動清掃把還在跑的任務當成中斷、記成
+        FAILED，任務之後跑完就記成完成。
+        """
+        uuid_val = self._coerce_task_uuid(task_uuid)
+        if uuid_val is None:
+            return False
+        updated = (
+            db.query(TranscriptionLog)
+            .filter(
+                TranscriptionLog.task_uuid == uuid_val,
+                TranscriptionLog.status.is_distinct_from(TaskStatus.CANCELLED),
+            )
+            .update(update_data, synchronize_session=False)
+        )
+        if updated:
+            db.commit()
+        return bool(updated)
+
     def update_log_if_processing(
         self, db: Session, task_uuid, update_data: Dict[str, Any]
     ) -> bool:

@@ -286,15 +286,32 @@ def retained_files(data_dir) -> list[str]:
     return sorted(p.name for p in store.iterdir()) if store.exists() else []
 
 
+def kept_uploads(data_dir) -> list[bytes]:
+    """暫存上傳資料夾裡還留著的檔案內容。"""
+    return [(data_dir / "temp_uploads" / name).read_bytes() for name in leftovers(data_dir)]
+
+
+def block_audio_store(data_dir) -> None:
+    """保留區寫不進去：它的位置被一個檔案佔住，建不了資料夾。"""
+    (data_dir / "audio_store").write_bytes(b"")
+
+
+def run_startup_sweep(engine) -> None:
+    """app 啟動時的清掃：卡在處理中的單檔任務記成失敗。
+
+    門檻給 0 小時，當成任務已經逾時；例如 Docker 模式重啟 API 時，還在 GPU worker 上
+    跑的長任務也會被記成失敗。
+    """
+    from sqlalchemy.orm import sessionmaker
+
+    from app.repositories.transcription_log_repository import TranscriptionLogRepository
+
+    with sessionmaker(bind=engine)() as db:
+        TranscriptionLogRepository().mark_stale_processing_failed(db, max_age_hours=0)
+
+
 def codes(messages: list[dict]) -> list[str]:
     return [m["status_code"] for m in messages]
-
-
-def wait_until(condition) -> None:
-    deadline = time.monotonic() + TIMEOUT
-    while not condition():
-        assert time.monotonic() < deadline, "等太久"
-        time.sleep(0.02)
 
 
 # ─── 單檔任務跑完 ───────────────────────────────────────────────────────────
@@ -391,6 +408,26 @@ class TestSingleFileTask:
         record = api.get(f"/api/v1/history/{done['task_uuid']}").json()
         assert record["cost"] == pytest.approx(0.15)
         assert record["service_tier_used"] == "flex"
+
+    def test_task_finishing_after_the_startup_sweep_is_recorded_as_completed(
+            self, api, fake, test_engine):
+        fake.hold = threading.Event()
+        filename = upload(api)
+        with api.websocket_connect("/api/v1/ws/uid-swept") as ws:
+            submit(ws, filename)
+            task_uuid = receive(ws)["task_uuid"]
+            assert fake.started.wait(TIMEOUT)
+            run_startup_sweep(test_engine)
+            assert api.get(f"/api/v1/history/{task_uuid}").json()["status"] == TaskStatus.FAILED
+            fake.hold.set()
+            end = receive_until_terminal(ws)[-1]
+
+        # 任務其實跑完了：照實記成完成，紀錄、片段與輸出格式都和宣告的結果一致
+        assert end["status_code"] == TaskStatus.COMPLETED
+        assert api.get(f"/api/v1/history/{task_uuid}").json()["status"] == TaskStatus.COMPLETED
+        assert [s["text"] for s in stored_segments(api, task_uuid)] == TEXTS
+        lrc = api.get(f"/api/v1/history/{task_uuid}/download/lrc").text
+        assert all(text in lrc for text in TEXTS)
 
     def test_provider_progress_reaches_the_screen_before_the_result(self, api, fake):
         fake.reports = ["假供應商：上傳中", "假供應商：轉錄中"]
@@ -825,6 +862,16 @@ class TestFinishing:
         assert retained_files(data_dir) == []
         assert leftovers(data_dir) == []
 
+    @FINISHED_RUNS
+    def test_upload_is_kept_when_the_audio_store_cannot_be_written(
+            self, api, fake, data_dir, run_task):
+        block_audio_store(data_dir)
+        end = run_task(api, fake)
+
+        # 保留音檔開著卻保留不成：上傳檔是唯一的一份，不刪，留在暫存區；暫存檔照樣清掉
+        assert api.get(f"/api/v1/transcripts/{end['task_uuid']}/audio").status_code == 404
+        assert kept_uploads(data_dir) == [synthetic_audio()]
+
     def test_a_failing_step_does_not_stop_the_rest_or_change_the_result(self, api, fake, data_dir):
         fake.hold = threading.Event()
         fake.script = list(SCRIPT)
@@ -865,6 +912,16 @@ class TestTransientError:
         # 任務結束時才照保留設定處理輸入音檔；兩次執行的暫存檔都沒留下來
         assert retained_files(data_dir) == ([f"{task_uuid}.wav"] if retain_audio else [])
         assert leftovers(data_dir) == []
+
+    def test_retry_with_an_unwritable_audio_store_keeps_the_upload(self, api, fake, data_dir):
+        block_audio_store(data_dir)
+        fake.script = [TransientError("503 服務暫時無法使用"), list(SCRIPT[0])]
+        messages = transcribe(api, "uid-transient-store-blocked")
+
+        # 兩次執行都保留不成：重試從暫存區讀到同一份輸入完成，結束時也不刪它
+        assert codes(messages)[-1] == TaskStatus.COMPLETED
+        assert len(fake.calls) == 2
+        assert kept_uploads(data_dir) == [synthetic_audio()]
 
     def test_failed_when_retries_run_out(self, api, fake):
         attempts = 1 + TRANSIENT_RETRIES
