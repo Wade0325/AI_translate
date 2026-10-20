@@ -105,8 +105,9 @@ class TranscriptSegment(Base):
     （#115）。說話者分離給出的每一段各一列，可逐段更新、可標記、可回溯；Gemini 的片段是它
     LRC 的一行，Gemini 寫明結束的才有結束時間。
 
-    ``seg_key`` 是確定性的（切段序號 + 片段序號），所以任務被重派或重新轉錄時是
-    覆寫同一列而不是產生重複資料。``text_alt`` 存另一個模型對同一段的轉錄
+    ``seg_key`` 是確定性的（切段序號 + 片段序號），所以任務被重派或重新轉錄時對得上同一段，
+    不會產生重複資料；使用者動過的片段不刪、不覆寫（見 ``TranscriptSegmentRepository``
+    的 ``replace_untouched``）。``text_alt`` 存另一個模型對同一段的轉錄
     （local provider 的 VibeVoice 文字），兩者不一致處即是需要人工複查的候選。
     """
 

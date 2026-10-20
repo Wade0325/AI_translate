@@ -1,16 +1,20 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { message } from 'antd';
-import { modelOptions, findProviderForModel } from '../constants/modelConfig';
 import { useModelManager } from '../components/ModelManager';
 import { useTranscriptionSocket } from '../hooks/useTranscriptionSocket';
 import { useUploadQueue } from '../hooks/useUploadQueue';
 import { useDownloadBundle } from '../hooks/useDownloadBundle';
+import { PROVIDER_LIST_FAILED, useProviderList } from '../hooks/useProviderList';
 import {
   disabledReasonsFor,
   findModelCapabilities,
+  missingApiKey,
   modelSupports,
-  useProviderList,
-} from '../hooks/useProviderList';
+  providerLabel,
+  resolveSelection,
+  withModel,
+  withProvider,
+} from '../utils/providerList';
 import { api } from '../services/api';
 
 const TranscriptionContext = createContext(null);
@@ -26,7 +30,6 @@ export const useTranscription = () => {
 export const TranscriptionProvider = ({ children }) => {
   const [fileList, setFileList] = useState([]);
   const [targetLang, setTargetLang] = useState('zh-TW');
-  const [model, setModel] = useState(modelOptions.Google[0].value);
   const [isProcessing, setIsProcessing] = useState(false);
   // 'standard' | 'flex' | 'batch'
   const [processingMode, setProcessingMode] = useState('batch');
@@ -34,9 +37,27 @@ export const TranscriptionProvider = ({ children }) => {
 
   const useBatchMode = processingMode === 'batch';
 
+  const { getProviderConfig } = useModelManager();
+
+  // 先選供應商、再選它的模型；兩者都照供應商清單的值送出，後端會驗證模型屬於這個供應商。
+  // 選擇的規則（預設、換供應商）見 utils/providerList.js 的 resolveSelection
+  const {
+    providerList,
+    failed: providerListFailed,
+    reload: reloadProviderList,
+  } = useProviderList();
+  const [selection, setSelection] = useState({ provider: null, model: null });
+  const { provider, model } = resolveSelection(providerList, selection);
+
+  const selectProvider = useCallback((nextProvider) => {
+    setSelection((current) => withProvider(current, nextProvider));
+  }, []);
+  const setModel = useCallback((nextModel) => {
+    setSelection((current) => withModel(current, nextModel));
+  }, []);
+
   // 所選模型支援哪些輸入與處理方式；模型能力還沒載入時不限制，由後端把關
-  const providerList = useProviderList();
-  const capabilities = findModelCapabilities(providerList, findProviderForModel(model), model);
+  const capabilities = findModelCapabilities(providerList, provider, model);
   const supports = useMemo(() => modelSupports(capabilities), [capabilities]);
   const reasons = useMemo(() => disabledReasonsFor(supports), [supports]);
 
@@ -44,7 +65,6 @@ export const TranscriptionProvider = ({ children }) => {
   const [previewContent, setPreviewContent] = useState('');
   const [previewTitle, setPreviewTitle] = useState('');
 
-  const { getProviderConfig } = useModelManager();
   const socketManager = useTranscriptionSocket();
   const { downloadFile, downloadAllFiles } = useDownloadBundle(fileList);
   const { startRegular, startBatch } = useUploadQueue({
@@ -194,19 +214,15 @@ export const TranscriptionProvider = ({ children }) => {
   }, [fileList]);
 
   const handleStartTranscription = useCallback(async () => {
-    const provider = findProviderForModel(model);
-    if (!provider) {
-      message.error(`找不到模型 ${model} 對應的服務商設定。`);
+    if (!provider || !model) {
+      message.error(providerListFailed ? PROVIDER_LIST_FAILED : '供應商清單還在載入，請稍後再試');
       return;
     }
 
     const config = await getProviderConfig(provider);
-    // 設定裡只有遮罩後的金鑰：這裡只確認已設定，實際金鑰由後端從資料庫取用、不隨任務送出
-    const hasApiKey = Boolean(config?.apiKeys?.[0]);
     const prompt = config?.prompt;
-    const isLocalProvider = provider.toLowerCase() === 'local';
-    if (!hasApiKey && !isLocalProvider) {
-      message.error(`請先在模型管理中為 ${provider} 設定 API 金鑰。`);
+    if (missingApiKey(providerList, provider, config)) {
+      message.error(`請先在設定頁為 ${providerLabel(providerList, provider)} 設定 API 金鑰。`);
       return;
     }
     if (useBatchMode && reasons.batch) {
@@ -230,7 +246,10 @@ export const TranscriptionProvider = ({ children }) => {
       message.warning('沒有等待處理的新檔案！');
     }
   }, [
+    provider,
     model,
+    providerList,
+    providerListFailed,
     getProviderConfig,
     targetLang,
     multiSpeaker,
@@ -247,6 +266,11 @@ export const TranscriptionProvider = ({ children }) => {
     setFileList,
     targetLang,
     setTargetLang,
+    providerList,
+    providerListFailed,
+    reloadProviderList,
+    provider,
+    selectProvider,
     model,
     setModel,
     disabledReasons: reasons,

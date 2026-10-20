@@ -253,6 +253,8 @@ def run_batch(task_params_dict: dict, task_uuid: str):
     vad_cleanup_files = []
     adapter = None
     start_time = time.time()
+    # {file_uid: 任務紀錄的 task_uuid}；在 try 之前給值：建立任務紀錄之前就出錯時，except 也用得到
+    file_log_uuids = {}
 
     try:
         # 模型不支援批次、金鑰無效都在這裡失敗
@@ -296,7 +298,6 @@ def run_batch(task_params_dict: dict, task_uuid: str):
 
         # --- 取得音訊時長 & 建立資料庫日誌 ---
         file_durations = {}
-        file_log_uuids = {}
 
         for file_item in task_params.files:
             local_path = Path(file_item.file_path)
@@ -507,6 +508,7 @@ def run_batch(task_params_dict: dict, task_uuid: str):
         # === 持久化節點 3b：任務失敗 ===
         batch_repo.update_job(db, batch_id, {"status": "FAILED"})
 
+        # 每個檔案都廣播失敗：畫面靠它離開處理中。還沒建立任務紀錄的檔案只廣播
         for file_item in task_params.files:
             file_uid = file_item.file_uid
             if file_uid in file_log_uuids:
@@ -515,7 +517,7 @@ def run_batch(task_params_dict: dict, task_uuid: str):
                     "error_message": str(e),
                     "processing_time_seconds": time.time() - start_time,
                 })
-                update_status(f"批次任務失敗: {e}", status_code=TaskStatus.FAILED, file_uid=file_uid)
+            update_status(f"批次任務失敗: {e}", status_code=TaskStatus.FAILED, file_uid=file_uid)
 
         update_status(f"批次任務失敗: {e}", status_code=TaskStatus.BATCH_COMPLETED)
         raise e

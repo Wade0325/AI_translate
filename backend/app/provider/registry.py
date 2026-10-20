@@ -1,15 +1,17 @@
 """依名稱找出供應商轉接器，驗證請求用得了所選的模型（模型屬於這個供應商、支援請求要的
 處理方式、吃得下請求裡填了的輸入），並列出每個供應商的模型與模型能力。
 
-供應商名稱不分大小寫（前端送 ``Google``／``Local``，紀錄裡存的也是原樣）。
+供應商名稱不分大小寫：畫面送的是清單上的小寫名稱（``google``／``local``），改版前的
+紀錄存的是 ``Google``／``Local``。
 """
 
 from __future__ import annotations
 
 import threading
-from typing import Dict, Mapping, Optional, Protocol, cast
+from dataclasses import dataclass
+from typing import List, Mapping, NamedTuple, Optional, Protocol, Tuple, cast
 
-from app.provider.base import BatchProvider, ModelCapabilities, Provider
+from app.provider.base import BatchProvider, ModelCapabilities, Provider, ProviderInfo
 from app.provider.google.provider import GeminiProvider
 from app.provider.local.provider import local_provider
 
@@ -18,7 +20,10 @@ class ProviderFactory(Protocol):
     """一個供應商：查模型能力不必建立轉接器，也不碰顯卡之類的硬體（API 行程與模型能力
     端點都會查）；建立的轉接器專給一個任務用。"""
 
-    def capabilities(self) -> Mapping[str, ModelCapabilities]: ...
+    info: ProviderInfo
+
+    def capabilities(self) -> Mapping[str, ModelCapabilities]:
+        """每個模型的模型能力，依畫面列出的順序；第一個是這個供應商的預設模型。"""
 
     def __call__(self, model: str, api_key: str) -> Provider:
         """建立已經準備好的轉接器；還不能轉錄（缺權重、金鑰無效）時拋 ValueError。"""
@@ -33,6 +38,8 @@ class UnsupportedInputError(UnsupportedModelError):
     """請求填了模型不吃的輸入（提示詞、使用者文稿）。"""
 
 
+# 順序就是畫面的順序，第一個是轉錄頁預設的供應商。沿用改版前的預設（Gemini）：和 ADR-0003
+# 「預設本機」不一致，沒有 GPU 時預設什麼還在 #11 待決定，決定後改這裡的順序
 _factories: dict[str, ProviderFactory] = {"google": GeminiProvider, "local": local_provider}
 _lock = threading.Lock()
 
@@ -57,14 +64,42 @@ def _factory(provider: str) -> ProviderFactory:
     return factory
 
 
-def providers() -> Dict[str, Mapping[str, ModelCapabilities]]:
-    """每個供應商（小寫名稱）的每個模型、不建立轉接器就知道的模型能力。
+@dataclass(frozen=True)
+class ListedModel:
+    """清單上的一個模型與它不建立轉接器就知道的模型能力。``single_pass_seconds`` 是上限：
+    實際轉錄時，轉接器在執行的機器上可能切得更短（本機依顯卡容量收斂）。"""
+    model: str
+    label: str
+    capabilities: ModelCapabilities
 
-    單次長度是上限：轉接器在執行的機器上可能更短（本機依顯卡容量收斂）。
-    """
+
+@dataclass(frozen=True)
+class ListedProvider:
+    """清單上的一個供應商與它的模型；送出任務時，``provider`` 與 ``model`` 照這裡的值帶回。
+    第一個模型是這個供應商的預設模型。"""
+    provider: str
+    label: str
+    requires_api_key: bool
+    models: Tuple[ListedModel, ...]
+
+
+def providers() -> List[ListedProvider]:
+    """每個供應商（小寫名稱）與它的每個模型，不建立轉接器、不碰顯卡。"""
     with _lock:
         factories = list(_factories.items())
-    return {name: factory.capabilities() for name, factory in factories}
+    return [_listed(name, factory.info, factory.capabilities()) for name, factory in factories]
+
+
+def _listed(name: str, info: ProviderInfo,
+            models: Mapping[str, ModelCapabilities]) -> ListedProvider:
+    return ListedProvider(
+        provider=name,
+        label=info.label,
+        requires_api_key=info.requires_api_key,
+        models=tuple(ListedModel(model=model, label=info.model_labels.get(model, model),
+                                 capabilities=capabilities)
+                     for model, capabilities in models.items()),
+    )
 
 
 def model_capabilities(provider: str, model: str) -> ModelCapabilities:
@@ -79,9 +114,17 @@ def model_capabilities(provider: str, model: str) -> ModelCapabilities:
     return capabilities
 
 
+class CheckedRequest(NamedTuple):
+    """驗證過的請求：派送任務與存任務紀錄都用這裡的值。"""
+    provider: str
+    """供應商清單上的名稱（小寫）。請求裡可能寫成 ``Google``、``GOOGLE``，任務紀錄一律存這個。"""
+    capabilities: ModelCapabilities
+
+
 def check_request(provider: str, model: str, *, prompt: Optional[str] = None,
-                  user_text: Optional[str] = None, batch: bool = False) -> ModelCapabilities:
-    """驗證這個請求用得了這個供應商的這個模型，回傳模型能力給呼叫端派送任務。
+                  user_text: Optional[str] = None, batch: bool = False) -> CheckedRequest:
+    """驗證這個請求用得了這個供應商的這個模型，回傳供應商清單上的名稱與模型能力給呼叫端
+    派送任務。
 
     依序檢查：模型屬於這個供應商；批次請求（``batch``）的模型支援批次；模型吃得下
     請求裡填了的輸入。整批跑不了的原因先報，免得使用者清掉輸入後又被拒一次。
@@ -103,7 +146,7 @@ def check_request(provider: str, model: str, *, prompt: Optional[str] = None,
     if unsupported:
         raise UnsupportedInputError(
             f"模型 {model} 不支援{'與'.join(unsupported)}，請清空後再送出")
-    return capabilities
+    return CheckedRequest(provider=provider.lower(), capabilities=capabilities)
 
 
 def open_provider(provider: str, model: str, api_key: str = "") -> Provider:

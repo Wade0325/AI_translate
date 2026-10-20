@@ -8,7 +8,7 @@
   沒有另外指定的請求，回應的文字是 ``[00:00.00]<這個請求的提示詞>``；
   送出時請求引用的檔案不在遠端，那個請求回錯誤。
 
-測試從 ``stored`` 看遠端還留著哪些檔案。
+測試從 ``stored`` 看遠端還留著哪些檔案，從 ``prompts`` 看收到了哪些提示詞。
 """
 
 from __future__ import annotations
@@ -111,6 +111,8 @@ class FakeGenaiClient:
         """每查一次批次依序回報的狀態，停在最後一個。"""
         self.batch_outcomes: Dict[int, BatchOutcome] = {}
         """批次裡第 i 個請求的結果；沒指定的照提示詞回應。"""
+        self.prompts: List[str] = []
+        """依序收到的提示詞：generate_content 每次一則，送出的批次每個請求一則。"""
         self._ids = itertools.count(1)
         self._polls_left: Dict[str, int] = {}
         self._jobs: Dict[str, List[types.InlinedResponse]] = {}
@@ -164,6 +166,7 @@ class _Models:
     def generate_content(self, *, model: str, contents: List[Any],
                          config: types.GenerateContentConfig) -> types.GenerateContentResponse:
         tier = "flex" if config.service_tier == "flex" else "standard"
+        self._client.prompts.extend(part for part in contents if isinstance(part, str))
         for part in contents:
             if isinstance(part, types.File):
                 stored = self._client.stored.get(part.name or "")
@@ -208,6 +211,7 @@ class _Batches:
     def _respond(self, index: int, request: types.InlinedRequest) -> types.InlinedResponse:
         parts = request.contents[0].parts
         prompt = next(p.text for p in parts if p.text)
+        self._client.prompts.append(prompt)
         uri = next(p.file_data.file_uri for p in parts if p.file_data)
         if not any(f.uri == uri for f in self._client.stored.values()):
             return types.InlinedResponse(error=types.JobError(code=5, message=f"File {uri} not found."))

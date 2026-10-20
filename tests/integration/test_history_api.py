@@ -298,7 +298,8 @@ class TestDownloadFromSegments:
             self, client: TestClient, db_session: Session, fmt):
         # 存下來的 LRC 只是凍結的原始轉錄副本，有片段時下載不讀它
         log = _create_log(db_session, lrc_content="[00:00.00]凍結的原始轉錄副本")
-        TranscriptSegmentRepository.replace_all(db_session, log.task_uuid, SEGMENTS)
+        TranscriptSegmentRepository.replace_untouched(db_session, log.task_uuid, SEGMENTS)
+        db_session.commit()
 
         response = client.get(f"/api/v1/history/{log.task_uuid}/download/{fmt}")
         assert response.status_code == 200

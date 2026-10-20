@@ -2,11 +2,12 @@
 
 這裡不換供應商，只換掉 google-genai 用戶端：批次目前只有 Gemini 支援，遠端檔也只有
 Gemini 會留下。其他都走真的：TestClient、sqlite、行程內執行模式、WebSocket 狀態廣播、
-ffmpeg 與去靜音。測試只從外部觀察：狀態廣播、API 回應，以及遠端還留著哪些檔案。
+ffmpeg 與去靜音。測試只從外部觀察：狀態廣播、API 回應、送給 Gemini 的提示詞，以及
+遠端與上傳的暫存資料夾還留著哪些檔案。
 """
 import io
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait
 from contextlib import asynccontextmanager
 
 import numpy as np
@@ -23,6 +24,10 @@ from tests.support.fake_genai import FakeGenaiClient, Reply, invalid_argument, u
 MODEL = "gemini-2.5-flash"
 SAMPLE_RATE = 16000
 TIMEOUT = 30
+
+# 使用者的提示詞照樣代入變數，裡面的 JSON 之類的大括號原樣送給 Gemini（#143）
+JSON_PROMPT = '請轉錄{source_lang}音檔，每一行寫成 {"speaker": "S0", "text": "…"}'
+JSON_PROMPT_SENT = '請轉錄日文音檔，每一行寫成 {"speaker": "S0", "text": "…"}'
 
 
 VOICED = [(0, 2), (5, 7), (10, 12)]
@@ -50,16 +55,22 @@ def genai():
 class _GeminiWithFakeClient:
     """供應商「google」：建立的 Gemini 轉接器都接上同一個假用戶端，也不真的等。"""
 
+    info = GeminiProvider.info
+
     def __init__(self, genai: FakeGenaiClient):
         self._genai = genai
         self.withdrawn: set[str] = set()
         """不再提供的模型，例如升級後從模型清單拿掉的。"""
+        self.open_error: Exception | None = None
+        """建立轉接器時拋的錯，例如金鑰無效時的 ValueError。"""
 
     def capabilities(self):
         return {model: capabilities for model, capabilities in GeminiProvider.capabilities().items()
                 if model not in self.withdrawn}
 
     def __call__(self, model: str, api_key: str) -> GeminiProvider:
+        if self.open_error is not None:
+            raise self.open_error
         return GeminiProvider(model, api_key, client=self._genai, sleep=lambda seconds: None)
 
 
@@ -86,6 +97,7 @@ def data_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(upload, "TEMP_UPLOADS_DIR", uploads)
     monkeypatch.setattr(transcription, "TEMP_UPLOADS_DIR", uploads)
     monkeypatch.setattr(batch, "TEMP_UPLOADS_DIR", uploads)
+    return tmp_path
 
 
 @pytest.fixture
@@ -137,43 +149,58 @@ def api(test_engine, data_dir, task_db, in_process_run_mode, gemini):
 _reader = ThreadPoolExecutor(max_workers=2)
 
 
-def transcribe(api: TestClient, run_mode, name: str) -> list[dict]:
-    """上傳、送出單檔任務，收下所有廣播直到任務結束。file_uid 就是檔名。"""
+def transcribe(api: TestClient, run_mode, name: str, **fields) -> list[dict]:
+    """上傳、送出單檔任務，收下所有廣播直到任務結束。file_uid 就是檔名。
+
+    fields 是請求的其他欄位，例如提示詞。
+    """
     response = api.post("/api/v1/upload", files={"file": (name, synthetic_audio(), "audio/wav")})
     assert response.status_code == 200, response.text
 
     with api.websocket_connect(f"/api/v1/ws/{name}") as ws:
         ws.send_json({"filename": response.json()["filename"], "original_filename": name,
-                      "provider": "Google", "model": MODEL, "source_lang": "ja"})
+                      "provider": "Google", "model": MODEL, "source_lang": "ja", **fields})
         messages = receive_until(ws, TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED)
     # 結束的廣播之後任務還在收尾（刪遠端檔就在這裡），等它整個跑完
     wait_until(lambda: not run_mode.is_alive(messages[-1]["task_uuid"]))
     return messages
 
 
-def run_batch(api: TestClient, run_mode, batch_id: str, names: list[str]) -> list[dict]:
-    """上傳、送出批次，收下所有廣播直到批次結束。檔案的 file_uid 就是檔名。"""
+def run_batch(api: TestClient, run_mode, batch_id: str, names: list[str],
+              fields_per_file: dict[str, dict] | None = None, timeout: float = TIMEOUT,
+              **fields) -> list[dict]:
+    """上傳、送出批次，收下所有廣播直到批次結束。檔案的 file_uid 就是檔名。
+
+    fields 是批次層級的其他欄位，fields_per_file 是個別檔案的欄位（以檔名為 key），
+    例如提示詞。timeout 是每則廣播最多等幾秒。
+    """
     files = []
     for name in names:
         response = api.post("/api/v1/upload", files={"file": (name, synthetic_audio(), "audio/wav")})
         assert response.status_code == 200, response.text
         files.append({"filename": response.json()["filename"], "original_filename": name,
-                      "file_uid": name})
+                      "file_uid": name, **(fields_per_file or {}).get(name, {})})
 
     with api.websocket_connect(f"/api/v1/batch/ws/{batch_id}") as ws:
-        ws.send_json({"files": files, "provider": "Google", "model": MODEL, "source_lang": "ja"})
-        messages = receive_until(ws, TaskStatus.BATCH_COMPLETED)
+        ws.send_json({"files": files, "provider": "Google", "model": MODEL, "source_lang": "ja",
+                      **fields})
+        messages = receive_until(ws, TaskStatus.BATCH_COMPLETED, timeout=timeout)
     # 結束的廣播之後批次還在收尾。等它整個跑完再查 API：
     # 測試的 sqlite 只有一條連線，和 worker 同時用會互相蓋掉交易
     wait_until(lambda: not run_mode.is_alive(messages[-1]["task_uuid"]))
     return messages
 
 
-def receive_until(ws, *end: TaskStatus) -> list[dict]:
-    """收廣播直到收到其中一種結束狀態；逾時直接失敗，不讓 CI 卡住。"""
+def receive_until(ws, *end: TaskStatus, timeout: float = TIMEOUT) -> list[dict]:
+    """收廣播直到收到其中一種結束狀態。
+
+    等一則廣播超過 timeout 秒就斷言失敗，附上已經收到的廣播，不讓 CI 卡住。
+    """
     messages = []
     while not messages or messages[-1]["status_code"] not in end:
-        messages.append(_reader.submit(ws.receive_json).result(timeout=TIMEOUT))
+        done, _ = wait([_reader.submit(ws.receive_json)], timeout=timeout)
+        assert done, f"{timeout} 秒內沒有新的廣播，還沒收到 {'、'.join(end)}；已經收到：{messages}"
+        messages.append(done.pop().result())
     return messages
 
 
@@ -246,6 +273,16 @@ def test_single_file_is_retried_after_a_transient_error(api, in_process_run_mode
     assert "おはよう。" in messages[-1]["result"]["transcripts"]["srt"]
     assert history(api, "gemini-single-transient.wav")["status"] == TaskStatus.COMPLETED
     assert genai.stored == {}  # 兩次執行上傳的遠端檔都刪掉了
+
+
+def test_single_file_prompt_with_braces_reaches_gemini_as_written(api, in_process_run_mode, genai):
+    genai.replies = [Reply(text="[00:01.00]おはよう。")]
+
+    end = transcribe(api, in_process_run_mode, "gemini-single-braces.wav",
+                     prompt=JSON_PROMPT, source_lang="ja-JP")[-1]
+
+    assert end["status_code"] == TaskStatus.COMPLETED
+    assert genai.prompts == [JSON_PROMPT_SENT]
 
 
 # ─── 分段轉錄 ────────────────────────────────────────────────────────────────
@@ -330,6 +367,18 @@ def test_every_file_completes_and_remote_files_are_deleted(api, in_process_run_m
     assert genai.stored == {}  # 批次結束時刪掉上傳到 Gemini 的檔案
 
 
+def test_batch_records_store_the_listed_provider_name(api, in_process_run_mode, genai, db_session):
+    # run_batch 照舊前端的寫法送 Google；任務紀錄存的是供應商清單上的 google（#97）
+    from app.repositories.transcription_log_repository import TranscriptionLogRepository
+
+    genai.batch_outcomes = {0: Reply(text="[00:01.00]おはよう。")}
+    run_batch(api, in_process_run_mode, "batch-gemini-spelling", ["gemini-spelling.wav"])
+
+    task_uuid = history(api, "gemini-spelling.wav")["task_uuid"]
+    db_session.expire_all()
+    assert TranscriptionLogRepository().get(db_session, task_uuid).provider == "google"
+
+
 def test_a_failed_file_does_not_stop_the_others(api, in_process_run_mode, genai):
     genai.batch_outcomes = {0: types.JobError(code=3, message="音檔無法解碼")}
 
@@ -344,6 +393,37 @@ def test_a_failed_file_does_not_stop_the_others(api, in_process_run_mode, genai)
     failed = history(api, "gemini-bad.wav")
     assert failed["status"] == TaskStatus.FAILED
     assert "音檔無法解碼" in failed["error_message"]
+
+
+def test_every_file_fails_when_the_provider_cannot_be_opened(
+        api, in_process_run_mode, gemini, data_dir):
+    # 開供應商時就失敗，這時還沒建立任務紀錄（#156）
+    gemini.open_error = ValueError("API 金鑰無效")
+
+    # 失敗得這麼早，廣播馬上就到：每則只等 5 秒，收不到就斷言失敗
+    messages = run_batch(api, in_process_run_mode, "batch-gemini-bad-key",
+                         ["gemini-bad-key-a.wav", "gemini-bad-key-b.wav"], timeout=5)
+
+    # 畫面靠每個檔案自己的失敗廣播離開處理中，批次結束的廣播不會改檔案的狀態
+    results = final_status(messages)
+    assert {uid: m["status_code"] for uid, m in results.items()} == {
+        "gemini-bad-key-a.wav": TaskStatus.FAILED, "gemini-bad-key-b.wav": TaskStatus.FAILED}
+    assert all("API 金鑰無效" in m["status_text"] for m in results.values())
+    assert [p.name for p in (data_dir / "temp_uploads").iterdir()] == []  # 上傳的暫存檔照樣清掉
+
+
+def test_prompts_with_braces_reach_gemini_as_written(api, in_process_run_mode, genai):
+    # 第一個檔案沿用批次的提示詞，第二個檔案有自己的提示詞（#143）
+    own_prompt = "這一檔有兩位說話者，分別標成 {A} 與 {B}"
+
+    messages = run_batch(api, in_process_run_mode, "batch-gemini-braces",
+                         ["gemini-braces-a.wav", "gemini-braces-b.wav"],
+                         fields_per_file={"gemini-braces-b.wav": {"prompt": own_prompt}},
+                         prompt=JSON_PROMPT, source_lang="ja-JP")
+
+    assert {uid: m["status_code"] for uid, m in final_status(messages).items()} == {
+        "gemini-braces-a.wav": TaskStatus.COMPLETED, "gemini-braces-b.wav": TaskStatus.COMPLETED}
+    assert genai.prompts == [JSON_PROMPT_SENT, own_prompt]
 
 
 @pytest.mark.parametrize("model_withdrawn", [False, True], ids=["model-offered", "model-withdrawn"])

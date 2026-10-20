@@ -1,5 +1,5 @@
 import { useState, useRef } from "react"
-import { Card, Typography, Button, Input, Modal, Pagination, Space, Tag, Dropdown, Popconfirm, message } from "antd"
+import { Card, Typography, Button, Input, Modal, Pagination, Space, Dropdown, Popconfirm, message } from "antd"
 import { ReasonText, ReasonTooltip } from "@/components/disabled-reason"
 import { UploadZone } from "@/components/transcribe/upload-zone"
 import { GlobalDefaults } from "@/components/transcribe/global-defaults"
@@ -8,8 +8,8 @@ import { CostEstimator } from "@/components/transcribe/cost-estimator"
 import VadTestModal from "@/components/transcribe/VadTestModal"
 import { useTranscription } from "@/context/TranscriptionContext"
 import { useModelManager } from "@/components/ModelManager"
-import { modelOptions, findProviderForModel } from "@/constants/modelConfig"
-import { providerPromptDisabledReason, useProviderList } from "@/hooks/useProviderList"
+import { PROVIDER_LIST_FAILED } from "@/hooks/useProviderList"
+import { modelOptions, providerOptions, providerPromptDisabledReason } from "@/utils/providerList"
 import { api } from "@/services/api"
 import { DownloadOutlined } from "@ant-design/icons"
 import { downloadFormatsLong } from "@/constants/downloadFormats"
@@ -20,12 +20,26 @@ const { TextArea } = Input
 
 const PAGE_SIZE = 5
 
+const selectStyle = {
+    background: "#2a2a48",
+    border: "1px solid #3a3a5c",
+    borderRadius: 6,
+    color: "#e8e8e8",
+    padding: "4px 8px",
+    fontSize: 12,
+}
+
 export default function TranscribePage() {
     const {
         fileList,
         setFileList,
         targetLang,
         setTargetLang,
+        providerList,
+        providerListFailed,
+        reloadProviderList,
+        provider,
+        selectProvider,
         model,
         setModel,
         disabledReasons,
@@ -58,10 +72,8 @@ export default function TranscribePage() {
     const [vadResult, setVadResult] = useState(null)
     const fileInputRef = useRef(null)
 
-    const currentProvider = findProviderForModel(model)
     // 「編輯參數」改的是供應商的提示詞範本，和設定頁同一條規則：供應商的模型都不吃提示詞才停用
-    const providerList = useProviderList()
-    const promptTemplateDisabledReason = providerPromptDisabledReason(providerList, currentProvider)
+    const promptTemplateDisabledReason = providerPromptDisabledReason(providerList, provider)
 
     const [globalConfig, setGlobalConfig] = useState({
         language: targetLang || "zh-TW",
@@ -218,45 +230,61 @@ export default function TranscribePage() {
                 styles={{ body: { padding: "12px 16px" } }}
             >
                 <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 16 }}>
+                    {/* 先選供應商，模型選單只列這個供應商的模型 */}
                     <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                        <Text style={{ fontSize: 11, color: "#8888a8" }}>服務商</Text>
-                        <Tag color="green">{currentProvider}</Tag>
-                    </div>
-                    <div style={{ height: 32, width: 1, background: "#3a3a5c" }} />
-                    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                        <Text style={{ fontSize: 11, color: "#8888a8" }}>模型</Text>
+                        <Text style={{ fontSize: 11, color: "#8888a8" }}>供應商</Text>
                         <select
-                            value={model}
-                            onChange={(e) => setModel(e.target.value)}
-                            style={{
-                                background: "#2a2a48",
-                                border: "1px solid #3a3a5c",
-                                borderRadius: 6,
-                                color: "#e8e8e8",
-                                padding: "4px 8px",
-                                fontSize: 12,
-                            }}
+                            aria-label="供應商"
+                            value={provider ?? ""}
+                            onChange={(e) => selectProvider(e.target.value)}
+                            disabled={!provider}
+                            style={selectStyle}
                         >
-                            {Object.values(modelOptions).flat().map((m) => (
-                                <option key={m.value} value={m.value}>
-                                    {m.label}
+                            {!provider && (
+                                <option value="">{providerListFailed ? "讀取失敗" : "載入中…"}</option>
+                            )}
+                            {providerOptions(providerList).map((option) => (
+                                <option key={option.value} value={option.value}>
+                                    {option.label}
                                 </option>
                             ))}
                         </select>
                     </div>
                     <div style={{ height: 32, width: 1, background: "#3a3a5c" }} />
                     <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                        <Text style={{ fontSize: 11, color: "#8888a8" }}>模型</Text>
+                        <select
+                            aria-label="模型"
+                            value={model ?? ""}
+                            onChange={(e) => setModel(e.target.value)}
+                            disabled={!provider}
+                            style={selectStyle}
+                        >
+                            {modelOptions(providerList, provider).map((option) => (
+                                <option key={option.value} value={option.value}>
+                                    {option.label}
+                                </option>
+                            ))}
+                        </select>
+                        {providerListFailed && (
+                            <Space size={6}>
+                                <ReasonText reason={PROVIDER_LIST_FAILED} />
+                                <Button size="small" type="link" onClick={reloadProviderList} style={{ padding: 0, fontSize: 11 }}>
+                                    重試
+                                </Button>
+                            </Space>
+                        )}
+                    </div>
+                    <div style={{ height: 32, width: 1, background: "#3a3a5c" }} />
+                    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
                         <Text style={{ fontSize: 11, color: "#8888a8" }}>處理模式</Text>
                         <select
+                            aria-label="處理模式"
                             value={processingMode}
                             onChange={(e) => setProcessingMode(e.target.value)}
                             style={{
-                                background: "#2a2a48",
-                                border: "1px solid #3a3a5c",
-                                borderRadius: 6,
+                                ...selectStyle,
                                 color: processingMode === "standard" ? "#e8e8e8" : "#2dd4a8",
-                                padding: "4px 8px",
-                                fontSize: 12,
                             }}
                         >
                             <option value="standard">標準（即時）</option>
@@ -279,19 +307,19 @@ export default function TranscribePage() {
                     </div>
                     <div style={{ flex: 1 }} />
                     <Space size={6}>
-                        <Button size="small" onClick={() => handleEditProvider(currentProvider)}>
+                        <Button size="small" disabled={!provider} onClick={() => handleEditProvider(provider)}>
                             編輯 API
                         </Button>
                         <ReasonTooltip title={promptTemplateDisabledReason}>
                             <Button
                                 size="small"
-                                disabled={Boolean(promptTemplateDisabledReason)}
-                                onClick={() => handleEditProviderParams(currentProvider)}
+                                disabled={!provider || Boolean(promptTemplateDisabledReason)}
+                                onClick={() => handleEditProviderParams(provider)}
                             >
                                 編輯參數
                             </Button>
                         </ReasonTooltip>
-                        <Button size="small" onClick={() => handleTestProvider(currentProvider)}>
+                        <Button size="small" disabled={!provider} onClick={() => handleTestProvider(provider)}>
                             測試 API
                         </Button>
                     </Space>
