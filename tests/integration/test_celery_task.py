@@ -9,7 +9,6 @@ Redis 換成 fakeredis，供應商換成假供應商；任務生命週期、分�
 """
 import io
 import json
-import time
 import uuid
 
 import fakeredis
@@ -25,6 +24,7 @@ from app.runtime import run_mode
 from app.runtime.celery_redis import CHANNEL, CeleryRedisRunMode
 from app.runtime.run_mode import TRANSIENT_RETRIES
 from tests.support.fake_provider import FAKE_MODEL, FakeProvider
+from tests.support.waiting import cancel_when_dispatched
 
 LINES = [(0.2, 1.5, 0, "おはよう。"), (2.3, 3.6, 1, "こんにちは。")]
 WILL_RETRY = "暫時性錯誤，將重試"
@@ -183,17 +183,18 @@ def test_retries_until_the_provider_recovers(
     assert client.get(f"/api/v1/history/{task_id}").json()["status"] == TaskStatus.COMPLETED
 
 
-def test_completed_task_clears_its_registration_and_cancel_flag(
-        transcribe_media_task, uploads, fake, redis_run_mode):
+def test_cancel_after_the_task_completed_finds_nothing_to_cancel(
+        transcribe_media_task, uploads, fake, redis_run_mode, client):
     fake.script = [list(LINES)]
     task_id = str(uuid.uuid4())
-    redis_run_mode.register_task("uid-done", task_id, can_terminate=False)
+    redis_run_mode.register_task("uid-done", task_id, can_terminate=False)  # 派送時登記
 
     transcribe_media_task.apply(args=[task_params(uploads, "uid-done")], task_id=task_id)
 
-    # 任務結束就清掉登記：之後按取消不會找到這個早已結束的任務
-    assert redis_run_mode.registered_task("uid-done") is None
-    assert redis_run_mode.is_cancel_requested("uid-done") is False
+    # 任務結束時清掉登記：之後按取消，不會找到這個早已結束的任務，紀錄維持完成
+    response = client.post("/api/v1/transcription/uid-done/cancel").json()
+    assert response == {"file_uid": "uid-done", "cancelled": False, "reason": "not-started"}
+    assert client.get(f"/api/v1/history/{task_id}").json()["status"] == TaskStatus.COMPLETED
 
 
 # ─── 撤銷之後不會再執行的任務 ────────────────────────────────────────────────
@@ -221,7 +222,8 @@ def test_task_revoked_before_it_runs_is_recorded_and_its_upload_handled(
     else:
         assert audio.status_code == 404
     assert list(uploads.iterdir()) == []
-    assert redis_run_mode.registered_task("uid-revoked") is None
+    again = client.post("/api/v1/transcription/uid-revoked/cancel").json()
+    assert again["reason"] == "not-started"
     assert redis_run_mode.is_cancel_requested("uid-revoked") is False
 
 
@@ -252,7 +254,8 @@ def test_task_revoked_while_waiting_to_retry_is_recorded_and_its_upload_handled(
     else:
         assert audio.status_code == 404
     assert list(uploads.iterdir()) == []
-    assert redis_run_mode.registered_task("uid-retry-revoked") is None
+    again = client.post("/api/v1/transcription/uid-retry-revoked/cancel").json()
+    assert again["reason"] == "not-started"
     assert redis_run_mode.is_cancel_requested("uid-retry-revoked") is False
 
 
@@ -290,25 +293,13 @@ def test_cancelling_a_queued_gemini_task_still_terminates_it(
     with client.websocket_connect("/api/v1/ws/uid-gemini-queued") as ws:
         ws.send_json({"filename": uploaded.json()["filename"], "original_filename": name,
                       "provider": "Google", "model": "gemini-2.5-flash", "source_lang": "ja"})
-        cancelled = poll_cancel(client, "uid-gemini-queued")
+        cancel_when_dispatched(client, "uid-gemini-queued")
 
     # 任務紀錄還沒建立（任務可能下一刻就開始）：照派送時登記的模型能力送出強制終止
-    assert cancelled["cancelled"] is True
     assert [terminate for _, terminate in queued.revoked] == [True]
 
 
-def poll_cancel(client, file_uid: str) -> dict:
-    """派送本身不廣播：輪詢取消端點，直到任務登記好、取消真的送出。"""
-    deadline = time.monotonic() + 30
-    while time.monotonic() < deadline:
-        response = client.post(f"/api/v1/transcription/{file_uid}/cancel").json()
-        if response["cancelled"]:
-            return response
-        time.sleep(0.02)
-    raise AssertionError(f"{file_uid} 一直沒有派送")
-
-
-def test_terminated_task_finishes_by_itself(
+def test_revoked_signal_leaves_a_terminated_task_to_its_own_finishing(
         transcribe_media_task, uploads, fake, redis_run_mode, client):
     task_id = str(uuid.uuid4())
     params = task_params(uploads, "uid-terminated")

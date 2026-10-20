@@ -140,24 +140,19 @@ def shift_segments(
 
 
 def _add_usage(
-    used: Optional[TranscriptionTaskResult], part: TranscriptionTaskResult
+    usage: Optional[TranscriptionTaskResult], part: TranscriptionTaskResult
 ) -> TranscriptionTaskResult:
-    """到目前為止的用量加上這一段的；處理模式每一段都一樣才照記，不然算標準。
-
-    只看 token 數與處理模式：使用者取消時，任務生命週期據此計價。
-    """
-    if used is None:
-        return TranscriptionTaskResult(
-            success=part.success, input_tokens=part.input_tokens,
-            output_tokens=part.output_tokens, total_tokens=part.total_tokens,
-            service_tier_used=part.service_tier_used)
+    """到目前為止的用量加上這一段的，回傳只帶 token 數與處理模式的轉錄結果（不是可以採用的
+    結果，所以 success 是 False）；處理模式每一段都一樣才照記，不然算標準。"""
+    if usage is None:
+        usage = TranscriptionTaskResult(success=False, service_tier_used=part.service_tier_used)
     return TranscriptionTaskResult(
-        success=used.success and part.success,
-        input_tokens=used.input_tokens + part.input_tokens,
-        output_tokens=used.output_tokens + part.output_tokens,
-        total_tokens=used.total_tokens + part.total_tokens,
-        service_tier_used=(used.service_tier_used
-                           if used.service_tier_used == part.service_tier_used else "standard"),
+        success=False,
+        input_tokens=usage.input_tokens + part.input_tokens,
+        output_tokens=usage.output_tokens + part.output_tokens,
+        total_tokens=usage.total_tokens + part.total_tokens,
+        service_tier_used=(usage.service_tier_used
+                           if usage.service_tier_used == part.service_tier_used else "standard"),
     )
 
 
@@ -225,8 +220,9 @@ class TranscriptionTask:
         self.max_duration_seconds = get_settings().transcription_max_duration_seconds
         self.original_file = None
         self.split_threshold_seconds = self.capabilities.single_pass_seconds
-        # 到目前為止向供應商轉錄完的用量；取消時交給任務生命週期記下（供應商照樣收費）
-        self._used: Optional[TranscriptionTaskResult] = None
+        self.billed_usage: Optional[TranscriptionTaskResult] = None
+        """到目前為止向供應商轉錄完的用量（見 :func:`_add_usage`）；使用者取消時，
+        已經轉完的段落供應商照樣收費。"""
 
         try:
             self.vad_service = get_vad_service()
@@ -376,15 +372,11 @@ class TranscriptionTask:
         每次呼叫供應商之前都查一次取消：供應商不理會取消、照樣轉完手上這一段時，
         下一段也不會再送出去。
         """
+        self.progress.raise_if_cancelled()
         try:
-            self.progress.raise_if_cancelled()
             result = self.provider.transcribe(audio_path, self.request, self.progress)
-        except TranscriptionCancelledError as e:
-            # 取消不是這一段失敗，往上拋給任務生命週期；之前轉完的段落照樣收費，用量一起帶上
-            e.used = self._used
-            raise
-        except TransientError:
-            # 暫時錯誤也不是這一段失敗：整個任務交給執行模式重試
+        except (TranscriptionCancelledError, TransientError):
+            # 取消與暫時錯誤都不是這一段失敗：往上拋給任務生命週期
             raise
         except Exception as e:
             logger.error(f"轉錄過程發生錯誤: {e}")
@@ -393,13 +385,8 @@ class TranscriptionTask:
                 text=f"[[轉錄錯誤: {str(e)}]]",
                 total_tokens=0
             )
-        self._used = _add_usage(self._used, result)
+        self.billed_usage = _add_usage(self.billed_usage, result)
         return result
-
-    def _raise_if_cancelled(self) -> None:
-        """使用者已經取消時拋 TranscriptionCancelledError，帶著之前轉完的段落的用量。"""
-        if self.progress.cancel_requested():
-            raise TranscriptionCancelledError(used=self._used)
 
     def _transcribe_halved(
         self,
@@ -419,7 +406,7 @@ class TranscriptionTask:
         if threshold <= 0 or duration <= threshold:
             return self._attempt_transcription(audio_path)
 
-        self._raise_if_cancelled()
+        self.progress.raise_if_cancelled()
 
         part1 = part2 = None
         split_point = None

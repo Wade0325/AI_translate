@@ -42,10 +42,9 @@ class RegisteredTask:
 class RunMode(Protocol):
     # ── 派送與控制 ────────────────────────────────────────────────
     def submit_transcription(self, task_id: str, task_params_dict: dict, queue: str) -> None:
-        """派發單檔轉錄任務。
+        """派發單檔轉錄任務；``task_id`` 由呼叫端產生，同時是任務紀錄的主鍵。
 
-        ``task_id`` 由呼叫端產生，同時是任務紀錄的主鍵：派送前就先登記（:meth:`register_task`），
-        取消端點才找得到還在佇列裡、甚至已經跑完的任務。
+        派送之後呼叫端立刻登記（:meth:`register_task`），取消端點才找得到還在佇列裡的任務。
         """
 
     def submit_batch(self, task_params_dict: dict) -> str:

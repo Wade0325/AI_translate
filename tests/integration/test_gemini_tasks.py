@@ -6,7 +6,6 @@ ffmpeg 與去靜音。測試只從外部觀察：狀態廣播、API 回應，以
 """
 import io
 import threading
-import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 
@@ -20,6 +19,7 @@ from app.core.task_status import TaskStatus
 from app.provider import registry
 from app.provider.google.provider import GeminiProvider
 from tests.support.fake_genai import FakeGenaiClient, Reply, invalid_argument, unavailable
+from tests.support.waiting import wait_until
 
 MODEL = "gemini-2.5-flash"
 SAMPLE_RATE = 16000
@@ -186,13 +186,6 @@ def history(api: TestClient, original_filename: str) -> dict:
     items = api.get("/api/v1/history", params={"keyword": original_filename}).json()["items"]
     assert len(items) == 1, items
     return items[0]
-
-
-def wait_until(condition) -> None:
-    deadline = time.monotonic() + TIMEOUT
-    while not condition():
-        assert time.monotonic() < deadline, "等太久"
-        time.sleep(0.02)
 
 
 # ─── 單檔 ────────────────────────────────────────────────────────────────────

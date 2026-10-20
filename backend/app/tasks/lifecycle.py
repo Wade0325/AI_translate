@@ -139,13 +139,7 @@ class TaskLifecycle:
                 if cancelled:
                     self._cancel_before_start(db)
                 else:
-                    logger.warning(f"應用程式關閉時任務 {self._task_uuid} 還在排隊，記成失敗")
-                    self._records.insert_log(db, {
-                        **self._record_fields(),
-                        "status": TaskStatus.FAILED,
-                        "error_message": "應用程式關閉時任務還在排隊，沒有開始轉錄",
-                        "completed_at": datetime.now(),
-                    })
+                    self._fail_before_start(db, "應用程式關閉時任務還在排隊，沒有開始轉錄")
             except Exception as e:
                 logger.error(f"任務 {self._task_uuid} 無法更新任務紀錄: {e}")
             finally:
@@ -170,7 +164,7 @@ class TaskLifecycle:
             db.rollback()
             if isinstance(e, TranscriptionCancelledError):
                 # 取消前已經轉完的段落，供應商照樣收費：用量照記
-                return self._cancel(db, e.used)
+                return self._cancel(db, e.billed_usage)
             if self._progress.cancel_requested():
                 # 使用者取消之後才冒出的錯誤（例如 503 剛好回來）也算取消：不重試、不算失敗
                 return self._cancel(db)
@@ -268,6 +262,16 @@ class TaskLifecycle:
             f"任務 {self._task_uuid} 在啟動前已被取消 (file_uid={self._params.file_uid})")
         self._records.insert_log(db, {**self._record_fields(), **self._cancelled_fields()})
         return _cancelled()
+
+    def _fail_before_start(self, db: Session, reason: str) -> None:
+        """開始前就停了、也不是使用者取消的（例如應用程式關閉時還在排隊）：記成失敗並寫明原因。"""
+        logger.warning(f"任務 {self._task_uuid} 沒有開始就停了: {reason}")
+        self._records.insert_log(db, {
+            **self._record_fields(),
+            "status": TaskStatus.FAILED,
+            "error_message": reason,
+            "completed_at": datetime.now(),
+        })
 
     def _transient(self, error: Exception) -> _Outcome:
         """暫時錯誤：不寫 FAILED，交給執行模式重試。"""

@@ -12,7 +12,6 @@ import subprocess
 import sys
 import textwrap
 import threading
-import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from dataclasses import replace
@@ -31,6 +30,7 @@ from app.provider import registry
 from app.runtime import run_mode
 from app.runtime.run_mode import TRANSIENT_RETRIES
 from tests.support.fake_provider import FAKE_MODEL, Fail, FakeProvider
+from tests.support.waiting import cancel_when_dispatched, wait_until
 
 SAMPLE_RATE = 16000
 TIMEOUT = 30
@@ -151,6 +151,23 @@ class FinishingHeld:
         return getattr(self._inner, name)
 
 
+class DispatchHeld:
+    """派送停在交給執行模式之前，直到測試放行；其餘照轉。用 ``run_mode.use`` 換上。"""
+
+    def __init__(self, inner):
+        self._inner = inner
+        self.reached = threading.Event()
+        self.release = threading.Event()
+
+    def submit_transcription(self, task_id, task_params_dict, queue):
+        self.reached.set()
+        self.release.wait(TIMEOUT)
+        self._inner.submit_transcription(task_id, task_params_dict, queue)
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
 @pytest.fixture
 def run_mode_spy(in_process_run_mode):
     from app.runtime import run_mode
@@ -223,13 +240,6 @@ def receive_until_terminal(ws) -> list[dict]:
         messages.append(message)
         if message["status_code"] in TERMINAL:
             return messages
-
-
-def wait_until(condition) -> None:
-    deadline = time.monotonic() + TIMEOUT
-    while not condition():
-        assert time.monotonic() < deadline, "等太久"
-        time.sleep(0.02)
 
 
 def upload(api: TestClient, name: str = "voice.wav", voiced=VOICED) -> str:
@@ -783,18 +793,6 @@ class TestInputsTheModelDoesNotTake:
 
 # ─── 取消 ────────────────────────────────────────────────────────────────────
 
-def cancel_when_dispatched(api, file_uid) -> dict:
-    """派送本身不廣播：輪詢取消端點，直到任務登記好、取消真的送出。"""
-    deadline = time.monotonic() + TIMEOUT
-    while time.monotonic() < deadline:
-        response = api.post(f"/api/v1/transcription/{file_uid}/cancel")
-        assert response.status_code == 200
-        if response.json()["cancelled"]:
-            return response.json()
-        time.sleep(0.02)
-    raise AssertionError(f"{file_uid} 一直沒有派送")
-
-
 class TestCancel:
     @pytest.mark.parametrize("terminate", [False, True])
     def test_cancel_queued_and_running_without_provider(
@@ -868,31 +866,35 @@ class TestCancel:
             assert audio.status_code == 404
         assert leftovers(data_dir) == []
         assert run_mode.get().is_cancel_requested("uid-queued") is False
-        assert run_mode.get().registered_task("uid-queued") is None
+        again = api.post("/api/v1/transcription/uid-queued/cancel").json()
+        assert again["reason"] == "not-started"
 
     def test_task_still_queued_when_the_app_closes_is_recorded_as_failed(
             self, api, fake, data_dir, in_process_run_mode):
         fake.hold = threading.Event()
         fake.script = list(SCRIPT)
-        running_file, queued_file = upload(api, "a.wav"), upload(api, "b.wav")
+        # 檔名在整個測試資料庫裡唯一：之後從歷史紀錄用檔名找到它
+        running_file, queued_file = upload(api, "a.wav"), upload(api, "queued-at-close.wav")
 
         with api.websocket_connect("/api/v1/ws/uid-open") as running, \
                 api.websocket_connect("/api/v1/ws/uid-waiting") as queued:
             submit(running, running_file)
             assert fake.started.wait(TIMEOUT)
             submit(queued, queued_file)
+            # 派送好了（登記了）才關：還在排隊
             wait_until(lambda: run_mode.get().registered_task("uid-waiting") is not None)
-            task_uuid = run_mode.get().registered_task("uid-waiting").task_id
             # 應用程式關閉（lifespan 關掉執行模式）：還在排隊的任務不會再執行
             in_process_run_mode.close()
             fake.hold.set()
             receive_until_terminal(running)
 
         # 和開始前就被取消的任務一樣有紀錄、上傳檔照保留設定處理，只是記成失敗並寫明原因
-        record = api.get(f"/api/v1/history/{task_uuid}").json()
+        [listed] = api.get("/api/v1/history", params={"keyword": queued_file}).json()["items"]
+        record = api.get(f"/api/v1/history/{listed['task_uuid']}").json()
         assert record["status"] == TaskStatus.FAILED
         assert "關閉" in record["error_message"]
-        assert api.get(f"/api/v1/transcripts/{task_uuid}/audio").content == synthetic_audio()
+        audio = api.get(f"/api/v1/transcripts/{listed['task_uuid']}/audio")
+        assert audio.content == synthetic_audio()
         assert leftovers(data_dir) == []
         assert len(fake.calls) == 1
 
@@ -982,6 +984,30 @@ class TestCancel:
         record = api.get(f"/api/v1/history/{task_end['task_uuid']}").json()
         assert record["status"] == TaskStatus.CANCELLED
 
+    def test_cancel_while_the_task_is_being_dispatched_does_not_lose_it(self, api, fake):
+        fake.hold = threading.Event()
+        fake.script = list(SCRIPT)
+        held = DispatchHeld(run_mode.get())
+        filename = upload(api)
+        previous = run_mode.use(held)
+        try:
+            with api.websocket_connect("/api/v1/ws/uid-dispatching") as ws:
+                submit(ws, filename)
+                # 任務正在交給執行模式時按下取消：還沒有可以取消的任務，請前端稍後再試
+                assert held.reached.wait(TIMEOUT)
+                early = api.post("/api/v1/transcription/uid-dispatching/cancel").json()
+                held.release.set()
+                # 派送完再按一次就取消得到：任務沒有因為太早按取消而變成取消不了
+                cancel_when_dispatched(api, "uid-dispatching")
+                endpoint_end = receive_until_terminal(ws)[-1]
+                task_end = receive_until_terminal(ws)[-1]
+        finally:
+            run_mode.use(previous)
+
+        assert early == {"file_uid": "uid-dispatching", "cancelled": False,
+                         "reason": "not-started"}
+        assert codes([endpoint_end, task_end]) == [TaskStatus.CANCELLED] * 2
+
     def test_cancel_while_the_task_is_finishing_reports_it_finished(self, api, fake):
         fake.script = list(SCRIPT)
         held = FinishingHeld(run_mode.get())
@@ -1023,7 +1049,8 @@ class TestCancel:
         # 回報已結束：不再撤銷、不再廣播；留下來的登記與取消旗標順手清掉
         assert response == {"file_uid": "uid-stale", "cancelled": False, "reason": "finished"}
         assert run_mode_spy.revoked == revoked
-        assert run_mode.get().registered_task("uid-stale") is None
+        again = api.post("/api/v1/transcription/uid-stale/cancel").json()
+        assert again["reason"] == "not-started"
         assert run_mode.get().is_cancel_requested("uid-stale") is False
 
     def test_cancel_while_re_transcribing_leaves_the_earlier_task_alone(

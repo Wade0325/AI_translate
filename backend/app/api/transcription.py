@@ -86,15 +86,12 @@ def start_transcription_task_sync(payload_str: str, file_uid: str) -> None:
     # 否則同一檔案再開的任務會被誤取消
     mode = run_mode.get()
     mode.clear_cancel(file_uid)
-    # 先登記再派送：任務一進佇列就取消得到。能不能強制終止照模型能力一起登記，
-    # 取消時不必再查任務紀錄（可能還沒建立）或模型清單（模型可能已經拿掉）
+    # 派送之後立刻登記，能不能強制終止照模型能力一起登記：取消時不必再查任務紀錄（可能還沒
+    # 建立）或模型清單（模型可能已經拿掉）。不能先登記：還沒交給執行模式的任務查不到存活，
+    # 這時按取消會被當成已經結束、清掉登記，任務之後就取消不了
     task_id = str(uuid.uuid4())
+    mode.submit_transcription(task_id, task_params.model_dump(), queue)
     mode.register_task(file_uid, task_id, can_terminate=capabilities.can_terminate)
-    try:
-        mode.submit_transcription(task_id, task_params.model_dump(), queue)
-    except Exception:
-        mode.task_ended(file_uid, task_id)
-        raise
     logger.info(f"已為 file_uid: {file_uid} 啟動轉錄任務（queue={queue}）。")
 
 
@@ -120,7 +117,7 @@ def cancel_transcription(file_uid: str):
         # 登記的任務已經結束，只是登記沒清掉（例如 worker 中途被終止）。Celery 回不知道
         # （None）時當成還在佇列裡
         mode.task_ended(file_uid, task_id)
-        return _finished(file_uid)
+        return _already_finished(file_uid)
 
     mode.request_cancel(file_uid)
     log_repo = TranscriptionLogRepository()
@@ -128,11 +125,11 @@ def cancel_transcription(file_uid: str):
         # 被 revoke/terminate 掉的任務不會再回報狀態：仍在 PROCESSING 的紀錄由此補寫。
         # 合作式停止的任務由任務生命週期自行記為 CANCELLED，此處條件式更新不衝突。
         if (not log_repo.mark_cancelled_if_processing(db, task_id)
-                and log_repo.current_status(db, task_id) in _FINISHED):
+                and log_repo.current_status(db, task_id) in _RESULT_RECORDED):
             # 任務已經記下完成或失敗、正在收尾：來不及取消了。不撤銷（強制終止會打斷收尾），
             # 也不廣播已取消，畫面才不會先跳已取消、再翻成完成；剛設的旗標一併清掉
             mode.task_ended(file_uid, task_id)
-            return _finished(file_uid)
+            return _already_finished(file_uid)
     mode.revoke(task_id, terminate=task.can_terminate)
 
     publish_status(
@@ -143,10 +140,11 @@ def cancel_transcription(file_uid: str):
     return {"file_uid": file_uid, "cancelled": True}
 
 
-_FINISHED = (TaskStatus.COMPLETED, TaskStatus.FAILED)
+_RESULT_RECORDED = (TaskStatus.COMPLETED, TaskStatus.FAILED)
+"""任務已經記下結果（完成或失敗）的紀錄狀態：這時才按取消已經來不及。"""
 
 
-def _finished(file_uid: str) -> dict:
+def _already_finished(file_uid: str) -> dict:
     return {"file_uid": file_uid, "cancelled": False, "reason": "finished"}
 
 

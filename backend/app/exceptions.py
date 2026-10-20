@@ -26,8 +26,9 @@ class GeminiPermanentError(AppError):
 class TranscriptionCancelledError(AppError):
     """使用者取消轉錄任務。任務生命週期據此把任務記為 CANCELLED 而非 FAILED。"""
 
-    def __init__(self, message: str = "使用者已取消任務", used=None):
+    def __init__(self, message: str = "使用者已取消任務"):
         super().__init__(message)
-        self.used = used
-        """取消前已經向供應商轉錄完的段落的用量（``TranscriptionTaskResult``，只看 token 數與
-        處理模式），沒有時是 None。供應商照樣收費，任務生命週期把它記在已取消的紀錄上。"""
+        self.billed_usage = None
+        """取消前已經向供應商轉錄完的段落的用量（只帶 token 數與處理模式的
+        ``TranscriptionTaskResult``），沒有時是 None。供應商照樣收費，任務生命週期把它記在
+        已取消的紀錄上。"""

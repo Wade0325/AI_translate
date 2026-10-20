@@ -11,6 +11,7 @@ from pathlib import Path
 from app.celery.models import TranscriptionTaskParams
 from app.core.config import get_settings
 from app.core.default_prompt import build_prompt
+from app.exceptions import TranscriptionCancelledError
 from app.provider.base import ProgressAndCancel, TranscribeRequest
 from app.provider.registry import open_provider
 from app.services.transcription.flows import TranscriptionTask
@@ -67,6 +68,10 @@ def _transcribe(
     try:
         logger.info(f"Starting transcription. Task ID : {task_uuid}")
         return chunked.transcribe_audio(audio)
+    except TranscriptionCancelledError as e:
+        # 取消前已經轉完的段落，供應商照樣收費：用量交給任務生命週期記在已取消的紀錄上
+        e.billed_usage = chunked.billed_usage
+        raise
     finally:
         # 供應商的遠端資源與分段轉錄的暫存檔；輸入音檔由任務生命週期保留或清理
         chunked.cleanup()
