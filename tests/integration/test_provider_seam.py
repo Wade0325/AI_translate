@@ -116,13 +116,35 @@ class RevokesLost:
 
 
 class CancelFlagsDown:
-    """取消旗標清不掉（Docker 模式的 Redis 剛好斷線），其餘照轉；用 ``run_mode.use`` 換上。"""
+    """任務結束時清不掉登記與取消旗標（Docker 模式的 Redis 剛好斷線），其餘照轉；
+    用 ``run_mode.use`` 換上。"""
 
     def __init__(self, inner):
         self._inner = inner
 
-    def clear_cancel(self, file_uid):
+    def task_ended(self, file_uid, task_id):
         raise ConnectionError("Redis 連不上")
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
+class FinishingHeld:
+    """任務收尾到最後一步（清掉登記與取消旗標）時停住，直到測試放行；其餘照轉。
+
+    只停第一次：之後（例如取消端點）的呼叫照常。用 ``run_mode.use`` 換上。
+    """
+
+    def __init__(self, inner):
+        self._inner = inner
+        self.reached = threading.Event()
+        self.release = threading.Event()
+
+    def task_ended(self, file_uid, task_id):
+        if not self.reached.is_set():
+            self.reached.set()
+            self.release.wait(TIMEOUT)
+        self._inner.task_ended(file_uid, task_id)
 
     def __getattr__(self, name):
         return getattr(self._inner, name)
@@ -200,6 +222,13 @@ def receive_until_terminal(ws) -> list[dict]:
         messages.append(message)
         if message["status_code"] in TERMINAL:
             return messages
+
+
+def wait_until(condition) -> None:
+    deadline = time.monotonic() + TIMEOUT
+    while not condition():
+        assert time.monotonic() < deadline, "等太久"
+        time.sleep(0.02)
 
 
 def upload(api: TestClient, name: str = "voice.wav", voiced=VOICED) -> str:
@@ -769,9 +798,10 @@ class TestCancel:
             assert codes([endpoint_end, task_end]) == [TaskStatus.CANCELLED] * 2
             assert fake.cancelled == 1
 
-        # 能不能強制終止看任務的供應商的模型能力；佇列中的任務撤銷就好，不必終止
+        # 能不能強制終止隨任務登記（派送時照模型能力）：還沒有任務紀錄的佇列中任務也照登記的送，
+        # 剛開始執行、紀錄還沒寫進去的任務才停得下來
         queued_revoke, running_revoke = run_mode_spy.revoked
-        assert queued_revoke[1] is False
+        assert queued_revoke[1] is terminate
         assert running_revoke[1] is terminate
 
         assert len(fake.calls) == 1  # 佇列中的那個從沒開始
@@ -799,6 +829,54 @@ class TestCancel:
         assert record["status"] == TaskStatus.CANCELLED
         assert stored_segments(api, task_end["task_uuid"]) == []
 
+    def test_cancel_during_a_chunk_stops_before_the_next_chunk(self, api, fake):
+        # 語音視圖約 7 秒、單次只能處理 5 秒：切成兩段。供應商不理會取消，照樣轉完手上這一段
+        fake.model_capabilities = replace(fake.model_capabilities, single_pass_seconds=5.0)
+        fake.ignores_cancel = True
+        fake.hold = threading.Event()
+        fake.script = [[(0.2, 1.5, 0, "一つ目。")], [(0.2, 0.9, 1, "二つ目。")]]
+        filename = upload(api)
+        with api.websocket_connect("/api/v1/ws/uid-between-chunks") as ws:
+            submit(ws, filename)
+            assert fake.started.wait(TIMEOUT)
+            cancel_when_dispatched(api, "uid-between-chunks")
+            receive_until_terminal(ws)  # 取消端點的廣播
+            fake.hold.set()
+            task_end = receive_until_terminal(ws)[-1]
+
+        # 下一段不再送進供應商
+        assert task_end["status_code"] == TaskStatus.CANCELLED
+        assert len(fake.calls) == 1
+
+    @pytest.mark.parametrize("single_pass_seconds", [600.0, 5.0],
+                             ids=["whole-audio", "first-of-two-chunks"])
+    def test_what_the_provider_finished_after_the_cancel_is_still_billed(
+            self, api, fake, single_pass_seconds):
+        # 供應商不理會取消、照樣轉完手上這一段，也就照樣收費（例如 Gemini 已經送出的生成）；
+        # 分段轉錄時，下一段不再送出
+        fake.model_capabilities = replace(
+            fake.model_capabilities, pricing="per_token", single_pass_seconds=single_pass_seconds)
+        fake.usage = (200_000, 40_000)
+        fake.ignores_cancel = True
+        fake.hold = threading.Event()
+        fake.script = [[(0.2, 1.5, 0, "一つ目。")], [(0.2, 0.9, 1, "二つ目。")]]
+        filename = upload(api)
+        with api.websocket_connect("/api/v1/ws/uid-billed-after-cancel") as ws:
+            submit(ws, filename)
+            assert fake.started.wait(TIMEOUT)
+            cancel_when_dispatched(api, "uid-billed-after-cancel")
+            receive_until_terminal(ws)  # 取消端點的廣播
+            fake.hold.set()
+            task_end = receive_until_terminal(ws)[-1]
+
+        # 任務維持已取消，轉完的那一段的用量與費用照樣記在紀錄上，帳單頁才不會少算
+        # （價目見上面的計價測試）
+        assert task_end["status_code"] == TaskStatus.CANCELLED
+        record = api.get(f"/api/v1/history/{task_end['task_uuid']}").json()
+        assert record["status"] == TaskStatus.CANCELLED
+        assert record["total_tokens"] == 240_000
+        assert record["cost"] == pytest.approx(0.30)
+
     @pytest.mark.parametrize("error", [TransientError("503 服務暫時無法使用"), RuntimeError("連線中斷")],
                              ids=["transient", "failure"])
     def test_error_after_the_cancel_is_a_cancellation(self, api, fake, error):
@@ -817,6 +895,66 @@ class TestCancel:
         assert len(fake.calls) == 1
         record = api.get(f"/api/v1/history/{task_end['task_uuid']}").json()
         assert record["status"] == TaskStatus.CANCELLED
+
+    def test_cancel_while_the_task_is_finishing_reports_it_finished(self, api, fake):
+        fake.script = list(SCRIPT)
+        held = FinishingHeld(run_mode.get())
+        filename = upload(api)
+        with api.websocket_connect("/api/v1/ws/uid-finishing") as ws:
+            previous = run_mode.use(held)
+            try:
+                submit(ws, filename)
+                # 任務已經記下完成、還在收尾時，使用者按下取消
+                assert held.reached.wait(TIMEOUT)
+                response = api.post("/api/v1/transcription/uid-finishing/cancel").json()
+                flag_left = run_mode.get().is_cancel_requested("uid-finishing")
+                held.release.set()
+                messages = receive_until_terminal(ws)
+            finally:
+                run_mode.use(previous)
+
+        # 回報任務已經結束、不廣播已取消：畫面不會先跳已取消再翻成完成；取消旗標也沒留下來
+        assert response == {"file_uid": "uid-finishing", "cancelled": False, "reason": "finished"}
+        assert TaskStatus.CANCELLED not in codes(messages)
+        assert codes(messages)[-1] == TaskStatus.COMPLETED
+        assert flag_left is False
+        record = api.get(f"/api/v1/history/{messages[-1]['task_uuid']}").json()
+        assert record["status"] == TaskStatus.COMPLETED
+
+    def test_cancel_on_a_task_that_ended_but_stayed_registered_reports_it_finished(
+            self, api, fake, run_mode_spy):
+        # 任務收尾時清不掉登記（Docker 模式的 Redis 剛好斷線）：登記留著，任務其實已經結束
+        healthy = run_mode.use(CancelFlagsDown(run_mode.get()))
+        try:
+            end = cancel_while_transcribing(api, fake, "uid-stale")
+        finally:
+            run_mode.use(healthy)
+        wait_until(lambda: not run_mode.get().is_alive(end["task_uuid"]))
+        revoked = list(run_mode_spy.revoked)
+
+        response = api.post("/api/v1/transcription/uid-stale/cancel").json()
+
+        # 回報已結束：不再撤銷、不再廣播；留下來的登記與取消旗標順手清掉
+        assert response == {"file_uid": "uid-stale", "cancelled": False, "reason": "finished"}
+        assert run_mode_spy.revoked == revoked
+        assert run_mode.get().registered_task("uid-stale") is None
+        assert run_mode.get().is_cancel_requested("uid-stale") is False
+
+    def test_cancel_while_re_transcribing_leaves_the_earlier_task_alone(
+            self, api, fake, run_mode_spy):
+        fake.script = [Fail("模型壞掉了"), list(SCRIPT[0])]
+        earlier = transcribe(api, "uid-again")[-1]
+        assert earlier["status_code"] == TaskStatus.FAILED
+
+        # 失敗後重新轉錄：新的音檔還在上傳、還沒送出任務時，使用者就按下取消
+        response = api.post("/api/v1/transcription/uid-again/cancel").json()
+
+        # 沒有任務可以取消，請前端稍後再試；早就結束的上一個任務不撤銷，紀錄維持失敗
+        assert response == {"file_uid": "uid-again", "cancelled": False, "reason": "not-started"}
+        assert run_mode_spy.revoked == []
+        assert api.get(f"/api/v1/history/{earlier['task_uuid']}").json()["status"] == TaskStatus.FAILED
+        # 新任務照常跑完
+        assert transcribe(api, "uid-again")[-1]["status_code"] == TaskStatus.COMPLETED
 
     def test_cancelled_before_start_is_recorded_without_calling_the_provider(
             self, api, fake, data_dir):

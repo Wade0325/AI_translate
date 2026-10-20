@@ -5,6 +5,7 @@ Gemini 會留下。其他都走真的：TestClient、sqlite、行程內執行模
 ffmpeg 與去靜音。測試只從外部觀察：狀態廣播、API 回應，以及遠端還留著哪些檔案。
 """
 import io
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
@@ -50,13 +51,15 @@ class _GeminiWithFakeClient:
         self._genai = genai
         self.withdrawn: set[str] = set()
         """不再提供的模型，例如升級後從模型清單拿掉的。"""
+        self.sleep = lambda seconds: None
+        """轉接器等待（輪詢上傳檔、Flex 退避）時呼叫；預設不等。"""
 
     def capabilities(self):
         return {model: capabilities for model, capabilities in GeminiProvider.capabilities().items()
                 if model not in self.withdrawn}
 
     def __call__(self, model: str, api_key: str) -> GeminiProvider:
-        return GeminiProvider(model, api_key, client=self._genai, sleep=lambda seconds: None)
+        return GeminiProvider(model, api_key, client=self._genai, sleep=lambda s: self.sleep(s))
 
 
 @pytest.fixture
@@ -213,6 +216,35 @@ def test_single_file_failure_still_deletes_its_remote_file(api, in_process_run_m
     assert end["status_code"] == TaskStatus.FAILED
     assert "音檔無法解碼" in end["status_text"]
     assert genai.stored == {}
+
+
+def test_cancelling_a_running_task_stops_it_before_the_generation(
+        api, in_process_run_mode, genai, gemini):
+    name = "gemini-cancel.wav"
+    polling, cancel_sent = threading.Event(), threading.Event()
+
+    def sleep(seconds):
+        polling.set()
+        cancel_sent.wait(TIMEOUT)
+
+    # 音檔上傳之後，Gemini 還要處理一下；使用者在等的期間按下取消
+    gemini.sleep = sleep
+    genai.processing_polls = 3
+    response = api.post("/api/v1/upload", files={"file": (name, synthetic_audio(), "audio/wav")})
+    with api.websocket_connect(f"/api/v1/ws/{name}") as ws:
+        ws.send_json({"filename": response.json()["filename"], "original_filename": name,
+                      "provider": "Google", "model": MODEL, "source_lang": "ja"})
+        assert polling.wait(TIMEOUT)
+        assert api.post(f"/api/v1/transcription/{name}/cancel").json()["cancelled"] is True
+        cancel_sent.set()
+        end = receive_until(ws, TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED)[-1]
+    wait_until(lambda: not in_process_run_mode.is_alive(end["task_uuid"]))
+
+    # 沒有送出要收費的生成，已經上傳的遠端檔也刪掉了；任務紀錄是已取消，不會變回完成
+    assert end["status_code"] == TaskStatus.CANCELLED
+    assert genai.generated == []
+    assert genai.stored == {}
+    assert history(api, name)["status"] == TaskStatus.CANCELLED
 
 
 def test_single_file_is_retried_after_a_transient_error(api, in_process_run_mode, genai):

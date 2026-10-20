@@ -139,6 +139,28 @@ def shift_segments(
     return out
 
 
+def _add_usage(
+    used: Optional[TranscriptionTaskResult], part: TranscriptionTaskResult
+) -> TranscriptionTaskResult:
+    """到目前為止的用量加上這一段的；處理模式每一段都一樣才照記，不然算標準。
+
+    只看 token 數與處理模式：使用者取消時，任務生命週期據此計價。
+    """
+    if used is None:
+        return TranscriptionTaskResult(
+            success=part.success, input_tokens=part.input_tokens,
+            output_tokens=part.output_tokens, total_tokens=part.total_tokens,
+            service_tier_used=part.service_tier_used)
+    return TranscriptionTaskResult(
+        success=used.success and part.success,
+        input_tokens=used.input_tokens + part.input_tokens,
+        output_tokens=used.output_tokens + part.output_tokens,
+        total_tokens=used.total_tokens + part.total_tokens,
+        service_tier_used=(used.service_tier_used
+                           if used.service_tier_used == part.service_tier_used else "standard"),
+    )
+
+
 def order_segments(segments: List[Dict]) -> List[Dict]:
     """依時間排序並重編 seq；跨切段合併之後 seq 才會連續。"""
     ordered = sorted(segments, key=lambda s: s.get("start", 0.0))
@@ -203,6 +225,8 @@ class TranscriptionTask:
         self.max_duration_seconds = get_settings().transcription_max_duration_seconds
         self.original_file = None
         self.split_threshold_seconds = self.capabilities.single_pass_seconds
+        # 到目前為止向供應商轉錄完的用量；取消時交給任務生命週期記下（供應商照樣收費）
+        self._used: Optional[TranscriptionTaskResult] = None
 
         try:
             self.vad_service = get_vad_service()
@@ -347,11 +371,20 @@ class TranscriptionTask:
         return duration
 
     def _attempt_transcription(self, audio_path: Path) -> TranscriptionTaskResult:
-        """透過供應商轉錄一段音檔；一般錯誤轉成失敗結果，交給上層決定要不要切段重試。"""
+        """透過供應商轉錄一段音檔；一般錯誤轉成失敗結果，交給上層決定要不要切段重試。
+
+        每次呼叫供應商之前都查一次取消：供應商不理會取消、照樣轉完手上這一段時，
+        下一段也不會再送出去。
+        """
         try:
-            return self.provider.transcribe(audio_path, self.request, self.progress)
-        except (TranscriptionCancelledError, TransientError):
-            # 取消與暫時錯誤都不是這一段失敗：往上拋給任務生命週期
+            self.progress.raise_if_cancelled()
+            result = self.provider.transcribe(audio_path, self.request, self.progress)
+        except TranscriptionCancelledError as e:
+            # 取消不是這一段失敗，往上拋給任務生命週期；之前轉完的段落照樣收費，用量一起帶上
+            e.used = self._used
+            raise
+        except TransientError:
+            # 暫時錯誤也不是這一段失敗：整個任務交給執行模式重試
             raise
         except Exception as e:
             logger.error(f"轉錄過程發生錯誤: {e}")
@@ -360,6 +393,13 @@ class TranscriptionTask:
                 text=f"[[轉錄錯誤: {str(e)}]]",
                 total_tokens=0
             )
+        self._used = _add_usage(self._used, result)
+        return result
+
+    def _raise_if_cancelled(self) -> None:
+        """使用者已經取消時拋 TranscriptionCancelledError，帶著之前轉完的段落的用量。"""
+        if self.progress.cancel_requested():
+            raise TranscriptionCancelledError(used=self._used)
 
     def _transcribe_halved(
         self,
@@ -379,7 +419,7 @@ class TranscriptionTask:
         if threshold <= 0 or duration <= threshold:
             return self._attempt_transcription(audio_path)
 
-        self.progress.raise_if_cancelled()
+        self._raise_if_cancelled()
 
         part1 = part2 = None
         split_point = None

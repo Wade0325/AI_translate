@@ -131,8 +131,8 @@ class TaskLifecycle:
             self._start(db)
             result = transcribe(self._input, self._progress)
             if self._progress.cancel_requested():
-                # 供應商沒理會取消、照樣跑完：使用者已經取消，不採用這次的結果
-                return self._cancel(db)
+                # 供應商沒理會取消、照樣跑完：使用者已經取消，不採用這次的結果（用量照記）
+                return self._cancel(db, result)
             if not result.success:
                 # 失敗結果的 text 是錯誤描述而非 LRC，不能標成完成、產出空字幕
                 raise ValueError(f"轉錄失敗: {result.text}")
@@ -140,7 +140,10 @@ class TaskLifecycle:
         except Exception as e:
             # 失敗的寫入可能讓 session 停在 pending rollback，先復原才寫得進紀錄
             db.rollback()
-            if isinstance(e, TranscriptionCancelledError) or self._progress.cancel_requested():
+            if isinstance(e, TranscriptionCancelledError):
+                # 取消前已經轉完的段落，供應商照樣收費：用量照記
+                return self._cancel(db, e.used)
+            if self._progress.cancel_requested():
                 # 使用者取消之後才冒出的錯誤（例如 503 剛好回來）也算取消：不重試、不算失敗
                 return self._cancel(db)
             if isinstance(e, TransientError) and self._retries_left > 0:
@@ -193,7 +196,7 @@ class TaskLifecycle:
         # 只有取消不蓋掉；其他狀態照實記成完成（例如啟動清掃把還在跑的任務記成了失敗）
         if not completed and self._is_record_cancelled(db):
             # 取消端點剛好先把紀錄記成已取消：完成不蓋掉取消，也不宣告完成
-            return self._cancel(db)
+            return self._cancel(db, result)
         if completed:
             logger.info(f"Task status updated to COMPLETED. Task ID: {self._task_uuid}")
         else:
@@ -213,10 +216,17 @@ class TaskLifecycle:
         return _Outcome(TaskStatus.COMPLETED, "任務完成", broadcast_result=response,
                         return_value={"raw_lrc_text": result.text})
 
-    def _cancel(self, db: Session) -> _Outcome:
-        """取消：不是失敗，任務紀錄寫 CANCELLED。"""
+    def _cancel(self, db: Session, result: Optional[TranscriptionTaskResult] = None) -> _Outcome:
+        """取消：不是失敗，任務紀錄寫 CANCELLED。
+
+        使用者取消之後供應商才跑完（``result``）時，照樣記下用量與費用：供應商照樣收費
+        （例如 Gemini 已經送出的生成），帳單頁不能少算。
+        """
         logger.info(f"Transcription task {self._task_uuid} cancelled by user.")
-        self._records.update_log(db, self._task_uuid, self._cancelled_fields())
+        fields = self._cancelled_fields()
+        if result is not None:
+            fields.update(self._usage(result))
+        self._records.update_log(db, self._task_uuid, fields)
         return _cancelled()
 
     def _cancel_before_start(self, db: Session) -> _Outcome:
@@ -280,10 +290,10 @@ class TaskLifecycle:
             else:
                 with self._best_effort("清理上傳檔"):
                     _delete_upload(self._input)
-        # 任務結束後旗標已無作用，清掉以免影響同一檔案之後再開的任務
-        # （之後再派送同一個檔案時也會先清一次）
-        with self._best_effort("清除取消旗標"):
-            run_mode.get().clear_cancel(self._params.file_uid)
+        # 任務結束後登記與旗標都已無作用，清掉：取消端點才不會去撤銷早已結束的任務，
+        # 旗標也不會影響同一檔案之後再開的任務（同一檔案已經登記了新任務時不動它的）
+        with self._best_effort("清除任務登記與取消旗標"):
+            run_mode.get().task_ended(self._params.file_uid, self._task_uuid)
 
     @contextmanager
     def _best_effort(self, step: str) -> Iterator[None]:
@@ -338,6 +348,16 @@ class TaskLifecycle:
 
     def _is_record_cancelled(self, db: Session) -> bool:
         return self._records.current_status(db, self._task_uuid) == TaskStatus.CANCELLED
+
+    def _usage(self, result: TranscriptionTaskResult) -> dict:
+        """供應商回報的用量與據此算出的費用，記進任務紀錄的欄位。"""
+        tokens, cost = self._price(result, self._elapsed())
+        return {
+            "audio_duration_seconds": self._duration,
+            "total_tokens": tokens,
+            "cost": cost,
+            "service_tier_used": result.service_tier_used or "standard",
+        }
 
     def _price(self, result: TranscriptionTaskResult, elapsed: float) -> tuple[int, float]:
         """計價：回傳 (總 token 數, 費用)；收不收費照模型能力的計價方式。"""

@@ -43,11 +43,10 @@ def dispatched(uploads, monkeypatch, in_process_run_mode):
     root, _ = uploads
     calls = []
 
-    def _submit_transcription(params, queue):
+    def _submit_transcription(task_id, params, queue):
         if not _is_inside(params["file_path"], root):
             raise AssertionError(f"派發了上傳目錄外的檔案: {params['file_path']}")
         calls.append(params)
-        return "task-id"
 
     def _submit_batch(params):
         for f in params["files"]:

@@ -1,3 +1,5 @@
+import uuid
+
 from fastapi import (
     APIRouter,
     WebSocket,
@@ -10,9 +12,8 @@ from app.runtime import run_mode
 from app.runtime.run_mode import publish_status
 from app.core.config import get_settings
 from app.core.task_status import TaskStatus
-from app.database.models import TranscriptionLog
 from app.database.session import SessionLocal
-from app.provider.registry import UnsupportedModelError, check_request, model_capabilities
+from app.provider.registry import UnsupportedModelError, check_request
 from app.repositories.transcription_log_repository import TranscriptionLogRepository
 from app.services.api_keys import resolve_api_key
 from app.utils.logger import setup_logger
@@ -79,33 +80,54 @@ def start_transcription_task_sync(payload_str: str, file_uid: str) -> None:
     # 否則同一檔案再開的任務會被誤取消
     mode = run_mode.get()
     mode.clear_cancel(file_uid)
-    task_id = mode.submit_transcription(task_params.model_dump(), queue)
-    mode.register_task(file_uid, task_id)
+    # 先登記再派送：任務一進佇列就取消得到。能不能強制終止照模型能力一起登記，
+    # 取消時不必再查任務紀錄（可能還沒建立）或模型清單（模型可能已經拿掉）
+    task_id = str(uuid.uuid4())
+    mode.register_task(file_uid, task_id, can_terminate=capabilities.can_terminate)
+    try:
+        mode.submit_transcription(task_id, task_params.model_dump(), queue)
+    except Exception:
+        mode.task_ended(file_uid, task_id)
+        raise
     logger.info(f"已為 file_uid: {file_uid} 啟動轉錄任務（queue={queue}）。")
 
 
 @router.post("/transcription/{file_uid}/cancel", name="Cancel Transcription")
 def cancel_transcription(file_uid: str):
-    """取消單檔轉錄任務；供應商從任務紀錄查，不由前端告知。
+    """取消單檔轉錄任務；要取消的任務與能不能強制終止都讀派送時的登記，不由前端告知。
 
-    - 佇列中（紀錄還沒建立）：revoke 讓任務不會啟動（旗標另作保險，攔截廣播沒送達的情況）
+    - 佇列中（紀錄還沒建立）：revoke 讓任務不會啟動，沒開始的任務照樣收尾
+      （旗標另作保險，攔截撤銷沒送達的情況）
     - 執行中：模型能力允許強制終止的直接終止；不允許的（例如本機的 GPU worker）
       靠合作式檢查點在數秒內自行中止並釋放模型
 
-    任務尚未派發（仍在上傳）時無事可取消，回報 not-started 讓前端稍後重試。
+    沒有登記的任務（還在上傳、還沒派送，或任務結束時已經清掉登記）時無事可取消，回報
+    not-started 讓前端稍後重試。登記的任務已經結束（登記沒清掉，或正在收尾）時回報
+    finished：不撤銷、不廣播已取消。
     """
     mode = run_mode.get()
-    task_id = mode.registered_task(file_uid)
-    if not task_id:
+    task = mode.registered_task(file_uid)
+    if task is None:
         return {"file_uid": file_uid, "cancelled": False, "reason": "not-started"}
+    task_id = task.task_id
+    if mode.is_alive(task_id) is False:
+        # 登記的任務已經結束，只是登記沒清掉（例如 worker 中途被終止）。Celery 回不知道
+        # （None）時當成還在佇列裡
+        mode.task_ended(file_uid, task_id)
+        return _finished(file_uid)
 
     mode.request_cancel(file_uid)
     log_repo = TranscriptionLogRepository()
     with SessionLocal() as db:
-        mode.revoke(task_id, terminate=_can_terminate(log_repo.get(db, task_id)))
         # 被 revoke/terminate 掉的任務不會再回報狀態：仍在 PROCESSING 的紀錄由此補寫。
         # 合作式停止的任務由任務生命週期自行記為 CANCELLED，此處條件式更新不衝突。
-        log_repo.mark_cancelled_if_processing(db, task_id)
+        if (not log_repo.mark_cancelled_if_processing(db, task_id)
+                and log_repo.current_status(db, task_id) in _FINISHED):
+            # 任務已經記下完成或失敗、正在收尾：來不及取消了。不撤銷（強制終止會打斷收尾），
+            # 也不廣播已取消，畫面才不會先跳已取消、再翻成完成；剛設的旗標一併清掉
+            mode.task_ended(file_uid, task_id)
+            return _finished(file_uid)
+    mode.revoke(task_id, terminate=task.can_terminate)
 
     publish_status(
         file_uid, task_id, "任務已取消",
@@ -115,14 +137,11 @@ def cancel_transcription(file_uid: str):
     return {"file_uid": file_uid, "cancelled": True}
 
 
-def _can_terminate(log: TranscriptionLog | None) -> bool:
-    """依任務的供應商的模型能力決定；還在佇列（沒有紀錄）的任務 revoke 就不會啟動，不需要終止。"""
-    if log is None:
-        return False
-    try:
-        return model_capabilities(log.provider, log.model_used).can_terminate
-    except UnsupportedModelError:
-        return False
+_FINISHED = (TaskStatus.COMPLETED, TaskStatus.FAILED)
+
+
+def _finished(file_uid: str) -> dict:
+    return {"file_uid": file_uid, "cancelled": False, "reason": "finished"}
 
 
 @router.websocket("/ws/{file_uid}", name="WebSocket Transcription")
