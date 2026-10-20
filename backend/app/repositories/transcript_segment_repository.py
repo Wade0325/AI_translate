@@ -1,7 +1,14 @@
 """transcript_segments 的資料庫操作。
 
-``upsert_many`` 以 (task_uuid, seg_key) 為鍵覆寫，所以任務被重派、或之後改成
-逐段回傳時反覆寫同一段，都不會產生重複資料。
+同一個任務再完成一次時（任務被重派、重新轉錄），``replace_untouched`` 只換掉使用者沒動過的
+片段：校正與確認狀態不會被新的轉錄結果蓋掉（ADR-0007）。
+
+校正的資料模型留給 v0.2，這裡先用現有的欄位判斷，有兩個限制要在 v0.2 處理：
+
+* 校正若直接寫在片段上，校正前的原始轉錄只留在任務紀錄的凍結副本裡；副本每次完成都換成
+  這次的結果，所以再完成一次之後，校正當時的那一版原始轉錄就不在了。
+* 片段以 ``seg_key``（序號）對應。再完成一次時切段或片段數不同，保留的片段可能和這次的
+  片段重疊，或之間少一段。
 """
 
 from __future__ import annotations
@@ -13,6 +20,14 @@ from sqlalchemy.orm import Session
 
 from app.database.models import TranscriptSegment
 from app.utils.identifiers import coerce_uuid
+
+CORRECTED_SOURCE = "edited"
+"""``source`` 是這個值時，片段的文字是使用者校正過的。"""
+
+
+def _touched_by_user(row: TranscriptSegment) -> bool:
+    """使用者動過這個片段：文字校正過，或標了確認狀態。"""
+    return row.source == CORRECTED_SOURCE or bool(row.review_state)
 
 
 def _to_row_values(seg: Dict[str, Any], seq: int) -> Dict[str, Any]:
@@ -33,34 +48,38 @@ def _to_row_values(seg: Dict[str, Any], seq: int) -> Dict[str, Any]:
 
 class TranscriptSegmentRepository:
     @staticmethod
-    def upsert_many(db: Session, task_uuid, segments: List[Dict[str, Any]]) -> int:
-        """寫入／覆寫片段，回傳處理筆數。"""
+    def replace_untouched(db: Session, task_uuid, segments: List[Dict[str, Any]]) -> int:
+        """這次轉錄的片段取代使用者沒動過的片段，回傳寫入的筆數。
+
+        使用者動過的片段（:func:`_touched_by_user`）不刪、不覆寫，這次結果裡同一個 ``seg_key``
+        的片段不寫入；沒動過的舊片段全部換成這次的結果，這次沒有的就拿掉。沒有動過的片段時，
+        就是整批取代。
+
+        只寫進目前的交易、不 commit：任務生命週期把它和任務記成完成一起提交。
+        """
         uuid_val = coerce_uuid(task_uuid)
-        if uuid_val is None or not segments:
+        if uuid_val is None:
             return 0
 
-        existing = {
-            row.seg_key: row
-            for row in db.query(TranscriptSegment)
-            .filter(TranscriptSegment.task_uuid == uuid_val)
-            .all()
-        }
+        kept = set()
+        existing = db.query(TranscriptSegment).filter(TranscriptSegment.task_uuid == uuid_val)
+        for row in existing.all():
+            if _touched_by_user(row):
+                kept.add(row.seg_key)
+            else:
+                db.delete(row)
+        # 先刪再寫：這次的片段沿用舊片段的 seg_key 時，才不會撞到唯一鍵
+        db.flush()
+
+        written = 0
         for seq, seg in enumerate(segments):
             values = _to_row_values(seg, seq)
-            row = existing.get(values["seg_key"])
-            if row is None:
-                db.add(TranscriptSegment(task_uuid=uuid_val, **values))
-            else:
-                for key, value in values.items():
-                    setattr(row, key, value)
-        db.commit()
-        return len(segments)
-
-    @staticmethod
-    def replace_all(db: Session, task_uuid, segments: List[Dict[str, Any]]) -> int:
-        """整批取代：先刪掉這個任務所有片段，再寫入新的。"""
-        TranscriptSegmentRepository.delete_for_task(db, task_uuid)
-        return TranscriptSegmentRepository.upsert_many(db, task_uuid, segments)
+            if values["seg_key"] in kept:
+                continue
+            db.add(TranscriptSegment(task_uuid=uuid_val, **values))
+            written += 1
+        db.flush()
+        return written
 
     @staticmethod
     def list_for_task(db: Session, task_uuid) -> List[TranscriptSegment]:
