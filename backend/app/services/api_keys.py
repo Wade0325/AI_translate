@@ -13,10 +13,9 @@ from __future__ import annotations
 import json
 from typing import Optional
 
-from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.database.models import ModelConfiguration
+from app.repositories.model_manager_repository import find_provider_settings
 from app.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -50,16 +49,8 @@ def parse_stored_api_keys(raw: Optional[str]) -> list[str]:
 
 
 def load_stored_api_keys(db: Session, provider: str) -> list[str]:
-    """讀出 provider 存在資料庫的金鑰。
-
-    前端以 "Google" 存設定，任務流程則以小寫比對 provider，所以先找完全相同的名稱，
-    找不到再不分大小寫。
-    """
-    row = db.query(ModelConfiguration).filter(
-        ModelConfiguration.provider == provider).first()
-    if row is None:
-        row = db.query(ModelConfiguration).filter(
-            func.lower(ModelConfiguration.provider) == provider.lower()).first()
+    """讀出 provider 存在資料庫的金鑰（名稱不分大小寫）。"""
+    row = find_provider_settings(db, provider)
     return parse_stored_api_keys(row.api_keys) if row else []
 
 

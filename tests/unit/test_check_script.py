@@ -37,8 +37,8 @@ def _ran(tmp_path):
     return log.read_text(encoding="utf-8") if log.exists() else ""
 
 
-def test_checks_are_ruff_pytest_eslint_in_order(check):
-    assert [c.name for c in check.CHECKS] == ["ruff", "pytest", "eslint"]
+def test_checks_are_ruff_pytest_eslint_node_test_in_order(check):
+    assert [c.name for c in check.CHECKS] == ["ruff", "pytest", "eslint", "node-test"]
 
 
 def test_python_checks_use_running_interpreter_from_repo_root(check):
@@ -47,6 +47,13 @@ def test_python_checks_use_running_interpreter_from_repo_root(check):
         assert by_name[name].cmd[0] == sys.executable
         assert by_name[name].cwd == ROOT
     assert by_name["eslint"].cwd == ROOT / "frontend"
+
+
+def test_frontend_tests_run_with_node_from_frontend(check):
+    # 前端的純邏輯測試用 Node 內建的 node:test，不另裝套件
+    node_test = {c.name: c for c in check.CHECKS}["node-test"]
+    assert node_test.cmd[:2] == ("node", "--test")
+    assert node_test.cwd == ROOT / "frontend"
 
 
 def test_no_arguments_runs_every_check(check, monkeypatch, tmp_path):
@@ -166,3 +173,4 @@ def test_python_change_triggers_ruff_and_frontend_change_triggers_eslint(check):
     assert not by_name["ruff"].runs_for("README.md")
     assert by_name["eslint"].runs_for("frontend/src/App.jsx")
     assert not by_name["eslint"].runs_for("frontend/dist/index.js")
+    assert by_name["node-test"].runs_for("frontend/src/utils/id.js")

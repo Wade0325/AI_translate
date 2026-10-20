@@ -147,6 +147,39 @@ class TestGetModelSetting:
         assert len(data["apiKeys"]) == 3
 
 
+# ─── 供應商名稱不分大小寫（#97） ──────────────────────────────────────────────
+
+class TestProviderNameIgnoresCase:
+    """設定存在「Google」「Local」底下（舊版前端與空資料庫的預設資料都這樣存）；畫面改用
+    模型能力端點的「google」「local」之後，讀到、存回的仍是同一份設定。"""
+
+    def test_settings_saved_under_one_spelling_are_read_under_another(self, client: TestClient):
+        client.post("/api/v1/setting/models", json={
+            "provider": "CaseReadProvider",
+            "apiKeys": ["my_key"],
+            "model": "my-model",
+            "prompt": "My prompt",
+        })
+
+        data = client.get("/api/v1/setting/models/casereadprovider").json()
+
+        assert (data["apiKeys"], data["model"], data["prompt"]) == (
+            [mask_api_key("my_key")], "my-model", "My prompt")
+
+    def test_saving_under_another_spelling_updates_the_same_settings(self, client: TestClient):
+        key = "AIzaSyTEST-case-insensitive-000000-ABCD"
+        client.post("/api/v1/setting/models", json={
+            "provider": "CaseSaveProvider", "apiKeys": [key], "model": "old-model"})
+
+        # 畫面送回的是遮罩值：要對得上原本那份設定裡的金鑰，不能被當成沒有金鑰
+        client.post("/api/v1/setting/models", json={
+            "provider": "casesaveprovider", "apiKeys": [mask_api_key(key)], "model": "new-model"})
+
+        data = client.get("/api/v1/setting/models/CaseSaveProvider").json()
+        assert data["model"] == "new-model"
+        assert data["apiKeys"] == [mask_api_key(key)]
+
+
 # ─── 測試 API 連線 ────────────────────────────────────────────────────────────
 
 class TestProviderConnectionTest:

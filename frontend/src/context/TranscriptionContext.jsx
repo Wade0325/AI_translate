@@ -1,16 +1,18 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { message } from 'antd';
-import { modelOptions, findProviderForModel } from '../constants/modelConfig';
 import { useModelManager } from '../components/ModelManager';
 import { useTranscriptionSocket } from '../hooks/useTranscriptionSocket';
 import { useUploadQueue } from '../hooks/useUploadQueue';
 import { useDownloadBundle } from '../hooks/useDownloadBundle';
+import { useProviderList } from '../hooks/useProviderList';
 import {
   disabledReasonsFor,
   findModelCapabilities,
+  modelForProvider,
   modelSupports,
-  useProviderList,
-} from '../hooks/useProviderList';
+  providerLabel,
+  requiresApiKey,
+} from '../utils/providerList';
 import { api } from '../services/api';
 
 const TranscriptionContext = createContext(null);
@@ -26,7 +28,6 @@ export const useTranscription = () => {
 export const TranscriptionProvider = ({ children }) => {
   const [fileList, setFileList] = useState([]);
   const [targetLang, setTargetLang] = useState('zh-TW');
-  const [model, setModel] = useState(modelOptions.Google[0].value);
   const [isProcessing, setIsProcessing] = useState(false);
   // 'standard' | 'flex' | 'batch'
   const [processingMode, setProcessingMode] = useState('batch');
@@ -34,9 +35,37 @@ export const TranscriptionProvider = ({ children }) => {
 
   const useBatchMode = processingMode === 'batch';
 
+  const { getProviderConfig } = useModelManager();
+
+  // 先選供應商、再選它的模型；兩者都照供應商清單的值送出，後端會驗證模型屬於這個供應商
+  const { providerList, failed: providerListFailed } = useProviderList();
+  const [selection, setSelection] = useState({ provider: null, model: null });
+  const { provider, model } = selection;
+
+  // 選供應商時，模型用設定頁存的預設模型；存的不屬於這個供應商（或已經不在清單上）就用預設
+  const latestProviderChoice = useRef(0);
+  const selectProvider = useCallback(async (nextProvider) => {
+    const choice = ++latestProviderChoice.current;
+    const config = await getProviderConfig(nextProvider);
+    if (choice !== latestProviderChoice.current) return; // 使用者已經改選別的供應商
+    setSelection({
+      provider: nextProvider,
+      model: modelForProvider(providerList, nextProvider, config?.model),
+    });
+  }, [providerList, getProviderConfig]);
+
+  const setModel = useCallback((nextModel) => {
+    setSelection((current) => ({ ...current, model: nextModel }));
+  }, []);
+
+  // 清單載入後先選預設的供應商（清單上的第一個）
+  const defaultProvider = providerList?.[0]?.provider;
+  useEffect(() => {
+    if (defaultProvider && !provider) selectProvider(defaultProvider);
+  }, [defaultProvider, provider, selectProvider]);
+
   // 所選模型支援哪些輸入與處理方式；模型能力還沒載入時不限制，由後端把關
-  const providerList = useProviderList();
-  const capabilities = findModelCapabilities(providerList, findProviderForModel(model), model);
+  const capabilities = findModelCapabilities(providerList, provider, model);
   const supports = useMemo(() => modelSupports(capabilities), [capabilities]);
   const reasons = useMemo(() => disabledReasonsFor(supports), [supports]);
 
@@ -44,7 +73,6 @@ export const TranscriptionProvider = ({ children }) => {
   const [previewContent, setPreviewContent] = useState('');
   const [previewTitle, setPreviewTitle] = useState('');
 
-  const { getProviderConfig } = useModelManager();
   const socketManager = useTranscriptionSocket();
   const { downloadFile, downloadAllFiles } = useDownloadBundle(fileList);
   const { startRegular, startBatch } = useUploadQueue({
@@ -194,9 +222,10 @@ export const TranscriptionProvider = ({ children }) => {
   }, [fileList]);
 
   const handleStartTranscription = useCallback(async () => {
-    const provider = findProviderForModel(model);
-    if (!provider) {
-      message.error(`找不到模型 ${model} 對應的服務商設定。`);
+    if (!provider || !model) {
+      message.error(providerListFailed
+        ? '讀取供應商清單失敗，請重新整理頁面。'
+        : '供應商清單還在載入，請稍後再試。');
       return;
     }
 
@@ -204,9 +233,8 @@ export const TranscriptionProvider = ({ children }) => {
     // 設定裡只有遮罩後的金鑰：這裡只確認已設定，實際金鑰由後端從資料庫取用、不隨任務送出
     const hasApiKey = Boolean(config?.apiKeys?.[0]);
     const prompt = config?.prompt;
-    const isLocalProvider = provider.toLowerCase() === 'local';
-    if (!hasApiKey && !isLocalProvider) {
-      message.error(`請先在模型管理中為 ${provider} 設定 API 金鑰。`);
+    if (requiresApiKey(providerList, provider) && !hasApiKey) {
+      message.error(`請先在設定頁為 ${providerLabel(providerList, provider)} 設定 API 金鑰。`);
       return;
     }
     if (useBatchMode && reasons.batch) {
@@ -230,7 +258,10 @@ export const TranscriptionProvider = ({ children }) => {
       message.warning('沒有等待處理的新檔案！');
     }
   }, [
+    provider,
     model,
+    providerList,
+    providerListFailed,
     getProviderConfig,
     targetLang,
     multiSpeaker,
@@ -247,6 +278,10 @@ export const TranscriptionProvider = ({ children }) => {
     setFileList,
     targetLang,
     setTargetLang,
+    providerList,
+    providerListFailed,
+    provider,
+    selectProvider,
     model,
     setModel,
     disabledReasons: reasons,

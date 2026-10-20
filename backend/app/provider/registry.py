@@ -7,7 +7,8 @@
 from __future__ import annotations
 
 import threading
-from typing import Dict, Mapping, Optional, Protocol, cast
+from dataclasses import dataclass
+from typing import List, Mapping, Optional, Protocol, Tuple, cast
 
 from app.provider.base import BatchProvider, ModelCapabilities, Provider
 from app.provider.google.provider import GeminiProvider
@@ -18,7 +19,15 @@ class ProviderFactory(Protocol):
     """一個供應商：查模型能力不必建立轉接器，也不碰顯卡之類的硬體（API 行程與模型能力
     端點都會查）；建立的轉接器專給一個任務用。"""
 
-    def capabilities(self) -> Mapping[str, ModelCapabilities]: ...
+    label: str
+    """畫面上的供應商名稱。"""
+    model_labels: Mapping[str, str]
+    """畫面上的模型名稱；沒列的模型直接顯示模型名稱。"""
+    requires_api_key: bool
+    """轉錄要不要使用者的 API 金鑰。"""
+
+    def capabilities(self) -> Mapping[str, ModelCapabilities]:
+        """每個模型的模型能力，依畫面列出的順序；第一個是這個供應商的預設模型。"""
 
     def __call__(self, model: str, api_key: str) -> Provider:
         """建立已經準備好的轉接器；還不能轉錄（缺權重、金鑰無效）時拋 ValueError。"""
@@ -57,14 +66,37 @@ def _factory(provider: str) -> ProviderFactory:
     return factory
 
 
-def providers() -> Dict[str, Mapping[str, ModelCapabilities]]:
-    """每個供應商（小寫名稱）的每個模型、不建立轉接器就知道的模型能力。
+@dataclass(frozen=True)
+class ListedModel:
+    """清單上的一個模型與它不建立轉接器就知道的模型能力。``single_pass_seconds`` 是上限：
+    實際轉錄時，轉接器在執行的機器上可能切得更短（本機依顯卡容量收斂）。"""
+    model: str
+    label: str
+    capabilities: ModelCapabilities
 
-    單次長度是上限：轉接器在執行的機器上可能更短（本機依顯卡容量收斂）。
-    """
+
+@dataclass(frozen=True)
+class ListedProvider:
+    """清單上的一個供應商與它的模型；送出任務時，``provider`` 與 ``model`` 照這裡的值帶回。
+    第一個模型是這個供應商的預設模型。"""
+    provider: str
+    label: str
+    requires_api_key: bool
+    models: Tuple[ListedModel, ...]
+
+
+def providers() -> List[ListedProvider]:
+    """每個供應商（小寫名稱）與它的每個模型，不建立轉接器、不碰顯卡。"""
     with _lock:
         factories = list(_factories.items())
-    return {name: factory.capabilities() for name, factory in factories}
+    return [ListedProvider(
+        provider=name,
+        label=factory.label,
+        requires_api_key=factory.requires_api_key,
+        models=tuple(ListedModel(model=model, label=factory.model_labels.get(model, model),
+                                 capabilities=capabilities)
+                     for model, capabilities in factory.capabilities().items()),
+    ) for name, factory in factories]
 
 
 def model_capabilities(provider: str, model: str) -> ModelCapabilities:

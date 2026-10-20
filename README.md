@@ -125,17 +125,18 @@ docker compose --env-file .env down
 ### 步驟 1️⃣ — 設定 API 金鑰
 
 1. 點擊左側選單 **⚙️ 設定 (Settings)**。
-2. 選擇服務商 **Google**，貼上你的 [Gemini API Key](https://aistudio.google.com/apikey)。
-3. 選擇預設模型（推薦 `gemini-2.5-flash`，速度與品質平衡）並儲存。
+2. 在 **Gemini** 的卡片貼上你的 [Gemini API Key](https://aistudio.google.com/apikey)。本機不需要 API 金鑰。
+3. 選擇預設模型（推薦 `gemini-2.5-flash`，速度與品質平衡）並儲存。轉錄頁選這個供應商時，預設就用這個模型。
 
 ### 步驟 2️⃣ — 上傳並設定轉錄參數
 
 進入 **🎙️ 轉錄 (Transcribe)** 頁面：
 
-1. **上傳檔案**：拖曳或點擊上傳音訊／視頻（可一次選擇多個檔案進入批次模式）。
-2. **選擇來源語言**：日文 / 英文 / 繁體中文。
-3. **（選填）多人對話模式**：開啟後自動標記 `Speaker 1` / `Speaker 2`。
-4. **（選填）自訂 Prompt**：可加入術語表、額外指令；不填則使用系統預設模板。本機的模型不支援提示詞與使用者文稿，選本機的模型時這些欄位會停用並註明原因。
+1. **選擇供應商與模型**：先選供應商（本機／Gemini），模型選單只列這個供應商的模型。
+2. **上傳檔案**：拖曳或點擊上傳音訊／視頻（可一次選擇多個檔案進入批次模式）。
+3. **選擇來源語言**：日文 / 英文 / 繁體中文。
+4. **（選填）多人對話模式**：開啟後自動標記 `Speaker 1` / `Speaker 2`。
+5. **（選填）自訂 Prompt**：可加入術語表、額外指令；不填則使用系統預設模板。本機的模型不支援提示詞與使用者文稿，選本機的模型時這些欄位會停用並註明原因。
 
 ### 步驟 3️⃣ — 開始轉錄
 
@@ -227,18 +228,11 @@ AI_translate/
 
 ### 新增 AI 模型
 
-1. 在 `frontend/src/constants/modelConfig.js` 新增選項：
+供應商、模型與模型能力只寫在後端，前端從 `GET /api/v1/providers` 讀，不必改前端：
 
-```javascript
-export const modelOptions = {
-  Google: [
-    { value: 'gemini-2.5-flash', label: 'gemini-2.5-flash' },
-    { value: 'gemini-2.5-pro', label: 'gemini-2.5-pro' },
-  ],
-};
-```
-
-2. 若是新供應商，於 `backend/app/provider/{provider}/` 新增對應客戶端模組。
+1. Gemini 的模型加進 `backend/app/provider/google/provider.py` 的 `MODELS`；本機的模型加進 `backend/app/provider/local/weights.py` 的 `MODEL_REPOS`，畫面上的名稱寫在 `backend/app/provider/local/provider.py` 的 `MODEL_LABELS`。清單的順序就是畫面的順序，第一個是預設。
+2. 在 `backend/app/services/calculator/flows.py` 的 `MODEL_PRICES` 補上價格。
+3. 若是新供應商，於 `backend/app/provider/{provider}/` 新增轉接器，並在 `backend/app/provider/registry.py` 登記。
 
 ### 修改預設 Prompt
 
@@ -247,7 +241,7 @@ export const modelOptions = {
 ### 執行測試
 
 ```powershell
-backend\.venv\Scripts\python.exe tools/check.py           # 依序跑 ruff → pytest → ESLint
+backend\.venv\Scripts\python.exe tools/check.py           # 依序跑 ruff → pytest → ESLint → 前端測試
 backend\.venv\Scripts\python.exe tools/check.py pytest    # 只跑指定的項目
 ```
 
@@ -257,7 +251,7 @@ clone 之後執行一次下面這行，讓 git 在每次 commit 前跑快的檢�
 git config core.hooksPath .githooks
 ```
 
-> `tools/check.py` 是唯一的檢查清單，CI 與 pre-commit 跑的也是它。Python 的檢查要先安裝 `backend/requirements-dev.txt`，ESLint 要先在 `frontend/` 執行 `npm ci`。`pytest.ini` 已設定 `pythonpath = backend`，測試可直接 `from app.api import ...` 匯入；測試自帶暫存的 SQLite 資料庫與 mock，不需 Postgres/Redis。
+> `tools/check.py` 是唯一的檢查清單，CI 與 pre-commit 跑的也是它。Python 的檢查要先安裝 `backend/requirements-dev.txt`，ESLint 要先在 `frontend/` 執行 `npm ci`；前端測試（`frontend/src` 底下的 `*.test.js`）用 Node 內建的 `node --test` 執行，不另裝套件。`pytest.ini` 已設定 `pythonpath = backend`，測試可直接 `from app.api import ...` 匯入；測試自帶暫存的 SQLite 資料庫與 mock，不需 Postgres/Redis。
 
 ### 建置 Windows 免安裝發布包
 

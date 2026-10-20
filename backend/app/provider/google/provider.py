@@ -18,7 +18,8 @@ from __future__ import annotations
 import hashlib
 import time
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from types import MappingProxyType
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from google.genai import types
 
@@ -37,7 +38,7 @@ from app.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
 
-# 與前端 frontend/src/constants/modelConfig.js 的 Google 選項一致
+# 畫面列出的模型與順序（GET /providers），第一個是預設
 MODELS = (
     "gemini-3.5-flash",
     "gemini-3.1-pro-preview",
@@ -237,6 +238,12 @@ def _batch_failure(text: str) -> TranscriptionTaskResult:
 
 
 class GeminiProvider:
+    label = "Gemini"
+    model_labels: Mapping[str, str] = MappingProxyType({})
+    """畫面直接顯示模型名稱。"""
+    requires_api_key = True
+    """轉錄用的是使用者自備的 Gemini API 金鑰。"""
+
     def __init__(
         self,
         model: str,

@@ -4,7 +4,7 @@ Docker 模式下只在主機端 GPU worker（local_asr 佇列）上執行，免�
 local_asr 執行緒池執行——本機轉接器（provider.py）第一次轉錄時才延遲 import 本模組，
 Docker 容器 worker 不需要 transformers/CUDA 相依。
 
-三種模型（frontend modelConfig 的 Local 選項，權重對照見 weights.MODEL_REPOS）：
+三種模型（畫面列出的本機模型，見 GET /providers；權重對照見 weights.MODEL_REPOS）：
   * moss-align（預設）：MOSS-Transcribe-Diarize 一次產生說話者、時間與文字，
     再由 Qwen3-ForcedAligner 斷行並補逐詞時間戳
   * moss-qwen3-asr：MOSS 分離後，文字改由 Qwen3-ASR 逐段轉錄（MOSS 文字留作 text_alt）

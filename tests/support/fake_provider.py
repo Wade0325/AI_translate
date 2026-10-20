@@ -50,6 +50,10 @@ def _lrc(t: float) -> str:
 
 
 class FakeProvider:
+    label = "假供應商"
+    model_labels: dict = {}
+    requires_api_key = False
+
     def __init__(self, script: Sequence[Step] = ()):
         self.script: List[Step] = list(script)
         self.model_capabilities = CAPABILITIES

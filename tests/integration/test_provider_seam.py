@@ -395,8 +395,8 @@ class TestModelMustBelongToProvider:
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BACKEND_DIR = REPO_ROOT / "backend"
-# 前端只在這裡讀模型能力的欄位
-FRONTEND_CAPABILITY_READER = REPO_ROOT / "frontend" / "src" / "hooks" / "useProviderList.js"
+# 前端只在這裡讀端點的欄位（供應商、模型與模型能力）
+FRONTEND_PROVIDER_LIST_READER = REPO_ROOT / "frontend" / "src" / "utils" / "providerList.js"
 
 
 def listed_capabilities(api) -> dict:
@@ -405,6 +405,16 @@ def listed_capabilities(api) -> dict:
     assert response.status_code == 200
     return {(entry["provider"], item["model"]): item["capabilities"]
             for entry in response.json() for item in entry["models"]}
+
+
+def listed_fields(api) -> set:
+    """GET /providers 回的所有欄位名稱：供應商、模型與模型能力三層。"""
+    fields = set()
+    for entry in api.get("/api/v1/providers").json():
+        fields |= entry.keys()
+        for item in entry["models"]:
+            fields |= item.keys() | item["capabilities"].keys()
+    return fields
 
 
 class TestModelCapabilitiesEndpoint:
@@ -434,6 +444,27 @@ class TestModelCapabilitiesEndpoint:
         assert {"gemini-3.5-flash", "gemini-2.5-flash"} <= set(gemini)
         assert not any(c["accepts_prompt"] or c["accepts_user_text"] for c in local.values())
         assert all(c["accepts_prompt"] and c["accepts_user_text"] for c in gemini.values())
+
+    def test_says_which_providers_need_the_users_api_key(self, api):
+        # 轉錄頁送出前依這一項確認設定了金鑰，不再寫死哪個供應商不用（#97）
+        listed = {entry["provider"]: entry for entry in api.get("/api/v1/providers").json()}
+
+        assert listed["google"]["requires_api_key"] is True
+        assert listed["local"]["requires_api_key"] is False
+
+    def test_names_providers_and_models_for_the_screen_default_model_first(self, api):
+        # 轉錄頁先選供應商、再選它的模型，名稱與預設（清單上的第一個）都從這裡來（#97）
+        listed = {entry["provider"]: entry for entry in api.get("/api/v1/providers").json()}
+
+        assert (listed["local"]["label"], listed["google"]["label"]) == ("本機", "Gemini")
+        assert [(m["model"], m["label"]) for m in listed["local"]["models"]] == [
+            ("moss-align", "MOSS-Transcribe-Diarize"),
+            ("moss-qwen3-asr", "MOSS + Qwen3-ASR"),
+            ("vibevoice-qwen3-asr", "VibeVoice + Qwen3-ASR（舊版）"),
+        ]
+        gemini = listed["google"]["models"]
+        assert gemini[0]["model"] == "gemini-3.5-flash"
+        assert all(m["label"] == m["model"] for m in gemini)
 
     def test_listing_does_not_import_torch(self):
         # 列模型能力的是 API 行程（Docker 模式的 API 容器沒有顯卡，也不裝 torch）：
@@ -468,15 +499,15 @@ class TestModelCapabilitiesEndpoint:
         probe_lines = [line for line in result.stdout.splitlines() if line.startswith("PROBE ")]
         assert probe_lines == ["PROBE 200 []"], result.stdout
 
-    def test_frontend_reads_only_capabilities_the_endpoint_lists(self, api):
-        # 前端讀不到的欄位一律當成支援（還沒載入時不限制）：欄位一改名，畫面就默默全部開放
-        source = FRONTEND_CAPABILITY_READER.read_text(encoding="utf-8")
-        read = set(re.findall(r"capabilities\??\.(\w+)", source))
-        listed = {field for capabilities in listed_capabilities(api).values()
-                  for field in capabilities}
+    def test_frontend_reads_only_fields_the_endpoint_lists(self, api):
+        # 前端讀不到的欄位一律當成支援、不用金鑰（還沒載入時不限制）：欄位一改名，畫面就
+        # 默默全部開放。端點的欄位是 snake_case，前端自己的名稱是 camelCase
+        source = FRONTEND_PROVIDER_LIST_READER.read_text(encoding="utf-8")
+        read = set(re.findall(r"\.([a-z]+(?:_[a-z]+)+)\b", source))
 
-        assert {"accepts_prompt", "accepts_user_text", "supports_batch"} <= read
-        assert read <= listed
+        assert {"accepts_prompt", "accepts_user_text", "supports_batch",
+                "requires_api_key"} <= read
+        assert read <= listed_fields(api)
 
 
 # ─── 模型不吃的輸入（#108） ─────────────────────────────────────────────────

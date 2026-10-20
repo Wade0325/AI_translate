@@ -2,9 +2,9 @@ import { useState, useEffect, useCallback } from "react"
 import { Card, Button, Input, Select, Switch, Typography, Row, Col, Spin, Divider, Progress, Alert } from "antd"
 import { Key, Bell, Save, Trash2, Cpu, Download, CheckCircle2 } from "lucide-react"
 import { useModelManager } from "../components/ModelManager"
-import { modelOptions } from "../constants/modelConfig"
 import { ReasonText } from "../components/disabled-reason"
-import { providerPromptDisabledReason, useProviderList } from "../hooks/useProviderList"
+import { useProviderList } from "../hooks/useProviderList"
+import { modelForProvider, providerPromptDisabledReason } from "../utils/providerList"
 import { api } from "../services/api"
 
 const { Text } = Typography
@@ -12,21 +12,23 @@ const { TextArea } = Input
 
 export default function SettingsPage() {
     const { getProviderConfig, saveProviderConfig, handleTestProvider } = useModelManager()
-    const providerList = useProviderList()
+    const { providerList, failed: providerListFailed } = useProviderList()
 
     const [providerForms, setProviderForms] = useState({})
     const [loading, setLoading] = useState(true)
 
     useEffect(() => {
+        if (!providerList) return
         const loadConfigs = async () => {
             setLoading(true)
             const entries = await Promise.all(
-                Object.keys(modelOptions).map(async (provider) => {
+                providerList.map(async ({ provider }) => {
                     try {
                         const config = await getProviderConfig(provider)
                         return [provider, {
                             apiKeys: config?.apiKeys?.length > 0 ? config.apiKeys : [""],
-                            model: config?.model || modelOptions[provider][0].value,
+                            // 存的模型不屬於這個供應商（或已經不在清單上）時顯示預設模型
+                            model: modelForProvider(providerList, provider, config?.model),
                             prompt: config?.prompt || "",
                             isDirty: false
                         }]
@@ -34,7 +36,7 @@ export default function SettingsPage() {
                         console.error(`Failed to load config for ${provider}:`, err)
                         return [provider, {
                             apiKeys: [""],
-                            model: modelOptions[provider][0].value,
+                            model: modelForProvider(providerList, provider, null),
                             prompt: "",
                             isDirty: false
                         }]
@@ -45,7 +47,7 @@ export default function SettingsPage() {
             setLoading(false)
         }
         loadConfigs()
-    }, [getProviderConfig])
+    }, [providerList, getProviderConfig])
 
     const updateForm = (provider, field, value) => {
         setProviderForms(prev => ({
@@ -78,7 +80,7 @@ export default function SettingsPage() {
         }
     }
 
-    if (loading) {
+    if (loading && !providerListFailed) {
         return (
             <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%', minHeight: 400 }}>
                 <Spin size="large" />
@@ -88,15 +90,18 @@ export default function SettingsPage() {
 
     return (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 24, padding: 24 }}>
+            {providerListFailed && (
+                <Alert type="error" showIcon message="讀取供應商清單失敗，請重新整理頁面" />
+            )}
             <Row gutter={[24, 24]}>
-                {Object.keys(modelOptions).map(provider => (
+                {!providerListFailed && providerList.map(({ provider, label, models }) => (
                     <Col xs={24} lg={12} key={provider}>
                         <Card
                             title={
                                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                                         <Key size={16} color="#2dd4a8" />
-                                        <span style={{ color: '#e8e8e8' }}>{provider} Configuration</span>
+                                        <span style={{ color: '#e8e8e8' }}>{label} Configuration</span>
                                     </div>
                                     {providerForms[provider].isDirty && (
                                         <Text style={{ fontSize: 12, color: '#d4a72d' }}>Unsaved changes</Text>
@@ -150,7 +155,7 @@ export default function SettingsPage() {
                                         value={providerForms[provider].model}
                                         onChange={(v) => updateForm(provider, 'model', v)}
                                         style={{ width: '100%' }}
-                                        options={modelOptions[provider]}
+                                        options={models.map((m) => ({ value: m.model, label: m.label }))}
                                     />
                                 </div>
 

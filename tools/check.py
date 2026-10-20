@@ -1,4 +1,4 @@
-"""唯一的檢查清單：ruff → pytest → ESLint。
+"""唯一的檢查清單：ruff → pytest → ESLint → 前端測試（node --test）。
 
 用法（在哪個目錄執行都可以，一律以 repo 根目錄為基準）：
 
@@ -76,17 +76,21 @@ def _python_module_missing(module: str) -> Callable[[], str | None]:
     return missing
 
 
+def _node_missing() -> str | None:
+    if shutil.which("node") is not None:
+        return None
+    return ("找不到 node：先安裝 frontend/.nvmrc 指定的 Node 版本"
+            "（Windows：winget install OpenJS.NodeJS.LTS），再重開終端機或"
+            " Claude Code，讓 PATH 生效")
+
+
 def _eslint_missing(frontend: Path) -> Callable[[], str | None]:
     def missing() -> str | None:
-        problems = []
-        if shutil.which("node") is None:
-            problems.append("找不到 node：先安裝 frontend/.nvmrc 指定的 Node 版本"
-                            "（Windows：winget install OpenJS.NodeJS.LTS），再重開終端機或"
-                            " Claude Code，讓 PATH 生效")
+        problems = [_node_missing()]
         if not (frontend / ESLINT_JS).is_file():
             problems.append(f"{frontend / ESLINT_JS} 不存在（這個 checkout 還沒裝前端依賴）："
                             f'照 package-lock.json 安裝：npm ci --prefix "{frontend}"')
-        return "\n".join(problems) or None
+        return "\n".join(problem for problem in problems if problem) or None
     return missing
 
 
@@ -102,6 +106,10 @@ def checks(root: Path = ROOT) -> tuple[Check, ...]:
         # --quiet 只印 error：warning 不擋合併，react-hooks 的 warning 一則十幾行，會把 error 淹掉
         Check("eslint", ("node", str(ESLINT_JS), ".", "--quiet"), frontend,
               _eslint_missing(frontend), _frontend_related, pre_commit=True),
+        # 前端純邏輯模組的測試（src 底下的 *.test.js），用 Node 內建的 node:test，不另裝套件；
+        # glob 由 node 自己展開。測試交給 CI，不在 commit 前跑
+        Check("node-test", ("node", "--test", "src/**/*.test.js"), frontend,
+              _node_missing, _frontend_related),
     )
 
 

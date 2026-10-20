@@ -165,8 +165,8 @@ jobs:
       - name: 安裝依賴
         working-directory: frontend
         run: npm ci
-      - name: ESLint
-        run: python3 tools/check.py eslint
+      - name: ESLint 與前端測試
+        run: python3 tools/check.py eslint node-test
       - name: 建置
         working-directory: frontend
         run: npm run build
