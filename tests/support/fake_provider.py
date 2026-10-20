@@ -29,8 +29,11 @@ CAPABILITIES = ModelCapabilities(
     remove_silence=True,
 )
 
-Line = Tuple[float, float, int, str]
-"""(起, 迄, 說話者編號, 文字)，時間軸是送進來的這段音檔。"""
+Word = Tuple[str, float, float]
+"""(詞, 起, 迄)：對齊器的一個詞，時間軸和所屬的那一行相同。"""
+
+Line = Union[Tuple[float, float, int, str], Tuple[float, float, int, str, Sequence[Word]]]
+"""(起, 迄, 說話者編號, 文字[, 逐字時間])，時間軸是送進來的這段音檔。"""
 
 
 @dataclass
@@ -46,6 +49,16 @@ Step = Union[Sequence[Line], Fail, Exception]
 def _lrc(t: float) -> str:
     minutes = int(t // 60)
     return f"[{minutes:02d}:{t - minutes * 60:05.2f}]"
+
+
+def _segment(i: int, line: Line) -> dict:
+    start, end, speaker, text, *timings = line
+    segment = {"seg_key": f"{i:04d}", "seq": i, "start": start, "end": end,
+               "speaker": f"S{speaker}", "text": text, "source": "fake"}
+    if timings:
+        segment["words"] = [{"text": word, "start": word_start, "end": word_end}
+                            for word, word_start, word_end in timings[0]]
+    return segment
 
 
 class FakeProvider:
@@ -104,13 +117,9 @@ class FakeProvider:
         if isinstance(step, Fail):
             return TranscriptionTaskResult(success=False, text=f"[[{step.message}]]")
 
-        segments = [
-            {"seg_key": f"{i:04d}", "seq": i, "start": start, "end": end,
-             "speaker": f"S{speaker}", "text": text, "source": "fake"}
-            for i, (start, end, speaker, text) in enumerate(step)
-        ]
+        segments = [_segment(i, line) for i, line in enumerate(step)]
         lrc = "\n".join(f"{_lrc(start)}[S{speaker}] {text}"
-                        for start, _, speaker, text in step)
+                        for start, _, speaker, text, *_ in step)
         input_tokens, output_tokens = self.usage
         return TranscriptionTaskResult(
             success=bool(step), text=lrc, segments=segments,

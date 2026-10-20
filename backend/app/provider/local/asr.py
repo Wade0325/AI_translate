@@ -362,6 +362,9 @@ def _entry_to_lines(entry: dict, count_words) -> List[str]:
     count_words: 文字 → 對齊詞數。必須與 _align_segments 餵給
     prepare_forced_aligner_inputs 的斷詞方式一致（先 _insert_align_breaks
     再 split_words_for_alignment），才能把文字單元對應回對齊詞序列的位置。
+
+    下載的輸出格式由 app.services.output_format 從片段照同樣的規則斷行；改規則要兩邊一起改
+    （#110 讓供應商不再產生 LRC 後，只剩那一份）。
     """
     speaker_tag = f"[S{entry['speaker']}]"
     fallback = [f"{_lrc_timestamp(entry['start'])}{speaker_tag} {entry['text']}"]

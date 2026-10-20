@@ -75,6 +75,17 @@ class TranscriptSegmentRepository:
         )
 
     @staticmethod
+    def segments_for_task(db: Session, task_uuid) -> List[Dict[str, Any]]:
+        """依 seq 讀回片段，形狀和寫入時傳進來的相同（``_to_row_values`` 的反向）。"""
+        return [
+            {"seg_key": row.seg_key, "seq": row.seq, "start": row.start_sec, "end": row.end_sec,
+             "speaker": row.speaker, "text": row.text, "text_alt": row.text_alt,
+             "source": row.source, "words": TranscriptSegmentRepository.words(row),
+             "confidence": row.confidence}
+            for row in TranscriptSegmentRepository.list_for_task(db, task_uuid)
+        ]
+
+    @staticmethod
     def delete_for_task(db: Session, task_uuid) -> int:
         uuid_val = coerce_uuid(task_uuid)
         if uuid_val is None:

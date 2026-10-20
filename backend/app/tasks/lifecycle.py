@@ -40,10 +40,9 @@ from app.repositories.transcript_segment_repository import TranscriptSegmentRepo
 from app.repositories.transcription_log_repository import TranscriptionLogRepository
 from app.runtime import run_mode
 from app.runtime.run_mode import publish_status
-from app.services import audio_store
+from app.services import audio_store, output_format
 from app.services.calculator.models import CalculationItem
 from app.services.calculator.service import CalculatorService
-from app.services.converter.service import convert_from_lrc
 from app.services.transcription.flows import order_segments
 from app.services.transcription.models import TranscriptionResponse, TranscriptionTaskResult
 from app.utils.audio import get_audio_duration
@@ -391,9 +390,8 @@ class TaskLifecycle:
 
 
 def _output_formats(result: TranscriptionTaskResult) -> dict:
-    """完成時送給畫面的輸出格式；#109 改由輸出格式模組產生。"""
-    transcripts = convert_from_lrc(result.text)
-    return transcripts.model_dump() if transcripts else {}
+    """完成時送給畫面的四種輸出格式，由輸出格式模組產生：和之後下載的內容相同。"""
+    return output_format.for_result(result).model_dump()
 
 
 def _resolve_input(file_path: str, task_uuid: str) -> Path:
