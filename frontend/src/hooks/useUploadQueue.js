@@ -20,12 +20,8 @@ import { TASK_STATUS } from '../constants/taskStatus';
  *       所有檔案共用一條 batch WS（Gemini Batch API，50% 折扣）
  *
  * 請求不帶 API 金鑰：後端從資料庫取用，明文金鑰不經過瀏覽器。
- * 請求的內容（包括每個檔案帶哪個提示詞）見 utils/transcribeRequest.js：
- *   - defaults 是全域預設：sourceLang / multiSpeaker / serviceTier / prompt（全域提示詞），
- *     檔案沒有每檔設定時用它補上；
- *   - promptTemplate 是供應商的提示詞範本（設定頁）；
- *   - supports 是所選模型支援的輸入（utils/providerList.js 的 modelSupports）：不支援的欄位在
- *     畫面上已停用並註明原因，送出時不帶上。
+ * 請求的內容（defaults、promptTemplate、supports 怎麼用，每個檔案帶哪個提示詞）見
+ * utils/transcribeRequest.js。
  */
 
 const isRestartable = (f) =>

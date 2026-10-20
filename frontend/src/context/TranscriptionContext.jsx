@@ -32,6 +32,8 @@ export const TranscriptionProvider = ({ children }) => {
   // 'standard' | 'flex' | 'batch'
   const [processingMode, setProcessingMode] = useState('batch');
   const [multiSpeaker, setMultiSpeaker] = useState(false);
+  // 轉錄頁的全域提示詞：送給沒有每檔設定提示詞的檔案（不必先按 Apply to All）
+  const [globalPrompt, setGlobalPrompt] = useState('');
 
   const useBatchMode = processingMode === 'batch';
 
@@ -208,8 +210,7 @@ export const TranscriptionProvider = ({ children }) => {
     }
   }, [fileList]);
 
-  // globalPrompt：轉錄頁的全域提示詞，送給沒有每檔設定提示詞的檔案（不必先按 Apply to All）
-  const handleStartTranscription = useCallback(async ({ globalPrompt = '' } = {}) => {
+  const handleStartTranscription = useCallback(async () => {
     if (!provider || !model) {
       message.error(providerListFailed ? PROVIDER_LIST_FAILED : '供應商清單還在載入，請稍後再試');
       return;
@@ -251,6 +252,7 @@ export const TranscriptionProvider = ({ children }) => {
     getProviderConfig,
     targetLang,
     multiSpeaker,
+    globalPrompt,
     processingMode,
     useBatchMode,
     supports,
@@ -276,6 +278,8 @@ export const TranscriptionProvider = ({ children }) => {
     setProcessingMode,
     multiSpeaker,
     setMultiSpeaker,
+    globalPrompt,
+    setGlobalPrompt,
     handleStartTranscription,
     downloadFile,
     downloadAllFiles,

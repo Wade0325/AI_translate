@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildBatchPayload, buildSinglePayload } from './transcribeRequest.js';
+import { buildBatchPayload, buildSinglePayload, globalSettingsPatch } from './transcribeRequest.js';
 
 // 轉錄頁按 Start 時的設定：全域預設（含全域提示詞）與所選的模型支援的輸入
 const DEFAULTS = { sourceLang: 'ja-JP', multiSpeaker: false, serviceTier: null, prompt: '人名照寫：佐藤' };
@@ -56,15 +56,44 @@ describe('批次送出的提示詞', () => {
     defaults: DEFAULTS, supports, sessionId: 's1',
   });
 
-  it('每個檔案帶自己的提示詞，沒有就帶全域的；批次層級的備用值也是全域的', () => {
-    const payload = batch();
-    expect(payload.files.map((f) => f.prompt)).toEqual(['人名照寫：佐藤', '這個檔案是關西腔']);
-    expect(payload.prompt).toBe('人名照寫：佐藤');
+  it('每個檔案帶自己的提示詞，沒有就帶全域的', () => {
+    expect(batch().files.map((f) => f.prompt)).toEqual(['人名照寫：佐藤', '這個檔案是關西腔']);
+  });
+
+  it('批次層級的備用值是提示詞範本：清成空白的檔案和單檔一樣，不會被全域的補回去', () => {
+    // 後端拿批次層級的值補沒帶提示詞的檔案（batch_core 的 file.prompt or 批次層級）
+    const payload = buildBatchPayload({
+      files: [uploaded({ uid: 'f1', prompt: '' })],
+      provider: 'google', model: 'gemini-2.5-flash', promptTemplate: '',
+      defaults: DEFAULTS, supports: TAKES_PROMPT, sessionId: 's1',
+    });
+    expect([payload.files[0].prompt, payload.prompt]).toEqual([null, null]);
+    expect(batch().prompt).toBe('設定頁的範本');
   });
 
   it('所選的模型不吃提示詞時，檔案與批次層級都不帶（#108）', () => {
     const payload = batch({ supports: { ...NO_PROMPT, batch: true } });
     expect([...payload.files.map((f) => f.prompt), payload.prompt]).toEqual([null, null, null]);
+  });
+});
+
+describe('套用全域設定（Apply to All、Reset to global）', () => {
+  it('套用之後，檔案跟著全域提示詞走：之後改的全域提示詞也會送出；語言照套用當下的全域值', () => {
+    const globalConfig = {
+      language: 'zh-TW', isMultiSpeaker: true, speakerCount: 3, includeTimestamps: false,
+      prompt: '套用當下的全域提示詞',
+    };
+    const file = {
+      ...untouched({ prompt: '這個檔案是關西腔', language: 'en-US', hasOverride: true }),
+      ...globalSettingsPatch(globalConfig),
+    };
+
+    const payload = buildSinglePayload({
+      serverFilename: 'srv-a.wav', file, provider: 'google', model: 'gemini-2.5-flash',
+      promptTemplate: null, defaults: { ...DEFAULTS, prompt: '後來改過的全域提示詞' },
+      supports: TAKES_PROMPT, sessionId: 's1',
+    });
+    expect([payload.prompt, payload.source_lang]).toEqual(['後來改過的全域提示詞', 'zh-TW']);
   });
 });
 

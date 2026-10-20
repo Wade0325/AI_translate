@@ -4,17 +4,30 @@
  * 每個檔案送出的提示詞，依序取第一個有字的：
  *   1. 檔案卡顯示的提示詞：每檔設定過就是它自己的，沒設定過就是全域的；
  *   2. 供應商的提示詞範本（設定頁）。
- * 都沒有時不帶，由後端用預設範本；只有空白算沒填。所選的模型不吃提示詞時一律不帶（#108）。
+ * 都沒有時不帶，由後端用系統預設範本；只有空白算沒填。所選的模型不吃提示詞時一律不帶（#108）。
  */
 
-const filled = (text) => (typeof text === 'string' && text.trim() ? text : null);
+const blankToNull = (text) => (typeof text === 'string' && text.trim() ? text : null);
 
 /** 檔案卡顯示、也是送出的提示詞：每檔設定過（包括清成空白）就是它自己的，否則是全域的。 */
 export const filePrompt = (file, globalPrompt) => file.prompt ?? globalPrompt;
 
+/**
+ * 把一個檔案的每檔設定改回全域預設（Apply to All、Reset to global）時要更新的欄位。
+ * 語言、說話者與時間戳複製全域當下的值；提示詞清掉，讓檔案跟著全域提示詞走，之後改的也會送出。
+ */
+export const globalSettingsPatch = (globalConfig) => ({
+  language: globalConfig.language,
+  isMultiSpeaker: globalConfig.isMultiSpeaker,
+  speakerCount: globalConfig.speakerCount,
+  prompt: undefined,
+  includeTimestamps: globalConfig.includeTimestamps,
+  hasOverride: false,
+});
+
 function promptToSend(file, globalPrompt, promptTemplate, supports) {
   if (!supports.prompt) return null;
-  return filled(filePrompt(file, globalPrompt)) ?? filled(promptTemplate);
+  return blankToNull(filePrompt(file, globalPrompt)) ?? blankToNull(promptTemplate);
 }
 
 /** defaults：全域預設 { sourceLang, multiSpeaker, serviceTier, prompt }，prompt 是全域提示詞。 */
@@ -47,8 +60,8 @@ export function buildBatchPayload({ files, provider, model, promptTemplate, defa
     provider,
     model,
     source_lang: defaults.sourceLang,
-    // 每個檔案都已經帶了自己的提示詞；這是沒帶時的備用值：全域的，沒有就是範本
-    prompt: promptToSend({}, defaults.prompt, promptTemplate, supports),
+    // 後端拿這個值補沒帶提示詞的檔案；只放範本，清成空白的檔案才不會被全域的補回去
+    prompt: supports.prompt ? blankToNull(promptTemplate) : null,
     multi_speaker: defaults.multiSpeaker,
     session_id: sessionId,
   };

@@ -22,6 +22,7 @@ import { LoadingOutlined } from "@ant-design/icons"
 import { ReasonText, ReasonTooltip } from "@/components/disabled-reason"
 import { languages, formatLang } from "@/constants/languages"
 import { downloadFormats } from "@/constants/downloadFormats"
+import { globalSettingsPatch } from "@/utils/transcribeRequest"
 
 const { Text } = Typography
 const { TextArea } = Input
@@ -61,14 +62,7 @@ export function FileConfigCard({
     }
 
     const resetToGlobal = () => {
-        onUpdate(config.id, {
-            language: globalConfig.language,
-            isMultiSpeaker: globalConfig.isMultiSpeaker,
-            speakerCount: globalConfig.speakerCount,
-            prompt: globalConfig.prompt,
-            includeTimestamps: globalConfig.includeTimestamps,
-            hasOverride: false,
-        })
+        onUpdate(config.id, globalSettingsPatch(globalConfig))
         setExpanded(false)
     }
 
