@@ -9,7 +9,7 @@ import VadTestModal from "@/components/transcribe/VadTestModal"
 import { useTranscription } from "@/context/TranscriptionContext"
 import { useModelManager } from "@/components/ModelManager"
 import { PROVIDER_LIST_FAILED } from "@/hooks/useProviderList"
-import { providerModels, providerPromptDisabledReason } from "@/utils/providerList"
+import { modelOptions, providerOptions, providerPromptDisabledReason } from "@/utils/providerList"
 import { api } from "@/services/api"
 import { DownloadOutlined } from "@ant-design/icons"
 import { downloadFormatsLong } from "@/constants/downloadFormats"
@@ -37,6 +37,7 @@ export default function TranscribePage() {
         setTargetLang,
         providerList,
         providerListFailed,
+        reloadProviderList,
         provider,
         selectProvider,
         model,
@@ -242,9 +243,9 @@ export default function TranscribePage() {
                             {!provider && (
                                 <option value="">{providerListFailed ? "讀取失敗" : "載入中…"}</option>
                             )}
-                            {providerList?.map((p) => (
-                                <option key={p.provider} value={p.provider}>
-                                    {p.label}
+                            {providerOptions(providerList).map((option) => (
+                                <option key={option.value} value={option.value}>
+                                    {option.label}
                                 </option>
                             ))}
                         </select>
@@ -259,13 +260,20 @@ export default function TranscribePage() {
                             disabled={!provider}
                             style={selectStyle}
                         >
-                            {providerModels(providerList, provider).map((m) => (
-                                <option key={m.model} value={m.model}>
-                                    {m.label}
+                            {modelOptions(providerList, provider).map((option) => (
+                                <option key={option.value} value={option.value}>
+                                    {option.label}
                                 </option>
                             ))}
                         </select>
-                        {providerListFailed && <ReasonText reason={PROVIDER_LIST_FAILED} />}
+                        {providerListFailed && (
+                            <Space size={6}>
+                                <ReasonText reason={PROVIDER_LIST_FAILED} />
+                                <Button size="small" type="link" onClick={reloadProviderList} style={{ padding: 0, fontSize: 11 }}>
+                                    重試
+                                </Button>
+                            </Space>
+                        )}
                     </div>
                     <div style={{ height: 32, width: 1, background: "#3a3a5c" }} />
                     <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>

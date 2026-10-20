@@ -578,6 +578,20 @@ class TestModelMustBelongToProvider:
         assert fake.opened == 0
 
 
+class TestStoredProviderName:
+    def test_task_record_stores_the_listed_name_whatever_the_request_spelling(
+            self, api, fake, db_session):
+        # 任務紀錄存的是供應商清單上的名稱，不是請求的原樣：舊前端送 Google、直接呼叫 API
+        # 的人可能送 GOOGLE，存下來都要是同一個值（#97）
+        from app.repositories.transcription_log_repository import TranscriptionLogRepository
+
+        fake.script = list(SCRIPT)
+        task_uuid = transcribe(api, "uid-spelling", provider="FAKE")[-1]["task_uuid"]
+
+        db_session.expire_all()
+        assert TranscriptionLogRepository().get(db_session, task_uuid).provider == "fake"
+
+
 # ─── 模型能力端點（#108） ───────────────────────────────────────────────────
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -592,6 +606,13 @@ def listed_capabilities(api) -> dict:
     assert response.status_code == 200
     return {(entry["provider"], item["model"]): item["capabilities"]
             for entry in response.json() for item in entry["models"]}
+
+
+def listed_providers(api) -> dict:
+    """GET /providers 依供應商名稱排成 {供應商: 清單上的那一項}。"""
+    response = api.get("/api/v1/providers")
+    assert response.status_code == 200
+    return {entry["provider"]: entry for entry in response.json()}
 
 
 def listed_fields(api) -> set:
@@ -634,14 +655,14 @@ class TestModelCapabilitiesEndpoint:
 
     def test_says_which_providers_need_the_users_api_key(self, api):
         # 轉錄頁送出前依這一項確認設定了金鑰，不再寫死哪個供應商不用（#97）
-        listed = {entry["provider"]: entry for entry in api.get("/api/v1/providers").json()}
+        listed = listed_providers(api)
 
         assert listed["google"]["requires_api_key"] is True
         assert listed["local"]["requires_api_key"] is False
 
     def test_names_providers_and_models_for_the_screen_default_model_first(self, api):
         # 轉錄頁先選供應商、再選它的模型，名稱與預設（清單上的第一個）都從這裡來（#97）
-        listed = {entry["provider"]: entry for entry in api.get("/api/v1/providers").json()}
+        listed = listed_providers(api)
 
         assert (listed["local"]["label"], listed["google"]["label"]) == ("本機", "Gemini")
         assert [(m["model"], m["label"]) for m in listed["local"]["models"]] == [

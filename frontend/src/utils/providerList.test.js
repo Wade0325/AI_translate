@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { modelForProvider, requiresApiKey } from './providerList.js';
+import {
+  missingApiKey,
+  modelForProvider,
+  modelOptions,
+  providerOptions,
+  requiresApiKey,
+  resolveSelection,
+  withModel,
+  withProvider,
+} from './providerList.js';
 
 // 後端 GET /providers 回的形狀，只留測試用得到的欄位
 const PROVIDERS = [
@@ -49,5 +58,64 @@ describe('requiresApiKey：送出前要不要確認設定了 API 金鑰', () => 
   it('照端點說的：Gemini 要，本機不用', () => {
     expect([requiresApiKey(PROVIDERS, 'google'), requiresApiKey(PROVIDERS, 'local')])
       .toEqual([true, false]);
+  });
+});
+
+describe('missingApiKey：按 Start 時缺不缺金鑰', () => {
+  it('只有要金鑰的供應商才檢查：Gemini 沒存金鑰才算缺，本機不用存', () => {
+    const saved = { apiKeys: ['AIza********ABCD'] };
+    expect([
+      missingApiKey(PROVIDERS, 'google', { apiKeys: [] }),
+      missingApiKey(PROVIDERS, 'google', saved),
+      missingApiKey(PROVIDERS, 'local', null),
+    ]).toEqual([true, false, false]);
+  });
+});
+
+describe('轉錄頁選的供應商與模型', () => {
+  const NOTHING_CHOSEN = { provider: null, model: null };
+
+  it('還沒選時用清單上的第一個供應商與它的預設模型', () => {
+    expect(resolveSelection(PROVIDERS, NOTHING_CHOSEN))
+      .toEqual({ provider: 'google', model: 'gemini-3.5-flash' });
+  });
+
+  it('選了模型就用它', () => {
+    expect(resolveSelection(PROVIDERS, withModel(NOTHING_CHOSEN, 'gemini-2.5-pro')))
+      .toEqual({ provider: 'google', model: 'gemini-2.5-pro' });
+  });
+
+  it('換供應商時，模型回到這個供應商的預設模型', () => {
+    const chosen = withModel(NOTHING_CHOSEN, 'gemini-2.5-pro');
+    expect(resolveSelection(PROVIDERS, withProvider(chosen, 'local')))
+      .toEqual({ provider: 'local', model: 'moss-align' });
+  });
+
+  it('換供應商時，兩邊都有同名的模型也一樣回到預設：一個模型由供應商與模型一起識別', () => {
+    const model = (id) => ({ model: id, label: id, capabilities: {} });
+    const sameModelOnBoth = [
+      { provider: 'local', label: '本機', models: [model('local-default'), model('shared')] },
+      { provider: 'cloud', label: '雲端', models: [model('cloud-default'), model('shared')] },
+    ];
+    const chosen = withModel(withProvider(NOTHING_CHOSEN, 'local'), 'shared');
+
+    expect(resolveSelection(sameModelOnBoth, withProvider(chosen, 'cloud')))
+      .toEqual({ provider: 'cloud', model: 'cloud-default' });
+  });
+
+  it('清單還沒載入時什麼都沒選', () => {
+    expect(resolveSelection(null, NOTHING_CHOSEN)).toEqual({ provider: null, model: null });
+  });
+});
+
+describe('選單的選項', () => {
+  it('供應商與模型都照清單的順序，顯示畫面上的名稱', () => {
+    expect([providerOptions(PROVIDERS), modelOptions(PROVIDERS, 'local')]).toEqual([
+      [{ value: 'google', label: 'Gemini' }, { value: 'local', label: '本機' }],
+      [
+        { value: 'moss-align', label: 'MOSS-Transcribe-Diarize' },
+        { value: 'vibevoice-qwen3-asr', label: 'VibeVoice + Qwen3-ASR（舊版）' },
+      ],
+    ]);
   });
 });
