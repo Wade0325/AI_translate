@@ -4,7 +4,7 @@
 # 新增 job 時，要加進 `check` 的 needs；`check` 逐一確認每個 needs 的結果，全部 success
 # 才綠燈（只改文件時，四個重的 job 可以是 skipped）。
 #
-# 要跑哪些檢查定義在 tools/check.py：這裡的 job 只呼叫它，不另寫 ruff、pytest、ESLint 的指令。
+# 要跑哪些檢查定義在 tools/check.py：這裡的 job 只呼叫它，不另寫 ruff、pytest、ESLint、vitest 的指令。
 # 不要加 on.paths：被路徑過濾掉的 PR 等不到 `check`，會一直卡在等待中；
 # 只改文件時的跳過，由 `changes` job 判斷。
 
@@ -166,8 +166,8 @@ jobs:
       - name: 安裝依賴
         working-directory: frontend
         run: npm ci
-      - name: ESLint
-        run: python3 tools/check.py eslint
+      - name: ESLint 與 vitest
+        run: python3 tools/check.py eslint vitest
       - name: 建置
         working-directory: frontend
         run: npm run build
