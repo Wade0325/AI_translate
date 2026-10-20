@@ -19,8 +19,9 @@ from app.schemas.schemas import (
     HistoryStatsResponse,
     HistoryUsageResponse,
 )
+from app.services import output_format
 from app.services.calculator.flows import MODEL_PRICES
-from app.services.converter.service import convert_from_lrc
+from app.services.output_format import OutputFormat
 from app.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -29,12 +30,11 @@ router = APIRouter()
 history_repo = HistoryRepository()
 segment_repo = TranscriptSegmentRepository()
 
-VALID_DOWNLOAD_FORMATS = frozenset({"lrc", "srt", "vtt", "txt"})
 DOWNLOAD_MIME_TYPES = {
-    "lrc": "text/plain; charset=utf-8",
-    "srt": "application/x-subrip; charset=utf-8",
-    "vtt": "text/vtt; charset=utf-8",
-    "txt": "text/plain; charset=utf-8",
+    OutputFormat.LRC: "text/plain; charset=utf-8",
+    OutputFormat.SRT: "application/x-subrip; charset=utf-8",
+    OutputFormat.VTT: "text/vtt; charset=utf-8",
+    OutputFormat.TXT: "text/plain; charset=utf-8",
 }
 
 
@@ -57,14 +57,6 @@ def _log_to_response(log: TranscriptionLog) -> HistoryLogResponse:
         file_uid=log.file_uid,
         service_tier_used=log.service_tier_used,
     )
-
-
-def _transcript_content(lrc_text: str, fmt: str) -> str:
-    """由 DB 中的 LRC 產生指定格式的字幕內容。"""
-    if fmt == "lrc":
-        return lrc_text
-    converted = convert_from_lrc(lrc_text)
-    return getattr(converted, fmt, "") or ""
 
 
 def _download_filename(original_filename: Optional[str], fmt: str) -> str:
@@ -164,31 +156,31 @@ def download_transcript(
     fmt: str,
     db: Session = Depends(get_db),
 ):
-    """下載指定格式的字幕檔（由 DB 中的 LRC 即時轉換）。"""
+    """下載任務的一種輸出格式（原始轉錄），內容由輸出格式模組產生。"""
     fmt = fmt.lower()
-    if fmt not in VALID_DOWNLOAD_FORMATS:
+    try:
+        output = OutputFormat(fmt)
+    except ValueError:
+        available = ", ".join(sorted(f.value for f in OutputFormat))
         raise HTTPException(
-            status_code=400,
-            detail=f"不支援的格式: {fmt}，可用: {', '.join(sorted(VALID_DOWNLOAD_FORMATS))}",
-        )
+            status_code=400, detail=f"不支援的格式: {fmt}，可用: {available}") from None
 
     log = history_repo.get_log_by_uuid(db, task_uuid)
     if not log:
         raise HTTPException(status_code=404, detail="找不到此任務紀錄")
     if log.status != TaskStatus.COMPLETED:
         raise HTTPException(status_code=400, detail="任務尚未完成，無法下載字幕")
-    lrc_text = history_repo.resolve_lrc_content(db, log, backfill=True)
-    if not lrc_text:
-        raise HTTPException(status_code=404, detail="此任務沒有儲存的轉錄結果")
 
-    content = _transcript_content(lrc_text, fmt)
+    content = output_format.for_task(db, log, output)
+    if content is None:
+        raise HTTPException(status_code=404, detail="此任務沒有儲存的轉錄結果")
     if not content.strip():
         raise HTTPException(status_code=404, detail="無法產生此格式的字幕內容")
 
     filename = _download_filename(log.original_filename, fmt)
     return Response(
         content=content,
-        media_type=DOWNLOAD_MIME_TYPES[fmt],
+        media_type=DOWNLOAD_MIME_TYPES[output],
         headers={
             "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}",
         },

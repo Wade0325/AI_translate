@@ -1,6 +1,6 @@
 /**
  * 下載格式的單一來源；各下載 UI 的清單皆由此衍生。
- * key 必須是後端 SubtitleFormats 實際產出的格式（lrc/srt/vtt/txt），
+ * key 必須是後端輸出格式模組（backend/app/services/output_format.py 的 OutputFormat）產出的格式（lrc/srt/vtt/txt），
  * 列出後端沒有的格式會讓使用者下載到空內容。
  */
 const FORMATS = [

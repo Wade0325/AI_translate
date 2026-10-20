@@ -22,10 +22,9 @@ from app.provider.base import TranscribeRequest
 from app.provider.registry import open_provider
 from app.repositories.transcript_segment_repository import TranscriptSegmentRepository
 from app.repositories.transcription_log_repository import TranscriptionLogRepository
-from app.services import audio_store
+from app.services import audio_store, output_format
 from app.services.calculator.service import CalculatorService
 from app.services.calculator.models import CalculationItem
-from app.services.converter.service import convert_from_lrc
 from app.services.transcription.flows import TranscriptionTask, order_segments
 from app.utils.audio import get_audio_duration
 from app.services.transcription.models import TranscriptionResponse
@@ -182,7 +181,7 @@ def run_transcription(task_params_dict: dict, task_uuid: str):
             f"Transcription complete. Task ID: {task_uuid}. Tokens used: {total_tokens:,}")
 
         update_status("正在轉換字幕格式...")
-        transcripts_model = convert_from_lrc(final_lrc_text)
+        transcripts_model = output_format.for_result(transcription_result)
         final_transcripts = transcripts_model.model_dump() if transcripts_model else {}
 
         update_status("正在計算費用...")
