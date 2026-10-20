@@ -2,7 +2,7 @@ from typing import Dict
 from .models import ModelPrice, PriceCalculationRequest, PriceCalculationResponse
 
 # 模型價格設定（每百萬 token）；不在表內的模型套用 default。
-# 注意：此表需涵蓋 frontend/src/constants/modelConfig.js 中所有可選模型，
+# 注意：此表需涵蓋 GET /providers 列出的所有模型（各供應商轉接器的模型清單），
 # 否則該模型會以 default（flash 級）價格入帳，且不會出現在 Billing 頁的計費表。
 MODEL_PRICES: Dict[str, ModelPrice] = {
     "gemini-3.5-flash": ModelPrice(

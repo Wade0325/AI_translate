@@ -51,6 +51,8 @@ def genai():
 class _GeminiWithFakeClient:
     """供應商「google」：建立的 Gemini 轉接器都接上同一個假用戶端，也不真的等。"""
 
+    info = GeminiProvider.info
+
     def __init__(self, genai: FakeGenaiClient):
         self._genai = genai
         self.withdrawn: set[str] = set()
@@ -267,6 +269,18 @@ def test_every_file_completes_and_remote_files_are_deleted(api, in_process_run_m
     assert "おはよう。" in results["gemini-ok-a.wav"]["result"]["transcripts"]["srt"]
     assert "こんにちは。" in results["gemini-ok-b.wav"]["result"]["transcripts"]["srt"]
     assert genai.stored == {}  # 批次結束時刪掉上傳到 Gemini 的檔案
+
+
+def test_batch_records_store_the_listed_provider_name(api, in_process_run_mode, genai, db_session):
+    # run_batch 照舊前端的寫法送 Google；任務紀錄存的是供應商清單上的 google（#97）
+    from app.repositories.transcription_log_repository import TranscriptionLogRepository
+
+    genai.batch_outcomes = {0: Reply(text="[00:01.00]おはよう。")}
+    run_batch(api, in_process_run_mode, "batch-gemini-spelling", ["gemini-spelling.wav"])
+
+    task_uuid = history(api, "gemini-spelling.wav")["task_uuid"]
+    db_session.expire_all()
+    assert TranscriptionLogRepository().get(db_session, task_uuid).provider == "google"
 
 
 def test_a_failed_file_does_not_stop_the_others(api, in_process_run_mode, genai):
