@@ -42,7 +42,7 @@ def start_transcription_task_sync(payload_str: str, file_uid: str) -> None:
         payload_str)
 
     # 先驗證再碰檔案：不符的組合不能默默跑到別的供應商，模型不吃的輸入也不能默默丟掉
-    capabilities = check_request(
+    provider, capabilities = check_request(
         request_data.provider, request_data.model,
         prompt=request_data.prompt, user_text=request_data.original_text)
 
@@ -56,11 +56,11 @@ def start_transcription_task_sync(payload_str: str, file_uid: str) -> None:
 
     # 前端不再送明文金鑰：缺少或只帶遮罩值時改用資料庫裡的金鑰
     with SessionLocal() as db:
-        api_key = resolve_api_key(db, request_data.provider, request_data.api_keys)
+        api_key = resolve_api_key(db, provider, request_data.api_keys)
 
     task_params = TranscriptionTaskParams(
         file_path=server_file_path,
-        provider=request_data.provider,
+        provider=provider,
         model=request_data.model,
         api_keys=api_key,
         source_lang=request_data.source_lang,
@@ -140,7 +140,12 @@ async def websocket_endpoint(
         try:
             await run_in_threadpool(start_transcription_task_sync, payload_str=payload_str, file_uid=file_uid)
         except (UnsafeUploadFilenameError, UnsupportedModelError) as e:
-            logger.warning(f"拒絕轉錄請求 (file_uid: {file_uid}): {e}")
+            if isinstance(e, UnsafeUploadFilenameError):
+                # 錯誤訊息是固定的：可疑的檔名要另外記，排查只能靠使用者附上的 log（ADR-0005）。
+                # 用 repr，換行等控制字元才不會在 log 裡偽造出別的行
+                logger.warning(f"拒絕不合法的上傳檔名 (file_uid: {file_uid}): {e.filename!r}")
+            else:
+                logger.warning(f"拒絕轉錄請求 (file_uid: {file_uid}): {e}")
             await websocket.send_json({
                 "client_id": file_uid,
                 "file_uid": file_uid,

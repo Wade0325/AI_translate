@@ -37,7 +37,8 @@ const statusConfig = {
 }
 
 /**
- * disabledReasons：所選的模型不支援的輸入與原因（{ prompt, userText }，見 useProviderList）；
+ * disabledReasons：所選的模型不支援的輸入與原因（{ prompt, userText }，見 utils/providerList.js 的
+ * disabledReasonsFor）；
  * 有原因的欄位停用並顯示它，已經填了的值標成不會送出。
  */
 export function FileConfigCard({

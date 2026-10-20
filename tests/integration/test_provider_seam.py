@@ -17,6 +17,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from pathlib import Path
+from urllib.parse import unquote
 
 import numpy as np
 import pytest
@@ -578,6 +579,20 @@ class TestModelMustBelongToProvider:
         assert fake.opened == 0
 
 
+class TestStoredProviderName:
+    def test_task_record_stores_the_listed_name_whatever_the_request_spelling(
+            self, api, fake, db_session):
+        # 任務紀錄存的是供應商清單上的名稱，不是請求的原樣：舊前端送 Google、直接呼叫 API
+        # 的人可能送 GOOGLE，存下來都要是同一個值（#97）
+        from app.repositories.transcription_log_repository import TranscriptionLogRepository
+
+        fake.script = list(SCRIPT)
+        task_uuid = transcribe(api, "uid-spelling", provider="FAKE")[-1]["task_uuid"]
+
+        db_session.expire_all()
+        assert TranscriptionLogRepository().get(db_session, task_uuid).provider == "fake"
+
+
 # ─── 模型能力端點（#108） ───────────────────────────────────────────────────
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -592,6 +607,13 @@ def listed_capabilities(api) -> dict:
     assert response.status_code == 200
     return {(entry["provider"], item["model"]): item["capabilities"]
             for entry in response.json() for item in entry["models"]}
+
+
+def listed_providers(api) -> dict:
+    """GET /providers 依供應商名稱排成 {供應商: 清單上的那一項}。"""
+    response = api.get("/api/v1/providers")
+    assert response.status_code == 200
+    return {entry["provider"]: entry for entry in response.json()}
 
 
 def listed_fields(api) -> set:
@@ -634,14 +656,14 @@ class TestModelCapabilitiesEndpoint:
 
     def test_says_which_providers_need_the_users_api_key(self, api):
         # 轉錄頁送出前依這一項確認設定了金鑰，不再寫死哪個供應商不用（#97）
-        listed = {entry["provider"]: entry for entry in api.get("/api/v1/providers").json()}
+        listed = listed_providers(api)
 
         assert listed["google"]["requires_api_key"] is True
         assert listed["local"]["requires_api_key"] is False
 
     def test_names_providers_and_models_for_the_screen_default_model_first(self, api):
         # 轉錄頁先選供應商、再選它的模型，名稱與預設（清單上的第一個）都從這裡來（#97）
-        listed = {entry["provider"]: entry for entry in api.get("/api/v1/providers").json()}
+        listed = listed_providers(api)
 
         assert (listed["local"]["label"], listed["google"]["label"]) == ("本機", "Gemini")
         assert [(m["model"], m["label"]) for m in listed["local"]["models"]] == [
@@ -1030,3 +1052,50 @@ class TestTransientError:
         record = api.get(f"/api/v1/history/{messages[-1]['task_uuid']}").json()
         assert record["status"] == TaskStatus.FAILED
         assert "503" in record["error_message"]
+
+
+# ─── 非 ASCII 檔名 ───────────────────────────────────────────────────────────
+
+def download_filename(response) -> str:
+    """Content-Disposition 標頭給的檔名；非 ASCII 的檔名照 RFC 5987 寫成 filename*=utf-8''…。"""
+    header = response.headers["content-disposition"]
+    match = re.search(r"filename\*=utf-8''([^;]+)", header, re.IGNORECASE)
+    assert match, header
+    return unquote(match.group(1))
+
+
+class TestNonAsciiFilename:
+    """日文、中文檔名的音檔走完上傳 → ffmpeg → 下載。
+
+    CI 的 Windows job 刻意不開 UTF-8 模式（PYTHONUTF8），和使用者的電腦一樣用系統碼頁：
+    檔名經過暫存路徑、ffmpeg 的參數與輸出、任務紀錄與下載，哪一處用了系統碼頁就會在那裡出錯。
+    """
+
+    @pytest.mark.parametrize("name, srt_name", [
+        ("おはようの録音.flac", "おはようの録音.srt"),
+        ("會議錄音.flac", "會議錄音.srt"),
+    ], ids=["ja", "zh"])
+    def test_goes_through_ffmpeg_and_downloads(self, api, fake, data_dir, name, srt_name):
+        # FLAC 先經 ffmpeg 轉成 wav 再去靜音；單次只能處理 5 秒，再由 ffmpeg 在靜音處切成兩段
+        fake.model_capabilities = replace(fake.model_capabilities, single_pass_seconds=5.0)
+        fake.script = [
+            [(0.2, 1.5, 0, "一つ目。")],
+            [(0.2, 0.9, 1, "二つ目。"), (1.2, 2.0, 0, "三つ目。")],
+        ]
+        done = transcribe(api, "uid-non-ascii", name)[-1]
+
+        assert done["status_code"] == TaskStatus.COMPLETED
+        assert len(fake.calls) == 2
+        assert done["result"]["audio_duration_seconds"] == pytest.approx(12.0, abs=0.1)
+        # 歷史紀錄列出原本的檔名，輸出格式照它命名下載
+        task_uuid = done["task_uuid"]
+        assert api.get(f"/api/v1/history/{task_uuid}").json()["original_filename"] == name
+        srt = api.get(f"/api/v1/history/{task_uuid}/download/srt")
+        assert srt.status_code == 200
+        assert all(text in srt.text for text in ["一つ目。", "二つ目。", "三つ目。"])
+        assert download_filename(srt) == srt_name
+        # 上傳的音檔原封不動保留下來、可以重播，轉檔與切段的暫存檔都清掉了
+        audio = api.get(f"/api/v1/transcripts/{task_uuid}/audio")
+        assert audio.content == synthetic_audio("FLAC")
+        assert download_filename(audio) == name
+        assert leftovers(data_dir) == []

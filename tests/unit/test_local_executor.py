@@ -1,4 +1,4 @@
-"""LocalExecutor（standalone 行程內任務執行器）單元測試。"""
+"""LocalExecutor（免安裝模式的行程內任務執行器）單元測試。"""
 import threading
 import time
 

@@ -4,7 +4,7 @@ import { Key, Bell, Save, Trash2, Cpu, Download, CheckCircle2 } from "lucide-rea
 import { useModelManager } from "../components/ModelManager"
 import { ReasonText } from "../components/disabled-reason"
 import { PROVIDER_LIST_FAILED, useProviderList } from "../hooks/useProviderList"
-import { modelForProvider, providerPromptDisabledReason } from "../utils/providerList"
+import { modelForProvider, modelOptions, providerOptions, providerPromptDisabledReason } from "../utils/providerList"
 import { api } from "../services/api"
 
 const { Text } = Typography
@@ -12,7 +12,7 @@ const { TextArea } = Input
 
 export default function SettingsPage() {
     const { getProviderConfig, saveProviderConfig, handleTestProvider } = useModelManager()
-    const { providerList, failed: providerListFailed } = useProviderList()
+    const { providerList, failed: providerListFailed, reload: reloadProviderList } = useProviderList()
 
     const [providerForms, setProviderForms] = useState({})
     const [loading, setLoading] = useState(true)
@@ -22,7 +22,7 @@ export default function SettingsPage() {
         const loadConfigs = async () => {
             setLoading(true)
             const entries = await Promise.all(
-                providerList.map(async ({ provider }) => {
+                providerOptions(providerList).map(async ({ value: provider }) => {
                     try {
                         const config = await getProviderConfig(provider)
                         return [provider, {
@@ -90,9 +90,16 @@ export default function SettingsPage() {
 
     return (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 24, padding: 24 }}>
-            {providerListFailed && <Alert type="error" showIcon message={PROVIDER_LIST_FAILED} />}
+            {providerListFailed && (
+                <Alert
+                    type="error"
+                    showIcon
+                    message={PROVIDER_LIST_FAILED}
+                    action={<Button size="small" onClick={reloadProviderList}>重試</Button>}
+                />
+            )}
             <Row gutter={[24, 24]}>
-                {!providerListFailed && providerList.map(({ provider, label, models }) => (
+                {!providerListFailed && providerOptions(providerList).map(({ value: provider, label }) => (
                     <Col xs={24} lg={12} key={provider}>
                         <Card
                             title={
@@ -153,7 +160,7 @@ export default function SettingsPage() {
                                         value={providerForms[provider].model}
                                         onChange={(v) => updateForm(provider, 'model', v)}
                                         style={{ width: '100%' }}
-                                        options={models.map((m) => ({ value: m.model, label: m.label }))}
+                                        options={modelOptions(providerList, provider)}
                                     />
                                 </div>
 

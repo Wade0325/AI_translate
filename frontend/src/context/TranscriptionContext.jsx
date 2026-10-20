@@ -8,10 +8,12 @@ import { PROVIDER_LIST_FAILED, useProviderList } from '../hooks/useProviderList'
 import {
   disabledReasonsFor,
   findModelCapabilities,
-  modelForProvider,
+  missingApiKey,
   modelSupports,
   providerLabel,
-  requiresApiKey,
+  resolveSelection,
+  withModel,
+  withProvider,
 } from '../utils/providerList';
 import { api } from '../services/api';
 
@@ -40,17 +42,20 @@ export const TranscriptionProvider = ({ children }) => {
   const { getProviderConfig } = useModelManager();
 
   // 先選供應商、再選它的模型；兩者都照供應商清單的值送出，後端會驗證模型屬於這個供應商。
-  // 還沒選時用預設：清單上的第一個供應商；換供應商時模型回到它的預設模型（第一個）
-  const { providerList, failed: providerListFailed } = useProviderList();
+  // 選擇的規則（預設、換供應商）見 utils/providerList.js 的 resolveSelection
+  const {
+    providerList,
+    failed: providerListFailed,
+    reload: reloadProviderList,
+  } = useProviderList();
   const [selection, setSelection] = useState({ provider: null, model: null });
-  const provider = selection.provider ?? providerList?.[0]?.provider ?? null;
-  const model = modelForProvider(providerList, provider, selection.model);
+  const { provider, model } = resolveSelection(providerList, selection);
 
   const selectProvider = useCallback((nextProvider) => {
-    setSelection({ provider: nextProvider, model: null });
+    setSelection((current) => withProvider(current, nextProvider));
   }, []);
   const setModel = useCallback((nextModel) => {
-    setSelection((current) => ({ ...current, model: nextModel }));
+    setSelection((current) => withModel(current, nextModel));
   }, []);
 
   // 所選模型支援哪些輸入與處理方式；模型能力還沒載入時不限制，由後端把關
@@ -217,9 +222,7 @@ export const TranscriptionProvider = ({ children }) => {
     }
 
     const config = await getProviderConfig(provider);
-    // 設定裡只有遮罩後的金鑰：這裡只確認已設定，實際金鑰由後端從資料庫取用、不隨任務送出
-    const hasApiKey = Boolean(config?.apiKeys?.[0]);
-    if (requiresApiKey(providerList, provider) && !hasApiKey) {
+    if (missingApiKey(providerList, provider, config)) {
       message.error(`請先在設定頁為 ${providerLabel(providerList, provider)} 設定 API 金鑰。`);
       return;
     }
@@ -268,6 +271,7 @@ export const TranscriptionProvider = ({ children }) => {
     setTargetLang,
     providerList,
     providerListFailed,
+    reloadProviderList,
     provider,
     selectProvider,
     model,

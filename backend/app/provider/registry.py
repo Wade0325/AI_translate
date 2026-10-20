@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass
-from typing import List, Mapping, Optional, Protocol, Tuple, cast
+from typing import List, Mapping, NamedTuple, Optional, Protocol, Tuple, cast
 
 from app.provider.base import BatchProvider, ModelCapabilities, Provider, ProviderInfo
 from app.provider.google.provider import GeminiProvider
@@ -114,9 +114,17 @@ def model_capabilities(provider: str, model: str) -> ModelCapabilities:
     return capabilities
 
 
+class CheckedRequest(NamedTuple):
+    """驗證過的請求：派送任務與存任務紀錄都用這裡的值。"""
+    provider: str
+    """供應商清單上的名稱（小寫）。請求裡可能寫成 ``Google``、``GOOGLE``，任務紀錄一律存這個。"""
+    capabilities: ModelCapabilities
+
+
 def check_request(provider: str, model: str, *, prompt: Optional[str] = None,
-                  user_text: Optional[str] = None, batch: bool = False) -> ModelCapabilities:
-    """驗證這個請求用得了這個供應商的這個模型，回傳模型能力給呼叫端派送任務。
+                  user_text: Optional[str] = None, batch: bool = False) -> CheckedRequest:
+    """驗證這個請求用得了這個供應商的這個模型，回傳供應商清單上的名稱與模型能力給呼叫端
+    派送任務。
 
     依序檢查：模型屬於這個供應商；批次請求（``batch``）的模型支援批次；模型吃得下
     請求裡填了的輸入。整批跑不了的原因先報，免得使用者清掉輸入後又被拒一次。
@@ -138,7 +146,7 @@ def check_request(provider: str, model: str, *, prompt: Optional[str] = None,
     if unsupported:
         raise UnsupportedInputError(
             f"模型 {model} 不支援{'與'.join(unsupported)}，請清空後再送出")
-    return capabilities
+    return CheckedRequest(provider=provider.lower(), capabilities=capabilities)
 
 
 def open_provider(provider: str, model: str, api_key: str = "") -> Provider:
