@@ -1,39 +1,18 @@
 """列出供應商、它們的模型與每個模型的模型能力（唯讀）。
 
-畫面依模型能力停用模型不支援的欄位，不再自己寫死哪個供應商能用哪些欄位。
+畫面依這份清單列出供應商與模型、依模型能力停用模型不支援的欄位，不再自己寫死。
 列的是不建立轉接器就知道的模型能力，不碰顯卡：API 行程沒有顯卡、沒裝 torch 也列得出來。
 """
 
 from typing import List
 
 from fastapi import APIRouter
-from pydantic import BaseModel
 
 from app.provider import registry
-from app.provider.base import ModelCapabilities
 
 router = APIRouter()
 
 
-class ListedModel(BaseModel):
-    """清單上的一個模型與它的模型能力。``single_pass_seconds`` 是上限：實際轉錄時，
-    轉接器在執行的機器上可能切得更短（本機依顯卡容量收斂）。"""
-    model: str
-    capabilities: ModelCapabilities
-
-
-class ListedProvider(BaseModel):
-    """清單上的一個供應商與它的模型；送出任務時，``provider`` 與 ``model`` 照這裡的值帶回。"""
-    provider: str
-    models: List[ListedModel]
-
-
-@router.get("/providers", response_model=List[ListedProvider])
+@router.get("/providers", response_model=List[registry.ListedProvider])
 def list_providers():
-    return [
-        ListedProvider(provider=provider, models=[
-            ListedModel(model=model, capabilities=capabilities)
-            for model, capabilities in models.items()
-        ])
-        for provider, models in registry.providers().items()
-    ]
+    return registry.providers()

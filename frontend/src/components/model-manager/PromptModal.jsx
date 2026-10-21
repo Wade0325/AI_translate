@@ -1,12 +1,12 @@
 import { Modal, Input } from 'antd';
 
 /**
- * 編輯 Provider Prompt 範本的 Modal。
+ * 編輯供應商提示詞範本的 Modal；providerLabel 是畫面上的供應商名稱。
  */
-export default function PromptModal({ open, provider, value, onChange, onOk, onCancel }) {
+export default function PromptModal({ open, providerLabel, value, onChange, onOk, onCancel }) {
     return (
         <Modal
-            title={`編輯參數 - ${provider}`}
+            title={`編輯參數 - ${providerLabel}`}
             open={open}
             onOk={onOk}
             onCancel={onCancel}

@@ -9,6 +9,8 @@
   使用者取消之後，供應商才跑完或才出錯，都不蓋掉取消。其他狀態照實改寫：啟動清掃把
   還在跑的任務記成失敗，任務之後跑完就記成完成。
 - 暫時錯誤不寫 FAILED：輸入音檔與取消旗標留給執行模式的重試；沒有重試了才照失敗處理。
+- 完成和片段一起寫：任務紀錄記成完成（連同凍結的原始轉錄副本）和片段在同一個交易，片段
+  寫不進去就照失敗處理。同一個任務再完成一次時，使用者動過的片段不刪、不覆寫（ADR-0007）。
 - 先保留音檔，再清理：不論結果（連被強制終止也一樣），輸入音檔先搬進保留區。關掉保留
   音檔時刪掉上傳檔；開著卻保留不成時，上傳檔是唯一的一份，留在暫存區。收尾的每一步
   各自保護，失敗只記 log。
@@ -180,6 +182,7 @@ class TaskLifecycle:
         elapsed = self._elapsed()
         tokens, cost = self._price(result, elapsed)
 
+        # 和片段寫進同一個交易：看得到完成時片段已經在了；片段寫不進去就連完成一起退回，照失敗處理
         completed = self._records.update_log_unless_cancelled(db, self._task_uuid, {
             "status": TaskStatus.COMPLETED,
             "audio_duration_seconds": self._duration,
@@ -189,16 +192,18 @@ class TaskLifecycle:
             "completed_at": datetime.now(),
             "lrc_content": result.text or None,
             "service_tier_used": result.service_tier_used or "standard",
-        })
+        }, commit=False)
         # 只有取消不蓋掉；其他狀態照實記成完成（例如啟動清掃把還在跑的任務記成了失敗）
         if not completed and self._is_record_cancelled(db):
             # 取消端點剛好先把紀錄記成已取消：完成不蓋掉取消，也不宣告完成
             return self._cancel(db)
         if completed:
+            self._save_segments(db, result)
+            db.commit()
             logger.info(f"Task status updated to COMPLETED. Task ID: {self._task_uuid}")
         else:
+            # 片段也不寫：沒有紀錄的片段找不到，Postgres 也會擋下
             logger.warning(f"找不到任務紀錄（可能在處理中被刪掉了）: {self._task_uuid}")
-        self._save_segments(db, result)
 
         response = TranscriptionResponse(
             task_uuid=self._task_uuid,
@@ -374,16 +379,13 @@ class TaskLifecycle:
             return "per_token"
 
     def _save_segments(self, db: Session, result: TranscriptionTaskResult) -> None:
-        """片段是校正介面的資料來源；寫入失敗不影響任務結果（LRC 已經存進紀錄），只記警告。"""
+        """片段是校正介面的資料來源；同一個任務再完成一次時，使用者動過的片段不刪、不覆寫
+        （ADR-0007），其他片段換成這次的結果。只寫進目前的交易，由 :meth:`_complete` 提交。"""
         if not result.segments:
             return
-        try:
-            segments = order_segments(result.segments)
-            count = TranscriptSegmentRepository.replace_all(db, self._task_uuid, segments)
-            logger.info(f"已寫入 {count} 個轉錄片段 (task={self._task_uuid})")
-        except Exception as e:
-            db.rollback()
-            logger.warning(f"寫入轉錄片段失敗 (task={self._task_uuid}): {e}")
+        segments = order_segments(result.segments)
+        count = TranscriptSegmentRepository.replace_untouched(db, self._task_uuid, segments)
+        logger.info(f"已寫入 {count} 個轉錄片段 (task={self._task_uuid})")
 
     def _elapsed(self) -> float:
         return time.time() - self._started_at

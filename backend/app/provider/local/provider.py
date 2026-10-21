@@ -15,9 +15,23 @@ from pathlib import Path
 from typing import Dict
 
 from app.core.config import get_settings
-from app.provider.base import LOCAL_QUEUE, ModelCapabilities, ProgressAndCancel, TranscribeRequest
+from app.provider.base import (
+    LOCAL_QUEUE,
+    ModelCapabilities,
+    ProgressAndCancel,
+    ProviderInfo,
+    TranscribeRequest,
+)
 from app.provider.local import weights
 from app.services.transcription.models import TranscriptionTaskResult
+
+
+MODEL_LABELS = {
+    weights.MOSS_ALIGN: "MOSS-Transcribe-Diarize",
+    weights.MOSS_QWEN: "MOSS + Qwen3-ASR",
+    weights.VIBEVOICE_QWEN: "VibeVoice + Qwen3-ASR（舊版）",
+}
+"""畫面上的模型名稱；列出的模型與順序依 ``weights.MODEL_REPOS``，第一個是預設。"""
 
 
 def _single_pass_limit_seconds(model: str) -> float:
@@ -88,6 +102,9 @@ class LocalProvider:
 class _LocalProviderFactory:
     """registry 認得的本機供應商：列模型能力不建立轉接器、不碰顯卡（API 行程與模型能力
     端點都會列，Docker 模式的 API 容器沒有顯卡）；呼叫它建立一個任務專用的轉接器。"""
+
+    # 在使用者自己的顯卡上轉錄，不用 API 金鑰
+    info = ProviderInfo(label="本機", requires_api_key=False, model_labels=MODEL_LABELS)
 
     @staticmethod
     def capabilities() -> Dict[str, ModelCapabilities]:

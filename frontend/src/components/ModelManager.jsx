@@ -1,6 +1,7 @@
 import { useState, createContext, useContext, useCallback, useEffect } from 'react';
 import { message } from 'antd';
-import { modelOptions } from '../constants/modelConfig';
+import { useProviderList } from '../hooks/useProviderList';
+import { modelForProvider, providerLabel } from '../utils/providerList';
 import { api, ApiError } from '../services/api';
 import ApiKeyModal from './model-manager/ApiKeyModal';
 import PromptModal from './model-manager/PromptModal';
@@ -39,6 +40,16 @@ const ModelManagerProvider = ({ children }) => {
     const [editingParamsProvider, setEditingParamsProvider] = useState('');
     const [promptText, setPromptText] = useState('');
 
+    // provider 是供應商清單（GET /providers）的名稱；畫面上顯示它的 label
+    const { providerList } = useProviderList();
+    const labelOf = useCallback((provider) => providerLabel(providerList, provider), [providerList]);
+    // 存回設定的模型：存的模型屬於這個供應商就照舊，對不上（舊版的值、已經不在清單上）就改存
+    // 預設模型；清單還沒載入時照舊
+    const modelToStore = useCallback(
+        (provider, storedModel) => modelForProvider(providerList, provider, storedModel) ?? storedModel ?? '',
+        [providerList],
+    );
+
     useEffect(() => {
         purgeLegacyStoredConfigs();
     }, []);
@@ -60,13 +71,13 @@ const ModelManagerProvider = ({ children }) => {
             return null;
         } catch (error) {
             console.error(`從後端獲取 ${provider} 設定時發生網路錯誤:`, error);
-            message.error(`獲取 ${provider} 設定失敗`);
+            message.error(`獲取 ${labelOf(provider)} 設定失敗`);
             return null;
         }
-    }, [providerConfigs]);
+    }, [providerConfigs, labelOf]);
 
     const saveProviderConfig = useCallback(async (provider, partialConfig) => {
-        message.loading({ content: `正在保存 ${provider} 的設定...`, key: 'saveConfig' });
+        message.loading({ content: `正在保存 ${labelOf(provider)} 的設定...`, key: 'saveConfig' });
 
         const latestConfig = await getProviderConfig(provider) || {};
 
@@ -76,7 +87,7 @@ const ModelManagerProvider = ({ children }) => {
             ...partialConfig,
             provider: provider,
             apiKeys: partialConfig.apiKeys || latestConfig.apiKeys || [''],
-            model: partialConfig.model || latestConfig.model || modelOptions[provider]?.[0]?.value,
+            model: partialConfig.model || modelToStore(provider, latestConfig.model),
         };
 
         try {
@@ -108,22 +119,17 @@ const ModelManagerProvider = ({ children }) => {
         message.success({ content: '設定保存成功！', key: 'saveConfig' });
         // 回傳遮罩後的設定（讀回失敗時回傳 true），失敗時回傳 false
         return savedConfig || true;
-    }, [getProviderConfig]);
+    }, [getProviderConfig, modelToStore, labelOf]);
 
     const handleEditProvider = useCallback(async (provider) => {
         setEditingProvider(provider);
         const config = await getProviderConfig(provider);
 
-        if (config) {
-            setApiKeys(config.apiKeys && config.apiKeys.length > 0 ? config.apiKeys : ['']);
-            setSelectedModel(config.model);
-        } else {
-            setApiKeys(['']);
-            setSelectedModel(modelOptions[provider]?.[0]?.value || undefined);
-        }
+        setApiKeys(config?.apiKeys?.length > 0 ? config.apiKeys : ['']);
+        setSelectedModel(modelToStore(provider, config?.model));
 
         setIsModalOpen(true);
-    }, [getProviderConfig]);
+    }, [getProviderConfig, modelToStore]);
 
     const handleOk = async () => {
         const validApiKeys = apiKeys.filter(key => key.trim() !== '');
@@ -171,7 +177,7 @@ const ModelManagerProvider = ({ children }) => {
     };
 
     const handleTestProvider = useCallback(async (provider) => {
-        message.loading({ content: `正在測試 ${provider} API...`, key: 'testInterface' });
+        message.loading({ content: `正在測試 ${labelOf(provider)} API...`, key: 'testInterface' });
 
         const config = await getProviderConfig(provider);
         // 這裡是遮罩值，只用來確認已設定金鑰；後端會換回資料庫中的實際金鑰再測試
@@ -199,12 +205,12 @@ const ModelManagerProvider = ({ children }) => {
                 ? (error.payload?.message || error.message)
                 : (error.message || '網絡問題');
             message.error({
-                content: `${provider} API測試失敗: ${errMsg}`,
+                content: `${labelOf(provider)} API測試失敗: ${errMsg}`,
                 key: 'testInterface',
                 duration: 6,
             });
         }
-    }, [getProviderConfig]);
+    }, [getProviderConfig, labelOf]);
 
     const contextValue = {
         handleEditProvider,
@@ -220,7 +226,7 @@ const ModelManagerProvider = ({ children }) => {
 
             <ApiKeyModal
                 open={isModalOpen}
-                provider={editingProvider}
+                providerLabel={labelOf(editingProvider)}
                 apiKeys={apiKeys}
                 onApiKeysChange={setApiKeys}
                 onOk={handleOk}
@@ -229,7 +235,7 @@ const ModelManagerProvider = ({ children }) => {
 
             <PromptModal
                 open={isParamsModalOpen}
-                provider={editingParamsProvider}
+                providerLabel={labelOf(editingParamsProvider)}
                 value={promptText}
                 onChange={setPromptText}
                 onOk={handleParamsOk}
