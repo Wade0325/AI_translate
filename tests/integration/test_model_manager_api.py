@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 
 from app.core.config import get_settings
 from app.provider import registry
+from app.provider.base import ProviderInfo
 from app.provider.local import weights
 from app.services.api_keys import mask_api_key
 from tests.support.fake_provider import FAKE_MODEL, FakeProvider
@@ -229,6 +230,47 @@ class TestCheckFollowsTheProviderList:
 
         assert response.status_code == 200
         assert response.json() == {"success": False, "message": "模型 moss-align 不屬於供應商 fake"}
+
+
+class TestCheckOnlyWhereItTranscribes:
+    """檢查要查轉錄那台機器的供應商（像本機查顯卡與模型權重）：這個行程就是轉錄的地方才問
+    供應商。要不要問由 API 依執行模式決定，供應商接縫不知道執行模式（#99、#145）。"""
+
+    @pytest.fixture
+    def machine_checked(self, fake):
+        fake.info = ProviderInfo(
+            label="假本機", requires_api_key=False, checks_transcribing_machine=True)
+        return fake
+
+    def test_standalone_mode_asks_the_provider(
+            self, client: TestClient, machine_checked, monkeypatch):
+        # 免安裝模式的轉錄就在這個行程，供應商查得到
+        monkeypatch.setattr(get_settings(), "app_mode", "standalone")
+
+        response = press_test(client, "fake", FAKE_MODEL)
+
+        assert response.json() == {"success": True, "message": "假供應商可以轉錄"}
+        assert machine_checked.checked_keys == [""]
+
+    def test_docker_mode_explains_without_asking_the_provider(
+            self, client: TestClient, machine_checked, monkeypatch):
+        # Docker 模式的轉錄不在 API 容器裡：在這裡查到的顯卡與權重不是轉錄那台機器的
+        monkeypatch.setattr(get_settings(), "app_mode", "docker")
+
+        data = press_test(client, "fake", FAKE_MODEL).json()
+
+        assert data["success"] is False
+        assert "Docker 模式" in data["message"]
+        assert machine_checked.checked_keys == []
+
+    def test_docker_mode_still_asks_providers_that_only_go_online(
+            self, client: TestClient, fake, monkeypatch):
+        # 只連一次 API 的檢查（像 Gemini）在哪個行程跑都一樣
+        monkeypatch.setattr(get_settings(), "app_mode", "docker")
+
+        response = press_test(client, "fake", FAKE_MODEL)
+
+        assert response.json() == {"success": True, "message": "假供應商可以轉錄"}
 
 
 @pytest.fixture

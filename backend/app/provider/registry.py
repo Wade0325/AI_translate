@@ -111,13 +111,14 @@ def _listed(name: str, info: ProviderInfo,
     )
 
 
-def requires_api_key(provider: str) -> bool:
-    """轉錄要不要使用者的 API 金鑰；和供應商清單的 ``requires_api_key`` 是同一份資訊。
+def provider_info(provider: str) -> ProviderInfo:
+    """這個供應商的 :class:`ProviderInfo`，例如轉錄要不要使用者的 API 金鑰；和供應商清單
+    （``GET /providers``）是同一份資訊。
 
     Raises:
         UnsupportedModelError: 供應商不存在。
     """
-    return _factory(provider).info.requires_api_key
+    return _factory(provider).info
 
 
 def check_ready(provider: str, model: str, api_key: str = "") -> str:

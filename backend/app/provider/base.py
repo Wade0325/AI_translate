@@ -49,12 +49,15 @@ class ModelCapabilities:
 
 @dataclass(frozen=True)
 class ProviderInfo:
-    """畫面怎麼列出一個供應商：名稱、模型的名稱，以及轉錄要不要使用者的 API 金鑰。"""
+    """畫面怎麼列出一個供應商：名稱、模型的名稱，以及轉錄要不要使用者的 API 金鑰；
+    還有設定頁的「測試」查的是什麼。"""
 
     label: str
     requires_api_key: bool
     model_labels: Mapping[str, str] = field(default_factory=dict)
     """畫面上的模型名稱；沒列的模型直接顯示模型名稱。"""
+    checks_transcribing_machine: bool = False
+    """設定頁的「測試」查的是執行轉錄的那台機器（例如顯卡與模型權重），不是只連一次 API。"""
 
 
 @dataclass

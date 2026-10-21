@@ -5,6 +5,7 @@ from typing import Optional
 from sqlalchemy.orm import Session
 
 from app.schemas.schemas import ProviderConfigRequest, ProviderConfigResponse, ModelConfigurationSchema, ProviderTestRequest, ProviderTestResponse
+from app.core.config import get_settings
 from app.database.session import describe_db_error, get_db
 from app.repositories.model_manager_repository import ModelSettingsRepository
 from app.provider import registry
@@ -88,13 +89,23 @@ async def check_provider_ready(
 
     要不要 API 金鑰照供應商清單的 ``requires_api_key``；怎麼確認由供應商決定（本機查顯卡與
     模型權重，Gemini 用金鑰連一次 API），見 :func:`app.provider.registry.check_ready`。
+
+    檢查要查轉錄那台機器的供應商（``checks_transcribing_machine``），只在免安裝模式問它：
+    免安裝模式的轉錄就在這個行程；Docker 模式的本機轉錄在主機端的 GPU worker，API 容器
+    看到的顯卡與模型權重不是它的，查了也不準，所以直接說明。供應商接縫不知道執行模式，
+    這個判斷放在 API 這一層。
     """
     logger.info(
         f"收到設定頁的測試請求: provider='{request_data.provider}', model='{request_data.model}', "
         f"API Keys count: {len(request_data.api_keys)}")
     try:
+        info = registry.provider_info(request_data.provider)
+        if info.checks_transcribing_machine and not get_settings().is_standalone:
+            return ProviderTestResponse(success=False, message=(
+                f"Docker 模式的{info.label}轉錄在主機端的 GPU worker 執行，"
+                "這裡檢查不到它的顯卡與模型權重"))
         api_key = ""
-        if registry.requires_api_key(request_data.provider):
+        if info.requires_api_key:
             # 前端送的是遮罩值（或不送）：從資料庫取回實際金鑰，用第一把測試
             api_keys = await run_in_threadpool(
                 resolve_api_keys, db, request_data.provider, request_data.api_keys)
