@@ -112,7 +112,10 @@ class Provider(Protocol):
     def transcribe(
         self, audio_path: Path, request: TranscribeRequest, progress: ProgressAndCancel,
     ) -> TranscriptionTaskResult:
-        """轉錄一段音檔，時間軸是這段音檔本身。
+        """轉錄一段音檔，回傳轉錄結果（片段）與用量，不附著 LRC 文字；時間軸是這段音檔本身。
+
+        這一段沒有任何內容（例如沒人說話）時可以回傳成功、沒有片段，``text`` 寫為什麼：
+        分段轉錄照樣合併其他段，整個任務都沒有片段時才由任務生命週期回報失敗。
 
         進度經 ``progress`` 回報。使用者取消時拋
         :class:`~app.exceptions.TranscriptionCancelledError`；暫時錯誤（429、503 之類）拋
@@ -135,7 +138,8 @@ class BatchStatus:
     succeeded: bool = False
     results: Tuple[TranscriptionTaskResult, ...] = ()
     """成功結束時每個請求一份轉錄結果，順序和送出時相同；
-    失敗的請求 ``success=False``，``text`` 是給使用者看的失敗原因。"""
+    失敗的請求 ``success=False``，``text`` 是給使用者看的失敗原因。
+    成功的請求暫時還沒有片段，``text`` 是 Gemini 寫的 LRC 文字：批次改成處理轉錄結果是 #115。"""
 
 
 class BatchProvider(Provider, Protocol):

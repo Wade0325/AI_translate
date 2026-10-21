@@ -3,7 +3,8 @@
 其他都走真的：TestClient、sqlite、行程內執行模式、WebSocket 狀態廣播，以及
 用 numpy／soundfile 產生的合成音檔經真實的 ffmpeg 轉檔、去靜音、切音檔、取得長度。
 測試只從外部觀察：狀態廣播、API 回應、存下來的任務紀錄與片段、可以下載的輸出格式與
-保留音檔，以及暫存資料夾裡有沒有留下檔案。
+保留音檔，以及暫存資料夾裡有沒有留下檔案。唯一的例外是凍結的原始轉錄副本（ADR-0007）：
+還沒有讀它的介面，只能從任務紀錄看（見 :func:`frozen_original`）。
 """
 import io
 import os
@@ -276,6 +277,19 @@ def stored_segments(api, task_uuid: str) -> list[dict]:
     return api.get(f"/api/v1/transcripts/{task_uuid}").json()["segments"]
 
 
+def frozen_original(engine, task_uuid: str) -> str | None:
+    """任務紀錄裡凍結的原始轉錄副本（ADR-0007）。
+
+    下載不讀它，也還沒有讀它的介面（v0.2 的校正才會用到），只能從任務紀錄看。
+    """
+    from sqlalchemy.orm import sessionmaker
+
+    from app.repositories.history_repository import HistoryRepository
+
+    with sessionmaker(bind=engine)() as db:
+        return HistoryRepository().get_log_by_uuid(db, task_uuid).lrc_content
+
+
 def in_voiced_region(t: float) -> bool:
     return any(lo - 0.5 <= t <= hi + 0.5 for lo, hi in VOICED)
 
@@ -498,7 +512,7 @@ class TestOutputFormatsFromSegments:
     def completed(self, api, fake):
         """片段帶逐字時間的任務；不去靜音，時間軸就是送進供應商的時間。"""
         fake.model_capabilities = replace(fake.model_capabilities, remove_silence=False)
-        # 供應商自己的 LRC 是一段一行：「[00:00.20][S0] おはよう。こんにちは。」
+        # 一個片段兩句，逐字時間讓下載在句尾斷行
         fake.script = [[(0.2, 2.6, 0, "おはよう。こんにちは。",
                          [("おはよう", 0.24, 0.9), ("こんにちは", 1.5, 2.56)])]]
         messages = transcribe(api, "uid-words")
@@ -529,6 +543,11 @@ class TestOutputFormatsFromSegments:
     def test_completion_broadcast_matches_the_download(self, api, completed, fmt):
         broadcast = completed["result"]["transcripts"][fmt]
         assert broadcast == self.download(api, completed["task_uuid"], fmt)
+
+    def test_frozen_original_transcription_is_the_lrc_download(self, api, completed, test_engine):
+        # 凍結的原始轉錄副本和下載的 LRC 一樣，由輸出格式模組從轉錄結果產生
+        task_uuid = completed["task_uuid"]
+        assert frozen_original(test_engine, task_uuid) == self.download(api, task_uuid, "lrc")
 
     @pytest.fixture
     def across_cut_silence(self, api, fake):

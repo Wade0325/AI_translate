@@ -308,8 +308,8 @@ class TestDownloadFromSegments:
         assert response.text == FROM_SEGMENTS[fmt]
 
 
-# 沒有片段的任務（片段功能上線前的任務、Gemini 的任務、批次裡的任務），輸出要和以前從
-# 存下來的 LRC 轉換時一模一樣
+# 沒有片段的任務（片段功能上線前的任務、#110 之前的 Gemini 任務、批次裡的任務），輸出要和
+# 以前從存下來的 LRC 轉換時一模一樣
 STORED_LRC = ("[00:01.50]Speaker A: Hello\n[00:03.123]Speaker B: World\n"
               "這行沒有時間戳\n[61:02.00]Final line")
 FROM_STORED_LRC = {

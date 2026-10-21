@@ -31,12 +31,16 @@ JSON_PROMPT = '請轉錄{source_lang}音檔，每一行寫成 {"speaker": "S0", 
 JSON_PROMPT_SENT = '請轉錄日文音檔，每一行寫成 {"speaker": "S0", "text": "…"}'
 
 
+VOICED = [(0, 2), (5, 7), (10, 12)]
+"""合成音檔的有聲段（秒）：有聲 2 秒、靜音 3 秒交錯，共 12 秒。"""
+
+
 def synthetic_audio() -> bytes:
-    """有聲 2 秒、靜音 3 秒交錯的合成 wav，共 12 秒。"""
-    samples = np.zeros(12 * SAMPLE_RATE, dtype=np.float32)
-    for start in (0, 5, 10):
-        t = np.arange(2 * SAMPLE_RATE) / SAMPLE_RATE
-        samples[start * SAMPLE_RATE:(start + 2) * SAMPLE_RATE] = 0.3 * np.sin(2 * np.pi * 440 * t)
+    """有聲段見 VOICED，其餘是靜音的合成 wav。"""
+    samples = np.zeros(VOICED[-1][1] * SAMPLE_RATE, dtype=np.float32)
+    for start, end in VOICED:
+        t = np.arange((end - start) * SAMPLE_RATE) / SAMPLE_RATE
+        samples[start * SAMPLE_RATE:end * SAMPLE_RATE] = 0.3 * np.sin(2 * np.pi * 440 * t)
     buffer = io.BytesIO()
     sf.write(buffer, samples, SAMPLE_RATE, format="WAV")
     return buffer.getvalue()
@@ -199,6 +203,36 @@ def test_single_file_completes_and_its_remote_file_is_deleted(api, in_process_ru
     assert genai.stored == {}  # 任務結束時刪掉上傳到 Gemini 的檔案
 
 
+def test_single_file_stores_segments_labelled_like_the_local_provider(api, in_process_run_mode, genai):
+    # Gemini 的 LRC 在轉接器裡解析一次就變成片段：任務存下片段，字幕的說話者標記和本機一樣
+    genai.replies = [Reply(text="[00:00.50]Speaker 1: おはよう。\n[00:03.00]Speaker 2: こんにちは。")]
+
+    end = transcribe(api, in_process_run_mode, "gemini-single-speakers.wav")[-1]
+
+    assert end["status_code"] == TaskStatus.COMPLETED
+    segments = api.get(f"/api/v1/transcripts/{end['task_uuid']}").json()["segments"]
+    assert [(s["speaker"], s["text"]) for s in segments] == [("S0", "おはよう。"), ("S1", "こんにちは。")]
+    # 去靜音之後的時間還原回原音檔：第二句落在第二個有聲段（5–7 秒），不在被剪掉的靜音裡
+    assert 4.5 <= segments[1]["start"] <= 7.5
+    srt = api.get(f"/api/v1/history/{end['task_uuid']}/download/srt").text
+    assert "[S0] おはよう。" in srt and "[S1] こんにちは。" in srt
+    assert "Speaker" not in srt
+
+
+def test_subtitles_end_where_gemini_wrote_it_and_otherwise_follow_the_old_rule(
+        api, in_process_run_mode, genai):
+    # 只有時間戳的行是 Gemini 寫明的結束時間，字幕照實際說話的時間顯示（ADR-0008）；沒寫結束時間
+    # 的行照以前的規則，最後一行加 5 秒。兩行都在第一個有聲段，去靜音不改它們的時間
+    genai.replies = [Reply(text="[00:00.50]おはよう。\n[00:01.50]\n[00:01.75]はい。")]
+
+    end = transcribe(api, in_process_run_mode, "gemini-single-end-times.wav")[-1]
+
+    assert end["status_code"] == TaskStatus.COMPLETED
+    assert api.get(f"/api/v1/history/{end['task_uuid']}/download/srt").text == (
+        "1\n00:00:00,500 --> 00:00:01,500\nおはよう。\n\n"
+        "2\n00:00:01,750 --> 00:00:06,750\nはい。\n")
+
+
 def test_single_file_failure_still_deletes_its_remote_file(api, in_process_run_mode, genai):
     # 假用戶端只在檔案已經上傳、處理完時才回這個錯：失敗之前遠端確實有檔案
     genai.replies = [invalid_argument("音檔無法解碼")]
@@ -260,6 +294,71 @@ def test_single_file_prompt_with_braces_reaches_gemini_as_written(api, in_proces
 
     assert end["status_code"] == TaskStatus.COMPLETED
     assert genai.prompts == [JSON_PROMPT_SENT]
+
+
+# ─── 分段轉錄 ────────────────────────────────────────────────────────────────
+
+@pytest.fixture
+def three_chunks(monkeypatch):
+    """單次只能處理 3 秒：去靜音後約 7.2 秒的語音視圖在有聲段的交界切成三段，依序送進 Gemini，
+    每一段是一個有聲段。"""
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "long_audio_split_threshold_seconds", 3)
+
+
+def stored(api: TestClient, task_uuid: str) -> list[tuple]:
+    """存下來的片段：（落在第幾個有聲段, 說話者編號, 文字）。"""
+    segments = api.get(f"/api/v1/transcripts/{task_uuid}").json()["segments"]
+    return [(next(i for i, (lo, hi) in enumerate(VOICED) if lo - 0.5 <= s["start"] <= hi + 0.5),
+             s["speaker"], s["text"]) for s in segments]
+
+
+def test_chunk_without_any_line_is_skipped_and_the_others_are_kept(
+        api, in_process_run_mode, genai, three_chunks):
+    # 一段沒有任何帶時間戳的行（例如那段沒人說話）：算成功、沒有片段，任務照樣完成。
+    # 其他段的片段平移、還原回原音檔，落在各自的有聲段；Gemini 寫明的結束時間也一樣
+    genai.replies = [Reply(text="[00:00.50]おはよう。"), Reply(text=""),
+                     Reply(text="[00:01.00]またね。\n[00:01.80]")]
+
+    end = transcribe(api, in_process_run_mode, "gemini-chunks-gap.wav")[-1]
+
+    assert end["status_code"] == TaskStatus.COMPLETED
+    assert stored(api, end["task_uuid"]) == [(0, None, "おはよう。"), (2, None, "またね。")]
+    last = api.get(f"/api/v1/transcripts/{end['task_uuid']}").json()["segments"][-1]
+    assert last["start"] + 0.7 < last["end"] < VOICED[2][1] + 0.5
+
+
+def test_speaker_ids_are_consistent_across_chunks(api, in_process_run_mode, genai, three_chunks):
+    # Gemini 的同一個說話者代號在同一個任務的各段對到同一個說話者編號，依整個任務第一次出現的順序
+    genai.replies = [
+        Reply(text="[00:00.50]Speaker 2: おはよう。"),
+        Reply(text="[00:00.50]Speaker 1: こんにちは。\n[00:01.50]Speaker 2: はい。"),
+        Reply(text="[00:01.00]Speaker 2: またね。"),
+    ]
+
+    end = transcribe(api, in_process_run_mode, "gemini-chunks-speakers.wav")[-1]
+
+    assert end["status_code"] == TaskStatus.COMPLETED
+    assert stored(api, end["task_uuid"]) == [
+        (0, "S0", "おはよう。"), (1, "S1", "こんにちは。"), (1, "S0", "はい。"), (2, "S0", "またね。")]
+
+
+def test_task_fails_only_when_no_chunk_has_any_line(
+        api, in_process_run_mode, genai, three_chunks, monkeypatch):
+    # 整個任務合併完一個片段都沒有才算失敗，原因寫明。沒有內容不是轉錄失敗，檔案夠長也不切段重試
+    # （重試的話會因為測試環境沒有 Silero 找不到切點，原因變成「無法分割音訊檔案」）
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "transcription_max_duration_seconds", 5)
+    genai.replies = [Reply(text=""), Reply(text="這段聽不出任何語音。"), Reply(text="[00:01.00]")]
+
+    end = transcribe(api, in_process_run_mode, "gemini-chunks-empty.wav")[-1]
+
+    assert end["status_code"] == TaskStatus.FAILED
+    assert "Gemini 的回應沒有任何帶時間戳的文字" in end["status_text"]
+    assert "Gemini 的回應沒有任何帶時間戳的文字" in history(
+        api, "gemini-chunks-empty.wav")["error_message"]
 
 
 # ─── 批次 ────────────────────────────────────────────────────────────────────

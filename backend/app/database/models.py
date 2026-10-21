@@ -84,8 +84,9 @@ class TranscriptionLog(Base):
     provider = Column(String, nullable=True)
     target_language = Column(String, nullable=True)
     completed_at = Column(DateTime, nullable=True)
-    # 凍結的原始轉錄副本（ADR-0007）。有片段的任務，輸出格式從片段產生、不讀這裡；沒有片段的
-    # 任務（含 Gemini 的任務與批次裡的任務）才從這份 LRC 轉換（app.services.output_format）
+    # 凍結的原始轉錄副本（ADR-0007），單檔任務完成時由輸出格式模組從轉錄結果產生。有片段的
+    # 任務，輸出格式從片段產生、不讀這裡；沒有片段的任務（片段上線前的任務、#110 之前的 Gemini
+    # 任務、批次裡的任務）才從這份 LRC 轉換（app.services.output_format）
     lrc_content = Column(Text, nullable=True)
     file_uid = Column(String, nullable=True, index=True)  # 前端檔案 uid
     session_id = Column(String, nullable=True, index=True)  # 同一次 Start 的任務群組
@@ -100,8 +101,9 @@ class TranscriptSegment(Base):
     """轉錄片段 — 校正介面與逐段回傳的持久化單位。
 
     有片段的任務，四種輸出格式都從這裡產生（app.services.output_format），
-    ``TranscriptionLog.lrc_content`` 只是凍結的原始轉錄副本；Gemini 的任務與批次裡的任務
-    目前還沒有片段。說話者分離給出的每一段各一列，可逐段更新、可標記、可回溯。
+    ``TranscriptionLog.lrc_content`` 只是凍結的原始轉錄副本；批次裡的任務目前還沒有片段
+    （#115）。說話者分離給出的每一段各一列，可逐段更新、可標記、可回溯；Gemini 的片段是它
+    LRC 的一行，Gemini 寫明結束的才有結束時間。
 
     ``seg_key`` 是確定性的（切段序號 + 片段序號），所以任務被重派或重新轉錄時對得上同一段，
     不會產生重複資料；使用者動過的片段不刪、不覆寫（見 ``TranscriptSegmentRepository``

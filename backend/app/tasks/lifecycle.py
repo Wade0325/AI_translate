@@ -191,6 +191,10 @@ class TaskLifecycle:
             if not result.success:
                 # 失敗結果的 text 是錯誤描述而非 LRC，不能標成完成、產出空字幕
                 raise ValueError(f"轉錄失敗: {result.text}")
+            if not result.segments:
+                # 每一段都沒有內容（例如 Gemini 沒寫出任何帶時間戳的行）：沒有轉錄結果，一樣不能
+                # 標成完成；text 是供應商寫的原因
+                raise ValueError(f"轉錄失敗: {result.text or '沒有轉錄出任何內容'}")
             return self._complete(db, result)
         except Exception as e:
             # 失敗的寫入可能讓 session 停在 pending rollback，先復原才寫得進紀錄
@@ -246,7 +250,8 @@ class TaskLifecycle:
             "total_tokens": tokens,
             "cost": cost,
             "completed_at": datetime.now(),
-            "lrc_content": result.text or None,
+            # 凍結的原始轉錄副本（ADR-0007）：和下載的 LRC 一樣由輸出格式模組從轉錄結果產生
+            "lrc_content": transcripts["lrc"] or None,
             "service_tier_used": result.service_tier_used or "standard",
         }, commit=False)
         # 只有取消不蓋掉；其他狀態照實記成完成（例如啟動清掃把還在跑的任務記成了失敗）
@@ -272,7 +277,7 @@ class TaskLifecycle:
         ).model_dump()
         response["task_uuid"] = response["task_uuid"].hex
         return _Outcome(TaskStatus.COMPLETED, "任務完成", broadcast_result=response,
-                        return_value={"raw_lrc_text": result.text})
+                        return_value={"raw_lrc_text": transcripts["lrc"]})
 
     def _cancel(self, db: Session, result: Optional[TranscriptionTaskResult] = None) -> _Outcome:
         """取消：不是失敗，任務紀錄寫 CANCELLED。
@@ -478,7 +483,8 @@ class TaskLifecycle:
 
 
 def _output_formats(result: TranscriptionTaskResult) -> dict:
-    """完成時送給畫面的四種輸出格式，由輸出格式模組產生：和之後下載的內容相同。"""
+    """完成時送給畫面的四種輸出格式，由輸出格式模組產生：和之後下載的內容相同；
+    凍結的原始轉錄副本也是這裡的 LRC。"""
     return output_format.for_result(result).model_dump()
 
 

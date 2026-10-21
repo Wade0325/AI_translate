@@ -1,4 +1,3 @@
-import re
 from pathlib import Path
 from typing import List, Dict, Optional
 
@@ -55,7 +54,7 @@ def pick_halving_split_point(
 def speech_time_remapper(segments: List[Dict[str, float]]):
     """回傳「純語音檔時間 → 去靜音前時間」的轉換函式。
 
-    LRC 與結構化片段共用同一套轉換，兩者的時間軸才不會分岔。
+    單檔任務的片段與批次的 LRC 共用同一套轉換，兩者的時間軸才不會分岔。
     """
     durations = [seg['end'] - seg['start'] for seg in segments]
     cumulative = [sum(durations[:i]) for i in range(len(durations))]
@@ -72,7 +71,11 @@ def speech_time_remapper(segments: List[Dict[str, float]]):
 
 
 def remap_lrc_timestamps(lrc_text: str, segments: List[Dict[str, float]]) -> str:
-    """將 LRC 時間戳從拼接後的時間軸重對應回原始時間軸"""
+    """將 LRC 時間戳從拼接後的時間軸重對應回原始時間軸。
+
+    只剩批次在用：單檔任務的轉錄結果是片段，見 :func:`remap_segments`。批次改成處理
+    轉錄結果時（#115）刪掉。
+    """
     parsed_lines = _parse_lrc(lrc_text)
     if not parsed_lines:
         return ""
@@ -95,7 +98,7 @@ def remap_lrc_timestamps(lrc_text: str, segments: List[Dict[str, float]]) -> str
 def remap_segments(
     segments: List[Dict], speech_segments: List[Dict[str, float]]
 ) -> List[Dict]:
-    """結構化片段的時間軸重對應，與 remap_lrc_timestamps 同一套轉換。"""
+    """片段的時間軸重對應回去靜音前的原音檔，與批次的 remap_lrc_timestamps 同一套轉換。"""
     remap = speech_time_remapper(speech_segments)
     out: List[Dict] = []
     for seg in segments:
@@ -139,6 +142,14 @@ def shift_segments(
     return out
 
 
+def _why_no_segments(segments: List[Dict], results: List[TranscriptionTaskResult]) -> str:
+    """合併之後的 text：有片段時是空的；一段都沒有時，取第一個寫了原因的段的說明，
+    整個任務都沒有片段時由任務生命週期拿它回報失敗。"""
+    if segments:
+        return ""
+    return next((result.text for result in results if result.text), "")
+
+
 def _add_usage(
     usage: Optional[TranscriptionTaskResult], part: TranscriptionTaskResult
 ) -> TranscriptionTaskResult:
@@ -162,27 +173,6 @@ def order_segments(segments: List[Dict]) -> List[Dict]:
     for i, seg in enumerate(ordered):
         seg["seq"] = i
     return ordered
-
-
-def _adjust_lrc_timestamps(lrc_text: str, offset_seconds: float) -> str:
-    """將 LRC 每行時間戳整體平移 offset_seconds 秒。"""
-    if offset_seconds == 0:
-        return lrc_text
-    adjusted_lines = []
-    for line in lrc_text.strip().split('\n'):
-        match = re.match(r'\[(\d{2,3}):(\d{2})\.(\d{2,3})\](.*)', line)
-        if match:
-            minutes, seconds, ms_str, text_content = match.groups()
-            original_time = int(minutes) * 60 + \
-                int(seconds) + float(f"0.{ms_str}")
-            new_time = original_time + offset_seconds
-            new_minutes = int(new_time / 60)
-            new_seconds = new_time % 60
-            adjusted_lines.append(
-                f"[{new_minutes:02d}:{new_seconds:05.2f}]{text_content}")
-        else:
-            adjusted_lines.append(line)
-    return "\n".join(adjusted_lines)
 
 
 class AudioSegment:
@@ -292,15 +282,8 @@ class TranscriptionTask:
         # --- 時間戳重映射 ---
         if result.success and speech_segments:
             self.progress.report("校正時間軸...")
-            result = TranscriptionTaskResult(
-                success=True,
-                text=remap_lrc_timestamps(result.text, speech_segments),
-                input_tokens=result.input_tokens,
-                output_tokens=result.output_tokens,
-                total_tokens=result.total_tokens,
-                service_tier_used=result.service_tier_used,
-                segments=remap_segments(result.segments, speech_segments),
-            )
+            result = result.model_copy(
+                update={"segments": remap_segments(result.segments, speech_segments)})
             logger.info("時間戳已重映射回原始時間軸")
 
         # 如果成功或檔案很短，直接返回結果
@@ -463,17 +446,15 @@ class TranscriptionTask:
         if not second.success:
             return second
 
-        combined_text = "\n".join(
-            [first.text, _adjust_lrc_timestamps(second.text, split_point)])
         tier = (first.service_tier_used
                 if first.service_tier_used == second.service_tier_used
                 else "standard")
-        # 片段與 LRC 走同樣的平移；前後半各自加前綴，避免 seg_key 相撞
+        # 後半的片段平移到切點之後；前後半各自加前綴，避免 seg_key 相撞
         combined_segments = (shift_segments(first.segments, 0.0, prefix="a")
                              + shift_segments(second.segments, split_point, prefix="b"))
         return TranscriptionTaskResult(
             success=True,
-            text=combined_text,
+            text=_why_no_segments(combined_segments, [first, second]),
             input_tokens=first.input_tokens + second.input_tokens,
             output_tokens=first.output_tokens + second.output_tokens,
             total_tokens=first.total_tokens + second.total_tokens,
@@ -495,9 +476,9 @@ class TranscriptionTask:
         if wav_path != audio_path:
             self.local_cleanup_list.append(wav_path)
 
-        segments = self._split_audio_file(wav_path)
+        chunks = self._split_audio_file(wav_path)
 
-        if not segments or len(segments) < 2:
+        if not chunks or len(chunks) < 2:
             logger.error("無法分割音訊檔案")
             return TranscriptionTaskResult(
                 success=False,
@@ -505,45 +486,43 @@ class TranscriptionTask:
                 total_tokens=0
             )
 
-        results = []
         all_segments: List[Dict] = []
+        chunk_results: List[TranscriptionTaskResult] = []
         total_input_tokens = 0
         total_output_tokens = 0
         total_tokens = 0
-        all_flex = True  # 所有片段皆用 flex 才回報 "flex"，只要有一段 fallback 就視為 standard
+        all_flex = True  # 每一段都用 flex 才回報 "flex"，只要有一段退回標準就算 standard
 
-        for i, segment in enumerate(segments):
-            logger.info(f"轉錄片段 {i+1}/{len(segments)}: {segment}")
+        for i, chunk in enumerate(chunks):
+            logger.info(f"轉錄第 {i+1}/{len(chunks)} 段: {chunk}")
 
-            # 遞迴轉錄每個片段（如果片段仍然太長，會再次分割）
-            segment_result = self.transcribe_audio(segment.path)
+            # 遞迴轉錄每一段（還是太長時會再切）
+            chunk_result = self.transcribe_audio(chunk.path)
 
-            if not segment_result.success:
-                logger.error(f"片段 {i+1} 轉錄失敗")
+            if not chunk_result.success:
+                # 內層的原因原樣接在後面（去掉外層的 [[ ]]），使用者看得到是哪一段、為什麼
+                reason = chunk_result.text.strip().removeprefix("[[").removesuffix("]]")
+                logger.error(f"分段轉錄的第 {i+1} 段失敗: {reason}")
                 return TranscriptionTaskResult(
                     success=False,
-                    text=f"[[片段 {i+1} 轉錄失敗]]",
+                    text=f"[[分段轉錄的第 {i+1} 段：{reason}]]",
                     total_tokens=total_tokens
                 )
 
-            adjusted_text = _adjust_lrc_timestamps(
-                segment_result.text, segment.start_time)
-            results.append(adjusted_text)
+            chunk_results.append(chunk_result)
             all_segments.extend(shift_segments(
-                segment_result.segments, segment.start_time, prefix=f"s{i}"))
-            total_input_tokens += segment_result.input_tokens
-            total_output_tokens += segment_result.output_tokens
-            total_tokens += segment_result.total_tokens
-            if segment_result.service_tier_used != "flex":
+                chunk_result.segments, chunk.start_time, prefix=f"s{i}"))
+            total_input_tokens += chunk_result.input_tokens
+            total_output_tokens += chunk_result.output_tokens
+            total_tokens += chunk_result.total_tokens
+            if chunk_result.service_tier_used != "flex":
                 all_flex = False
-
-        combined_text = "\n".join(results)
 
         final_tier = "flex" if (self.request.service_tier == "flex" and all_flex) else "standard"
 
         return TranscriptionTaskResult(
             success=True,
-            text=combined_text,
+            text=_why_no_segments(all_segments, chunk_results),
             input_tokens=total_input_tokens,
             output_tokens=total_output_tokens,
             total_tokens=total_tokens,

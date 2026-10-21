@@ -1,12 +1,14 @@
 """輸出格式模組：從轉錄結果（片段）產生四種輸出格式。
 
-期望值是本機原本會產生的輸出：LRC 照本機的斷行規則（asr._entry_to_lines，搭配真的
-Qwen3-ForcedAligner 斷詞）手算，SRT／VTT／TXT 是舊的 LRC 轉換器從那份 LRC 轉出的結果，
+期望值是本機原本會產生的輸出：LRC 照本機的斷行規則（#110 之前由本機轉接器自己寫 LRC，搭配
+真的 Qwen3-ForcedAligner 斷詞）手算，SRT／VTT／TXT 是舊的 LRC 轉換器從那份 LRC 轉出的結果，
 只有 SRT／VTT 的結束時間改用片段的真實結束時間（#96，見「SRT／VTT 的結束時間」那一節）。
 逐字時間的 text 是對齊器的詞：標點被丟掉，漢字一字一詞，連續的假名、英數字是一詞。
-「和本機原本產生的 LRC 逐字相同」那一節直接拿本機的斷行當期望值，比對隨機產生的片段。
+「本機的逐字時間都用得上」那一節用真的對齊器斷詞，確認本機存下來的逐字時間都對得上文字；
+「和 #110 之前本機寫的 LRC 逐字相同」那一節比對隨機片段和存下來的舊輸出。
 """
 import importlib.util
+import json
 import random
 import re
 import subprocess
@@ -15,7 +17,6 @@ from pathlib import Path
 
 import pytest
 
-from app.provider.local import asr
 from app.services import output_format
 from app.services.transcription.models import TranscriptionTaskResult
 
@@ -160,6 +161,26 @@ class TestLineBreaksFromWordTimings:
         }
         assert lrc_lines(segment) == ["[00:04.10][S1] 今日はね、ずっと待ってたんだよ。"]
 
+    @pytest.mark.parametrize("start, first_ms, expected", [
+        # 段內 151.6 到 163.6 秒相減剛好 12 秒，不斷開；絕對時間相減會是 12.000000000000455
+        (3934.3, 151600, ["[68:05.90][S1] 今日はね、ずっと待ってたんだよ。"]),
+        # 段內 13.6 到 25.6 秒相減是 12.000000000000002，在讀點處斷開；絕對時間相減反而剛好 12
+        (3365.57, 13600, ["[56:19.17][S1] 今日はね、", "[56:24.77][S1] ずっと待ってたんだよ。"]),
+    ])
+    def test_12_second_limit_is_measured_on_the_aligner_times(self, start, first_ms, expected):
+        # 本機存的逐字時間是片段開頭加上對齊器的段內時間（毫秒）。第一個詞到最後一個詞
+        # 150 格（12 秒），中間有讀點可以斷開；期望值和 #110 之前本機自己寫的 LRC 逐字相同
+        offsets = [("今", 0, 160), ("日", 160, 320), ("はね", 320, 800),
+                   ("ずっと", 5600, 6640), ("待", 6640, 7200), ("ってたんだよ", 7200, 12000)]
+        segment = {
+            "start": start, "end": start + 200, "speaker": "S1",
+            "text": "今日はね、ずっと待ってたんだよ。",
+            "words": words(*[(text, start + round((first_ms + begin) / 1000.0, 3),
+                              start + round((first_ms + end) / 1000.0, 3))
+                             for text, begin, end in offsets]),
+        }
+        assert lrc_lines(segment) == expected
+
     def test_words_are_matched_to_the_text_the_way_the_aligner_splits_it(self):
         # 詞是 transformers 5.13 的對齊器真的斷出來的：符號（-、♡、〜）丟掉但不讓詞斷開，
         # 全形數字和前面的假名、英文連成一詞，全形空白會斷開；〆 不是漢字，被後面的漢字隔開
@@ -193,7 +214,29 @@ class TestLineBreaksFromWordTimings:
         assert lrc_lines(segment) == ["[00:50.00][S0] おはよう。こんにちは。"]
 
 
-# ─── 和本機原本產生的 LRC 逐字相同 ───────────────────────────────────────────
+# ─── 本機的逐字時間都用得上 ──────────────────────────────────────────────────
+
+class TestLocalWordTimingsAreUsed:
+    """本機存下來的逐字時間是真的對齊器斷的詞；這裡照同樣的規則斷詞，兩邊一個一個相同才用得上，
+    對不上的片段只能整段一行（見上面的「逐字時間對不上文字」）。"""
+
+    @pytest.mark.skipif(importlib.util.find_spec("transformers") is None,
+                        reason="沒裝 transformers（CI 不裝 ML 依賴），裝了的本機才跑")
+    def test_with_the_real_aligner_word_split(self):
+        # 詞照真的對齊器斷，字元涵蓋符號、全形與半形、表情符號、合成字元、擴展區漢字。
+        # conftest 把 torch 換成假的，transformers 在這裡匯入不了，另開乾淨的直譯器跑
+        result = subprocess.run([sys.executable, str(ALIGNER_PARITY)], capture_output=True,
+                                text=True, encoding="utf-8", errors="replace", timeout=120)
+        assert result.returncode == 0, result.stdout + result.stderr
+
+
+# ─── 和 #110 之前本機寫的 LRC 逐字相同 ───────────────────────────────────────
+
+# #110 之前，本機轉接器自己寫 LRC（asr._entry_to_lines）。期望值是那份程式對下面產生器的 300 組
+# 隨機片段算出來、存成 fixture 的 LRC。產生器（字元、時間、亂數種子）一改，期望值就得用 git 歷史
+# 裡 #110 之前的 asr.py 整份重算
+LOCAL_LRC_BEFORE_110 = (Path(__file__).resolve().parents[1] / "fixtures" / "output_format"
+                        / "local_lrc_before_110.json")
 
 # 隨機片段的字元：漢字一字一詞；假名、英數字連在一起是一詞；斷行標點與這幾個符號不算詞，
 # 符號也不會讓詞斷開（「そう♡ね」是一詞）
@@ -208,79 +251,86 @@ LENGTHS_MS = (80, 160, 320, 640, 1600, 6000, 113)
 
 def aligner_words(text: str) -> list[str]:
     """對齊器（不指定語言）在這組字元上斷出的詞；和本機一樣，先在斷行標點後補空白。"""
-    kept = "".join(c for c in asr._insert_align_breaks(text) if c not in BREAK_MARKS + SYMBOLS)
+    with_breaks = re.sub(f"([{BREAK_MARKS}])", r"\1 ", text)
+    kept = "".join(c for c in with_breaks if c not in BREAK_MARKS + SYMBOLS)
     return re.findall(f"[{KANJI}]|[^{KANJI}\\s]+", kept)
 
 
-def random_entry(rng: random.Random) -> dict:
+class Draws:
+    """亂數只用 ``random.Random.random()``：Python 只保證它在同一個種子下跨版本不變，
+    ``choice``、``choices``、``randint`` 的算法可能改，存下來的期望值就對不上了。"""
+
+    def __init__(self, seed: int):
+        self._rng = random.Random(seed)
+
+    def fraction(self) -> float:
+        return self._rng.random()
+
+    def below(self, n: int) -> int:
+        return int(self._rng.random() * n)
+
+    def between(self, low: int, high: int) -> int:
+        return low + self.below(high - low + 1)
+
+    def choice(self, items):
+        return items[self.below(len(items))]
+
+    def weighted(self, items, weights):
+        point = self._rng.random() * sum(weights)
+        for item, weight in zip(items, weights, strict=True):
+            if point < weight:
+                return item
+            point -= weight
+        return items[-1]
+
+
+def random_entry(draws: Draws) -> dict:
     """本機轉錄出的一段：MOSS 的時間（兩位小數）與文字，加上對齊器給的段內相對時間。"""
     text = ""
     while not text:
-        pools = rng.choices([KANJI, LETTERS, BREAK_MARKS, SYMBOLS, " "],
-                            weights=[7, 6, 4, 1, 1], k=rng.randint(1, 30))
-        text = "".join(rng.choice(pool) for pool in pools).strip()
+        pools = [draws.weighted([KANJI, LETTERS, BREAK_MARKS, SYMBOLS, " "], [7, 6, 4, 1, 1])
+                 for _ in range(draws.between(1, 30))]
+        text = "".join(draws.choice(pool) for pool in pools).strip()
     ms, timings = 0, []
     for word in aligner_words(text):
-        ms += rng.choice(GAPS_MS)
+        ms += draws.choice(GAPS_MS)
         start_ms = ms
-        ms += rng.choice(LENGTHS_MS)
+        ms += draws.choice(LENGTHS_MS)
         timings.append({"text": word, "start_time": round(start_ms / 1000.0, 3),
                         "end_time": round(ms / 1000.0, 3)})
-    start = round(rng.uniform(0, 5000), 2)
+    start = round(draws.fraction() * 5000, 2)
     return {"start": start, "end": round(start + ms / 1000 + 0.5, 2),
-            "speaker": rng.randint(0, 2), "text": text, "text_alt": None,
+            "speaker": draws.between(0, 2), "text": text, "text_alt": None,
             # 強制對齊失敗的段沒有逐字時間
-            "words": timings if rng.random() > 0.1 else None}
+            "words": timings if draws.fraction() > 0.1 else None}
 
 
-def local_provider_lrc(entries: list[dict]) -> str:
-    """本機原本產生的 LRC：每一段照 asr._entry_to_lines 斷行。"""
-    def count_words(text: str) -> int:
-        return len(aligner_words(text))
-    return "\n".join(line for entry in entries for line in asr._entry_to_lines(entry, count_words))
+def random_cases() -> list[list[dict]]:
+    """300 組隨機片段，每組 1 到 4 段、依開始時間排序。"""
+    draws = Draws(109)
+    return [sorted((random_entry(draws) for _ in range(draws.between(1, 4))),
+                   key=lambda entry: entry["start"])
+            for _ in range(300)]
 
 
-class TestSameLrcAsTheLocalProvider:
-    """本機現在自己產生 LRC（asr._entry_to_lines），從片段產生的 LRC 必須和它逐字相同，
-    所以拿它當期望值的來源；片段也用本機自己的 asr._build_segment_records 產生，和存下來的
-    一樣。文字不含換行：換行收成空白是唯一刻意不同的地方（見上面的換行一節）。
-    #110 讓本機不再產生 LRC 時，這組測試跟著刪掉。"""
+def stored_segment(entry: dict) -> dict:
+    """本機轉接器存下來的片段：說話者編號寫成 S0，逐字時間是片段開頭加上對齊器的段內時間。"""
+    timings = [{"text": w["text"], "start": entry["start"] + w["start_time"],
+                "end": entry["start"] + w["end_time"]} for w in entry["words"] or []]
+    return {"start": entry["start"], "end": entry["end"], "speaker": f"S{entry['speaker']}",
+            "text": entry["text"], "words": timings or None}
 
-    @pytest.mark.skipif(importlib.util.find_spec("transformers") is None,
-                        reason="沒裝 transformers（CI 不裝 ML 依賴），裝了的本機才跑")
-    def test_same_with_the_real_aligner_word_split(self):
-        # 詞照真的對齊器斷，字元涵蓋符號、全形與半形、表情符號、合成字元、擴展區漢字。
-        # conftest 把 torch 換成假的，transformers 在這裡匯入不了，另開乾淨的直譯器跑
-        result = subprocess.run([sys.executable, str(ALIGNER_PARITY)], capture_output=True,
-                                text=True, encoding="utf-8", errors="replace", timeout=120)
-        assert result.returncode == 0, result.stdout + result.stderr
 
+class TestSameLrcAsTheLocalProviderBefore110:
     def test_random_segments_break_into_the_same_lines_at_the_same_times(self):
-        rng = random.Random(109)
-        for _ in range(300):
-            entries = sorted((random_entry(rng) for _ in range(rng.randint(1, 4))),
-                             key=lambda entry: entry["start"])
-            segments = asr._build_segment_records(entries, source="moss")
-            assert formats(*segments).lrc == local_provider_lrc(entries), entries
+        expected = json.loads(LOCAL_LRC_BEFORE_110.read_text(encoding="utf-8"))
+        actual = [formats(*map(stored_segment, entries)).lrc for entries in random_cases()]
 
-    @pytest.mark.parametrize("start, first_ms, line_count", [
-        # 段內 151.6 到 163.6 秒相減剛好 12 秒，不斷開；加上片段開頭再相減會是 12.000000000000455
-        (3934.3, 151600, 1),
-        # 段內 13.6 到 25.6 秒相減是 12.000000000000002，本機在讀點處斷開；加上片段開頭再相減反而剛好 12
-        (3365.57, 13600, 2),
-    ])
-    def test_12_second_limit_is_measured_on_the_aligner_times(self, start, first_ms, line_count):
-        # 從第一個詞到最後一個詞 150 格（12 秒），中間有讀點可以斷開
-        offsets = [("今", 0, 160), ("日", 160, 320), ("はね", 320, 800),
-                   ("ずっと", 5600, 6640), ("待", 6640, 7200), ("ってたんだよ", 7200, 12000)]
-        entry = {"start": start, "end": start + 200, "speaker": 1, "text_alt": None,
-                 "text": "今日はね、ずっと待ってたんだよ。",
-                 "words": [{"text": text, "start_time": round((first_ms + begin) / 1000.0, 3),
-                            "end_time": round((first_ms + end) / 1000.0, 3)}
-                           for text, begin, end in offsets]}
-        lrc = formats(*asr._build_segment_records([entry])).lrc
-        assert lrc == local_provider_lrc([entry])
-        assert len(lrc.split("\n")) == line_count
+        assert len(actual) == len(expected)
+        different = [(i, want, got)
+                     for i, (want, got) in enumerate(zip(expected, actual, strict=True))
+                     if want != got]
+        assert not different, f"{len(different)} 組不同，第一組（序號, 期望, 實際）：{different[0]}"
 
 
 # ─── SRT／VTT／TXT ───────────────────────────────────────────────────────────
@@ -468,13 +518,11 @@ class TestSubtitleEndTimes:
                        {"start": 4.0, "end": None, "speaker": None, "text": "じゃあ"}).srt == expected
 
 
-# ─── 沒有片段：轉錄結果只有 LRC 文字（Gemini） ────────────────────────────────
+# ─── 沒有片段的轉錄結果 ──────────────────────────────────────────────────────
 
 class TestResultWithoutSegments:
-    def test_its_lrc_is_converted_as_before(self):
+    def test_has_nothing_in_any_format_and_its_text_is_not_read(self):
+        # 轉錄結果就是片段：供應商不再附著 LRC 文字，text 裡就算有也不讀
         result = output_format.for_result(TranscriptionTaskResult(
-            success=True, text="[00:00.50]Speaker A: こんにちは\n[00:02.00]Speaker B: はい"))
-        assert result.lrc == "[00:00.50]Speaker A: こんにちは\n[00:02.00]Speaker B: はい"
-        assert result.srt == ("1\n00:00:00,500 --> 00:00:02,000\nこんにちは\n\n"
-                              "2\n00:00:02,000 --> 00:00:07,000\nはい\n")
-        assert result.txt == "こんにちは\nはい"
+            success=True, text="[00:00.50]Speaker A: こんにちは"))
+        assert result == output_format.OutputFiles(lrc="", srt="", vtt="", txt="")
