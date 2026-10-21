@@ -564,13 +564,15 @@ class TestOutputFormatsFromSegments:
 
     @pytest.mark.parametrize("fmt, expected", [
         ("lrc", "[00:00.24][S0] おはよう。\n[00:01.50][S0] こんにちは。"),
-        ("srt", "1\n00:00:00,240 --> 00:00:01,500\n[S0] おはよう。\n\n"
-                "2\n00:00:01,500 --> 00:00:06,500\n[S0] こんにちは。\n"),
-        ("vtt", "WEBVTT\n\n00:00:00.240 --> 00:00:01.500\n[S0] おはよう。\n\n"
-                "00:00:01.500 --> 00:00:06.500\n[S0] こんにちは。\n"),
+        # SRT／VTT 的每一行在它最後一個詞的結束時結束（#96），不是下一行的開始或片段的結束；
+        # 「おはよう」只講 0.66 秒，至少顯示 0.8 秒（ADR-0008）
+        ("srt", "1\n00:00:00,240 --> 00:00:01,040\n[S0] おはよう。\n\n"
+                "2\n00:00:01,500 --> 00:00:02,560\n[S0] こんにちは。\n"),
+        ("vtt", "WEBVTT\n\n00:00:00.240 --> 00:00:01.040\n[S0] おはよう。\n\n"
+                "00:00:01.500 --> 00:00:02.560\n[S0] こんにちは。\n"),
         ("txt", "[S0] おはよう。\n[S0] こんにちは。"),
     ])
-    def test_downloads_break_lines_at_sentences_using_word_timings(
+    def test_downloads_break_and_end_lines_using_word_timings(
             self, api, completed, fmt, expected):
         assert self.download(api, completed["task_uuid"], fmt) == expected
 
@@ -584,18 +586,73 @@ class TestOutputFormatsFromSegments:
         task_uuid = completed["task_uuid"]
         assert frozen_original(test_engine, task_uuid) == self.download(api, task_uuid, "lrc")
 
-    def test_silence_removed_inside_a_sentence_counts_toward_12_seconds(self, api, fake):
-        # 有聲 0–6 秒、靜音 6–14 秒、有聲 14–20 秒：去靜音剪掉 6.3–13.7 秒（有聲段前後各留 0.3 秒），
-        # 語音視圖 12.6 秒。送進供應商的「今日は、ありがとう。」從 1.0 到 8.0 秒，只有 7 秒；
-        # 還原回原音檔是 1.0 到 15.4 秒，超過 12 秒，在讀點斷開，第二行落在剪掉的靜音之後
+    @pytest.fixture
+    def across_cut_silence(self, api, fake):
+        """一句話跨過被剪掉的靜音的任務。
+
+        有聲 0–6 秒、靜音 6–14 秒、有聲 14–20 秒：去靜音剪掉 6.3–13.7 秒（有聲段前後各留 0.3 秒），
+        語音視圖 12.6 秒。送進供應商的「今日は、ありがとう。」從 1.0 到 8.0 秒，只有 7 秒；
+        還原回原音檔是 1.0 到 15.4 秒。
+        """
         fake.script = [[(0.8, 8.2, 0, "今日は、ありがとう。",
                          [("今", 1.0, 1.2), ("日", 1.2, 1.4), ("は", 1.4, 1.8),
                           ("ありがとう", 7.0, 8.0)])]]
         messages = transcribe(api, "uid-gap", voiced=[(0.0, 6.0), (14.0, 20.0)])
+        assert codes(messages)[-1] == TaskStatus.COMPLETED
+        return messages[-1]
+
+    def test_silence_removed_inside_a_sentence_counts_toward_12_seconds(
+            self, api, across_cut_silence):
+        # 還原回原音檔超過 12 秒，在讀點斷開，第二行落在剪掉的靜音之後
+        assert self.download(api, across_cut_silence["task_uuid"], "lrc") == (
+            "[00:01.00][S0] 今日は、\n[00:14.40][S0] ありがとう。")
+
+    def test_subtitle_end_times_are_restored_to_the_original_timeline(
+            self, api, across_cut_silence):
+        # 「は」在 1.8 秒結束；「ありがとう」在語音視圖的 8.0 秒結束，還原回原音檔是 15.4 秒。
+        # 結束時間和開始時間一樣取到 0.01 秒，不受還原時的浮點誤差影響
+        assert self.download(api, across_cut_silence["task_uuid"], "srt") == (
+            "1\n00:00:01,000 --> 00:00:01,800\n[S0] 今日は、\n\n"
+            "2\n00:00:14,400 --> 00:00:15,400\n[S0] ありがとう。\n")
+
+    @pytest.mark.parametrize("fmt, expected", [
+        ("srt", "1\n00:00:00,500 --> 00:00:03,500\n[S1] 你拉不拉货。\n\n"
+                "2\n00:00:03,000 --> 00:00:03,800\n[S0] 对\n\n"
+                "3\n00:00:04,000 --> 00:00:06,500\n[S1] 但是。\n"),
+        ("vtt", "WEBVTT\n\n00:00:00.500 --> 00:00:03.500\n[S1] 你拉不拉货。\n\n"
+                "00:00:03.000 --> 00:00:03.800\n[S0] 对\n\n"
+                "00:00:04.000 --> 00:00:06.500\n[S1] 但是。\n"),
+    ])
+    def test_interjection_overlaps_and_subtitles_follow_start_times(
+            self, api, fake, fmt, expected):
+        # 像 AISHELL-4 會議錄音 4:07.6 的插話（ADR-0008）：S1 講到 3.5 秒，S0 在 3.0 秒插一句
+        # 「对」，兩行同時顯示；「对」的詞是零長度，顯示最短的 0.8 秒。字幕依開始時間排序，
+        # S1 的片段斷成的第二行排在「对」後面
+        fake.model_capabilities = replace(fake.model_capabilities, remove_silence=False)
+        fake.script = [[(0.5, 6.5, 1, "你拉不拉货。但是。",
+                         [("你", 0.5, 1.0), ("拉", 1.0, 1.5), ("不", 1.5, 2.0), ("拉", 2.0, 2.5),
+                          ("货", 2.5, 3.5), ("但", 4.0, 4.5), ("是", 4.5, 6.5)]),
+                        (3.0, 3.25, 0, "对", [("对", 3.0, 3.0)])]]
+        messages = transcribe(api, "uid-interjection")
 
         assert codes(messages)[-1] == TaskStatus.COMPLETED
-        assert self.download(api, messages[-1]["task_uuid"], "lrc") == (
-            "[00:01.00][S0] 今日は、\n[00:14.40][S0] ありがとう。")
+        assert self.download(api, messages[-1]["task_uuid"], fmt) == expected
+
+    @pytest.mark.parametrize("fmt, expected", [
+        ("srt", "1\n00:00:00,250 --> 00:00:02,500\n[S0] おはよう。\n\n"
+                "2\n00:00:02,500 --> 00:00:07,500\n[S1] こんにちは。\n"),
+        ("vtt", "WEBVTT\n\n00:00:00.250 --> 00:00:02.500\n[S0] おはよう。\n\n"
+                "00:00:02.500 --> 00:00:07.500\n[S1] こんにちは。\n"),
+    ])
+    def test_segments_without_an_end_keep_the_old_subtitle_end_times(
+            self, api, fake, fmt, expected):
+        # 供應商只給開始時間：照以前，下一行的開始，最後一行加 5 秒
+        fake.model_capabilities = replace(fake.model_capabilities, remove_silence=False)
+        fake.script = [[(0.25, None, 0, "おはよう。"), (2.5, None, 1, "こんにちは。")]]
+        messages = transcribe(api, "uid-no-end")
+
+        assert codes(messages)[-1] == TaskStatus.COMPLETED
+        assert self.download(api, messages[-1]["task_uuid"], fmt) == expected
 
     def test_segment_without_text_and_word_without_a_time(self, api, fake):
         # 沒有文字的片段不產生行；有詞缺時間的片段不知道怎麼對到句子，整段一行
