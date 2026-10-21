@@ -3,8 +3,8 @@
 資料來源：
 
 * 有片段的任務從片段產生。
-* 沒有片段的任務（片段上線前的任務、Gemini 的任務、批次裡的任務）退回解析存下來的 LRC，
-  內容和以前相同。
+* 沒有片段的任務（片段上線前的任務、Gemini 的任務、批次裡的任務）退回解析存下來的 LRC：
+  LRC、TXT 和以前相同，SRT／VTT 的結束時間照下面同一套規則。
 * 存下來的 LRC 是凍結的原始轉錄副本（ADR-0007），有片段時下載不讀它。
 
 本機任務從片段產生的 LRC，和本機轉接器寫出的 LRC 逐字相同：同樣的斷行（見
@@ -28,14 +28,15 @@
 四種格式由同一串行產生，說話者標記一律「[S0] 文字」：LRC 一行一個時間戳；TXT 只留文字；
 SRT／VTT 另有結束時間，照實際說話的時間顯示（ADR-0008，規則見 :func:`_subtitles`）：不同說話者
 的字幕可以重疊，同一位說話者的不疊，每一行至少 0.8 秒，字幕依開始時間排序。有片段的任務和沒有
-片段的任務（從存下來的 LRC 轉換）用同一套規則。SRT／VTT 的時間取 LRC 時間戳讀回來的值，開始時間
-和以前從 LRC 轉換時一樣。斷行的規則見 :func:`_segment_lines`。
+片段的任務（從存下來的 LRC 轉換）用同一套規則。SRT／VTT 的開始時間取 LRC 時間戳讀回來的值，和
+以前從 LRC 轉換時一樣；結束時間取到毫秒。斷行的規則見 :func:`_segment_lines`。
 """
 
 from __future__ import annotations
 
 import re
 import unicodedata
+from bisect import bisect_right
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
@@ -344,8 +345,7 @@ def _is_cjk_ideograph(char: str) -> bool:
 def _render(lines: Sequence[_Line], fmt: OutputFormat) -> str:
     if fmt == OutputFormat.LRC:
         return "\n".join(_lrc_timestamp(line.start) + line.text for line in lines)
-    cues = [Cue(_lrc_seconds(line.start), line.text.strip(),
-                None if line.end is None else _lrc_seconds(line.end)) for line in lines]
+    cues = [Cue(_lrc_seconds(line.start), line.text.strip(), line.end) for line in lines]
     renderers = {OutputFormat.SRT: _srt, OutputFormat.VTT: _vtt, OutputFormat.TXT: _txt}
     return renderers[OutputFormat(fmt)](cues)
 
@@ -367,8 +367,8 @@ def _stamp_seconds(match: re.Match) -> float:
 
 
 def _milliseconds(seconds: float) -> int:
-    """寫進 SRT／VTT 的毫秒數：毫秒以下捨去，負的當成 0，和以前的寫法逐字相同（11.60 寫成
-    11,599）。結束時間在毫秒上算，最短顯示的 0.8 秒寫出來就是整整 800 毫秒。"""
+    """開始時間寫進 SRT／VTT 的毫秒數：毫秒以下捨去，負的當成 0。這是以前的寫法，開始時間因此
+    和以前逐字相同（11.60 寫成 11,599）；真實結束時間沒有這個包袱，四捨五入到毫秒。"""
     seconds = max(seconds, 0.0)
     return int(seconds) * 1000 + int((seconds - int(seconds)) * 1000)
 
@@ -384,61 +384,71 @@ MIN_CUE_SECONDS = 0.8
 """字幕至少顯示的秒數（ADR-0008）。對齊器給的詞常常只有零點幾秒，甚至是零長度；一兩個字的插話
 （例如「对」）照實際長度顯示會一閃而過。0.8 秒是使用者看過對照影片後選的。"""
 
+_LAST_LINE_SECONDS = 5.0
+"""沒有真實結束時間時，最後一行顯示的秒數（以前的規則）。"""
+
 
 def _subtitles(cues: Sequence[Cue]) -> List[Tuple[str, int, int]]:
     """SRT／VTT 的每一行：(文字, 開始, 結束)，時間是毫秒，依開始時間排序（ADR-0008）。
 
     WebVTT 規定字幕依開始時間排列，SRT 照做。行依片段的開始排序，一個片段斷成的幾行可能和別人
-    的片段交錯，所以這裡重新排序；同時開始的行照原本的順序。LRC、TXT 照片段的順序，不排序。
+    的片段交錯，所以這裡重新排序，同時開始的行照原本的順序；LRC、TXT 照片段的順序，不排序。
+    下面的「下一行」指之後第一個比這一行晚開始的行，同時開始的不算。
 
-    結束時間依序這樣算：
+    結束時間依序這樣算，全部在毫秒上：
 
     1. 有真實結束時間（有逐字時間時是這一行最後一個詞的結束，整段一行時是片段的結束，見
-       :func:`_segment_lines`）就用它，不截到別人下一行的開始：不同說話者的字幕可以重疊，
-       靠說話者標記分辨。沒有真實結束時間（沒有片段的任務、片段沒有結束時間）時照以前，
-       顯示到下一行（任何人的）開始，最後一行加 5 秒。
+       :func:`_segment_lines`）就用它，四捨五入到毫秒，不截到別人下一行的開始：不同說話者的
+       字幕可以重疊，靠說話者標記分辨。沒有真實結束時間（沒有片段的任務、片段沒有結束時間）時
+       照以前，顯示到下一行（任何人的）開始，最後一行加 :data:`_LAST_LINE_SECONDS`。
     2. 至少顯示 :data:`MIN_CUE_SECONDS`；真實結束時間是零長度或顛倒時，就顯示這麼久。
-    3. 同一位說話者的字幕不疊：不晚於他自己下一行的開始。說話者看行首的說話者標記（[S0]），
-       沒有標記的行（例如以前 Gemini 的 「Speaker 1:」）都算同一位說話者。
+    3. 同一位說話者的字幕不疊：不晚於他自己下一行的開始（說話者見 :func:`_speaker`）。同一位
+       說話者緊接著說下一句時，這一行因此可能不到 0.8 秒。
 
-    所以沒有說話者標記、也沒有真實結束時間的輸出和以前逐字相同（開始時間依序時）。同一位說話者
-    兩行同時開始時，前一行是零長度，和以前一樣。
+    沒有說話者標記的行都算同一位說話者，所以沒有說話者標記、也沒有真實結束時間的輸出和以前逐字
+    相同；只有開始時間倒退或重複的行不同，以前會輸出開始晚於結束、或零長度的字幕。
 
     去靜音的任務，結束剛好落在有聲段交界時，還原後會跳到被剪掉的靜音之後（和行開頭同一個問題，
     交給 #111）：這一行多顯示到那段靜音結束，或截到同一位說話者的下一行。
     """
     ordered = sorted(cues, key=lambda cue: cue.time)
     starts = [_milliseconds(cue.time) for cue in ordered]
-    # 同一位說話者下一行的開始，從後面往前找
-    next_same: List[Optional[int]] = [None] * len(ordered)
-    upcoming: Dict[Optional[str], int] = {}
-    for i in reversed(range(len(ordered))):
-        speaker = _speaker(ordered[i])
-        next_same[i] = upcoming.get(speaker)
-        upcoming[speaker] = starts[i]
+    speakers = [_speaker(cue) for cue in ordered]
+    starts_by_speaker: Dict[Optional[str], List[int]] = {}
+    for speaker, start in zip(speakers, starts, strict=True):
+        starts_by_speaker.setdefault(speaker, []).append(start)
 
     subtitles: List[Tuple[str, int, int]] = []
-    for i, cue in enumerate(ordered):
+    for cue, start, speaker in zip(ordered, starts, speakers, strict=True):
+        next_start = _first_after(starts, start)
         if cue.end is not None:
-            end = _milliseconds(cue.end)
-        elif i + 1 < len(ordered):
-            end = starts[i + 1]
+            end = round(cue.end * 1000)
+        elif next_start is not None:
+            end = next_start
         else:
-            end = _milliseconds(cue.time + 5.0)
-        end = max(end, starts[i] + round(MIN_CUE_SECONDS * 1000))
-        if next_same[i] is not None:
-            end = min(end, next_same[i])
-        subtitles.append((cue.text, starts[i], end))
+            end = _milliseconds(cue.time + _LAST_LINE_SECONDS)
+        end = max(end, start + round(MIN_CUE_SECONDS * 1000))
+        own_next_start = _first_after(starts_by_speaker[speaker], start)
+        if own_next_start is not None:
+            end = min(end, own_next_start)
+        subtitles.append((cue.text, start, end))
     return subtitles
 
 
-_SPEAKER_LABEL_RE = re.compile(r"\[(S\d+)\]")
+def _first_after(sorted_starts: Sequence[int], start: int) -> Optional[int]:
+    """排好序的開始時間裡，第一個比 start 晚的；沒有時是 None。"""
+    later = bisect_right(sorted_starts, start)
+    return sorted_starts[later] if later < len(sorted_starts) else None
+
+
+_SPEAKER_LABEL_RE = re.compile(r"\[S\d+\]|Speaker\s*(?:[0-9]+|[A-Z])\s*[:：]")
 
 
 def _speaker(cue: Cue) -> Optional[str]:
-    """行首的說話者標記（[S0] 的 S0）；沒有標記時是 None，這些行都算同一位說話者。"""
+    """這一行的說話者，看行首的說話者標記：[S0]，或存下來的 Gemini LRC 裡的「Speaker 1:」
+    （空白與全形冒號不計）。同一個標記就是同一位說話者；沒有標記時是 None，這些行都算同一位。"""
     match = _SPEAKER_LABEL_RE.match(cue.text)
-    return match.group(1) if match else None
+    return re.sub(r"[\s:：]", "", match.group(0)) if match else None
 
 
 def _srt(cues: Sequence[Cue]) -> str:

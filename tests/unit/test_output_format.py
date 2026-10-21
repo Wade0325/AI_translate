@@ -39,7 +39,7 @@ def words(*items):
 
 GREETINGS = [
     {"start": 1.5, "end": 2.8, "speaker": "S0", "text": "おはよう。"},
-    {"start": 3.25, "end": 4.5, "speaker": "S1", "text": "こんにちは。"},
+    {"start": 3.25, "end": 4.0, "speaker": "S1", "text": "こんにちは。"},
     {"start": 3725.5, "end": 3727.0, "speaker": "S0", "text": "またね。"},
 ]
 GREETINGS_LRC = [
@@ -287,9 +287,10 @@ class TestSameLrcAsTheLocalProvider:
 
 class TestSubtitleFormats:
     def test_vtt_has_a_header_and_dot_milliseconds(self):
+        # 「こんにちは。」只有 0.75 秒，顯示最短的 0.8 秒
         assert formats(*GREETINGS).vtt == (
-            "WEBVTT\n\n00:00:01.500 --> 00:00:02.799\n[S0] おはよう。\n\n"
-            "00:00:03.250 --> 00:00:04.500\n[S1] こんにちは。\n\n"
+            "WEBVTT\n\n00:00:01.500 --> 00:00:02.800\n[S0] おはよう。\n\n"
+            "00:00:03.250 --> 00:00:04.050\n[S1] こんにちは。\n\n"
             "01:02:05.500 --> 01:02:07.000\n[S0] またね。\n")
 
     def test_txt_keeps_the_labelled_text_of_each_line(self):
@@ -297,13 +298,13 @@ class TestSubtitleFormats:
             "[S0] おはようございます。\n[S0] 今日は、いい天気ですね！\n"
             "[S1] ラーメン食べた？\n[S1] 人々も来た。")
 
-    def test_subtitle_times_are_lrc_timestamps_read_back(self):
-        # 開始時間和以前從 LRC 轉換時相同：取 LRC 時間戳讀回來的值（11.60 讀回來是 11.599…）。
-        # 結束時間是每一行最後一個詞的結束，也取 LRC 時間戳讀回來的值（11.20 讀回來是 11.199…）
+    def test_starts_are_read_back_from_lrc_timestamps_and_ends_are_milliseconds(self):
+        # 開始時間和以前從 LRC 轉換時相同：取 LRC 時間戳讀回來的值，毫秒以下捨去（11.60 寫成
+        # 11,599）。結束時間是每一行最後一個詞的結束，取到毫秒（11.2 寫成 11,200）
         assert formats(*SENTENCES).srt == (
-            "1\n00:00:10,080 --> 00:00:11,199\n[S0] おはようございます。\n\n"
-            "2\n00:00:11,599 --> 00:00:13,599\n[S0] 今日は、いい天気ですね！\n\n"
-            "3\n00:00:14,080 --> 00:00:15,359\n[S1] ラーメン食べた？\n\n"
+            "1\n00:00:10,080 --> 00:00:11,200\n[S0] おはようございます。\n\n"
+            "2\n00:00:11,599 --> 00:00:13,600\n[S0] 今日は、いい天気ですね！\n\n"
+            "3\n00:00:14,080 --> 00:00:15,360\n[S1] ラーメン食べた？\n\n"
             "4\n00:00:15,839 --> 00:00:16,800\n[S1] 人々も来た。\n")
 
 
@@ -344,10 +345,12 @@ class TestSubtitleEndTimes:
                                       "00:00:41,500 --> 00:00:42,500"]
 
     def test_segment_without_word_timings_ends_at_the_segment_end(self):
-        # 和開始時間一樣取 LRC 時間戳讀回來的值：2.80 讀回來是 2.799…
-        assert srt_times(*GREETINGS) == ["00:00:01,500 --> 00:00:02,799",
-                                         "00:00:03,250 --> 00:00:04,500",
-                                         "01:02:05,500 --> 01:02:07,000"]
+        # 真實結束時間取到毫秒：2.8 秒寫成 2,800，3727.125 秒寫成 07,125（開始時間照以前，
+        # 2.80 會寫成 2,799）
+        segments = [{"start": 1.5, "end": 2.8, "speaker": "S0", "text": "おはよう。"},
+                    {"start": 3725.5, "end": 3727.125, "speaker": "S1", "text": "またね。"}]
+        assert srt_times(*segments) == ["00:00:01,500 --> 00:00:02,800",
+                                        "01:02:05,500 --> 01:02:07,125"]
 
     def test_segment_whose_word_timings_do_not_match_its_text_ends_at_the_segment_end(self):
         # 逐字時間對不上文字就不用（整段一行），結束時間也是片段的結束
@@ -379,6 +382,15 @@ class TestSubtitleEndTimes:
         assert srt_times(first, other, again) == ["00:00:01,000 --> 00:00:04,000",
                                                   "00:00:02,000 --> 00:00:03,000",
                                                   "00:00:04,000 --> 00:00:06,000"]
+
+    def test_same_speaker_lines_starting_together_both_show(self):
+        # 對齊器把兩句擠在同一個時間（零長度的詞）：同時開始的行不算「下一行」，兩行都顯示到
+        # 這位說話者下一個更晚開始的行，不會變成看不到的零長度字幕
+        segment = {"start": 5.0, "end": 9.0, "speaker": "S0", "text": "はい。はい。そうです。",
+                   "words": words(("はい", 5.0, 5.0), ("はい", 5.0, 5.0), ("そうです", 5.5, 6.5))}
+        assert srt_times(segment) == ["00:00:05,000 --> 00:00:05,500",
+                                      "00:00:05,000 --> 00:00:05,500",
+                                      "00:00:05,500 --> 00:00:06,500"]
 
     @pytest.mark.parametrize("shift", [0.0, -0.5], ids=["zero-length", "reversed"])
     def test_zero_length_or_reversed_end_shows_for_the_minimum(self, shift):
@@ -418,14 +430,30 @@ class TestSubtitleEndTimes:
                               "3\n00:04:12,000 --> 00:04:15,500\n[S1] 但是。\n")
         assert result.txt == "[S1] 你拉不拉货。\n[S1] 但是。\n[S0] 对"
 
-    def test_stored_lrc_follows_the_same_rules_by_its_speaker_labels(self):
+    @pytest.mark.parametrize("first, second", [
+        ("[S0] ", "[S1] "),
+        # 批次與 #110 之前的 Gemini 任務：Gemini 自己寫的說話者標記
+        ("Speaker 1: ", "Speaker 2: "),
+    ], ids=["app-labels", "gemini-labels"])
+    def test_stored_lrc_follows_the_same_rules_by_its_speaker_labels(self, first, second):
         # 沒有片段的任務從存下來的 LRC 轉換。LRC 沒有結束時間：顯示到下一行開始，最後一行加 5 秒；
-        # S0 講了 0.3 秒就換 S1，S0 這一行仍顯示 0.8 秒，和 S1 的行重疊
-        lrc = "[00:01.00][S0] はい\n[00:01.30][S1] そうですね\n[00:04.00][S0] じゃあ"
+        # 第一位說話者講了 0.3 秒就換人，這一行仍顯示 0.8 秒，和下一位的行重疊
+        lrc = f"[00:01.00]{first}はい\n[00:01.30]{second}そうですね\n[00:04.00]{first}じゃあ"
         assert output_format.convert_from_lrc(lrc).srt == (
-            "1\n00:00:01,000 --> 00:00:01,800\n[S0] はい\n\n"
-            "2\n00:00:01,300 --> 00:00:04,000\n[S1] そうですね\n\n"
-            "3\n00:00:04,000 --> 00:00:09,000\n[S0] じゃあ\n")
+            f"1\n00:00:01,000 --> 00:00:01,800\n{first}はい\n\n"
+            f"2\n00:00:01,300 --> 00:00:04,000\n{second}そうですね\n\n"
+            f"3\n00:00:04,000 --> 00:00:09,000\n{first}じゃあ\n")
+
+    def test_stored_lrc_with_backward_or_repeated_times_is_sorted_and_visible(self):
+        # 時間戳倒退或重複的 LRC（模型偶爾會這樣）：以前會輸出開始晚於結束、或零長度的字幕。
+        # 現在依開始時間排序，同時開始的行不算「下一行」，兩行都顯示到下一個更晚開始的行。
+        # 沒有說話者標記、也沒有結束時間的輸出，只有這兩種情況和以前不同；LRC 原樣保留
+        lrc = "[00:05.00]そうですね\n[00:01.00]はい\n[00:01.00]ええ"
+        result = output_format.convert_from_lrc(lrc)
+        assert result.srt == ("1\n00:00:01,000 --> 00:00:05,000\nはい\n\n"
+                              "2\n00:00:01,000 --> 00:00:05,000\nええ\n\n"
+                              "3\n00:00:05,000 --> 00:00:10,000\nそうですね\n")
+        assert result.lrc == lrc
 
     def test_lines_without_speaker_labels_or_end_times_are_unchanged(self):
         # 沒有說話者標記的行都算同一位說話者，不會重疊：顯示到下一行開始，0.3 秒就換行也不延長，
