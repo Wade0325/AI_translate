@@ -3,7 +3,9 @@
 - 在所有 app 模組匯入前，先 mock 重量級依賴（torch、torchaudio 等）
 - SQLite 檔案資料庫（取代 PostgreSQL），引擎設定與免安裝模式相同
 - 輕量 lifespan（略過 Redis / VAD 初始化）
+- 收集 app 寫進 log 的內容
 """
+import logging
 import sys
 import pytest
 from contextlib import asynccontextmanager
@@ -127,5 +129,36 @@ def client(test_engine):
 
     app.router.lifespan_context = original_lifespan
     app.dependency_overrides.clear()
+
+
+# ─── 5. app 的 log ───────────────────────────────────────────────────────────
+
+class _Collector(logging.Handler):
+    """每筆 log 收成寫出去的樣子：訊息，加上 exc_info 附的 traceback。"""
+
+    def __init__(self):
+        super().__init__()
+        self.entries: list[str] = []
+
+    def emit(self, record):
+        self.entries.append(self.format(record))
+
+
+@pytest.fixture
+def app_log():
+    """app 寫進 log 的內容，一筆一個字串。
+
+    app 的 logger 不往上傳（app/utils/logger.py 設了 propagate=False），caplog 收不到，
+    所以在每個 app 的 logger 上直接接一個收集的 handler。只接得到 fixture 啟動時已經
+    建立的 logger：要看的模組在測試檔開頭 import。
+    """
+    handler = _Collector()
+    loggers = [logger for name, logger in logging.Logger.manager.loggerDict.items()
+               if name.startswith("app.") and isinstance(logger, logging.Logger)]
+    for logger in loggers:
+        logger.addHandler(handler)
+    yield handler.entries
+    for logger in loggers:
+        logger.removeHandler(handler)
 
 
