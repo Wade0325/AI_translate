@@ -247,6 +247,20 @@ def test_single_file_stores_segments_labelled_like_the_local_provider(api, in_pr
     assert "Speaker" not in srt
 
 
+def test_subtitles_end_where_gemini_wrote_it_and_otherwise_follow_the_old_rule(
+        api, in_process_run_mode, genai):
+    # 只有時間戳的行是 Gemini 寫明的結束時間，字幕照實際說話的時間顯示（ADR-0008）；沒寫結束時間
+    # 的行照以前的規則，最後一行加 5 秒。兩行都在第一個有聲段，去靜音不改它們的時間
+    genai.replies = [Reply(text="[00:00.50]おはよう。\n[00:01.50]\n[00:01.75]はい。")]
+
+    end = transcribe(api, in_process_run_mode, "gemini-single-end-times.wav")[-1]
+
+    assert end["status_code"] == TaskStatus.COMPLETED
+    assert api.get(f"/api/v1/history/{end['task_uuid']}/download/srt").text == (
+        "1\n00:00:00,500 --> 00:00:01,500\nおはよう。\n\n"
+        "2\n00:00:01,750 --> 00:00:06,750\nはい。\n")
+
+
 def test_single_file_failure_still_deletes_its_remote_file(api, in_process_run_mode, genai):
     # 假用戶端只在檔案已經上傳、處理完時才回這個錯：失敗之前遠端確實有檔案
     genai.replies = [invalid_argument("音檔無法解碼")]
