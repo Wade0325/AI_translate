@@ -11,7 +11,6 @@
 被拒的檔名要用 repr 記進 log：排查只能靠使用者附上的 log（ADR-0005）。
 """
 import json
-import logging
 from pathlib import Path
 
 import pytest
@@ -92,32 +91,6 @@ def _traversal_names(root, secret):
         # 帶換行：照字面寫進 log 會多出一行假的 log
         "forged_log_line": "../a.wav\n2026-10-20 12:00:00 - INFO - 偽造的一行",
     }
-
-
-class _Messages(logging.Handler):
-    def __init__(self):
-        super().__init__()
-        self.messages: list[str] = []
-
-    def emit(self, record):
-        self.messages.append(record.getMessage())
-
-
-@pytest.fixture
-def app_log():
-    """app 寫進 log 的訊息。
-
-    app 的 logger 不往上傳（app/utils/logger.py 設了 propagate=False），caplog 收不到，
-    所以在每個 app 的 logger 上直接接一個收集訊息的 handler。
-    """
-    handler = _Messages()
-    loggers = [logger for name, logger in logging.Logger.manager.loggerDict.items()
-               if name.startswith("app.") and isinstance(logger, logging.Logger)]
-    for logger in loggers:
-        logger.addHandler(handler)
-    yield handler.messages
-    for logger in loggers:
-        logger.removeHandler(handler)
 
 
 def _logged_as_repr(app_log, filename: str) -> bool:
