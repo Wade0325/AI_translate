@@ -28,10 +28,9 @@ from starlette.websockets import WebSocketDisconnect
 
 from app.core.task_status import TaskStatus
 from app.exceptions import TransientError
-from app.provider import registry
 from app.runtime import run_mode
 from app.runtime.run_mode import TRANSIENT_RETRIES
-from tests.support.fake_provider import FAKE_MODEL, Fail, FakeProvider
+from tests.support.fake_provider import FAKE_MODEL, Fail
 from tests.support.waiting import cancel_when_dispatched, wait_until
 
 SAMPLE_RATE = 16000
@@ -58,32 +57,6 @@ def synthetic_audio(fmt: str = "WAV", voiced=VOICED) -> bytes:
 def settings():
     from app.core.config import get_settings
     return get_settings()
-
-
-@pytest.fixture
-def data_dir(tmp_path, monkeypatch, settings):
-    """上傳檔、保留音檔、去靜音產物都寫進暫存資料夾。"""
-    from app.api import batch, transcription, upload
-
-    uploads = tmp_path / "temp_uploads"
-    uploads.mkdir()
-    monkeypatch.setattr(settings, "temp_uploads_dir", str(uploads))
-    monkeypatch.setattr(settings, "audio_store_dir", str(tmp_path / "audio_store"))
-    monkeypatch.setattr(settings, "vad_artifacts_dir", str(tmp_path / "vad_artifacts"))
-    monkeypatch.setattr(transcription, "TEMP_UPLOADS_DIR", uploads)
-    monkeypatch.setattr(upload, "TEMP_UPLOADS_DIR", uploads)
-    monkeypatch.setattr(batch, "TEMP_UPLOADS_DIR", uploads)
-    return tmp_path
-
-
-@pytest.fixture
-def task_db(test_engine):
-    """任務在 worker 執行緒裡用 SessionLocal 寫紀錄；指到測試的 sqlite。"""
-    from app.database.session import SessionLocal, engine
-
-    SessionLocal.configure(bind=test_engine)
-    yield
-    SessionLocal.configure(bind=engine)
 
 
 class RecordingRunMode:
@@ -180,16 +153,6 @@ def run_mode_spy(in_process_run_mode):
     # 先等任務跑完再換回：任務的取消檢查會呼叫 run_mode.get()
     in_process_run_mode.close(wait=True)
     run_mode.use(previous)
-
-
-@pytest.fixture
-def fake():
-    provider = FakeProvider()
-    previous = registry.register("fake", provider)
-    yield provider
-    if provider.hold is not None:
-        provider.hold.set()
-    registry.register("fake", previous)
 
 
 @pytest.fixture

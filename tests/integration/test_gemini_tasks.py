@@ -86,34 +86,6 @@ def gemini(genai):
 
 
 @pytest.fixture
-def data_dir(tmp_path, monkeypatch):
-    """上傳檔、保留音檔、去靜音產物都寫進暫存資料夾。"""
-    from app.api import batch, transcription, upload
-    from app.core.config import get_settings
-
-    settings = get_settings()
-    uploads = tmp_path / "temp_uploads"
-    uploads.mkdir()
-    monkeypatch.setattr(settings, "temp_uploads_dir", str(uploads))
-    monkeypatch.setattr(settings, "audio_store_dir", str(tmp_path / "audio_store"))
-    monkeypatch.setattr(settings, "vad_artifacts_dir", str(tmp_path / "vad_artifacts"))
-    monkeypatch.setattr(upload, "TEMP_UPLOADS_DIR", uploads)
-    monkeypatch.setattr(transcription, "TEMP_UPLOADS_DIR", uploads)
-    monkeypatch.setattr(batch, "TEMP_UPLOADS_DIR", uploads)
-    return tmp_path
-
-
-@pytest.fixture
-def task_db(test_engine):
-    """任務在 worker 執行緒裡用 SessionLocal 寫紀錄；指到測試的 sqlite。"""
-    from app.database.session import SessionLocal, engine
-
-    SessionLocal.configure(bind=test_engine)
-    yield
-    SessionLocal.configure(bind=engine)
-
-
-@pytest.fixture
 def api(test_engine, data_dir, task_db, in_process_run_mode, gemini):
     from sqlalchemy.orm import sessionmaker
 

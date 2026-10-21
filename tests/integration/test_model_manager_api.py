@@ -13,11 +13,10 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.core.config import get_settings
-from app.provider import registry
 from app.provider.base import ProviderInfo
 from app.provider.local import weights
 from app.services.api_keys import mask_api_key
-from tests.support.fake_provider import FAKE_MODEL, FakeProvider
+from tests.support.fake_provider import FAKE_MODEL
 
 
 # ─── 儲存模型設定 ─────────────────────────────────────────────────────────────
@@ -194,15 +193,6 @@ def press_test(client: TestClient, provider: str, model: str, api_keys=()):
     """按下設定頁的「測試」：apiKeys 是畫面上的金鑰（遮罩值），不用金鑰的供應商不帶。"""
     return client.post("/api/v1/setting/test", json={
         "provider": provider, "apiKeys": list(api_keys), "model": model})
-
-
-@pytest.fixture
-def fake():
-    """換上不用 API 金鑰的假供應商「fake」，測試結束後拿掉。"""
-    provider = FakeProvider()
-    previous = registry.register("fake", provider)
-    yield provider
-    registry.register("fake", previous)
 
 
 class TestCheckFollowsTheProviderList:

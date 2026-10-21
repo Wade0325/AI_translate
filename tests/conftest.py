@@ -4,6 +4,7 @@
 - SQLite 檔案資料庫（取代 PostgreSQL），引擎設定與免安裝模式相同
 - 輕量 lifespan（略過 Redis / VAD 初始化）
 - 收集 app 寫進 log 的內容
+- 單檔任務的暫存資料夾、任務用的資料庫與假供應商
 """
 import logging
 import sys
@@ -160,5 +161,56 @@ def app_log():
     yield handler.entries
     for logger in loggers:
         logger.removeHandler(handler)
+
+
+# ─── 6. 單檔任務 ─────────────────────────────────────────────────────────────
+
+@pytest.fixture
+def uploads(tmp_path, monkeypatch):
+    """上傳檔、保留音檔、去靜音產物都寫進暫存資料夾；回傳上傳資料夾。"""
+    from app.core.config import get_settings
+
+    settings = get_settings()
+    folder = tmp_path / "temp_uploads"
+    folder.mkdir()
+    monkeypatch.setattr(settings, "temp_uploads_dir", str(folder))
+    monkeypatch.setattr(settings, "audio_store_dir", str(tmp_path / "audio_store"))
+    monkeypatch.setattr(settings, "vad_artifacts_dir", str(tmp_path / "vad_artifacts"))
+    return folder
+
+
+@pytest.fixture
+def data_dir(uploads, monkeypatch):
+    """同 :func:`uploads`，上傳端點也收進同一個上傳資料夾；回傳放這些資料夾的暫存資料夾。"""
+    from app.api import batch, transcription, upload
+
+    for module in (transcription, upload, batch):
+        monkeypatch.setattr(module, "TEMP_UPLOADS_DIR", uploads)
+    return uploads.parent
+
+
+@pytest.fixture
+def task_db(test_engine):
+    """任務（含在 worker 執行緒裡的）用 SessionLocal 寫紀錄；指到測試資料庫。"""
+    from app.database.session import SessionLocal, engine
+
+    SessionLocal.configure(bind=test_engine)
+    yield
+    SessionLocal.configure(bind=engine)
+
+
+@pytest.fixture
+def fake():
+    """換上假供應商「fake」，測試結束後換回原本的。"""
+    from app.provider import registry
+    from tests.support.fake_provider import FakeProvider
+
+    provider = FakeProvider()
+    previous = registry.register("fake", provider)
+    yield provider
+    if provider.hold is not None:
+        # 放行還停在 hold 的轉錄，worker 執行緒才結束得了
+        provider.hold.set()
+    registry.register("fake", previous)
 
 
