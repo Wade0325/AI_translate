@@ -3,12 +3,11 @@ from fastapi import APIRouter, Body, HTTPException, Depends
 from fastapi.concurrency import run_in_threadpool
 from typing import Optional
 from sqlalchemy.orm import Session
-from fastapi import status
 
-from app.schemas.schemas import ProviderConfigRequest, ProviderConfigResponse, ModelConfigurationSchema, ServiceStatus, ProviderTestRequest, ProviderTestResponse
+from app.schemas.schemas import ProviderConfigRequest, ProviderConfigResponse, ModelConfigurationSchema, ProviderTestRequest, ProviderTestResponse
 from app.database.session import get_db
 from app.repositories.model_manager_repository import ModelSettingsRepository
-from app.provider.google.gemini import GeminiClient
+from app.provider import registry
 from app.services.api_keys import (
     mask_api_key,
     merge_api_keys,
@@ -81,58 +80,33 @@ async def get_model_setting(
 
 
 @router.post("/test", response_model=ProviderTestResponse)
-async def test_model_interface(
+async def check_provider_ready(
     request_data: ProviderTestRequest = Body(...),
     db: Session = Depends(get_db),
 ):
+    """設定頁的「測試」：確認現在能用這個供應商的這個模型轉錄。
+
+    要不要 API 金鑰照供應商清單的 ``requires_api_key``；怎麼確認由供應商決定（本機查顯卡與
+    模型權重，Gemini 用金鑰連一次 API），見 :func:`app.provider.registry.check_ready`。
+    """
     logger.info(
-        f"收到測試API請求: Interface Name - '{request_data.provider}', API Keys count: {len(request_data.api_keys)}")
-    if request_data.provider.lower() == "local":
-        return ProviderTestResponse(
-            success=True,
-            message="本地模型（VibeVoice + Qwen3-ASR）無需連線測試。",
-        )
-    # 前端送的是遮罩值（或不送）：從資料庫取回實際金鑰
-    api_keys = await run_in_threadpool(
-        resolve_api_keys, db, request_data.provider, request_data.api_keys)
-    if not api_keys:
-        raise HTTPException(status_code=400, detail="未提供 API 金鑰進行測試。")
-
-    # Gemini 通常使用單一 API Key。我們將使用列表中的第一個。
-    api_key_to_test = api_keys[0]
-
-    if "google" in request_data.provider.lower():
-        try:
-            gemini_client = GeminiClient(api_key=api_key_to_test)
-            test_result: ServiceStatus = await run_in_threadpool(gemini_client.test_connection)
-
-            if test_result.success:
-                return ProviderTestResponse(
-                    success=True,
-                    message="Gemini API (Google) 測試成功。",
-                )
-            else:
-                return ProviderTestResponse(
-                    success=False,
-                    message=test_result.message or "測試失敗，但未提供具體原因。",
-                )
-
-        except Exception as e:
-            # 捕捉在創建 client 或測試過程中的其他意外錯誤
-            logger.error(f"測試 Gemini 時發生意外錯誤。Error: {e}")
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail={
-                    "message": "測試 Gemini 時發生伺服器內部錯誤。",
-                    "details": str(e),
-                }
-            ) from e
-
-    else:
-        return ProviderTestResponse(
-            success=False,
-            message=f"API類型 '{request_data.provider}' 的測試邏輯尚未實現。",
-        )
+        f"收到設定頁的測試請求: provider='{request_data.provider}', model='{request_data.model}', "
+        f"API Keys count: {len(request_data.api_keys)}")
+    try:
+        api_key = ""
+        if registry.requires_api_key(request_data.provider):
+            # 前端送的是遮罩值（或不送）：從資料庫取回實際金鑰，用第一把測試
+            api_keys = await run_in_threadpool(
+                resolve_api_keys, db, request_data.provider, request_data.api_keys)
+            if not api_keys:
+                raise HTTPException(status_code=400, detail="未提供 API 金鑰進行測試。")
+            api_key = api_keys[0]
+        message = await run_in_threadpool(
+            registry.check_ready, request_data.provider, request_data.model, api_key)
+    except ValueError as e:
+        # 供應商不存在、模型不屬於它，或還不能轉錄（缺顯卡、缺模型權重、金鑰無效）
+        return ProviderTestResponse(success=False, message=str(e))
+    return ProviderTestResponse(success=True, message=message)
 
 
 @router.get("/default-prompt")

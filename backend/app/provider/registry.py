@@ -1,5 +1,6 @@
 """依名稱找出供應商轉接器，驗證請求用得了所選的模型（模型屬於這個供應商、支援請求要的
-處理方式、吃得下請求裡填了的輸入），並列出每個供應商的模型與模型能力。
+處理方式、吃得下請求裡填了的輸入），並列出每個供應商的模型與模型能力；設定頁的「測試」也
+經由這裡請供應商確認現在能不能轉錄。
 
 供應商名稱不分大小寫：畫面送的是清單上的小寫名稱（``google``／``local``），改版前的
 紀錄存的是 ``Google``／``Local``。
@@ -27,6 +28,14 @@ class ProviderFactory(Protocol):
 
     def __call__(self, model: str, api_key: str) -> Provider:
         """建立已經準備好的轉接器；還不能轉錄（缺權重、金鑰無效）時拋 ValueError。"""
+
+    def check_ready(self, model: str, api_key: str) -> str:
+        """不轉錄，確認現在能用這個模型轉錄（設定頁的「測試」）；回傳給使用者看的結果。
+
+        和查模型能力不同，這裡會碰硬體或連線；要查什麼由供應商決定：本機查顯卡與這個模型的
+        模型權重，Gemini 只用金鑰連一次 API、和模型無關。
+        還不能轉錄（缺顯卡、缺模型權重、金鑰無效）時拋 ValueError，訊息可直接顯示給使用者。
+        """
 
 
 class UnsupportedModelError(ValueError):
@@ -100,6 +109,27 @@ def _listed(name: str, info: ProviderInfo,
                                  capabilities=capabilities)
                      for model, capabilities in models.items()),
     )
+
+
+def requires_api_key(provider: str) -> bool:
+    """轉錄要不要使用者的 API 金鑰；和供應商清單的 ``requires_api_key`` 是同一份資訊。
+
+    Raises:
+        UnsupportedModelError: 供應商不存在。
+    """
+    return _factory(provider).info.requires_api_key
+
+
+def check_ready(provider: str, model: str, api_key: str = "") -> str:
+    """設定頁的「測試」：驗證模型屬於這個供應商，再請供應商確認現在能用這個模型轉錄，
+    回傳給使用者看的結果。
+
+    Raises:
+        UnsupportedModelError: 供應商不存在，或模型不屬於它。
+        ValueError: 還不能轉錄（缺顯卡、缺模型權重、API 金鑰無效）；訊息可直接顯示給使用者。
+    """
+    model_capabilities(provider, model)
+    return _factory(provider).check_ready(model, api_key)
 
 
 def model_capabilities(provider: str, model: str) -> ModelCapabilities:

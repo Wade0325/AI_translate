@@ -113,5 +113,20 @@ class _LocalProviderFactory:
     def __call__(self, model: str, api_key: str = "") -> LocalProvider:
         return LocalProvider(model, api_key)
 
+    @staticmethod
+    def check_ready(model: str, api_key: str = "") -> str:
+        """設定頁的「測試」：和轉錄前的檢查相同，查顯卡與這個模型的模型權重，不載入模型。
+
+        這個檢查跑在 API 行程，查的是 API 行程所在的機器。免安裝模式的本機轉錄也在這個行程；
+        Docker 模式則在主機端的 GPU worker，API 容器看到的顯卡與權重不是它的，所以不檢查，
+        直接說明。轉錄前的檢查（建立轉接器時）不受影響，一律照做。
+        """
+        if not get_settings().is_standalone:
+            raise ValueError("Docker 模式的本機轉錄在主機端的 GPU worker 執行，"
+                             "這裡檢查不到它的顯卡與模型權重")
+        weights.ensure_local_ready(model)
+        _, gpu_name = weights.cuda_status()
+        return f"本機已就緒：顯卡 {gpu_name}，{MODEL_LABELS.get(model, model)} 的模型權重都已下載"
+
 
 local_provider = _LocalProviderFactory()

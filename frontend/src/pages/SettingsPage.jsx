@@ -4,7 +4,7 @@ import { Key, Bell, Save, Trash2, Cpu, Download, CheckCircle2 } from "lucide-rea
 import { useModelManager } from "../components/ModelManager"
 import { ReasonText } from "../components/disabled-reason"
 import { PROVIDER_LIST_FAILED, useProviderList } from "../hooks/useProviderList"
-import { modelForProvider, modelOptions, providerOptions, providerPromptDisabledReason } from "../utils/providerList"
+import { modelForProvider, modelOptions, providerOptions, providerPromptDisabledReason, requiresApiKey } from "../utils/providerList"
 import { api } from "../services/api"
 
 const { Text } = Typography
@@ -119,7 +119,8 @@ export default function SettingsPage() {
                             }}
                         >
                             <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-                                <div>
+                                {/* 只有要使用者金鑰的供應商才有金鑰欄位（照供應商清單，本機不用） */}
+                                {requiresApiKey(providerList, provider) && <div>
                                     <Text style={{ color: '#e8e8e8', fontSize: 13, display: 'block', marginBottom: 6 }}>API Keys (Try from top to bottom)</Text>
                                     {providerForms[provider].apiKeys.map((key, idx) => (
                                         <div key={idx} style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
@@ -152,7 +153,7 @@ export default function SettingsPage() {
                                     >
                                         + Add API Key
                                     </Button>
-                                </div>
+                                </div>}
 
                                 <div>
                                     <Text style={{ color: '#e8e8e8', fontSize: 13, display: 'block', marginBottom: 6 }}>Default Model</Text>
@@ -173,7 +174,8 @@ export default function SettingsPage() {
                                 <Divider style={{ borderColor: '#3a3a5c', margin: '4px 0' }} />
 
                                 <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-                                    <Button onClick={() => handleTestProvider(provider)}>
+                                    {/* 測畫面上選的模型：本機要查的是這個模型的權重 */}
+                                    <Button onClick={() => handleTestProvider(provider, providerForms[provider].model)}>
                                         Test Connection
                                     </Button>
                                     <Button
