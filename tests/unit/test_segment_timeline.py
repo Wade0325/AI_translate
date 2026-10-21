@@ -1,53 +1,12 @@
-"""結構化片段的時間軸轉換。
+"""分段轉錄合併片段時的時間軸工具：平移與排序。
 
-片段與 LRC 必須走同一套轉換，否則校正介面顯示的時間會與下載的字幕不一致。
+去靜音之後的時間還原由語音視圖負責，從接縫 1 測（tests/integration/test_provider_seam.py 的
+TestSpeechView）。
 """
-import pytest
-
 from app.services.transcription.flows import (
     order_segments,
-    remap_lrc_timestamps,
-    remap_segments,
     shift_segments,
-    speech_time_remapper,
 )
-
-# 純語音檔＝原檔的 10-20s 與 50-60s 拼接而成
-SPEECH = [{"start": 10.0, "end": 20.0}, {"start": 50.0, "end": 60.0}]
-
-
-class TestSpeechTimeRemapper:
-    def test_maps_into_first_segment(self):
-        assert speech_time_remapper(SPEECH)(0.0) == 10.0
-
-    def test_maps_into_second_segment(self):
-        # 拼接後 10.5s 已經進入第二段（第一段長 10s）
-        assert speech_time_remapper(SPEECH)(10.5) == pytest.approx(50.5)
-
-    def test_beyond_total_clamps_to_last_end(self):
-        assert speech_time_remapper(SPEECH)(99.0) == 60.0
-
-    def test_no_segments_returns_none(self):
-        assert speech_time_remapper([])(1.0) is None
-
-
-class TestRemapSegments:
-    def test_agrees_with_lrc_remap(self):
-        lrc = "[00:10.50][S0] 測試"
-        assert remap_lrc_timestamps(lrc, SPEECH).startswith("[00:50.50]")
-        out = remap_segments([{"seg_key": "0000", "start": 10.5, "end": 11.0}], SPEECH)
-        assert out[0]["start"] == pytest.approx(50.5)
-        assert out[0]["end"] == pytest.approx(51.0)
-
-    def test_words_are_remapped(self):
-        seg = {"seg_key": "0000", "start": 0.0, "end": 1.0,
-               "words": [{"text": "測", "start": 0.0, "end": 0.5}]}
-        out = remap_segments([seg], SPEECH)
-        assert out[0]["words"][0]["start"] == 10.0
-        assert out[0]["words"][0]["end"] == pytest.approx(10.5)
-
-    def test_no_speech_segments_drops_everything(self):
-        assert remap_segments([{"seg_key": "0", "start": 1.0}], []) == []
 
 
 class TestShiftSegments:

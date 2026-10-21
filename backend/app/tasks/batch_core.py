@@ -85,14 +85,7 @@ def _vad_preprocess_file(
     若語音佔比 >= ``VAD_SPEECH_RATIO_SKIP_THRESHOLD`` 或去靜音失敗，
     則回傳原始路徑與 None。
     """
-    try:
-        from app.services.vad.service import get_vad_service
-        vad_service = get_vad_service()
-    except Exception as e:
-        logger.warning(f"VAD 服務不可用: {e}，跳過前處理")
-        return file_path, None, []
-
-    result = run_vad_extraction(file_path, temp_dir, vad_service)
+    result = run_vad_extraction(file_path, temp_dir)
     if not result.success:
         return file_path, None, result.cleanup_files
 

@@ -37,6 +37,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "backend"))
 
 from app.core.config import get_settings          # noqa: E402
+from app.services.silence_removal import worth_removing     # noqa: E402
 from app.services.vad.preprocess import run_vad_extraction  # noqa: E402
 from app.services.vad.service import get_vad_service        # noqa: E402
 from app.utils.audio import AUDIO_MIME_MAP, convert_to_wav, get_audio_duration  # noqa: E402
@@ -190,7 +191,7 @@ def process_file(input_path: Path, *, include_split: bool, min_silence: float) -
         cleanup.append(wav_path)
 
     # --- 方法一：去靜音（正式轉錄的前處理主路徑）---
-    extraction = run_vad_extraction(wav_path, work_dir, vad_service)
+    extraction = run_vad_extraction(wav_path, work_dir)
     cleanup.extend(extraction.cleanup_files)
 
     if extraction.success and extraction.speech_only_path:
@@ -219,7 +220,7 @@ def process_file(input_path: Path, *, include_split: bool, min_silence: float) -
             "speech_ratio": round(extraction.speech_ratio, 4),
             "segment_count": len(extraction.segments),
             "skip_threshold": threshold,
-            "would_use_speech_only": extraction.speech_ratio < threshold,
+            "would_use_speech_only": worth_removing(extraction.speech_ratio),
         }
     else:
         report["vad"] = {

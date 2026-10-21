@@ -19,6 +19,7 @@ from app.provider.base import (
     TranscribeRequest,
 )
 from app.services.transcription.models import TranscriptionTaskResult
+from app.utils.audio import get_audio_duration
 
 FAKE_MODEL = "fake-model"
 
@@ -71,6 +72,8 @@ class FakeProvider:
         self.model_capabilities = CAPABILITIES
         self.opened = 0
         self.calls: List[Path] = []
+        # 每一段轉錄收到的音檔有多長（秒）：看得出送進來的是只剩語音的音檔還是原音檔，以及切在哪裡
+        self.durations: List[Optional[float]] = []
         self.released = 0
         # 看到使用者取消而停下的次數
         self.cancelled = 0
@@ -112,6 +115,7 @@ class FakeProvider:
         self, audio_path: Path, request: TranscribeRequest, progress: ProgressAndCancel,
     ) -> TranscriptionTaskResult:
         self.calls.append(audio_path)
+        self.durations.append(get_audio_duration(audio_path))
         self.started.set()
         for text in self.reports:
             progress.report(text)

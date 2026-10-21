@@ -1,4 +1,4 @@
-"""接縫 1：透過 API 跑完一個單檔任務，只把供應商換成假供應商（#106、#113）。
+"""接縫 1：透過 API 跑完一個單檔任務，只把供應商換成假供應商（#106、#111、#113）。
 
 其他都走真的：TestClient、sqlite、行程內執行模式、WebSocket 狀態廣播，以及
 用 numpy／soundfile 產生的合成音檔經真實的 ffmpeg 轉檔、去靜音、切音檔、取得長度。
@@ -7,6 +7,7 @@
 還沒有讀它的介面，只能從任務紀錄看（見 :func:`frozen_original`）。
 """
 import io
+import json
 import os
 import re
 import subprocess
@@ -277,6 +278,17 @@ def stored_segments(api, task_uuid: str) -> list[dict]:
     return api.get(f"/api/v1/transcripts/{task_uuid}").json()["segments"]
 
 
+def flat_times(spans: list[dict]) -> list[float]:
+    """片段（或詞）的起訖時間依序攤平：[開始, 結束, 開始, 結束, …]。"""
+    return [t for span in spans for t in (span["start"], span["end"])]
+
+
+def download(api, task_uuid: str, fmt: str) -> str:
+    response = api.get(f"/api/v1/history/{task_uuid}/download/{fmt}")
+    assert response.status_code == 200
+    return response.text
+
+
 def frozen_original(engine, task_uuid: str) -> str | None:
     """任務紀錄裡凍結的原始轉錄副本（ADR-0007）。
 
@@ -359,19 +371,6 @@ class TestSingleFileTask:
         assert result["audio_duration_seconds"] == pytest.approx(12.0, abs=0.1)
         # 沒超過單次能處理的長度：整個語音視圖一次送進供應商
         assert len(fake.calls) == 1
-
-    def test_stores_segments_on_the_original_timeline(self, api):
-        task_uuid = transcribe(api, "uid-complete")[-1]["task_uuid"]
-
-        segments = stored_segments(api, task_uuid)
-        assert [(s["speaker"], s["text"]) for s in segments] == [
-            ("S0", "おはよう。"), ("S1", "こんにちは。"), ("S0", "またね。")]
-        # 去靜音後的時間還原回原音檔：每一句都落在原本的有聲段、不在被剪掉的靜音裡，
-        # 而且比送進供應商的時間晚
-        starts = [s["start"] for s in segments]
-        assert all(in_voiced_region(t) for t in starts)
-        assert starts == sorted(starts)
-        assert starts[-1] > SCRIPT[0][-1][0]
 
     @pytest.mark.parametrize("fmt", ["srt", "vtt", "lrc", "txt"])
     def test_every_output_format_downloads(self, api, fmt):
@@ -457,6 +456,167 @@ class TestSingleFileTask:
         assert messages[texts.index("假供應商：轉錄中")]["status_code"] == TaskStatus.PROCESSING
 
 
+# ─── 去靜音：語音視圖（#111） ───────────────────────────────────────────────
+
+MOSTLY_VOICED = [(0.0, 10.0), (11.5, 21.5)]
+"""有聲 0–10、11.5–21.5 秒，中間靜音 1.5 秒：語音佔比約 96%，不低於門檻。"""
+
+LONG_GAP = [(0.0, 6.0), (14.0, 20.0)]
+"""有聲 0–6 秒、靜音 6–14 秒、有聲 14–20 秒。去靜音剪掉 6.3–13.7 秒（有聲段前後各留 0.3 秒），
+語音視圖 12.6 秒，兩個有聲段在語音視圖的 6.3 秒交界。"""
+
+JUNCTIONS = pytest.mark.parametrize(
+    "junction", [6.3 - 5e-7, 6.3 - 1e-9, 6.3, 6.3 + 1e-9, 6.3 + 5e-7],
+    ids=["5e-7-before", "1e-9-before", "exactly", "1e-9-after", "5e-7-after"])
+"""LONG_GAP 的交界，以及浮點誤差讓它差一點點的情況，都在容許的 1e-6 秒以內。"""
+
+
+class TestSpeechView:
+    """測試環境和 CI 一樣沒有 Silero（tests/conftest.py 讓它 import 直接失敗）：去靜音只看音量，
+    剪靜音與找切點都用不到 Silero。"""
+
+    def test_mostly_silent_audio_is_sent_without_its_silences(self, api, fake):
+        # 語音佔比 60%（見 VOICED），低於門檻：剪掉靜音、有聲段前後各留 0.3 秒，送進供應商的是
+        # 0–2.3、4.7–7.3、9.7–12 秒接成的 7.2 秒
+        fake.script = [[(0.2, 1.5, 0, "おはよう。"), (3.0, 3.6, 1, "こんにちは。"),
+                        (5.5, 6.2, 0, "またね。")]]
+        messages = transcribe(api, "uid-speech-only")
+
+        assert codes(messages)[-1] == TaskStatus.COMPLETED
+        assert fake.durations == [pytest.approx(7.2, abs=0.01)]
+        # 片段的時間還原回原音檔：第二句落在第二個有聲段，第三句落在第三個
+        segments = stored_segments(api, messages[-1]["task_uuid"])
+        assert [s["text"] for s in segments] == ["おはよう。", "こんにちは。", "またね。"]
+        assert flat_times(segments) == pytest.approx([0.2, 1.5, 5.4, 6.0, 10.3, 11.0])
+
+    def test_times_past_the_end_are_clamped_to_the_last_voiced_part(self, api, fake):
+        # 模型給的時間超出 7.2 秒的語音視圖（例如浮點誤差）：還原成最後一個有聲段的結尾 12 秒，
+        # 這一句不會被丟掉
+        fake.script = [[(6.5, 7.6, 0, "またね。")]]
+        messages = transcribe(api, "uid-past-the-end")
+
+        assert flat_times(stored_segments(api, messages[-1]["task_uuid"])) == pytest.approx(
+            [11.3, 12.0])
+
+    def test_mostly_speech_audio_is_sent_as_it_is(self, api, fake):
+        # 幾乎全是語音的音檔剪不到什麼：送原音檔，時間原樣存下
+        fake.script = [[(0.5, 2.0, 0, "おはよう。"), (12.0, 13.5, 1, "こんにちは。")]]
+        messages = transcribe(api, "uid-mostly-speech", voiced=MOSTLY_VOICED)
+
+        assert codes(messages)[-1] == TaskStatus.COMPLETED
+        assert fake.durations == [pytest.approx(21.5, abs=0.01)]
+        assert flat_times(stored_segments(api, messages[-1]["task_uuid"])) == pytest.approx(
+            [0.5, 2.0, 12.0, 13.5])
+
+    def test_model_that_keeps_silences_gets_the_original_cut_at_silences(
+            self, api, fake, data_dir):
+        # 模型能力是不剪靜音：送原音檔，去靜音找到的靜音（2.3–4.7、7.3–9.7 秒）照樣當切點，
+        # 切在正中間。單次只能處理 5 秒：12 秒的原音檔在 3.5 秒切開，後面 8.5 秒再在 8.5 秒切開
+        fake.model_capabilities = replace(
+            fake.model_capabilities, remove_silence=False, single_pass_seconds=5.0)
+        fake.script = [[(0.5, 1.5, 0, "一つ目。")], [(2.0, 3.0, 1, "二つ目。")],
+                       [(2.0, 3.0, 0, "三つ目。")]]
+        messages = transcribe(api, "uid-keeps-silences")
+
+        assert codes(messages)[-1] == TaskStatus.COMPLETED
+        assert fake.durations == pytest.approx([3.5, 5.0, 3.5], abs=0.01)
+        # 每一段平移回原音檔的時間軸就是原音檔的時間，沒有要還原的剪掉的靜音
+        assert flat_times(stored_segments(api, messages[-1]["task_uuid"])) == pytest.approx(
+            [0.5, 1.5, 5.5, 6.5, 10.5, 11.5])
+        assert leftovers(data_dir) == []
+
+    @JUNCTIONS
+    def test_times_on_a_junction_stay_out_of_the_removed_silence(self, api, fake, junction):
+        # 一句在有聲段的交界說完，下一句在交界開始（見 LONG_GAP）。結束在交界的算前一段，在 6.3 秒
+        # 結束；開始在交界的算後一段，在 13.7 秒開始：都不含中間剪掉的靜音（#109 的審查）。
+        # 零長度的詞落在交界時，也不會結束得比開始早
+        fake.script = [[(1.0, junction, 0, "前半。", [("前", 1.0, 3.0), ("半", 3.0, junction)]),
+                        (junction, 8.0, 1, "後半。",
+                         [("後", junction, junction), ("半", junction, 8.0)])]]
+        task_uuid = transcribe(api, "uid-junction", voiced=LONG_GAP)[-1]["task_uuid"]
+
+        first, second = stored_segments(api, task_uuid)
+        assert flat_times([first, second]) == pytest.approx([1.0, 6.3, 13.7, 15.4])
+        assert flat_times(first["words"] + second["words"]) == pytest.approx(
+            [1.0, 3.0, 3.0, 6.3, 13.7, 13.7, 13.7, 15.4])
+        assert download(api, task_uuid, "lrc") == "[00:01.00][S0] 前半。\n[00:13.70][S1] 後半。"
+        srt = download(api, task_uuid, "srt")
+        assert "00:00:01,000 --> 00:00:06,300\n[S0] 前半。" in srt
+        assert "--> 00:00:15,400\n[S1] 後半。" in srt
+
+    def test_times_just_outside_the_tolerance_are_restored_as_they_are(self, api, fake):
+        # 離交界 1e-5 秒，超過容許的 1e-6 秒，就不算落在交界上：交界前 1e-5 秒開始的一句屬於前一段，
+        # 交界後 1e-5 秒結束的一句屬於後一段
+        fake.script = [[(1.0, 6.3 + 1e-5, 0, "前半。"), (6.3 - 1e-5, 8.0, 1, "後半。")]]
+        task_uuid = transcribe(api, "uid-near-junction", voiced=LONG_GAP)[-1]["task_uuid"]
+
+        assert flat_times(stored_segments(api, task_uuid)) == pytest.approx(
+            [1.0, 13.7 + 1e-5, 6.3 - 1e-5, 15.4], abs=1e-9)
+
+    @JUNCTIONS
+    def test_sentence_ending_on_a_junction_is_not_split_at_its_reading_point(
+            self, api, fake, junction):
+        # 一句話在交界剛好說完：從 1.0 秒到 6.3 秒，不到 12 秒，不在讀點斷行。結束算到剪掉的
+        # 靜音之後（13.7 秒）的話，這句會被當成超過 12 秒，在讀點多斷一行
+        fake.script = [[(1.0, junction, 0, "今日は、ありがとう。",
+                         [("今", 1.0, 1.2), ("日", 1.2, 1.4), ("は", 1.4, 1.8),
+                          ("ありがとう", 5.3, junction)])]]
+        task_uuid = transcribe(api, "uid-junction-end", voiced=LONG_GAP)[-1]["task_uuid"]
+
+        assert download(api, task_uuid, "lrc") == "[00:01.00][S0] 今日は、ありがとう。"
+        assert download(api, task_uuid, "srt") == (
+            "1\n00:00:01,000 --> 00:00:06,300\n[S0] 今日は、ありがとう。\n")
+
+    def test_kept_artifacts_record_what_was_sent(self, api, fake, settings, monkeypatch, data_dir):
+        # 開了 VAD_KEEP_ARTIFACTS：送進模型的語音視圖與找到的有聲段存進 vad_artifacts/，給本機檢查
+        # 切得對不對
+        monkeypatch.setattr(settings, "vad_keep_artifacts", True)
+        fake.script = list(SCRIPT)
+        transcribe(api, "uid-artifacts")
+
+        [kept] = (data_dir / "vad_artifacts").iterdir()
+        assert sf.info(str(kept / "speech_only.wav")).duration == pytest.approx(7.2, abs=0.01)
+        voiced = json.loads((kept / "segments.json").read_text(encoding="utf-8"))
+        assert flat_times(voiced) == pytest.approx([0.0, 2.3, 4.7, 7.3, 9.7, 12.0])
+        [operation] = json.loads((kept / "manifest.json").read_text(encoding="utf-8"))["operations"]
+        assert operation["used_for_transcription"] is True
+        assert operation["speech_duration_seconds"] == pytest.approx(7.2)
+        assert operation["total_duration_seconds"] == pytest.approx(12.0)
+
+    def test_artifacts_that_cannot_be_saved_do_not_fail_the_task(
+            self, api, fake, settings, monkeypatch, data_dir):
+        # 開了 VAD_KEEP_ARTIFACTS，產物卻存不進去（資料夾的位置被一個檔案佔住）：產物只是給本機
+        # 檢查的，任務照樣完成，只剩語音的音檔照樣從暫存區清掉
+        monkeypatch.setattr(settings, "vad_keep_artifacts", True)
+        (data_dir / "vad_artifacts").write_bytes(b"")
+        fake.script = list(SCRIPT)
+        messages = transcribe(api, "uid-artifacts-blocked")
+
+        assert codes(messages)[-1] == TaskStatus.COMPLETED
+        assert leftovers(data_dir) == []
+
+
+class TestVadTestEndpoint:
+    """轉錄頁的 VAD 測試：只跑去靜音與 Silero 的切點，不轉錄。"""
+
+    @pytest.mark.parametrize("voiced, cut", [(VOICED, True), (MOSTLY_VOICED, False)],
+                             ids=["mostly-silent", "mostly-speech"])
+    def test_reports_silence_removal_without_silero(self, api, voiced, cut):
+        # 測試環境沒有 Silero：去靜音照樣回報找到的有聲段，會不會剪和轉錄時用同一個門檻；
+        # 只有要 Silero 的切點那一段失敗
+        filename = upload(api, voiced=voiced)
+        response = api.post("/api/v1/vad/test",
+                            json={"filename": filename, "original_filename": "voice.wav"})
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["success"] is True
+        extraction = body["speech_extraction"]
+        assert extraction["would_use_speech_only"] is cut
+        assert extraction["segment_count"] == len(voiced)
+        assert body["split"]["success"] is False
+
+
 # ─── 分段轉錄改讀模型能力 ───────────────────────────────────────────────────
 
 class TestChunkedTranscriptionFollowsCapabilities:
@@ -519,12 +679,6 @@ class TestOutputFormatsFromSegments:
         assert codes(messages)[-1] == TaskStatus.COMPLETED
         return messages[-1]
 
-    @staticmethod
-    def download(api, task_uuid: str, fmt: str) -> str:
-        response = api.get(f"/api/v1/history/{task_uuid}/download/{fmt}")
-        assert response.status_code == 200
-        return response.text
-
     @pytest.mark.parametrize("fmt, expected", [
         ("lrc", "[00:00.24][S0] おはよう。\n[00:01.50][S0] こんにちは。"),
         # SRT／VTT 的每一行在它最後一個詞的結束時結束（#96），不是下一行的開始或片段的結束；
@@ -537,44 +691,43 @@ class TestOutputFormatsFromSegments:
     ])
     def test_downloads_break_and_end_lines_using_word_timings(
             self, api, completed, fmt, expected):
-        assert self.download(api, completed["task_uuid"], fmt) == expected
+        assert download(api, completed["task_uuid"], fmt) == expected
 
     @pytest.mark.parametrize("fmt", ["lrc", "srt", "vtt", "txt"])
     def test_completion_broadcast_matches_the_download(self, api, completed, fmt):
         broadcast = completed["result"]["transcripts"][fmt]
-        assert broadcast == self.download(api, completed["task_uuid"], fmt)
+        assert broadcast == download(api, completed["task_uuid"], fmt)
 
     def test_frozen_original_transcription_is_the_lrc_download(self, api, completed, test_engine):
         # 凍結的原始轉錄副本和下載的 LRC 一樣，由輸出格式模組從轉錄結果產生
         task_uuid = completed["task_uuid"]
-        assert frozen_original(test_engine, task_uuid) == self.download(api, task_uuid, "lrc")
+        assert frozen_original(test_engine, task_uuid) == download(api, task_uuid, "lrc")
 
     @pytest.fixture
     def across_cut_silence(self, api, fake):
         """一句話跨過被剪掉的靜音的任務。
 
-        有聲 0–6 秒、靜音 6–14 秒、有聲 14–20 秒：去靜音剪掉 6.3–13.7 秒（有聲段前後各留 0.3 秒），
-        語音視圖 12.6 秒。送進供應商的「今日は、ありがとう。」從 1.0 到 8.0 秒，只有 7 秒；
+        音檔見 LONG_GAP。送進供應商的「今日は、ありがとう。」從 1.0 到 8.0 秒，只有 7 秒；
         還原回原音檔是 1.0 到 15.4 秒。
         """
         fake.script = [[(0.8, 8.2, 0, "今日は、ありがとう。",
                          [("今", 1.0, 1.2), ("日", 1.2, 1.4), ("は", 1.4, 1.8),
                           ("ありがとう", 7.0, 8.0)])]]
-        messages = transcribe(api, "uid-gap", voiced=[(0.0, 6.0), (14.0, 20.0)])
+        messages = transcribe(api, "uid-gap", voiced=LONG_GAP)
         assert codes(messages)[-1] == TaskStatus.COMPLETED
         return messages[-1]
 
     def test_silence_removed_inside_a_sentence_counts_toward_12_seconds(
             self, api, across_cut_silence):
         # 還原回原音檔超過 12 秒，在讀點斷開，第二行落在剪掉的靜音之後
-        assert self.download(api, across_cut_silence["task_uuid"], "lrc") == (
+        assert download(api, across_cut_silence["task_uuid"], "lrc") == (
             "[00:01.00][S0] 今日は、\n[00:14.40][S0] ありがとう。")
 
     def test_subtitle_end_times_are_restored_to_the_original_timeline(
             self, api, across_cut_silence):
         # 「は」在 1.8 秒結束；「ありがとう」在語音視圖的 8.0 秒結束，還原回原音檔是 15.4 秒。
         # 結束時間和開始時間一樣取到 0.01 秒，不受還原時的浮點誤差影響
-        assert self.download(api, across_cut_silence["task_uuid"], "srt") == (
+        assert download(api, across_cut_silence["task_uuid"], "srt") == (
             "1\n00:00:01,000 --> 00:00:01,800\n[S0] 今日は、\n\n"
             "2\n00:00:14,400 --> 00:00:15,400\n[S0] ありがとう。\n")
 
@@ -599,7 +752,7 @@ class TestOutputFormatsFromSegments:
         messages = transcribe(api, "uid-interjection")
 
         assert codes(messages)[-1] == TaskStatus.COMPLETED
-        assert self.download(api, messages[-1]["task_uuid"], fmt) == expected
+        assert download(api, messages[-1]["task_uuid"], fmt) == expected
 
     @pytest.mark.parametrize("fmt, expected", [
         ("srt", "1\n00:00:00,250 --> 00:00:02,500\n[S0] おはよう。\n\n"
@@ -615,7 +768,7 @@ class TestOutputFormatsFromSegments:
         messages = transcribe(api, "uid-no-end")
 
         assert codes(messages)[-1] == TaskStatus.COMPLETED
-        assert self.download(api, messages[-1]["task_uuid"], fmt) == expected
+        assert download(api, messages[-1]["task_uuid"], fmt) == expected
 
     def test_segment_without_text_and_word_without_a_time(self, api, fake):
         # 沒有文字的片段不產生行；有詞缺時間的片段不知道怎麼對到句子，整段一行
@@ -626,7 +779,7 @@ class TestOutputFormatsFromSegments:
         messages = transcribe(api, "uid-untimed")
 
         assert codes(messages)[-1] == TaskStatus.COMPLETED
-        assert self.download(api, messages[-1]["task_uuid"], "lrc") == (
+        assert download(api, messages[-1]["task_uuid"], "lrc") == (
             "[00:01.00][S1] おはよう。こんにちは。")
 
 

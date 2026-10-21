@@ -6,7 +6,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Optional
 
-from app.core.config import get_settings
+from app.services.silence_removal import worth_removing
 from app.services.vad.artifacts import persist_speech_extraction, persist_split
 from app.services.vad.preprocess import run_vad_extraction
 from app.services.vad.service import get_vad_service
@@ -34,21 +34,14 @@ def run_vad_test(
 ) -> dict[str, Any]:
     """
     對單一音檔執行 VAD 測試：
-      1. 去靜音 → speech_only.wav
-      2. （可選）靜音分割 → part1.wav / part2.wav
+      1. 去靜音 → speech_only.wav（只看音量，不需要 Silero）
+      2. （可選）靜音分割 → part1.wav / part2.wav（Silero）
 
     產物一律保存到 vad_artifacts/（不受 VAD_KEEP_ARTIFACTS 開關限制）。
     """
     temp_dir = file_path.parent
     task_id = uuid.uuid4().hex[:12]
-    settings = get_settings()
-    threshold = settings.vad_speech_ratio_skip_threshold
     to_cleanup: list[Path] = []
-
-    try:
-        vad_service = get_vad_service()
-    except Exception as e:
-        return {"success": False, "error": f"VAD 服務不可用: {e}"}
 
     total_duration = get_audio_duration(file_path) or 0.0
     extraction_payload: Optional[dict[str, Any]] = None
@@ -56,11 +49,11 @@ def run_vad_test(
     artifact_dir: Optional[str] = None
 
     # --- 1. 去靜音 ---
-    extract_result = run_vad_extraction(file_path, temp_dir, vad_service)
+    extract_result = run_vad_extraction(file_path, temp_dir)
     to_cleanup.extend(extract_result.cleanup_files)
 
     if extract_result.success and extract_result.speech_only_path:
-        used = extract_result.speech_ratio < threshold
+        used = worth_removing(extract_result.speech_ratio)
         saved = persist_speech_extraction(
             task_id=task_id,
             original_filename=original_filename,
@@ -100,7 +93,7 @@ def run_vad_test(
             if wav_path != file_path:
                 to_cleanup.append(wav_path)
 
-            part1_path, part2_path, split_point = vad_service.split_audio_on_silence(
+            part1_path, part2_path, split_point = get_vad_service().split_audio_on_silence(
                 audio_path=str(wav_path),
                 output_dir=str(temp_dir),
             )

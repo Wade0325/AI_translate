@@ -21,6 +21,8 @@ class VADProcessRequest(BaseModel):
     """
     audio_path: str = Field(..., description="音訊檔案路徑")
     output_dir: str = Field(..., description="輸出目錄路徑")
+    write_speech_only: bool = Field(
+        True, description="是否把有聲段接成只剩語音的音檔寫進輸出目錄；只要有聲段時給 False")
 
 
 class SpeechExtractionResult(BaseModel):

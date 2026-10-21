@@ -364,7 +364,7 @@ def test_task_fails_only_when_no_chunk_has_any_line(
 # ─── 批次 ────────────────────────────────────────────────────────────────────
 
 def test_every_file_completes_and_remote_files_are_deleted(api, in_process_run_mode, genai):
-    genai.batch_outcomes = {0: Reply(text="[00:01.00]おはよう。"), 1: Reply(text="[00:01.00]こんにちは。")}
+    genai.batch_outcomes = {0: Reply(text="[00:01.00]おはよう。"), 1: Reply(text="[00:03.00]こんにちは。")}
 
     messages = run_batch(api, in_process_run_mode, "batch-gemini-ok",
                          ["gemini-ok-a.wav", "gemini-ok-b.wav"])
@@ -374,7 +374,9 @@ def test_every_file_completes_and_remote_files_are_deleted(api, in_process_run_m
     assert {uid: m["status_code"] for uid, m in results.items()} == {
         "gemini-ok-a.wav": TaskStatus.COMPLETED, "gemini-ok-b.wav": TaskStatus.COMPLETED}
     assert "おはよう。" in results["gemini-ok-a.wav"]["result"]["transcripts"]["srt"]
-    assert "こんにちは。" in results["gemini-ok-b.wav"]["result"]["transcripts"]["srt"]
+    # 去靜音之後的時間還原回原音檔，和單檔任務同一套：送進 Gemini 的 3.0 秒在第二個有聲段，
+    # 是原音檔的 5.4 秒（有聲段前後各留 0.3 秒，見 test_provider_seam.py 的 TestSpeechView）
+    assert results["gemini-ok-b.wav"]["result"]["transcripts"]["lrc"] == "[00:05.40]こんにちは。"
     assert genai.stored == {}  # 批次結束時刪掉上傳到 Gemini 的檔案
 
 
