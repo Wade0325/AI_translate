@@ -43,7 +43,7 @@ describe('formatDuration：音檔長度顯示成時:分:秒', () => {
   });
 });
 
-describe('formatDateTime：任務的時間顯示成月/日與時:分', () => {
+describe('formatDateTime：任務的時間顯示成月/日與 12 小時制的時:分', () => {
   // 日期和時間之間的空白由 Node 內建的 ICU 決定（目前是 U+2009 窄空白），用 \s 比對
   it('帶時區的時間換成台北時間顯示', () => {
     expect(formatDateTime('2026-01-04T16:30:00Z')).toMatch(/^01\/05\s上午12:30$/);
@@ -75,6 +75,10 @@ describe('localDateKey：對齊後端每日用量的本地日期', () => {
   it('兩位數的月與日照原樣', () => {
     expect(localDateKey(new Date(2026, 9, 20, 23, 59))).toBe('2026-10-20');
   });
+
+  it('無效的日期沒有日期鍵，不會變成 NaN-NaN-NaN', () => {
+    expect(localDateKey(new Date('not a date'))).toBeNull();
+  });
 });
 
 describe('formatTokensTick：用量圖 Y 軸的 token 數刻度', () => {
@@ -89,6 +93,27 @@ describe('formatTokensTick：用量圖 Y 軸的 token 數刻度', () => {
     [1_000_000, '1.0M'],
     [1_200_000, '1.2M'],
   ])('%s 顯示成 %s', (tokens, expected) => {
+    expect(formatTokensTick(tokens)).toBe(expected);
+  });
+
+  it.each([
+    [9_949, '9.9k'],
+    [9_950, '10k'],
+    [9_999, '10k'],
+    [10_001, '10k'],
+    [999_499, '999k'],
+    [999_500, '1.0M'],
+    [999_999, '1.0M'],
+    [1_000_001, '1.0M'],
+  ])('進到下一個單位的邊界：%s 顯示成 %s', (tokens, expected) => {
+    expect(formatTokensTick(tokens)).toBe(expected);
+  });
+
+  // 1.95 這類剛好一半的值，toFixed 會受浮點誤差影響變成 1.9
+  it.each([
+    [1_950, '2.0k'],
+    [1_950_000, '2.0M'],
+  ])('剛好一半時照四捨五入進位：%s 顯示成 %s', (tokens, expected) => {
     expect(formatTokensTick(tokens)).toBe(expected);
   });
 });

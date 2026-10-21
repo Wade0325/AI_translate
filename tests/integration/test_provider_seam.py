@@ -13,7 +13,7 @@ import sys
 import textwrap
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import replace
 from pathlib import Path
 from urllib.parse import unquote
@@ -643,12 +643,26 @@ class TestModelMustBelongToProvider:
         assert leftovers(data_dir) == []
 
 
+class TestStoredProviderName:
+    def test_task_record_stores_the_listed_name_whatever_the_request_spelling(
+            self, api, fake, db_session):
+        # 任務紀錄存的是供應商清單上的名稱，不是請求的原樣：舊前端送 Google、直接呼叫 API
+        # 的人可能送 GOOGLE，存下來都要是同一個值（#97）
+        from app.repositories.transcription_log_repository import TranscriptionLogRepository
+
+        fake.script = list(SCRIPT)
+        task_uuid = transcribe(api, "uid-spelling", provider="FAKE")[-1]["task_uuid"]
+
+        db_session.expire_all()
+        assert TranscriptionLogRepository().get(db_session, task_uuid).provider == "fake"
+
+
 # ─── 模型能力端點（#108） ───────────────────────────────────────────────────
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BACKEND_DIR = REPO_ROOT / "backend"
-# 前端只在這裡讀模型能力的欄位
-FRONTEND_CAPABILITY_READER = REPO_ROOT / "frontend" / "src" / "hooks" / "useProviderList.js"
+# 前端只在這裡讀端點的欄位（供應商、模型與模型能力）
+FRONTEND_PROVIDER_LIST_READER = REPO_ROOT / "frontend" / "src" / "utils" / "providerList.js"
 
 
 def listed_capabilities(api) -> dict:
@@ -657,6 +671,23 @@ def listed_capabilities(api) -> dict:
     assert response.status_code == 200
     return {(entry["provider"], item["model"]): item["capabilities"]
             for entry in response.json() for item in entry["models"]}
+
+
+def listed_providers(api) -> dict:
+    """GET /providers 依供應商名稱排成 {供應商: 清單上的那一項}。"""
+    response = api.get("/api/v1/providers")
+    assert response.status_code == 200
+    return {entry["provider"]: entry for entry in response.json()}
+
+
+def listed_fields(api) -> set:
+    """GET /providers 回的所有欄位名稱：供應商、模型與模型能力三層。"""
+    fields = set()
+    for entry in api.get("/api/v1/providers").json():
+        fields |= entry.keys()
+        for item in entry["models"]:
+            fields |= item.keys() | item["capabilities"].keys()
+    return fields
 
 
 class TestModelCapabilitiesEndpoint:
@@ -686,6 +717,27 @@ class TestModelCapabilitiesEndpoint:
         assert {"gemini-3.5-flash", "gemini-2.5-flash"} <= set(gemini)
         assert not any(c["accepts_prompt"] or c["accepts_user_text"] for c in local.values())
         assert all(c["accepts_prompt"] and c["accepts_user_text"] for c in gemini.values())
+
+    def test_says_which_providers_need_the_users_api_key(self, api):
+        # 轉錄頁送出前依這一項確認設定了金鑰，不再寫死哪個供應商不用（#97）
+        listed = listed_providers(api)
+
+        assert listed["google"]["requires_api_key"] is True
+        assert listed["local"]["requires_api_key"] is False
+
+    def test_names_providers_and_models_for_the_screen_default_model_first(self, api):
+        # 轉錄頁先選供應商、再選它的模型，名稱與預設（清單上的第一個）都從這裡來（#97）
+        listed = listed_providers(api)
+
+        assert (listed["local"]["label"], listed["google"]["label"]) == ("本機", "Gemini")
+        assert [(m["model"], m["label"]) for m in listed["local"]["models"]] == [
+            ("moss-align", "MOSS-Transcribe-Diarize"),
+            ("moss-qwen3-asr", "MOSS + Qwen3-ASR"),
+            ("vibevoice-qwen3-asr", "VibeVoice + Qwen3-ASR（舊版）"),
+        ]
+        gemini = listed["google"]["models"]
+        assert gemini[0]["model"] == "gemini-3.5-flash"
+        assert all(m["label"] == m["model"] for m in gemini)
 
     def test_listing_does_not_import_torch(self):
         # 列模型能力的是 API 行程（Docker 模式的 API 容器沒有顯卡，也不裝 torch）：
@@ -720,15 +772,15 @@ class TestModelCapabilitiesEndpoint:
         probe_lines = [line for line in result.stdout.splitlines() if line.startswith("PROBE ")]
         assert probe_lines == ["PROBE 200 []"], result.stdout
 
-    def test_frontend_reads_only_capabilities_the_endpoint_lists(self, api):
-        # 前端讀不到的欄位一律當成支援（還沒載入時不限制）：欄位一改名，畫面就默默全部開放
-        source = FRONTEND_CAPABILITY_READER.read_text(encoding="utf-8")
-        read = set(re.findall(r"capabilities\??\.(\w+)", source))
-        listed = {field for capabilities in listed_capabilities(api).values()
-                  for field in capabilities}
+    def test_frontend_reads_only_fields_the_endpoint_lists(self, api):
+        # 前端讀不到的欄位一律當成支援、不用金鑰（還沒載入時不限制）：欄位一改名，畫面就
+        # 默默全部開放。端點的欄位是 snake_case，前端自己的名稱是 camelCase
+        source = FRONTEND_PROVIDER_LIST_READER.read_text(encoding="utf-8")
+        read = set(re.findall(r"\.([a-z]+(?:_[a-z]+)+)\b", source))
 
-        assert {"accepts_prompt", "accepts_user_text", "supports_batch"} <= read
-        assert read <= listed
+        assert {"accepts_prompt", "accepts_user_text", "supports_batch",
+                "requires_api_key"} <= read
+        assert read <= listed_fields(api)
 
 
 # ─── 模型不吃的輸入（#108） ─────────────────────────────────────────────────
@@ -1298,3 +1350,138 @@ class TestNonAsciiFilename:
         assert audio.content == synthetic_audio("FLAC")
         assert download_filename(audio) == name
         assert leftovers(data_dir) == []
+
+
+# ─── 存片段：和完成一起寫，同一個任務再完成一次時不刪校正（#114） ───────────
+
+class Redelivers:
+    """Docker 模式的 Celery 重派：同一個任務（同一個 task id、同一份參數）再執行一次，
+    其餘照轉；用 ``run_mode.use`` 換上。行程內執行模式不會重派任務。"""
+
+    def __init__(self, inner):
+        self._inner = inner
+        self._params = {}
+
+    def submit_transcription(self, task_id, task_params_dict, queue):
+        self._inner.submit_transcription(task_id, task_params_dict, queue)
+        self._params[task_id] = task_params_dict
+
+    def redeliver(self, task_id: str) -> None:
+        """同一個任務再執行一次，跑完才回來。"""
+        from app.tasks.transcribe_core import run_transcription
+
+        run_transcription(self._params[task_id], task_id)
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
+@pytest.fixture
+def redelivery(run_mode_spy):
+    mode = Redelivers(run_mode.get())
+    previous = run_mode.use(mode)
+    yield mode
+    run_mode.use(previous)
+
+
+def mark_segment(engine, task_uuid: str, seg_key: str, **fields) -> None:
+    """使用者在一個片段上校正或標確認狀態：校正介面是 v0.2，還沒有端點，直接寫進片段。"""
+    from sqlalchemy.orm import sessionmaker
+
+    from app.database.models import TranscriptSegment
+    from app.utils.identifiers import coerce_uuid
+
+    with sessionmaker(bind=engine)() as db:
+        marked = db.query(TranscriptSegment).filter(
+            TranscriptSegment.task_uuid == coerce_uuid(task_uuid),
+            TranscriptSegment.seg_key == seg_key,
+        ).update(fields)
+        db.commit()
+    assert marked == 1
+
+
+@contextmanager
+def segments_unwritable(engine):
+    """這段期間資料庫寫不進片段（例如磁碟剛好滿了），任務紀錄照樣寫得進去。"""
+    from sqlalchemy import text
+
+    with engine.begin() as conn:
+        conn.execute(text(
+            "CREATE TRIGGER segments_unwritable BEFORE INSERT ON transcript_segments "
+            "BEGIN SELECT RAISE(ABORT, 'database or disk is full'); END"))
+    try:
+        yield
+    finally:
+        with engine.begin() as conn:
+            conn.execute(text("DROP TRIGGER segments_unwritable"))
+
+
+# 第一次完成有四個片段；再完成一次時，模型聽成不一樣的文字，而且少了最後一段
+FIRST_RUN = [
+    (0.2, 1.5, 0, "おはよう。"),
+    (2.3, 3.6, 1, "こんにちは。"),
+    (4.4, 5.6, 0, "またね。"),
+    (6.0, 6.8, 1, "じゃあね。"),
+]
+SECOND_RUN = [
+    (0.2, 1.5, 0, "おはよ。"),
+    (2.3, 3.6, 1, "こんにちわ。"),
+    (4.4, 5.6, 0, "まったね。"),
+]
+
+
+class TestSegmentsAreSavedWithTheCompletion:
+    def test_task_whose_segments_cannot_be_stored_fails(self, api, fake, test_engine):
+        fake.script = [list(FIRST_RUN)]
+        with segments_unwritable(test_engine):
+            messages = transcribe(api, "uid-unwritable")
+
+        # 片段和「完成」一起寫進去：片段寫不進去，任務就沒有完成，不會只記警告就宣告完成
+        assert codes(messages)[-1] == TaskStatus.FAILED
+        task_uuid = messages[-1]["task_uuid"]
+        assert api.get(f"/api/v1/history/{task_uuid}").json()["status"] == TaskStatus.FAILED
+        assert stored_segments(api, task_uuid) == []
+
+
+class TestCompletingTheSameTaskAgain:
+    @pytest.fixture
+    def task_uuid(self, api, fake, redelivery):
+        """完成過一次（FIRST_RUN）的任務；再完成一次時，假供應商回 SECOND_RUN。"""
+        fake.script = [list(FIRST_RUN), list(SECOND_RUN)]
+        return transcribe(api, "uid-again")[-1]["task_uuid"]
+
+    def test_without_touched_segments_the_new_result_replaces_all(
+            self, api, redelivery, task_uuid):
+        redelivery.redeliver(task_uuid)
+
+        # 和以前一樣整批換成這次的結果，這次沒有的那一段也拿掉
+        assert [s["text"] for s in stored_segments(api, task_uuid)] == [
+            "おはよ。", "こんにちわ。", "まったね。"]
+
+    def test_segments_the_user_touched_are_kept_others_take_the_new_result(
+            self, api, redelivery, task_uuid, test_engine):
+        keys = [s["seg_key"] for s in stored_segments(api, task_uuid)]
+        # 使用者校正了第一段，把第三段標成已確認
+        mark_segment(test_engine, task_uuid, keys[0], text="おはようございます。", source="edited")
+        mark_segment(test_engine, task_uuid, keys[2], review_state="verified")
+        corrected, _, verified, _ = stored_segments(api, task_uuid)
+
+        redelivery.redeliver(task_uuid)
+
+        # 這兩段不刪、不覆寫；其他片段換成這次的結果，這次沒有的第四段拿掉
+        segments = stored_segments(api, task_uuid)
+        assert [s["text"] for s in segments] == ["おはようございます。", "こんにちわ。", "またね。"]
+        assert (segments[0], segments[2]) == (corrected, verified)
+
+    def test_failing_to_store_the_new_segments_leaves_the_old_ones_untouched(
+            self, api, redelivery, task_uuid, test_engine):
+        first_key = stored_segments(api, task_uuid)[0]["seg_key"]
+        mark_segment(test_engine, task_uuid, first_key, text="おはようございます。", source="edited")
+        before = stored_segments(api, task_uuid)
+
+        with segments_unwritable(test_engine), pytest.raises(Exception, match="disk is full"):
+            redelivery.redeliver(task_uuid)
+
+        # 這次的片段寫不進去：任務記成失敗，使用者的校正和上一次的結果都原封不動
+        assert api.get(f"/api/v1/history/{task_uuid}").json()["status"] == TaskStatus.FAILED
+        assert stored_segments(api, task_uuid) == before
