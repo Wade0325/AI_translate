@@ -1,4 +1,4 @@
-"""去靜音模組：轉錄時去靜音只有一個入口 :func:`speech_view`，回傳語音視圖。
+"""去靜音模組：單檔任務的去靜音只有一個入口 :func:`speech_view`，回傳語音視圖。
 
 語音視圖（:class:`SpeechView`）是實際送進模型的音檔，以及把其中的時間還原回原音檔的對照；
 分段轉錄照它決定送什麼、切在哪裡，轉錄完把時間還原回原音檔。剪不剪看兩件事：
@@ -10,7 +10,7 @@
 
 找靜音只看音量（RMS，見 :func:`app.services.vad.preprocess.run_vad_extraction`），用不到 Silero：
 沒有 Silero 也照樣去靜音。找不到有聲段（全段靜音、轉檔失敗）時送原音檔。開了
-``VAD_KEEP_ARTIFACTS`` 時，剪下來的音檔與有聲段存進 vad_artifacts/，給本機檢查切得對不對。
+``VAD_KEEP_ARTIFACTS`` 時，只剩語音的音檔與有聲段存進 vad_artifacts/，給本機檢查切得對不對。
 
 批次（tasks/batch_core.py）還自己判斷門檻與存檔，改用語音視圖是 #115；它還原 LRC 時間用的已經是
 這裡的 :class:`SpeechTimeline`。VAD 測試端點（services/vad/test.py）不轉錄，只顯示去靜音找到的
@@ -70,7 +70,7 @@ class SpeechTimeline:
         :data:`JUNCTION_TOLERANCE` 秒內）時有差別：開始算後一段，結束算前一段。在交界開始的是
         從後一段才開始說，在交界結束的在前一段就說完了，都不包含中間剪掉的靜音；浮點誤差讓時間
         落在交界的哪一邊，結果都一樣。超出語音視圖的時間（模型給的時間超出音檔，或浮點誤差）
-        夾到最後一段的結尾。
+        夾到最後一段的結尾，負的時間夾到第一段的開頭。
         """
         if not self.voiced:
             return seconds
@@ -170,7 +170,7 @@ def speech_view(
     task_id: str,
     original_filename: str,
 ) -> SpeechView:
-    """轉錄時去靜音的唯一入口：這段音檔的語音視圖。剪不剪見模組說明。
+    """單檔任務的去靜音只有這個入口：這段音檔的語音視圖。剪不剪見模組說明。
 
     ``duration`` 是 ``audio`` 的長度（秒），沒剪靜音時就是語音視圖的長度；``remove_silence``
     是模型能力的「轉錄前要不要剪掉靜音」。產生的暫存檔放在 ``temp_dir``，列在語音視圖的
@@ -179,11 +179,10 @@ def speech_view(
 
     轉檔、讀檔或找有聲段失敗時，送原音檔。
     """
-    unchanged = SpeechView(audio=audio, duration=duration)
     found = run_vad_extraction(audio, temp_dir, write_speech_only=remove_silence)
-    temp_files = tuple(found.cleanup_files)
+    unchanged = SpeechView(audio=audio, duration=duration, temp_files=tuple(found.cleanup_files))
     if not found.success:
-        return replace(unchanged, temp_files=temp_files)
+        return unchanged
     voiced = tuple((segment["start"], segment["end"]) for segment in found.segments)
 
     if not remove_silence:
@@ -191,34 +190,26 @@ def speech_view(
         midpoints = tuple((end + start) / 2
                           for (_, end), (start, _) in zip(voiced, voiced[1:], strict=False))
         logger.info(f"不剪靜音的模型：送原音檔，{len(midpoints)} 段靜音的正中間當切點")
-        return replace(unchanged, silence_boundaries=midpoints, temp_files=temp_files)
-    speech_only = found.speech_only_path
-    if speech_only is None:
-        logger.warning(f"去靜音：沒有寫出只剩語音的音檔，送原音檔 ({audio.name})")
-        return replace(unchanged, temp_files=temp_files)
+        return replace(unchanged, silence_boundaries=midpoints)
 
     use_speech_only = worth_removing(found.speech_ratio)
-    persist_speech_extraction(
-        task_id=task_id,
-        original_filename=original_filename,
-        speech_only_path=speech_only,
-        segments=found.segments,
-        speech_ratio=found.speech_ratio,
-        speech_duration=found.speech_duration,
-        total_duration=duration,
-        used_for_transcription=use_speech_only,
-    )
-    if not use_speech_only:
+    if found.speech_only_path is not None:
+        persist_speech_extraction(
+            task_id=task_id,
+            original_filename=original_filename,
+            speech_only_path=found.speech_only_path,
+            segments=found.segments,
+            speech_ratio=found.speech_ratio,
+            speech_duration=found.speech_duration,
+            total_duration=duration,
+            used_for_transcription=use_speech_only,
+        )
+    if not use_speech_only or found.speech_only_path is None:
         logger.info(f"去靜音：語音佔比 {found.speech_ratio:.1%}，不低於門檻，送原音檔")
-        return replace(unchanged, temp_files=temp_files)
+        return unchanged
 
     timeline = SpeechTimeline(voiced)
     logger.info(f"去靜音：語音佔比 {found.speech_ratio:.1%}，送只剩語音的音檔"
                 f"（{found.speech_duration:.1f} 秒／{duration:.1f} 秒）")
-    return SpeechView(
-        audio=speech_only,
-        duration=found.speech_duration,
-        timeline=timeline,
-        silence_boundaries=timeline.junctions,
-        temp_files=temp_files,
-    )
+    return replace(unchanged, audio=found.speech_only_path, duration=found.speech_duration,
+                   timeline=timeline, silence_boundaries=timeline.junctions)

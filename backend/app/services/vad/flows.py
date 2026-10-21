@@ -143,7 +143,7 @@ def extract_speech_segments(request: VADProcessRequest) -> SpeechExtractionResul
             output_file = output_path / f"{input_filename}_speech_only.wav"
 
             sf.write(str(output_file), concatenated_audio, original_sr)
-            logger.info(f"純有聲檔案已儲存: {output_file}")
+            logger.info(f"只剩語音的音檔已儲存: {output_file}")
 
         segments = _convert_segments_to_pydantic(speech_timestamps)
         total_speech_duration = sum(seg.duration for seg in segments)

@@ -2,7 +2,7 @@
 不使用 Silero），需要時接成只剩語音的音檔，回傳結構化結果。是否要採用只剩語音的音檔
 （例如語音佔比閾值判斷）由呼叫端依情境決定。
 
-轉錄的去靜音經 :func:`app.services.silence_removal.speech_view` 拿到語音視圖，它也用這裡找有聲段。
+單檔任務的去靜音經 :func:`app.services.silence_removal.speech_view` 拿到語音視圖，它也用這裡找有聲段。
 還直接呼叫這裡的：批次（`tasks/batch_core.py`，改用語音視圖是 #115）、VAD 測試端點與 tests/
 底下的工具腳本。
 
@@ -29,7 +29,7 @@ class VadPreprocessResult:
     """去靜音前處理的結果。
 
     Attributes:
-        success: 是否找到有聲段（要寫只剩語音的音檔時，也要寫成）；False 代表呼叫端應回退到原始檔。
+        success: 是否找到有聲段（要寫只剩語音的音檔時，也要寫成）；False 代表呼叫端應回退到原音檔。
         speech_only_path: 只剩語音的 wav 檔路徑；沒有寫或 success=False 時為 None。
         segments: 每個有聲段的 {"start", "end"} 字典列表（原音檔的時間軸）。
         speech_ratio: 語音佔總時長的比例（0.0~1.0）。
@@ -59,7 +59,7 @@ def run_vad_extraction(
          時再接成只剩語音的音檔
       3. 回傳結構化結果與待清理檔案清單
 
-    任何步驟失敗皆回傳 ``success=False``，由呼叫端決定是否回退到原始檔。
+    任何步驟失敗皆回傳 ``success=False``，由呼叫端決定是否回退到原音檔。
     """
     cleanup_files: List[Path] = []
 

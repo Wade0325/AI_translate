@@ -11,9 +11,8 @@ from app.utils.audio import (
     slice_audio,
 )
 from app.provider.base import ProgressAndCancel, Provider, TranscribeRequest
-from app.services import silence_removal
 from app.services.converter.service import _parse_lrc
-from app.services.silence_removal import SpeechTimeline, SpeechView
+from app.services.silence_removal import SpeechTimeline, SpeechView, speech_view
 from app.services.vad.artifacts import persist_split
 from app.services.vad.service import get_vad_service
 
@@ -217,7 +216,7 @@ class TranscriptionTask:
         """去靜音：這段音檔的語音視圖（見 :mod:`app.services.silence_removal`），
         它產生的暫存檔登記進 cleanup 列表。"""
         self.progress.report("分析語音活動...")
-        view = silence_removal.speech_view(
+        view = speech_view(
             audio_path,
             duration,
             remove_silence=self.capabilities.remove_silence,

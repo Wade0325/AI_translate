@@ -466,8 +466,9 @@ LONG_GAP = [(0.0, 6.0), (14.0, 20.0)]
 語音視圖 12.6 秒，兩個有聲段在語音視圖的 6.3 秒交界。"""
 
 JUNCTIONS = pytest.mark.parametrize(
-    "junction", [6.3 - 1e-9, 6.3, 6.3 + 1e-9], ids=["just-before", "exactly", "just-after"])
-"""LONG_GAP 的交界，以及浮點誤差讓它差一點點的兩種情況。"""
+    "junction", [6.3 - 5e-7, 6.3 - 1e-9, 6.3, 6.3 + 1e-9, 6.3 + 5e-7],
+    ids=["5e-7-before", "1e-9-before", "exactly", "1e-9-after", "5e-7-after"])
+"""LONG_GAP 的交界，以及浮點誤差讓它差一點點的情況，都在容許的 1e-6 秒以內。"""
 
 
 class TestSpeechView:
@@ -543,6 +544,15 @@ class TestSpeechView:
         assert "00:00:01,000 --> 00:00:06,300\n[S0] 前半。" in srt
         assert "--> 00:00:15,400\n[S1] 後半。" in srt
 
+    def test_times_just_outside_the_tolerance_are_restored_as_they_are(self, api, fake):
+        # 離交界 1e-5 秒，超過容許的 1e-6 秒，就不算落在交界上：交界前 1e-5 秒開始的一句屬於前一段，
+        # 交界後 1e-5 秒結束的一句屬於後一段
+        fake.script = [[(1.0, 6.3 + 1e-5, 0, "前半。"), (6.3 - 1e-5, 8.0, 1, "後半。")]]
+        task_uuid = transcribe(api, "uid-near-junction", voiced=LONG_GAP)[-1]["task_uuid"]
+
+        assert flat_times(stored_segments(api, task_uuid)) == pytest.approx(
+            [1.0, 13.7 + 1e-5, 6.3 - 1e-5, 15.4], abs=1e-9)
+
     @JUNCTIONS
     def test_sentence_ending_on_a_junction_is_not_split_at_its_reading_point(
             self, api, fake, junction):
@@ -572,6 +582,18 @@ class TestSpeechView:
         assert operation["used_for_transcription"] is True
         assert operation["speech_duration_seconds"] == pytest.approx(7.2)
         assert operation["total_duration_seconds"] == pytest.approx(12.0)
+
+    def test_artifacts_that_cannot_be_saved_do_not_fail_the_task(
+            self, api, fake, settings, monkeypatch, data_dir):
+        # 開了 VAD_KEEP_ARTIFACTS，產物卻存不進去（資料夾的位置被一個檔案佔住）：產物只是給本機
+        # 檢查的，任務照樣完成，只剩語音的音檔照樣從暫存區清掉
+        monkeypatch.setattr(settings, "vad_keep_artifacts", True)
+        (data_dir / "vad_artifacts").write_bytes(b"")
+        fake.script = list(SCRIPT)
+        messages = transcribe(api, "uid-artifacts-blocked")
+
+        assert codes(messages)[-1] == TaskStatus.COMPLETED
+        assert leftovers(data_dir) == []
 
 
 class TestVadTestEndpoint:

@@ -29,7 +29,7 @@
 
 - **🤖 高品質 AI 轉錄**：整合 Google Gemini 多模態模型，支援 `gemini-3.5-flash` / `gemini-2.5-flash` 等。
 - **🖥️ 本機轉錄**：預設 MOSS-Transcribe-Diarize 一次完成說話者分離與轉錄，再由 Qwen3-ForcedAligner 強制對齊並斷行；另可選 MOSS + Qwen3-ASR、舊版 VibeVoice + Qwen3-ASR（主機 GPU 執行，零 API 費用；以 `local_worker.bat` 啟動）。
-- **🗣️ 去靜音與分段轉錄**：轉錄前剪掉長段靜音以節省 Token；長音檔分段轉錄時切在靜音處：優先用去靜音找到的靜音，找不到時再用 Silero VAD 找。
+- **🗣️ 去靜音與分段轉錄**：轉錄前剪掉長段靜音以節省 Token；長音檔分段轉錄時切在靜音處：去靜音之後切在剪掉靜音的位置，沒有去靜音時用 Silero VAD 找。
 - **⏱️ 逐行時間戳**：單檔任務的 LRC、SRT、VTT 每一行都帶時間戳（LRC 為 `[mm:ss.xx]`），TXT 只有文字；批次的 LRC 暫時是 Gemini 寫的原樣。
 - **📦 多格式匯出**：LRC、SRT、VTT、TXT 一鍵下載；批量任務支援 ZIP 打包。
 - **📤 多來源輸入**：支援 MP3 / WAV / FLAC / M4A / MP4 / WebM 等音訊與視頻格式。
