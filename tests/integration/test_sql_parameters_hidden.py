@@ -1,18 +1,23 @@
 """
-整合測試：資料庫出錯時，SQL 參數不進 log，也不傳回瀏覽器（#157）
+整合測試：資料庫出錯時，SQL 參數與資料庫附上的資料列不進 log，也不傳回瀏覽器（#157、#168）
 測試範圍：
   POST /api/v1/setting/models             存檔失敗：回固定的錯誤訊息，log 只記例外類型與原因
   GET  /api/v1/setting/models/{provider}  讀取失敗：同上
-  單檔任務（run_transcription）            任務紀錄寫不進去
+  單檔任務（run_transcription）            任務紀錄或片段寫不進去：log 只記例外類型與原因，
+                                          畫面與任務紀錄給固定的訊息
+  沒開始的任務（abandon_transcription）     任務紀錄寫不進去：log 只記例外類型與原因
   兩種執行模式的 engine                     例外文字都不附 SQL 參數，含 Celery 的結果後端
 
 漏洞重現：SQLAlchemy 的例外文字預設附上 SQL 參數。設定存檔時資料庫出錯（例如 SQLite 的
 database is locked），明文 API 金鑰跟著例外寫進 log，也放進 HTTP 500 的 detail、顯示在
-畫面上；任務紀錄寫不進去時，轉錄結果與檔名一樣進了 log。排查只能靠使用者附上的 log
-（ADR-0005），log 一附到 GitHub Issues 就公開了。
+畫面上；任務紀錄寫不進去時，轉錄結果與檔名一樣進了 log。任務失敗時 log 記下完整的
+traceback：Postgres 在例外訊息第一行之後附上的 DETAIL 是寫不進去的整列，轉錄結果跟著
+進了 log；畫面的狀態文字與任務紀錄的錯誤訊息則是使用者看不懂的 SQL 原文。排查只能靠
+使用者附上的 log（ADR-0005），log 一附到 GitHub Issues 就公開了。
 
 資料庫出錯用 SQLite 的 trigger 模擬：測試期間擋下某張表的 INSERT 或 UPDATE。
 """
+import traceback
 import uuid
 from contextlib import contextmanager
 
@@ -20,24 +25,30 @@ import numpy as np
 import pytest
 import soundfile as sf
 from fastapi.testclient import TestClient
-from sqlalchemy.exc import DBAPIError
 
-from app.core.config import get_settings
+from app.core.task_status import TaskStatus
 from app.database import session
-from app.database.models import ModelConfiguration
-from app.provider import registry
-from app.tasks.transcribe_core import run_transcription
+from app.database.models import ModelConfiguration, TranscriptionLog
+from app.exceptions import TaskDatabaseError
+from app.tasks.transcribe_core import abandon_transcription, run_transcription
 from tests.support.fake_provider import FAKE_MODEL, FakeProvider
 
 KEY = "AIzaSyLEAK-0123456789-abcdefghij-QRST"
 DISK_FULL = "database or disk is full"
-# Postgres 回報違反約束時，在第一行之後附上 DETAIL：寫不進去的那一整列，含明文金鑰。
-# SQLite 不會這樣做，用 trigger 的錯誤訊息模擬
-NOT_NULL_WITH_ROW = (
-    'null value in column "model" of relation "model_configurations" '
-    'violates not-null constraint\n'
-    f'DETAIL:  Failing row contains (Leak157Row, ["{KEY}"], null, null, 2026-10-20 12:00:00).'
-)
+NOT_NULL = "violates not-null constraint"
+
+
+def rejected_row(table: str, row: str) -> str:
+    """Postgres 回報違反約束的訊息：第一行是原因，之後的 DETAIL 是寫不進去的那一整列。
+
+    SQLite 不會附上資料列，用 trigger 的錯誤訊息模擬。
+    """
+    return (f'null value in column "created_at" of relation "{table}" {NOT_NULL}\n'
+            f'DETAIL:  Failing row contains ({row}).')
+
+
+NOT_NULL_WITH_ROW = rejected_row(
+    "model_configurations", f'Leak157Row, ["{KEY}"], null, null, 2026-10-20 12:00:00')
 
 
 @contextmanager
@@ -45,15 +56,21 @@ def writes_fail(engine, table: str, statement: str, message: str = DISK_FULL):
     """這段期間資料庫擋下 table 的 INSERT 或 UPDATE（statement），回報 message。"""
     trigger = f"{table}_{statement.lower()}_fails"
     literal = message.replace("'", "''")
-    with engine.begin() as conn:
-        conn.exec_driver_sql(
-            f"CREATE TRIGGER {trigger} BEFORE {statement} ON {table} "
-            f"BEGIN SELECT RAISE(ABORT, '{literal}'); END")
+    _change_schema(engine, f"CREATE TRIGGER {trigger} BEFORE {statement} ON {table} "
+                           f"BEGIN SELECT RAISE(ABORT, '{literal}'); END")
     try:
         yield
     finally:
-        with engine.begin() as conn:
-            conn.exec_driver_sql(f"DROP TRIGGER {trigger}")
+        _change_schema(engine, f"DROP TRIGGER {trigger}")
+
+
+def _change_schema(engine, ddl: str) -> None:
+    with engine.begin() as conn:
+        # 連線池裡的連線記著自己上次讀到的 schema，SQLite 解析 CREATE／DROP 時就照它判斷
+        # trigger 在不在：用過這條連線之後別條連線才拿掉的 trigger，在這裡還「已經存在」。
+        # 先讀一次，讓它重新載入 schema
+        conn.exec_driver_sql("SELECT count(*) FROM sqlite_master")
+        conn.exec_driver_sql(ddl)
 
 
 def _save(client: TestClient, provider: str, key: str):
@@ -152,43 +169,22 @@ SAMPLE_RATE = 16000
 
 
 @pytest.fixture
-def uploads(tmp_path, monkeypatch):
-    """上傳檔、保留音檔、去靜音產物都寫進暫存資料夾；回傳上傳資料夾。"""
-    settings = get_settings()
-    folder = tmp_path / "temp_uploads"
-    folder.mkdir()
-    monkeypatch.setattr(settings, "temp_uploads_dir", str(folder))
-    monkeypatch.setattr(settings, "audio_store_dir", str(tmp_path / "audio_store"))
-    monkeypatch.setattr(settings, "vad_artifacts_dir", str(tmp_path / "vad_artifacts"))
-    return folder
+def broadcasts(in_process_run_mode, monkeypatch):
+    """任務廣播給畫面的狀態訊息，依廣播的順序。"""
+    messages: list[dict] = []
+    monkeypatch.setattr(in_process_run_mode, "publish", messages.append)
+    return messages
 
 
-@pytest.fixture
-def task_db(test_engine):
-    """任務用 SessionLocal 寫紀錄；指到測試資料庫。"""
-    session.SessionLocal.configure(bind=test_engine)
-    yield
-    session.SessionLocal.configure(bind=session.engine)
+def task_params(uploads) -> dict:
+    """一個單檔任務的參數：原始檔名是 FILENAME，輸入音檔是一秒的合成音。
 
-
-@pytest.fixture
-def fake():
-    provider = FakeProvider()
-    previous = registry.register("fake", provider)
-    yield provider
-    registry.register("fake", previous)
-
-
-def run_task(uploads, fake: FakeProvider) -> None:
-    """跑一個單檔任務：原始檔名是 FILENAME，假供應商把一秒的音檔轉錄成 TRANSCRIPT。
-
-    上傳檔另外命名，FILENAME 只出現在任務紀錄的 SQL 參數裡。
+    上傳檔另外命名，FILENAME 只出現在任務紀錄裡。
     """
     t = np.arange(SAMPLE_RATE) / SAMPLE_RATE
     audio = uploads / "upload-0001.wav"
     sf.write(audio, (0.3 * np.sin(2 * np.pi * 440 * t)).astype(np.float32), SAMPLE_RATE)
-    fake.script = [[(0.2, 0.8, 0, TRANSCRIPT)]]
-    run_transcription({
+    return {
         "file_path": str(audio),
         "provider": "fake",
         "model": FAKE_MODEL,
@@ -197,7 +193,28 @@ def run_task(uploads, fake: FakeProvider) -> None:
         "original_filename": FILENAME,
         "client_id": "uid-157",
         "file_uid": "uid-157",
-    }, str(uuid.uuid4()))
+    }
+
+
+def run_task(uploads, fake: FakeProvider, task_uuid: str | None = None) -> None:
+    """跑一個單檔任務（見 :func:`task_params`），假供應商把音檔轉錄成 TRANSCRIPT。"""
+    fake.script = [[(0.2, 0.8, 0, TRANSCRIPT)]]
+    run_transcription(task_params(uploads), task_uuid or str(uuid.uuid4()))
+
+
+def failure_shown(broadcasts: list[dict]) -> str:
+    """畫面上看到的失敗原因：宣告失敗時的狀態文字。"""
+    [failed] = [m for m in broadcasts if m["status_code"] == TaskStatus.FAILED]
+    return failed["status_text"]
+
+
+def assert_fixed_message(shown: str) -> None:
+    """給使用者看的是看得懂、告訴他怎麼做的固定訊息：不轉述例外，SQL 與原因只在 log。"""
+    assert "INSERT" not in shown
+    assert "UPDATE" not in shown
+    assert NOT_NULL not in shown
+    assert DISK_FULL not in shown
+    assert "重新轉錄" in shown
 
 
 class TestTaskRecordCannotBeWritten:
@@ -210,12 +227,110 @@ class TestTaskRecordCannotBeWritten:
             self, uploads, task_db, in_process_run_mode, fake, test_engine, app_log,
             statement, private):
         with writes_fail(test_engine, "transcription_logs", statement):
-            with pytest.raises(DBAPIError):
+            with pytest.raises(TaskDatabaseError):
                 run_task(uploads, fake)
 
         log = "\n".join(app_log)
         assert DISK_FULL in log
         assert private not in log
+
+    # Postgres 附上的那一列也一樣：開始時建立的有原始檔名，完成時寫入的有轉錄結果。完成時
+    # 寫不進去，記成失敗與記下保留音檔也寫不進去
+    @pytest.mark.parametrize("statement, private", [
+        pytest.param("INSERT", FILENAME, id="start-filename"),
+        pytest.param("UPDATE", TRANSCRIPT, id="complete-transcript"),
+    ])
+    def test_log_keeps_the_reason_but_not_the_row_the_database_attached(
+            self, uploads, task_db, in_process_run_mode, fake, test_engine, app_log,
+            statement, private):
+        row = rejected_row("transcription_logs", f"0f5c, PROCESSING, {private}, null")
+        with writes_fail(test_engine, "transcription_logs", statement, row):
+            with pytest.raises(TaskDatabaseError):
+                run_task(uploads, fake)
+
+        log = "\n".join(app_log)
+        assert private not in log
+        assert "[SQL:" not in log
+        # 排查只能靠 log（ADR-0005）：記下例外類型與資料庫回報的原因
+        assert "IntegrityError" in log
+        assert NOT_NULL in log
+
+    @pytest.mark.parametrize("statement", ["INSERT", "UPDATE"])
+    def test_user_sees_a_fixed_message(
+            self, uploads, task_db, broadcasts, fake, test_engine, statement):
+        with writes_fail(test_engine, "transcription_logs", statement):
+            with pytest.raises(TaskDatabaseError):
+                run_task(uploads, fake)
+
+        assert_fixed_message(failure_shown(broadcasts))
+
+    def test_task_that_never_started_logs_the_reason_but_not_the_row(
+            self, uploads, task_db, in_process_run_mode, test_engine, app_log):
+        # 在佇列中被撤銷的任務也留下任務紀錄；那一列有原始檔名
+        row = rejected_row("transcription_logs", f"0f5c, CANCELLED, {FILENAME}, null")
+        with writes_fail(test_engine, "transcription_logs", "INSERT", row):
+            abandon_transcription(task_params(uploads), str(uuid.uuid4()), cancelled=True)
+
+        log = "\n".join(app_log)
+        assert FILENAME not in log
+        assert "[SQL:" not in log
+        assert NOT_NULL in log
+
+
+# ─── 片段寫不進去 ────────────────────────────────────────────────────────────
+
+# 片段和任務記成完成在同一個交易（#114）：片段寫不進去，任務照失敗處理。Postgres 附上的
+# 那一列有轉錄結果
+SEGMENT_ROW = rejected_row("transcript_segments", f"1, 0f5c, 0-0, 0, 0.2, 0.8, S0, {TRANSCRIPT}")
+
+
+class TestSegmentsCannotBeWritten:
+    def test_log_keeps_the_reason_but_not_the_row_or_the_sql(
+            self, uploads, task_db, in_process_run_mode, fake, test_engine, app_log):
+        with writes_fail(test_engine, "transcript_segments", "INSERT", SEGMENT_ROW):
+            with pytest.raises(TaskDatabaseError):
+                run_task(uploads, fake)
+
+        log = "\n".join(app_log)
+        assert TRANSCRIPT not in log
+        assert "[SQL:" not in log
+        assert "INSERT INTO" not in log
+        assert "IntegrityError" in log
+        assert NOT_NULL in log
+
+    def test_user_sees_a_fixed_message_on_screen_and_in_the_task_record(
+            self, uploads, task_db, broadcasts, fake, test_engine, db_session):
+        task_uuid = str(uuid.uuid4())
+        with writes_fail(test_engine, "transcript_segments", "INSERT", SEGMENT_ROW):
+            with pytest.raises(TaskDatabaseError):
+                run_task(uploads, fake, task_uuid)
+
+        record = db_session.get(TranscriptionLog, uuid.UUID(task_uuid))
+        assert record.status == TaskStatus.FAILED
+        for shown in (failure_shown(broadcasts), record.error_message):
+            assert TRANSCRIPT not in shown
+            assert_fixed_message(shown)
+
+
+# ─── 往上拋給執行模式的例外 ──────────────────────────────────────────────────
+
+# 執行模式記下任務往上拋的例外：Docker 模式的 Celery worker 連同 traceback 寫進 log，
+# 也存進結果後端
+@pytest.mark.parametrize("table, statement, private", [
+    pytest.param("transcription_logs", "INSERT", FILENAME, id="start-filename"),
+    pytest.param("transcription_logs", "UPDATE", TRANSCRIPT, id="complete-transcript"),
+    pytest.param("transcript_segments", "INSERT", TRANSCRIPT, id="segments-transcript"),
+])
+def test_run_mode_gets_the_reason_but_not_the_row_or_the_sql(
+        uploads, task_db, in_process_run_mode, fake, test_engine, table, statement, private):
+    with writes_fail(test_engine, table, statement, rejected_row(table, f"0f5c, {private}")):
+        with pytest.raises(TaskDatabaseError) as raised:
+            run_task(uploads, fake)
+
+    reported = "".join(traceback.format_exception(raised.value))
+    assert private not in reported
+    assert "[SQL:" not in reported
+    assert NOT_NULL in reported
 
 
 # ─── 兩種執行模式 ────────────────────────────────────────────────────────────

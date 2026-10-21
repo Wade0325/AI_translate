@@ -23,6 +23,15 @@ class GeminiPermanentError(AppError):
     """Gemini API 永久性錯誤（API key 無效、prompt 被阻擋、quota 永久耗盡）。不應重試。"""
 
 
+class TaskDatabaseError(AppError):
+    """任務讀寫資料庫時出錯，訊息只有資料庫例外的類型與資料庫回報的原因
+    （:func:`~app.database.session.describe_db_error`）。
+
+    任務生命週期把資料庫例外換成它，再記進 log、往上拋給執行模式：原本的例外帶著 SQL 原文與
+    資料庫附上的資料列。
+    """
+
+
 class TranscriptionCancelledError(AppError):
     """使用者取消轉錄任務。任務生命週期據此把任務記為 CANCELLED 而非 FAILED。"""
 
