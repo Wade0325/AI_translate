@@ -149,6 +149,7 @@ docker compose --env-file .env down
 
 - 預覽逐字稿與時間戳。
 - 下載 `.lrc` / `.srt` / `.vtt` / `.txt`（批次可一鍵 ZIP 下載全部）。
+- SRT／VTT 的字幕照實際說話的時間顯示：另一位說話者插話時，兩行字幕會同時出現，靠行首的說話者標記分辨；同一位說話者的字幕不重疊。每一行至少顯示 0.8 秒，同一位說話者緊接著說下一句時例外。部分字幕編輯器會把重疊的字幕標成錯誤，原因見 [ADR-0008](docs/adr/0008-subtitles-follow-speech-and-may-overlap.md)。
 
 ### 步驟 5️⃣ — 追蹤紀錄與費用
 
