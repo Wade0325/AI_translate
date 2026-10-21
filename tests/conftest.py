@@ -182,9 +182,9 @@ def uploads(tmp_path, monkeypatch):
 @pytest.fixture
 def data_dir(uploads, monkeypatch):
     """同 :func:`uploads`，上傳端點也收進同一個上傳資料夾；回傳放這些資料夾的暫存資料夾。"""
-    from app.api import batch, transcription, upload
+    from app.api import batch, transcription, upload, vad
 
-    for module in (transcription, upload, batch):
+    for module in (transcription, upload, batch, vad):
         monkeypatch.setattr(module, "TEMP_UPLOADS_DIR", uploads)
     return uploads.parent
 

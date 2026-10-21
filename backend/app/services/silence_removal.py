@@ -1,4 +1,4 @@
-"""去靜音模組：去靜音只有一個入口 :func:`speech_view`，回傳語音視圖。
+"""去靜音模組：轉錄時去靜音只有一個入口 :func:`speech_view`，回傳語音視圖。
 
 語音視圖（:class:`SpeechView`）是實際送進模型的音檔，以及把其中的時間還原回原音檔的對照；
 分段轉錄照它決定送什麼、切在哪裡，轉錄完把時間還原回原音檔。剪不剪看兩件事：
@@ -8,12 +8,13 @@
 - 語音佔比：低於門檻（``VAD_SPEECH_RATIO_SKIP_THRESHOLD``，預設 90%）才剪。幾乎全是語音的音檔
   剪不到什麼，送原音檔，切點交給分段轉錄另外找（Silero），和以前一樣。
 
-找靜音只看音量（RMS，見 :func:`app.services.vad.flows.extract_speech_segments`），用不到 Silero：
+找靜音只看音量（RMS，見 :func:`app.services.vad.preprocess.run_vad_extraction`），用不到 Silero：
 沒有 Silero 也照樣去靜音。找不到有聲段（全段靜音、轉檔失敗）時送原音檔。開了
 ``VAD_KEEP_ARTIFACTS`` 時，剪下來的音檔與有聲段存進 vad_artifacts/，給本機檢查切得對不對。
 
-批次還用自己的一份去靜音（tasks/batch_core.py），改用這裡是 #115；它還原 LRC 時間用的已經是
-這裡的 :class:`SpeechTimeline`。
+批次（tasks/batch_core.py）還自己判斷門檻與存檔，改用語音視圖是 #115；它還原 LRC 時間用的已經是
+這裡的 :class:`SpeechTimeline`。VAD 測試端點（services/vad/test.py）不轉錄，只顯示去靜音找到的
+有聲段，判斷會不會剪用這裡的 :func:`worth_removing`。
 """
 
 from __future__ import annotations
@@ -26,9 +27,7 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from app.core.config import get_settings
 from app.services.vad.artifacts import persist_speech_extraction
-from app.services.vad.flows import extract_speech_segments
-from app.services.vad.models import VADProcessRequest
-from app.utils.audio import convert_to_wav
+from app.services.vad.preprocess import run_vad_extraction
 from app.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -101,7 +100,7 @@ class SpeechTimeline:
         restored: List[Dict[str, Any]] = []
         for segment in segments:
             new = dict(segment)
-            start, end = self._interval(segment.get("start", 0.0), segment.get("end"))
+            start, end = self._restored_interval(segment.get("start", 0.0), segment.get("end"))
             new["start"] = start
             if segment.get("end") is not None:
                 new["end"] = end
@@ -111,11 +110,11 @@ class SpeechTimeline:
         return restored
 
     def _restored_word(self, word: Mapping[str, Any]) -> Dict[str, Any]:
-        start, end = self._interval(word.get("start"), word.get("end"))
+        start, end = self._restored_interval(word.get("start"), word.get("end"))
         return {**word, "start": start, "end": end}
 
-    def _interval(self, start: Optional[float],
-                  end: Optional[float]) -> Tuple[Optional[float], Optional[float]]:
+    def _restored_interval(self, start: Optional[float],
+                           end: Optional[float]) -> Tuple[Optional[float], Optional[float]]:
         if start is None or end is None:
             return (None if start is None else self.to_original(start),
                     None if end is None else self.to_original(end, end=True))
@@ -156,78 +155,69 @@ class SpeechView:
         return self.timeline.restore(segments)
 
 
+def worth_removing(speech_ratio: float) -> bool:
+    """語音佔比低於門檻（``VAD_SPEECH_RATIO_SKIP_THRESHOLD``，預設 90%）才值得剪掉靜音：幾乎全是
+    語音的音檔剪不到什麼。"""
+    return speech_ratio < get_settings().vad_speech_ratio_skip_threshold
+
+
 def speech_view(
     audio: Path,
     duration: float,
     *,
     remove_silence: bool,
     temp_dir: Path,
-    artifact_id: str,
-    artifact_name: str,
+    task_id: str,
+    original_filename: str,
 ) -> SpeechView:
-    """去靜音的唯一入口：這段音檔的語音視圖。剪不剪見模組說明。
+    """轉錄時去靜音的唯一入口：這段音檔的語音視圖。剪不剪見模組說明。
 
     ``duration`` 是 ``audio`` 的長度（秒），沒剪靜音時就是語音視圖的長度；``remove_silence``
     是模型能力的「轉錄前要不要剪掉靜音」。產生的暫存檔放在 ``temp_dir``，列在語音視圖的
-    ``temp_files``，剪不剪都由呼叫端清掉。``artifact_id`` 與 ``artifact_name``（例如任務 id 與
-    原本的檔名）決定 vad_artifacts/ 底下的資料夾名稱。
+    ``temp_files``，剪不剪都由呼叫端清掉。``task_id`` 與 ``original_filename`` 只用來替
+    vad_artifacts/ 底下的資料夾命名（見 :func:`persist_speech_extraction`）。
 
     轉檔、讀檔或找有聲段失敗時，送原音檔。
     """
     unchanged = SpeechView(audio=audio, duration=duration)
-    try:
-        wav = convert_to_wav(audio, temp_dir)
-    except Exception as e:
-        logger.warning(f"去靜音：轉 wav 失敗，送原音檔 ({audio.name}): {e}")
-        return unchanged
-    if wav is None:
-        logger.warning(f"去靜音：無法把 {audio.name} 轉成 wav，送原音檔")
-        return unchanged
-    temp_files: Tuple[Path, ...] = () if wav == audio else (wav,)
-
-    found = extract_speech_segments(VADProcessRequest(
-        audio_path=str(wav), output_dir=str(temp_dir), write_speech_only=remove_silence))
-    if found.speech_only_path:
-        temp_files += (Path(found.speech_only_path),)
+    found = run_vad_extraction(audio, temp_dir, write_speech_only=remove_silence)
+    temp_files = tuple(found.cleanup_files)
     if not found.success:
-        logger.warning(f"去靜音：找不到有聲段，送原音檔 ({audio.name})")
         return replace(unchanged, temp_files=temp_files)
-    voiced = tuple((segment.start, segment.end) for segment in found.segments)
+    voiced = tuple((segment["start"], segment["end"]) for segment in found.segments)
 
     if not remove_silence:
         # 不剪靜音的模型：送原音檔，兩個有聲段中間那段靜音的正中間當切點
-        silences = tuple((end + start) / 2
-                         for (_, end), (start, _) in zip(voiced, voiced[1:], strict=False))
-        logger.info(f"不剪靜音的模型：送原音檔，{len(silences)} 段靜音的正中間當切點")
-        return replace(unchanged, silence_boundaries=silences, temp_files=temp_files)
-    if not found.speech_only_path:
+        midpoints = tuple((end + start) / 2
+                          for (_, end), (start, _) in zip(voiced, voiced[1:], strict=False))
+        logger.info(f"不剪靜音的模型：送原音檔，{len(midpoints)} 段靜音的正中間當切點")
+        return replace(unchanged, silence_boundaries=midpoints, temp_files=temp_files)
+    speech_only = found.speech_only_path
+    if speech_only is None:
         logger.warning(f"去靜音：沒有寫出只剩語音的音檔，送原音檔 ({audio.name})")
         return replace(unchanged, temp_files=temp_files)
-    speech_only = Path(found.speech_only_path)
 
-    threshold = get_settings().vad_speech_ratio_skip_threshold
-    used = found.speech_ratio < threshold
+    use_speech_only = worth_removing(found.speech_ratio)
     persist_speech_extraction(
-        task_id=artifact_id,
-        original_filename=artifact_name,
+        task_id=task_id,
+        original_filename=original_filename,
         speech_only_path=speech_only,
-        segments=[{"start": start, "end": end} for start, end in voiced],
+        segments=found.segments,
         speech_ratio=found.speech_ratio,
-        speech_duration=found.total_speech_duration,
-        total_duration=found.total_duration,
-        used_for_transcription=used,
+        speech_duration=found.speech_duration,
+        total_duration=duration,
+        used_for_transcription=use_speech_only,
     )
-    if not used:
-        logger.info(f"去靜音：語音佔比 {found.speech_ratio:.1%}（不低於 {threshold:.0%}），送原音檔")
+    if not use_speech_only:
+        logger.info(f"去靜音：語音佔比 {found.speech_ratio:.1%}，不低於門檻，送原音檔")
         return replace(unchanged, temp_files=temp_files)
 
     timeline = SpeechTimeline(voiced)
-    speech_duration = sum(end - start for start, end in voiced)
     logger.info(f"去靜音：語音佔比 {found.speech_ratio:.1%}，送只剩語音的音檔"
-                f"（{speech_duration:.1f} 秒／{duration:.1f} 秒）")
+                f"（{found.speech_duration:.1f} 秒／{duration:.1f} 秒）")
     return SpeechView(
         audio=speech_only,
-        duration=speech_duration,
+        duration=found.speech_duration,
         timeline=timeline,
         silence_boundaries=timeline.junctions,
         temp_files=temp_files,

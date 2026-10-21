@@ -35,7 +35,7 @@ def pick_halving_split_point(
 
 
 def remap_lrc_timestamps(lrc_text: str, segments: List[Dict[str, float]]) -> str:
-    """將 LRC 時間戳從拼接後的時間軸重對應回原始時間軸；``segments`` 是去靜音保留下來的有聲段。
+    """LRC 的時間從只剩語音的音檔還原回原音檔的時間軸；``segments`` 是去靜音保留下來的有聲段。
 
     只剩批次在用：單檔任務的轉錄結果是片段，由語音視圖還原（:meth:`SpeechView.restore`）。
     兩邊用同一個時間還原（:class:`SpeechTimeline`），時間軸才不會分岔；LRC 只有開始時間。
@@ -222,8 +222,8 @@ class TranscriptionTask:
             duration,
             remove_silence=self.capabilities.remove_silence,
             temp_dir=self.temp_dir,
-            artifact_id=self.artifact_task_id or audio_path.stem,
-            artifact_name=self.original_filename or audio_path.name,
+            task_id=self.artifact_task_id or audio_path.stem,
+            original_filename=self.original_filename or audio_path.name,
         )
         for temp_file in view.temp_files:
             if temp_file not in self.local_cleanup_list:

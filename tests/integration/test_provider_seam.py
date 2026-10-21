@@ -278,7 +278,7 @@ def stored_segments(api, task_uuid: str) -> list[dict]:
     return api.get(f"/api/v1/transcripts/{task_uuid}").json()["segments"]
 
 
-def timeline(spans: list[dict]) -> list[float]:
+def flat_times(spans: list[dict]) -> list[float]:
     """片段（或詞）的起訖時間依序攤平：[開始, 結束, 開始, 結束, …]。"""
     return [t for span in spans for t in (span["start"], span["end"])]
 
@@ -470,16 +470,13 @@ JUNCTIONS = pytest.mark.parametrize(
 """LONG_GAP 的交界，以及浮點誤差讓它差一點點的兩種情況。"""
 
 
-@pytest.fixture
-def without_silero(monkeypatch):
-    """沒有 Silero，和 CI 一樣（CI 不裝 ML 依賴）：import 直接失敗。"""
-    monkeypatch.setitem(sys.modules, "silero_vad", None)
-
-
 class TestSpeechView:
-    def test_mostly_silent_audio_is_sent_without_its_silences(self, api, fake, without_silero):
+    """測試環境和 CI 一樣沒有 Silero（tests/conftest.py 讓它 import 直接失敗）：去靜音只看音量，
+    剪靜音與找切點都用不到 Silero。"""
+
+    def test_mostly_silent_audio_is_sent_without_its_silences(self, api, fake):
         # 語音佔比 60%（見 VOICED），低於門檻：剪掉靜音、有聲段前後各留 0.3 秒，送進供應商的是
-        # 0–2.3、4.7–7.3、9.7–12 秒接成的 7.2 秒。去靜音只看音量，沒有 Silero 也照樣剪
+        # 0–2.3、4.7–7.3、9.7–12 秒接成的 7.2 秒
         fake.script = [[(0.2, 1.5, 0, "おはよう。"), (3.0, 3.6, 1, "こんにちは。"),
                         (5.5, 6.2, 0, "またね。")]]
         messages = transcribe(api, "uid-speech-only")
@@ -489,7 +486,16 @@ class TestSpeechView:
         # 片段的時間還原回原音檔：第二句落在第二個有聲段，第三句落在第三個
         segments = stored_segments(api, messages[-1]["task_uuid"])
         assert [s["text"] for s in segments] == ["おはよう。", "こんにちは。", "またね。"]
-        assert timeline(segments) == pytest.approx([0.2, 1.5, 5.4, 6.0, 10.3, 11.0])
+        assert flat_times(segments) == pytest.approx([0.2, 1.5, 5.4, 6.0, 10.3, 11.0])
+
+    def test_times_past_the_end_are_clamped_to_the_last_voiced_part(self, api, fake):
+        # 模型給的時間超出 7.2 秒的語音視圖（例如浮點誤差）：還原成最後一個有聲段的結尾 12 秒，
+        # 這一句不會被丟掉
+        fake.script = [[(6.5, 7.6, 0, "またね。")]]
+        messages = transcribe(api, "uid-past-the-end")
+
+        assert flat_times(stored_segments(api, messages[-1]["task_uuid"])) == pytest.approx(
+            [11.3, 12.0])
 
     def test_mostly_speech_audio_is_sent_as_it_is(self, api, fake):
         # 幾乎全是語音的音檔剪不到什麼：送原音檔，時間原樣存下
@@ -498,14 +504,13 @@ class TestSpeechView:
 
         assert codes(messages)[-1] == TaskStatus.COMPLETED
         assert fake.durations == [pytest.approx(21.5, abs=0.01)]
-        assert timeline(stored_segments(api, messages[-1]["task_uuid"])) == pytest.approx(
+        assert flat_times(stored_segments(api, messages[-1]["task_uuid"])) == pytest.approx(
             [0.5, 2.0, 12.0, 13.5])
 
     def test_model_that_keeps_silences_gets_the_original_cut_at_silences(
-            self, api, fake, data_dir, without_silero):
+            self, api, fake, data_dir):
         # 模型能力是不剪靜音：送原音檔，去靜音找到的靜音（2.3–4.7、7.3–9.7 秒）照樣當切點，
-        # 切在正中間。單次只能處理 5 秒：12 秒的原音檔在 3.5 秒切開，後面 8.5 秒再在 8.5 秒切開。
-        # 切點來自去靜音，沒有 Silero 也找得到
+        # 切在正中間。單次只能處理 5 秒：12 秒的原音檔在 3.5 秒切開，後面 8.5 秒再在 8.5 秒切開
         fake.model_capabilities = replace(
             fake.model_capabilities, remove_silence=False, single_pass_seconds=5.0)
         fake.script = [[(0.5, 1.5, 0, "一つ目。")], [(2.0, 3.0, 1, "二つ目。")],
@@ -515,7 +520,7 @@ class TestSpeechView:
         assert codes(messages)[-1] == TaskStatus.COMPLETED
         assert fake.durations == pytest.approx([3.5, 5.0, 3.5], abs=0.01)
         # 每一段平移回原音檔的時間軸就是原音檔的時間，沒有要還原的剪掉的靜音
-        assert timeline(stored_segments(api, messages[-1]["task_uuid"])) == pytest.approx(
+        assert flat_times(stored_segments(api, messages[-1]["task_uuid"])) == pytest.approx(
             [0.5, 1.5, 5.5, 6.5, 10.5, 11.5])
         assert leftovers(data_dir) == []
 
@@ -530,8 +535,8 @@ class TestSpeechView:
         task_uuid = transcribe(api, "uid-junction", voiced=LONG_GAP)[-1]["task_uuid"]
 
         first, second = stored_segments(api, task_uuid)
-        assert timeline([first, second]) == pytest.approx([1.0, 6.3, 13.7, 15.4])
-        assert timeline(first["words"] + second["words"]) == pytest.approx(
+        assert flat_times([first, second]) == pytest.approx([1.0, 6.3, 13.7, 15.4])
+        assert flat_times(first["words"] + second["words"]) == pytest.approx(
             [1.0, 3.0, 3.0, 6.3, 13.7, 13.7, 13.7, 15.4])
         assert download(api, task_uuid, "lrc") == "[00:01.00][S0] 前半。\n[00:13.70][S1] 後半。"
         srt = download(api, task_uuid, "srt")
@@ -562,11 +567,32 @@ class TestSpeechView:
         [kept] = (data_dir / "vad_artifacts").iterdir()
         assert sf.info(str(kept / "speech_only.wav")).duration == pytest.approx(7.2, abs=0.01)
         voiced = json.loads((kept / "segments.json").read_text(encoding="utf-8"))
-        assert timeline(voiced) == pytest.approx([0.0, 2.3, 4.7, 7.3, 9.7, 12.0])
+        assert flat_times(voiced) == pytest.approx([0.0, 2.3, 4.7, 7.3, 9.7, 12.0])
         [operation] = json.loads((kept / "manifest.json").read_text(encoding="utf-8"))["operations"]
         assert operation["used_for_transcription"] is True
         assert operation["speech_duration_seconds"] == pytest.approx(7.2)
         assert operation["total_duration_seconds"] == pytest.approx(12.0)
+
+
+class TestVadTestEndpoint:
+    """轉錄頁的 VAD 測試：只跑去靜音與 Silero 的切點，不轉錄。"""
+
+    @pytest.mark.parametrize("voiced, cut", [(VOICED, True), (MOSTLY_VOICED, False)],
+                             ids=["mostly-silent", "mostly-speech"])
+    def test_reports_silence_removal_without_silero(self, api, voiced, cut):
+        # 測試環境沒有 Silero：去靜音照樣回報找到的有聲段，會不會剪和轉錄時用同一個門檻；
+        # 只有要 Silero 的切點那一段失敗
+        filename = upload(api, voiced=voiced)
+        response = api.post("/api/v1/vad/test",
+                            json={"filename": filename, "original_filename": "voice.wav"})
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["success"] is True
+        extraction = body["speech_extraction"]
+        assert extraction["would_use_speech_only"] is cut
+        assert extraction["segment_count"] == len(voiced)
+        assert body["split"]["success"] is False
 
 
 # ─── 分段轉錄改讀模型能力 ───────────────────────────────────────────────────

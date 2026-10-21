@@ -25,12 +25,12 @@ def _convert_segments_to_pydantic(segments: List[Dict[str, float]]) -> List[Spee
 
 
 def extract_speech_segments(request: VADProcessRequest) -> SpeechExtractionResult:
-    """以 RMS 音量閾值提取有聲區間並拼接成純語音檔（針對 ASMR 優化，不需 VAD 模型）；
-    ``write_speech_only`` 為 False 時只找有聲區間、不寫檔。"""
+    """以 RMS 音量閾值找出有聲段，接成只剩語音的音檔（針對 ASMR 優化，不需 VAD 模型）；
+    ``write_speech_only`` 為 False 時只找有聲段、不寫檔。"""
     logger.info(f"開始提取有聲片段 (音量閾值模式): {Path(request.audio_path).name}")
 
     try:
-        # 呼叫端保證已轉為 WAV，見 silence_removal.speech_view 與 preprocess.run_vad_extraction
+        # 呼叫端保證已轉為 WAV，見 preprocess.run_vad_extraction
         audio_data, original_sr = sf.read(request.audio_path, dtype="float32")
 
         num_frames = audio_data.shape[0] if audio_data.ndim > 1 else len(audio_data)
