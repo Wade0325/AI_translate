@@ -10,6 +10,7 @@ import { useTranscription } from "@/context/TranscriptionContext"
 import { useModelManager } from "@/components/ModelManager"
 import { PROVIDER_LIST_FAILED } from "@/hooks/useProviderList"
 import { modelOptions, providerOptions, providerPromptDisabledReason } from "@/utils/providerList"
+import { filePrompt, followsGlobalPrompt, globalSettingsPatch, promptToSend } from "@/utils/transcribeRequest"
 import { api } from "@/services/api"
 import { DownloadOutlined } from "@ant-design/icons"
 import { downloadFormatsLong } from "@/constants/downloadFormats"
@@ -42,12 +43,16 @@ export default function TranscribePage() {
         selectProvider,
         model,
         setModel,
+        supports,
+        promptTemplate,
         disabledReasons,
         isProcessing,
         processingMode,
         setProcessingMode,
         multiSpeaker,
         setMultiSpeaker,
+        globalPrompt,
+        setGlobalPrompt,
         handleStartTranscription,
         downloadFile,
         downloadAllFiles,
@@ -79,7 +84,7 @@ export default function TranscribePage() {
         language: targetLang || "zh-TW",
         isMultiSpeaker: multiSpeaker,
         speakerCount: 2,
-        prompt: "",
+        prompt: globalPrompt,
         includeTimestamps: true,
     })
 
@@ -87,6 +92,7 @@ export default function TranscribePage() {
         setGlobalConfig(newConfig)
         if (newConfig.language !== targetLang) setTargetLang(newConfig.language)
         if (newConfig.isMultiSpeaker !== multiSpeaker) setMultiSpeaker(newConfig.isMultiSpeaker)
+        if (newConfig.prompt !== globalPrompt) setGlobalPrompt(newConfig.prompt)
     }
 
     const handleFilesAdded = (files) => {
@@ -152,17 +158,7 @@ export default function TranscribePage() {
     }
 
     const handleApplyAll = () => {
-        setFileList((prev) =>
-            prev.map((f) => ({
-                ...f,
-                language: globalConfig.language,
-                isMultiSpeaker: globalConfig.isMultiSpeaker,
-                speakerCount: globalConfig.speakerCount,
-                prompt: globalConfig.prompt,
-                includeTimestamps: globalConfig.includeTimestamps,
-                hasOverride: false,
-            }))
-        )
+        setFileList((prev) => prev.map((f) => ({ ...f, ...globalSettingsPatch(globalConfig) })))
     }
 
     const handleVadTest = async (fileUid) => {
@@ -384,7 +380,15 @@ export default function TranscribePage() {
                             language: file.language || globalConfig.language,
                             isMultiSpeaker: file.isMultiSpeaker ?? globalConfig.isMultiSpeaker,
                             speakerCount: file.speakerCount ?? globalConfig.speakerCount,
-                            prompt: file.prompt ?? globalConfig.prompt,
+                            // 這個檔案自己的提示詞（每檔設定裡編輯的就是它）；清空就回到跟著全域
+                            prompt: file.prompt ?? "",
+                            followsGlobalPrompt: followsGlobalPrompt(file),
+                            // 這個檔案用的提示詞：自己的，沒有就是全域的（還沒輪到提示詞範本）
+                            filePrompt: filePrompt(file, globalConfig.prompt),
+                            // 檔案卡顯示的提示詞：還沒送出的照送出時的規則算（包括提示詞範本），
+                            // 已送出的顯示當初送出的（utils/transcribeRequest.js）
+                            promptToSend: promptToSend(file, globalConfig.prompt, promptTemplate, supports),
+                            sentPrompt: file.sentPrompt ?? null,
                             includeTimestamps: file.includeTimestamps ?? globalConfig.includeTimestamps,
                             hasOverride: file.hasOverride || false,
                             status: file.status,

@@ -9,6 +9,10 @@
   之後的流程不再碰 LRC 文字。
 - 批次：送出與輪詢；成功結束時把每個請求的回應換成轉錄結果。批次暫時還不解析，結果帶的是
   Gemini 寫的 LRC 文字（#115 改）。
+- 取消：上傳前、等 Gemini 處理上傳檔的每次輪詢、每次送出生成（含 Flex 的每次重試）之前，都經
+  進度與取消物件查一次；使用者取消時拋 :class:`~app.exceptions.TranscriptionCancelledError`，
+  音檔不再往外送、也不再送出要收費的請求。已經上傳的遠端檔照樣在 :meth:`GeminiProvider.release`
+  刪掉。已經送出的生成不中斷，回應照樣回報：Google 照樣收費，任務生命週期把用量記在已取消的紀錄上。
 - 錯誤：429／503 是暫時錯誤（:class:`~app.exceptions.GeminiTransientError`，外層會重試
   整個任務），其他是永久錯誤（:class:`~app.exceptions.GeminiPermanentError`）。
 
@@ -59,6 +63,9 @@ FLEX_BASE_DELAY = 5
 """Flex 第一次重試前等幾秒，之後每次加倍。"""
 FLEX_TIMEOUT_MS = 900_000
 """Flex 的請求逾時：15 分鐘，官方建議至少 10 分鐘。"""
+
+_UNCANCELLABLE = ProgressAndCancel(report=lambda text: None, cancel_requested=lambda: False)
+"""批次的上傳：整批一起送出，沒有單一任務的取消。"""
 
 
 def _capabilities() -> ModelCapabilities:
@@ -399,11 +406,21 @@ class GeminiProvider:
     def capabilities() -> Dict[str, ModelCapabilities]:
         return {model: _capabilities() for model in MODELS}
 
+    @staticmethod
+    def check_ready(model: str, api_key: str) -> str:
+        """設定頁的「測試」：用金鑰連一次 Gemini API（列出模型），結果和所選的模型無關。"""
+        status = GeminiClient(api_key=api_key).test_connection()
+        if not status.success:
+            raise ValueError(status.message or "測試失敗，但未提供具體原因。")
+        return "Gemini API (Google) 測試成功。"
+
     def transcribe(
         self, audio_path: Path, request: TranscribeRequest, progress: ProgressAndCancel,
     ) -> TranscriptionTaskResult:
+        # 使用者已經取消時，音檔不再往外送
+        progress.raise_if_cancelled()
         progress.report("上傳檔案至AI模型...")
-        gemini_file = self.upload(audio_path)
+        gemini_file = self.upload(audio_path, progress)
 
         progress.report("AI模型處理中...")
         logger.info(f"正在使用 {request.model} 進行轉錄... "
@@ -412,20 +429,25 @@ class GeminiProvider:
         contents = [request.prompt, gemini_file]
         # 拿到回應的那次請求是以哪種處理模式送出的
         sent_tier = "flex"
-        response = self._generate_flex(request.model, contents) if request.service_tier == "flex" else None
+        response = (self._generate_flex(request.model, contents, progress)
+                    if request.service_tier == "flex" else None)
         if response is None:
             sent_tier = "standard"
-            response = self._generate_standard(request.model, contents)
+            response = self._generate_standard(request.model, contents, progress)
         return _transcription_result(
             response, _tier_used(response, request.service_tier, sent_tier), self._speaker_ids)
 
-    def _generate_flex(self, model: str, contents: List[Any]) -> Any:
-        """Flex：429／503 以指數退避重試；用完或遇到其他錯誤回 None，由呼叫端退回標準。"""
+    def _generate_flex(self, model: str, contents: List[Any], progress: ProgressAndCancel) -> Any:
+        """Flex：429／503 以指數退避重試；用完或遇到其他錯誤回 None，由呼叫端退回標準。
+
+        每次送出（含每次重試）之前都查一次取消：生成照次收費。
+        """
         config = _generation_config(model, "flex")
         logger.info("[FLEX] 準備呼叫 Gemini Flex API (https://ai.google.dev/gemini-api/docs/flex-inference) "
                     f"model={model} config={config.model_dump(exclude_none=True)}")
         last_error: Optional[Exception] = None
         for attempt in range(FLEX_MAX_RETRIES):
+            progress.raise_if_cancelled()
             try:
                 return self._client.models.generate_content(
                     model=model, contents=contents, config=config)
@@ -441,7 +463,8 @@ class GeminiProvider:
         logger.warning(f"[FLEX] 推論耗盡，自動降級改以 Standard 層級重試: {last_error}")
         return None
 
-    def _generate_standard(self, model: str, contents: List[Any]) -> Any:
+    def _generate_standard(self, model: str, contents: List[Any], progress: ProgressAndCancel) -> Any:
+        progress.raise_if_cancelled()
         logger.info(f"[STANDARD] 呼叫 Gemini 標準同步 API model={model}")
         try:
             return self._client.models.generate_content(
@@ -449,8 +472,12 @@ class GeminiProvider:
         except Exception as e:
             raise _classify(e) from e
 
-    def upload(self, audio_path: Path) -> Any:
-        """上傳到 File API，等 Gemini 處理完才回傳；遠端檔在 :meth:`release` 刪除。"""
+    def upload(self, audio_path: Path, progress: ProgressAndCancel = _UNCANCELLABLE) -> Any:
+        """上傳到 File API，等 Gemini 處理完才回傳；遠端檔在 :meth:`release` 刪除。
+
+        等處理的期間使用者取消（``progress``）就不等了，拋
+        :class:`~app.exceptions.TranscriptionCancelledError`。
+        """
         if not audio_path.exists():
             raise ValueError("檔案不存在。")
 
@@ -475,6 +502,7 @@ class GeminiProvider:
             if polls % 10 == 1:
                 logger.info("Gemini 檔案處理中...")
             self._sleep(UPLOAD_POLL_SECONDS)
+            progress.raise_if_cancelled()
             try:
                 gemini_file = self._client.files.get(name=gemini_file.name)
             except Exception as e:

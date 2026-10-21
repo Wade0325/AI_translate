@@ -8,7 +8,8 @@
   沒有另外指定的請求，回應的文字是 ``[00:00.00]<這個請求的提示詞>``；
   送出時請求引用的檔案不在遠端，那個請求回錯誤。
 
-測試從 ``stored`` 看遠端還留著哪些檔案，從 ``prompts`` 看收到了哪些提示詞。
+測試從 ``stored`` 看遠端還留著哪些檔案，從 ``prompts`` 看收到了哪些提示詞，從 ``generated`` 看
+送出了哪些生成請求（Gemini 照次收費）。
 """
 
 from __future__ import annotations
@@ -103,6 +104,8 @@ class FakeGenaiClient:
         """操作名稱（例如 ``"files.upload"``）→ 這個操作每次都拋的錯。"""
         self.replies: List[Outcome] = []
         """generate_content 依序的結果；用完之後都回 ``Reply()``。"""
+        self.generated: List[str] = []
+        """每個送到 generate_content 的請求的處理模式（``"flex"``、``"standard"``），依送出順序。"""
         self.overloaded: Set[str] = set()
         """這些處理模式（``"flex"``、``"standard"``）的請求一律回 503。"""
         self.tier_header = True
@@ -166,6 +169,7 @@ class _Models:
     def generate_content(self, *, model: str, contents: List[Any],
                          config: types.GenerateContentConfig) -> types.GenerateContentResponse:
         tier = "flex" if config.service_tier == "flex" else "standard"
+        self._client.generated.append(tier)
         self._client.prompts.extend(part for part in contents if isinstance(part, str))
         for part in contents:
             if isinstance(part, types.File):

@@ -1,7 +1,7 @@
 import { useState, createContext, useContext, useCallback, useEffect } from 'react';
 import { message } from 'antd';
 import { useProviderList } from '../hooks/useProviderList';
-import { modelForProvider, providerLabel } from '../utils/providerList';
+import { missingApiKey, modelForProvider, providerLabel, providerTestRequest } from '../utils/providerList';
 import { api, ApiError } from '../services/api';
 import ApiKeyModal from './model-manager/ApiKeyModal';
 import PromptModal from './model-manager/PromptModal';
@@ -176,41 +176,38 @@ const ModelManagerProvider = ({ children }) => {
         setIsParamsModalOpen(false);
     };
 
-    const handleTestProvider = useCallback(async (provider) => {
-        message.loading({ content: `正在測試 ${labelOf(provider)} API...`, key: 'testInterface' });
+    // 按「測試」：要不要金鑰照供應商清單（本機不用，測的是顯卡與模型權重）。model 是設定頁
+    // 畫面上選的模型；轉錄頁的按鈕不給，測設定頁存的預設模型
+    const handleTestProvider = useCallback(async (provider, model) => {
+        message.loading({ content: `正在測試 ${labelOf(provider)}...`, key: 'testInterface' });
 
         const config = await getProviderConfig(provider);
-        // 這裡是遮罩值，只用來確認已設定金鑰；後端會換回資料庫中的實際金鑰再測試
-        const apiKeysToTest = config?.apiKeys?.filter(key => key) || [];
-
-        if (apiKeysToTest.length === 0) {
+        // 設定裡只有遮罩值，只用來確認已設定金鑰；後端會換回資料庫中的實際金鑰再測試
+        if (missingApiKey(providerList, provider, config)) {
             message.error({ content: '沒有可用的 API 金鑰來進行測試。', key: 'testInterface' });
             return;
         }
 
         try {
-            const result = await api.settings.testProvider({
-                provider,
-                apiKeys: apiKeysToTest,
-                model: config.model,
-            });
+            const result = await api.settings.testProvider(
+                providerTestRequest(providerList, provider, config, model));
             if (result.success) {
                 message.success({ content: result.message, key: 'testInterface', duration: 5 });
             } else {
                 message.error({ content: result.message, key: 'testInterface', duration: 5 });
             }
         } catch (error) {
-            console.error(`測試API ${provider} 時發生錯誤:`, error);
+            console.error(`測試 ${provider} 時發生錯誤:`, error);
             const errMsg = error instanceof ApiError
                 ? (error.payload?.message || error.message)
                 : (error.message || '網絡問題');
             message.error({
-                content: `${labelOf(provider)} API測試失敗: ${errMsg}`,
+                content: `${labelOf(provider)} 測試失敗：${errMsg}`,
                 key: 'testInterface',
                 duration: 6,
             });
         }
-    }, [getProviderConfig, labelOf]);
+    }, [getProviderConfig, labelOf, providerList]);
 
     const contextValue = {
         handleEditProvider,

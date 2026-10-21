@@ -45,11 +45,16 @@ async def lifespan(app: FastAPI):
         logger.warning(f"啟動清掃逾時 PROCESSING 紀錄失敗: {e}")
 
     # 清掉超過保留天數的保留音檔（它不是永久保存）
+    from app.services import audio_store
     try:
-        from app.services import audio_store
         audio_store.purge_expired()
     except Exception as e:
         logger.warning(f"清理過期音檔失敗: {e}")
+    # 清掉暫存區裡逾時的上傳檔：沒機會收尾的任務留下的（例如關閉時還在排隊）
+    try:
+        audio_store.purge_stale_uploads()
+    except Exception as e:
+        logger.warning(f"清理暫存上傳檔失敗: {e}")
 
     # 依執行模式選一次轉接器，再啟動 WebSocket 狀態監聽器
     run_mode.get()
