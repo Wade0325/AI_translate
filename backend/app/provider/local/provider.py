@@ -103,8 +103,9 @@ class _LocalProviderFactory:
     """registry 認得的本機供應商：列模型能力不建立轉接器、不碰顯卡（API 行程與模型能力
     端點都會列，Docker 模式的 API 容器沒有顯卡）；呼叫它建立一個任務專用的轉接器。"""
 
-    # 在使用者自己的顯卡上轉錄，不用 API 金鑰
-    info = ProviderInfo(label="本機", requires_api_key=False, model_labels=MODEL_LABELS)
+    # 在使用者自己的顯卡上轉錄，不用 API 金鑰；設定頁的「測試」查轉錄那台機器的顯卡與權重
+    info = ProviderInfo(label="本機", requires_api_key=False, model_labels=MODEL_LABELS,
+                        checks_transcribing_machine=True)
 
     @staticmethod
     def capabilities() -> Dict[str, ModelCapabilities]:
@@ -112,6 +113,15 @@ class _LocalProviderFactory:
 
     def __call__(self, model: str, api_key: str = "") -> LocalProvider:
         return LocalProvider(model, api_key)
+
+    @staticmethod
+    def check_ready(model: str, api_key: str = "") -> str:
+        """設定頁的「測試」：和轉錄前的檢查相同，查這個行程看得到的顯卡與這個模型的模型權重，
+        不載入模型。查的是轉錄那台機器（``checks_transcribing_machine``），哪個行程能問由
+        呼叫端依執行模式決定。"""
+        weights.ensure_local_ready(model)
+        _, gpu_name = weights.cuda_status()
+        return f"本機已就緒：顯卡 {gpu_name}，{MODEL_LABELS.get(model, model)} 的模型權重都已下載"
 
 
 local_provider = _LocalProviderFactory()

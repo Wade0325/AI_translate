@@ -4,6 +4,7 @@ import {
   modelForProvider,
   modelOptions,
   providerOptions,
+  providerTestRequest,
   requiresApiKey,
   resolveSelection,
   withModel,
@@ -69,6 +70,28 @@ describe('missingApiKey：按 Start 時缺不缺金鑰', () => {
       missingApiKey(PROVIDERS, 'google', saved),
       missingApiKey(PROVIDERS, 'local', null),
     ]).toEqual([true, false, false]);
+  });
+});
+
+describe('providerTestRequest：按「測試」送出的請求', () => {
+  it('不用金鑰的供應商不帶金鑰，也不必先存過設定：測它的預設模型', () => {
+    expect(providerTestRequest(PROVIDERS, 'local', null))
+      .toEqual({ provider: 'local', apiKeys: [], model: 'moss-align' });
+  });
+
+  it('要金鑰的供應商帶設定頁存的金鑰（遮罩值，後端換回實際金鑰），空白的不帶', () => {
+    const saved = { apiKeys: ['AIza********ABCD', ''], model: 'gemini-2.5-pro' };
+
+    expect(providerTestRequest(PROVIDERS, 'google', saved)).toEqual({
+      provider: 'google', apiKeys: ['AIza********ABCD'], model: 'gemini-2.5-pro',
+    });
+  });
+
+  it('設定頁上選了模型（還沒儲存）時測它，不測存過的預設模型', () => {
+    const saved = { apiKeys: [], model: 'moss-align' };
+
+    expect(providerTestRequest(PROVIDERS, 'local', saved, 'vibevoice-qwen3-asr').model)
+      .toBe('vibevoice-qwen3-asr');
   });
 });
 
