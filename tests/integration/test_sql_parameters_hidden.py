@@ -17,6 +17,7 @@ traceback：Postgres 在例外訊息第一行之後附上的 DETAIL 是寫不進
 
 資料庫出錯用 SQLite 的 trigger 模擬：測試期間擋下某張表的 INSERT 或 UPDATE。
 """
+import traceback
 import uuid
 from contextlib import contextmanager
 
@@ -24,11 +25,11 @@ import numpy as np
 import pytest
 import soundfile as sf
 from fastapi.testclient import TestClient
-from sqlalchemy.exc import DBAPIError
 
 from app.core.task_status import TaskStatus
 from app.database import session
 from app.database.models import ModelConfiguration, TranscriptionLog
+from app.exceptions import TaskDatabaseError
 from app.tasks.transcribe_core import abandon_transcription, run_transcription
 from tests.support.fake_provider import FAKE_MODEL, FakeProvider
 
@@ -195,7 +196,7 @@ def task_params(uploads) -> dict:
     }
 
 
-def run_task(uploads, fake: FakeProvider, task_uuid: str = "") -> None:
+def run_task(uploads, fake: FakeProvider, task_uuid: str | None = None) -> None:
     """跑一個單檔任務（見 :func:`task_params`），假供應商把音檔轉錄成 TRANSCRIPT。"""
     fake.script = [[(0.2, 0.8, 0, TRANSCRIPT)]]
     run_transcription(task_params(uploads), task_uuid or str(uuid.uuid4()))
@@ -226,7 +227,7 @@ class TestTaskRecordCannotBeWritten:
             self, uploads, task_db, in_process_run_mode, fake, test_engine, app_log,
             statement, private):
         with writes_fail(test_engine, "transcription_logs", statement):
-            with pytest.raises(DBAPIError):
+            with pytest.raises(TaskDatabaseError):
                 run_task(uploads, fake)
 
         log = "\n".join(app_log)
@@ -244,7 +245,7 @@ class TestTaskRecordCannotBeWritten:
             statement, private):
         row = rejected_row("transcription_logs", f"0f5c, PROCESSING, {private}, null")
         with writes_fail(test_engine, "transcription_logs", statement, row):
-            with pytest.raises(DBAPIError):
+            with pytest.raises(TaskDatabaseError):
                 run_task(uploads, fake)
 
         log = "\n".join(app_log)
@@ -258,7 +259,7 @@ class TestTaskRecordCannotBeWritten:
     def test_user_sees_a_fixed_message(
             self, uploads, task_db, broadcasts, fake, test_engine, statement):
         with writes_fail(test_engine, "transcription_logs", statement):
-            with pytest.raises(DBAPIError):
+            with pytest.raises(TaskDatabaseError):
                 run_task(uploads, fake)
 
         assert_fixed_message(failure_shown(broadcasts))
@@ -287,7 +288,7 @@ class TestSegmentsCannotBeWritten:
     def test_log_keeps_the_reason_but_not_the_row_or_the_sql(
             self, uploads, task_db, in_process_run_mode, fake, test_engine, app_log):
         with writes_fail(test_engine, "transcript_segments", "INSERT", SEGMENT_ROW):
-            with pytest.raises(DBAPIError):
+            with pytest.raises(TaskDatabaseError):
                 run_task(uploads, fake)
 
         log = "\n".join(app_log)
@@ -301,7 +302,7 @@ class TestSegmentsCannotBeWritten:
             self, uploads, task_db, broadcasts, fake, test_engine, db_session):
         task_uuid = str(uuid.uuid4())
         with writes_fail(test_engine, "transcript_segments", "INSERT", SEGMENT_ROW):
-            with pytest.raises(DBAPIError):
+            with pytest.raises(TaskDatabaseError):
                 run_task(uploads, fake, task_uuid)
 
         record = db_session.get(TranscriptionLog, uuid.UUID(task_uuid))
@@ -309,6 +310,27 @@ class TestSegmentsCannotBeWritten:
         for shown in (failure_shown(broadcasts), record.error_message):
             assert TRANSCRIPT not in shown
             assert_fixed_message(shown)
+
+
+# ─── 往上拋給執行模式的例外 ──────────────────────────────────────────────────
+
+# 執行模式記下任務往上拋的例外：Docker 模式的 Celery worker 連同 traceback 寫進 log，
+# 也存進結果後端
+@pytest.mark.parametrize("table, statement, private", [
+    pytest.param("transcription_logs", "INSERT", FILENAME, id="start-filename"),
+    pytest.param("transcription_logs", "UPDATE", TRANSCRIPT, id="complete-transcript"),
+    pytest.param("transcript_segments", "INSERT", TRANSCRIPT, id="segments-transcript"),
+])
+def test_run_mode_gets_the_reason_but_not_the_row_or_the_sql(
+        uploads, task_db, in_process_run_mode, fake, test_engine, table, statement, private):
+    with writes_fail(test_engine, table, statement, rejected_row(table, f"0f5c, {private}")):
+        with pytest.raises(TaskDatabaseError) as raised:
+            run_task(uploads, fake)
+
+    reported = "".join(traceback.format_exception(raised.value))
+    assert private not in reported
+    assert "[SQL:" not in reported
+    assert NOT_NULL in reported
 
 
 # ─── 兩種執行模式 ────────────────────────────────────────────────────────────

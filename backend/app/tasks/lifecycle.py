@@ -18,8 +18,9 @@
 - 不會再執行的任務也收尾（:meth:`TaskLifecycle.abandon`）：在佇列中或等重試時被撤銷、
   應用程式關閉時還在排隊的任務，一樣留下紀錄、保留或清理上傳檔。
 - 收尾之後才宣告結果：畫面收到完成、失敗或取消時，紀錄、片段與保留音檔都已就緒。
-- 資料庫出錯不轉述例外：log 只記例外類型與資料庫回報的原因，畫面與任務紀錄給看得懂的
-  固定訊息。例外訊息裡有 SQL 原文，Postgres 附上的 DETAIL 還可能是寫不進去的整列。
+- 資料庫出錯不轉述例外：資料庫例外一接到就換成只有類型與原因的
+  :class:`~app.exceptions.TaskDatabaseError`，記進 log 與往上拋給執行模式的都是它；畫面與
+  任務紀錄給看得懂的固定訊息。
 
 狀態廣播與查詢取消只經由執行模式模組（:mod:`app.runtime.run_mode`）。
 """
@@ -41,7 +42,7 @@ from app.celery.models import TranscriptionTaskParams
 from app.core.config import get_settings
 from app.core.task_status import TaskStatus
 from app.database.session import SessionLocal, describe_db_error
-from app.exceptions import TranscriptionCancelledError, TransientError
+from app.exceptions import TaskDatabaseError, TranscriptionCancelledError, TransientError
 from app.provider.base import ProgressAndCancel
 from app.provider.registry import UnsupportedModelError, model_capabilities
 from app.repositories.transcript_segment_repository import TranscriptSegmentRepository
@@ -84,36 +85,27 @@ def _cancelled() -> _Outcome:
     return _Outcome(TaskStatus.CANCELLED, "任務已取消", return_value={"cancelled": True})
 
 
-_NOT_SAVED = "轉錄結果沒有存進資料庫，請重新轉錄"
-"""資料庫出錯時給使用者看的原因。"""
+_DB_ERROR_MESSAGE = "轉錄結果沒有存進資料庫，請重新轉錄"
+"""資料庫出錯時給使用者看的原因；開始時就建立不了任務紀錄時也一樣沒有轉錄結果。"""
 
 
-def _for_log(error: Exception) -> str:
-    """寫進 log 的例外描述：資料庫例外只記類型與資料庫回報的原因（:func:`describe_db_error`）。
+def _without_db_details(error: Exception) -> Exception:
+    """資料庫例外換成 :class:`~app.exceptions.TaskDatabaseError`，其他例外原樣傳回。
 
-    資料庫例外的訊息裡有 SQL 原文，Postgres 在第一行之後附上的 DETAIL 還可能是寫不進去的
-    整列（例如 ``Failing row contains (…)``），裡面有轉錄結果或檔名；log 會被貼到公開的
-    GitHub Issues（ADR-0005）。
-    """
-    return describe_db_error(error) if isinstance(error, SQLAlchemyError) else str(error)
-
-
-def _for_user(error: Exception) -> str:
-    """給使用者看的失敗原因：資料庫例外換成看得懂的固定訊息，原因只記在 log；其他例外
-    （例如供應商回報的錯誤）照例外訊息。"""
-    return _NOT_SAVED if isinstance(error, SQLAlchemyError) else str(error)
-
-
-def _traceback(error: Exception) -> str:
-    """寫進 log 的 traceback。
-
-    資料庫例外只留呼叫的位置：最後一行換成 :func:`_for_log` 的描述，也不接著印它的成因
-    （DBAPI 的原始例外），兩者的訊息都帶著 SQL 原文與資料庫附上的資料列。
+    資料庫例外的訊息與它的成因（DBAPI 的原始例外）都帶著 SQL 原文，Postgres 在第一行之後
+    附上的 DETAIL 還可能是寫不進去的整列（見 :func:`describe_db_error`）。換掉的例外沿用
+    原本的 traceback，log 照樣看得到在哪裡出錯；執行模式也會把往上拋的例外連同 traceback
+    記進 log（Docker 模式的 Celery worker），還存進 Celery 的結果後端。
     """
     if not isinstance(error, SQLAlchemyError):
-        return "".join(traceback.format_exception(error))
-    frames = "".join(traceback.format_tb(error.__traceback__))
-    return f"Traceback (most recent call last):\n{frames}{_for_log(error)}"
+        return error
+    return TaskDatabaseError(describe_db_error(error)).with_traceback(error.__traceback__)
+
+
+def _shown_to_user(error: Exception) -> str:
+    """給使用者看的失敗原因：資料庫出錯換成看得懂的固定訊息，原因只記在 log；其他例外
+    （例如供應商回報的錯誤）照例外訊息。"""
+    return _DB_ERROR_MESSAGE if isinstance(error, TaskDatabaseError) else str(error)
 
 
 class TaskLifecycle:
@@ -143,7 +135,8 @@ class TaskLifecycle:
 
         Raises:
             Exception: 失敗或暫時錯誤時，收尾與宣告都做完之後，原本的例外往上拋，
-                讓執行模式記下失敗或安排重試。
+                讓執行模式記下失敗或安排重試；資料庫例外換成
+                :class:`~app.exceptions.TaskDatabaseError`。
         """
         outcome: Optional[_Outcome] = None
         with SessionLocal() as db:
@@ -151,8 +144,10 @@ class TaskLifecycle:
                 outcome = self._attempt(db, transcribe)
             except Exception as e:
                 # 連任務紀錄都寫不進去（例如資料庫連不上）：照樣收尾，宣告失敗
-                logger.error(f"任務 {self._task_uuid} 無法更新任務紀錄: {_for_log(e)}")
-                outcome = _Outcome(TaskStatus.FAILED, f"任務失敗: {_for_user(e)}", error=e)
+                error = _without_db_details(e)
+                logger.error(f"任務 {self._task_uuid} 無法更新任務紀錄: {error}")
+                outcome = _Outcome(
+                    TaskStatus.FAILED, f"任務失敗: {_shown_to_user(error)}", error=error)
             finally:
                 # 一定收尾。被強制終止時（Docker 模式的 gevent 丟 GreenletExit，不是 Exception）
                 # 例外照樣往上拋、不宣告結果，但上傳的音檔已經保留或清掉
@@ -178,7 +173,8 @@ class TaskLifecycle:
                 else:
                     self._fail_before_start(db, "應用程式關閉時任務還在排隊，沒有開始轉錄")
             except Exception as e:
-                logger.error(f"任務 {self._task_uuid} 無法更新任務紀錄: {_for_log(e)}")
+                logger.error(
+                    f"任務 {self._task_uuid} 無法更新任務紀錄: {_without_db_details(e)}")
             finally:
                 self._finish(db, retry=False)
 
@@ -207,7 +203,7 @@ class TaskLifecycle:
                 return self._cancel(db)
             if isinstance(e, TransientError) and self._retries_left > 0:
                 return self._transient(e)
-            return self._fail(db, e)
+            return self._fail(db, _without_db_details(e))
 
     def _start(self, db: Session) -> None:
         """開始：建立任務紀錄，廣播處理中。"""
@@ -323,8 +319,9 @@ class TaskLifecycle:
     def _fail(self, db: Session, error: Exception) -> _Outcome:
         """失敗：任務紀錄寫 FAILED 與錯誤訊息。"""
         logger.error(
-            f"Transcription task failed for log ID: {self._task_uuid}\n{_traceback(error)}")
-        reason = _for_user(error)
+            f"Transcription task failed for log ID: {self._task_uuid}\n"
+            f"{''.join(traceback.format_exception(error))}")
+        reason = _shown_to_user(error)
         failed = self._records.update_log_unless_cancelled(db, self._task_uuid, {
             "status": TaskStatus.FAILED,
             "error_message": reason,
@@ -375,7 +372,7 @@ class TaskLifecycle:
         try:
             yield
         except Exception as e:
-            logger.warning(f"{step}失敗 (task={self._task_uuid}): {_for_log(e)}")
+            logger.warning(f"{step}失敗 (task={self._task_uuid}): {_without_db_details(e)}")
 
     # ── 進度與廣播 ────────────────────────────────────────────────
     def _report(self, text: str) -> None:
