@@ -25,11 +25,12 @@ def _convert_segments_to_pydantic(segments: List[Dict[str, float]]) -> List[Spee
 
 
 def extract_speech_segments(request: VADProcessRequest) -> SpeechExtractionResult:
-    """以 RMS 音量閾值提取有聲區間並拼接成純語音檔（針對 ASMR 優化，不需 VAD 模型）。"""
+    """以 RMS 音量閾值提取有聲區間並拼接成純語音檔（針對 ASMR 優化，不需 VAD 模型）；
+    ``write_speech_only`` 為 False 時只找有聲區間、不寫檔。"""
     logger.info(f"開始提取有聲片段 (音量閾值模式): {Path(request.audio_path).name}")
 
     try:
-        # 呼叫端保證已轉為 WAV，見 preprocess.run_vad_extraction
+        # 呼叫端保證已轉為 WAV，見 silence_removal.speech_view 與 preprocess.run_vad_extraction
         audio_data, original_sr = sf.read(request.audio_path, dtype="float32")
 
         num_frames = audio_data.shape[0] if audio_data.ndim > 1 else len(audio_data)
@@ -122,25 +123,27 @@ def extract_speech_segments(request: VADProcessRequest) -> SpeechExtractionResul
                 total_duration=total_duration
             )
 
-        speech_segments = []
-        for ts in speech_timestamps:
-            start_sample = max(0, int(ts['start'] * original_sr))
-            end_sample = min(num_frames, int(ts['end'] * original_sr))
-            
-            segment_data = audio_data[start_sample:end_sample]
-            if len(segment_data) > 0:
-                speech_segments.append(segment_data)
+        output_file = None
+        if request.write_speech_only:
+            speech_segments = []
+            for ts in speech_timestamps:
+                start_sample = max(0, int(ts['start'] * original_sr))
+                end_sample = min(num_frames, int(ts['end'] * original_sr))
 
-        concatenated_audio = np.concatenate(speech_segments)
+                segment_data = audio_data[start_sample:end_sample]
+                if len(segment_data) > 0:
+                    speech_segments.append(segment_data)
 
-        output_path = Path(request.output_dir)
-        output_path.mkdir(parents=True, exist_ok=True)
+            concatenated_audio = np.concatenate(speech_segments)
 
-        input_filename = Path(request.audio_path).stem
-        output_file = output_path / f"{input_filename}_speech_only.wav"
+            output_path = Path(request.output_dir)
+            output_path.mkdir(parents=True, exist_ok=True)
 
-        sf.write(str(output_file), concatenated_audio, original_sr)
-        logger.info(f"純有聲檔案已儲存: {output_file}")
+            input_filename = Path(request.audio_path).stem
+            output_file = output_path / f"{input_filename}_speech_only.wav"
+
+            sf.write(str(output_file), concatenated_audio, original_sr)
+            logger.info(f"純有聲檔案已儲存: {output_file}")
 
         segments = _convert_segments_to_pydantic(speech_timestamps)
         total_speech_duration = sum(seg.duration for seg in segments)
@@ -153,7 +156,7 @@ def extract_speech_segments(request: VADProcessRequest) -> SpeechExtractionResul
 
         return SpeechExtractionResult(
             success=True,
-            speech_only_path=str(output_file),
+            speech_only_path=str(output_file) if output_file else None,
             segments=segments,
             total_speech_duration=total_speech_duration,
             total_duration=total_duration

@@ -11,9 +11,10 @@ from app.utils.audio import (
     slice_audio,
 )
 from app.provider.base import ProgressAndCancel, Provider, TranscribeRequest
+from app.services import silence_removal
 from app.services.converter.service import _parse_lrc
-from app.services.vad.preprocess import run_vad_extraction
-from app.services.vad.artifacts import persist_speech_extraction, persist_split
+from app.services.silence_removal import SpeechTimeline, SpeechView
+from app.services.vad.artifacts import persist_split
 from app.services.vad.service import get_vad_service
 
 from .models import (
@@ -21,24 +22,6 @@ from .models import (
 )
 
 logger = setup_logger(__name__)
-
-_settings = get_settings()
-# 語音佔比 >= 此閾值時跳過去靜音；低於則使用純語音檔轉錄
-VAD_SPEECH_RATIO_SKIP_THRESHOLD = _settings.vad_speech_ratio_skip_threshold
-
-
-def speech_segment_boundaries(segments: List[Dict[str, float]]) -> List[float]:
-    """去靜音找出的有聲區間在「拼接後時間軸」上的交界位置。
-
-    純語音檔是各有聲區間無縫拼接而成，交界正是去靜音前音檔的靜音處，
-    也是切割純語音檔時唯一不會切在語句中間的位置。
-    """
-    boundaries: List[float] = []
-    accumulated = 0.0
-    for seg in segments[:-1]:
-        accumulated += seg['end'] - seg['start']
-        boundaries.append(accumulated)
-    return boundaries
 
 
 def pick_halving_split_point(
@@ -51,41 +34,21 @@ def pick_halving_split_point(
     return min(candidates, key=lambda b: abs(b - duration / 2))
 
 
-def speech_time_remapper(segments: List[Dict[str, float]]):
-    """回傳「純語音檔時間 → 去靜音前時間」的轉換函式。
-
-    單檔任務的片段與批次的 LRC 共用同一套轉換，兩者的時間軸才不會分岔。
-    """
-    durations = [seg['end'] - seg['start'] for seg in segments]
-    cumulative = [sum(durations[:i]) for i in range(len(durations))]
-
-    def remap(t: float) -> Optional[float]:
-        for i, cum in enumerate(cumulative):
-            if t < cum + durations[i]:
-                return segments[i]['start'] + (t - cum)
-        # 落在總長之後（浮點誤差或模型給出超界時間）→ 夾到最後片段結尾，
-        # 避免整行被丟棄
-        return segments[-1]['end'] if segments else None
-
-    return remap
-
-
 def remap_lrc_timestamps(lrc_text: str, segments: List[Dict[str, float]]) -> str:
-    """將 LRC 時間戳從拼接後的時間軸重對應回原始時間軸。
+    """將 LRC 時間戳從拼接後的時間軸重對應回原始時間軸；``segments`` 是去靜音保留下來的有聲段。
 
-    只剩批次在用：單檔任務的轉錄結果是片段，見 :func:`remap_segments`。批次改成處理
-    轉錄結果時（#115）刪掉。
+    只剩批次在用：單檔任務的轉錄結果是片段，由語音視圖還原（:meth:`SpeechView.restore`）。
+    兩邊用同一個時間還原（:class:`SpeechTimeline`），時間軸才不會分岔；LRC 只有開始時間。
+    批次改成處理轉錄結果時（#115）刪掉。
     """
     parsed_lines = _parse_lrc(lrc_text)
     if not parsed_lines:
         return ""
 
-    remap = speech_time_remapper(segments)
+    timeline = SpeechTimeline(tuple((seg["start"], seg["end"]) for seg in segments))
     remapped_lrc_lines = []
     for line in parsed_lines:
-        remapped_time = remap(line.time)
-        if remapped_time is None:
-            continue
+        remapped_time = timeline.to_original(line.time)
         minutes = int(remapped_time // 60)
         seconds = int(remapped_time % 60)
         centiseconds = int((remapped_time - int(remapped_time)) * 100)  # 保持2位數
@@ -93,32 +56,6 @@ def remap_lrc_timestamps(lrc_text: str, segments: List[Dict[str, float]]) -> str
             f"[{minutes:02d}:{seconds:02d}.{centiseconds:02d}]{line.text}")
 
     return "\n".join(remapped_lrc_lines)
-
-
-def remap_segments(
-    segments: List[Dict], speech_segments: List[Dict[str, float]]
-) -> List[Dict]:
-    """片段的時間軸重對應回去靜音前的原音檔，與批次的 remap_lrc_timestamps 同一套轉換。"""
-    remap = speech_time_remapper(speech_segments)
-    out: List[Dict] = []
-    for seg in segments:
-        start = remap(seg.get("start", 0.0))
-        if start is None:
-            continue
-        new = dict(seg)
-        new["start"] = start
-        if seg.get("end") is not None:
-            new["end"] = remap(seg["end"])
-        if seg.get("words"):
-            words = []
-            for w in seg["words"]:
-                ws, we = remap(w["start"]), remap(w["end"])
-                if ws is None:
-                    continue
-                words.append({**w, "start": ws, "end": we})
-            new["words"] = words or None
-        out.append(new)
-    return out
 
 
 def shift_segments(
@@ -226,9 +163,9 @@ class TranscriptionTask:
         轉錄音訊檔案的主要方法
 
         流程：
-        1. 去靜音 → 建立純語音檔案
-        2. 轉錄純語音檔案
-        3. 時間戳重映射回原始時間軸
+        1. 去靜音 → 語音視圖
+        2. 轉錄語音視圖的音檔（超過單次長度時在靜音邊界分段轉錄）
+        3. 時間還原回原音檔的時間軸
         4. 如果轉錄失敗且檔案夠長，嘗試分割重試
         """
         logger.info(f"開始轉錄音訊: {audio_path.name}")
@@ -247,44 +184,18 @@ class TranscriptionTask:
                 total_tokens=0
             )
 
-        # --- 去靜音前處理 ---
-        speech_segments = None
-        transcription_path = audio_path  # 預設直接使用原始檔案
+        # --- 去靜音：語音視圖 ---
+        view = self._speech_view(audio_path, duration)
 
-        if self.capabilities.remove_silence and self.vad_service:
-            vad_result = self._extract_speech_only(audio_path)
-            if vad_result and vad_result.get("speech_only_path"):
-                speech_ratio = vad_result.get("speech_ratio", 1.0)
-                if speech_ratio < VAD_SPEECH_RATIO_SKIP_THRESHOLD:
-                    transcription_path = Path(vad_result["speech_only_path"])
-                    speech_segments = vad_result["segments"]
-                    logger.info(
-                        f"VAD 前處理完成: 語音佔比 {speech_ratio*100:.1f}%, "
-                        f"使用純語音檔 ({vad_result['speech_duration']:.1f}s / {duration:.1f}s)"
-                    )
-                else:
-                    logger.info(
-                        f"語音佔比 {speech_ratio*100:.1f}% "
-                        f"(>={VAD_SPEECH_RATIO_SKIP_THRESHOLD*100:.0f}%), 跳過 VAD 前處理"
-                    )
-
-        # --- 轉錄（去靜音之後仍超過閾值的長檔，先分段轉錄） ---
-        if speech_segments:
-            transcription_duration = sum(
-                seg['end'] - seg['start'] for seg in speech_segments)
-            silence_boundaries = speech_segment_boundaries(speech_segments)
-        else:
-            transcription_duration = duration
-            silence_boundaries = None
+        # --- 轉錄（語音視圖仍超過單次長度的長檔，先分段轉錄） ---
         result = self._transcribe_halved(
-            transcription_path, transcription_duration, silence_boundaries)
+            view.audio, view.duration, list(view.silence_boundaries) or None)
 
-        # --- 時間戳重映射 ---
-        if result.success and speech_segments:
+        # --- 時間還原回原音檔 ---
+        if result.success and view.removed_silence:
             self.progress.report("校正時間軸...")
-            result = result.model_copy(
-                update={"segments": remap_segments(result.segments, speech_segments)})
-            logger.info("時間戳已重映射回原始時間軸")
+            result = result.model_copy(update={"segments": view.restore(result.segments)})
+            logger.info("時間已還原回原音檔的時間軸")
 
         # 如果成功或檔案很短，直接返回結果
         if result.success or duration < self.max_duration_seconds:
@@ -302,45 +213,22 @@ class TranscriptionTask:
 
         return result
 
-    def _extract_speech_only(self, audio_path: Path) -> Optional[dict]:
-        """去靜音：提取純語音檔案。
-
-        實際的去靜音流程由 :mod:`app.services.vad.preprocess` 共用實作，
-        此處只負責呼叫 callback、把產生的暫存檔登記進 cleanup 列表。
-        """
+    def _speech_view(self, audio_path: Path, duration: float) -> SpeechView:
+        """去靜音：這段音檔的語音視圖（見 :mod:`app.services.silence_removal`），
+        它產生的暫存檔登記進 cleanup 列表。"""
         self.progress.report("分析語音活動...")
-
-        result = run_vad_extraction(audio_path, self.temp_dir, self.vad_service)
-
-        # 不論成功與否，cleanup 都要登記，避免暫存檔殘留
-        for cf in result.cleanup_files:
-            if cf not in self.local_cleanup_list:
-                self.local_cleanup_list.append(cf)
-
-        if not result.success:
-            return None
-
-        speech_ratio = result.speech_ratio
-        used_for_transcription = speech_ratio < VAD_SPEECH_RATIO_SKIP_THRESHOLD
-        artifact_id = self.artifact_task_id or audio_path.stem
-        artifact_name = self.original_filename or audio_path.name
-        if result.speech_only_path:
-            persist_speech_extraction(
-                task_id=artifact_id,
-                original_filename=artifact_name,
-                speech_only_path=result.speech_only_path,
-                segments=result.segments,
-                speech_ratio=speech_ratio,
-                speech_duration=result.speech_duration,
-                used_for_transcription=used_for_transcription,
-            )
-
-        return {
-            "speech_only_path": str(result.speech_only_path),
-            "segments": result.segments,
-            "speech_ratio": result.speech_ratio,
-            "speech_duration": result.speech_duration,
-        }
+        view = silence_removal.speech_view(
+            audio_path,
+            duration,
+            remove_silence=self.capabilities.remove_silence,
+            temp_dir=self.temp_dir,
+            artifact_id=self.artifact_task_id or audio_path.stem,
+            artifact_name=self.original_filename or audio_path.name,
+        )
+        for temp_file in view.temp_files:
+            if temp_file not in self.local_cleanup_list:
+                self.local_cleanup_list.append(temp_file)
+        return view
 
     def _get_audio_duration(self, audio_path: Path) -> Optional[float]:
         """取得音訊檔案時長"""
@@ -380,8 +268,8 @@ class TranscriptionTask:
         """時長超過閾值時在最接近中點的靜音處切成兩段，分別轉錄後合併。
 
         遞迴呼叫自身，直到每段低於 ``self.split_threshold_seconds``。
-        silence_boundaries 是音檔內已知的靜音位置（秒）——去靜音後的純語音檔
-        以有聲區間的交界為準；無資訊（跳過去靜音）時改用 VAD 服務在檔案上找。
+        silence_boundaries 是音檔內已知的靜音位置（秒），一開始是語音視圖的靜音邊界
+        （見 :attr:`SpeechView.silence_boundaries`）；沒有時改用 Silero 在檔案上找。
         注意：本機的模型分段轉錄時，兩半的說話者編號各自獨立（前半的 S0 未必是
         後半的 S0），多人對話的長檔請自行斟酌（MOSS 的門檻較長，多數檔案不會切）。
         """

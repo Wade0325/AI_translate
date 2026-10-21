@@ -1,26 +1,10 @@
-"""分段轉錄（去靜音之後在最接近中點的靜音處切成兩段）的純函式測試。"""
+"""分段轉錄（在最接近中點的靜音處切成兩段）的純函式測試。
 
-from app.services.transcription.flows import (
-    pick_halving_split_point,
-    speech_segment_boundaries,
-)
+候選的靜音位置是語音視圖的靜音邊界，從接縫 1 測（tests/integration/test_provider_seam.py 的
+TestSpeechView）。
+"""
 
-
-class TestSpeechSegmentBoundaries:
-    def test_boundaries_are_cumulative_durations(self):
-        # 三個片段（拼接後長度 10s、20s、5s）→ 交界在 10s 與 30s
-        segments = [
-            {"start": 0.0, "end": 10.0},
-            {"start": 15.0, "end": 35.0},
-            {"start": 40.0, "end": 45.0},
-        ]
-        assert speech_segment_boundaries(segments) == [10.0, 30.0]
-
-    def test_single_segment_has_no_boundary(self):
-        assert speech_segment_boundaries([{"start": 0.0, "end": 60.0}]) == []
-
-    def test_empty_segments(self):
-        assert speech_segment_boundaries([]) == []
+from app.services.transcription.flows import pick_halving_split_point
 
 
 class TestPickHalvingSplitPoint:

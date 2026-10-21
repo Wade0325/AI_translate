@@ -1,9 +1,9 @@
-"""去靜音前處理共用模組。
+"""去靜音前處理：先把音檔轉成 wav，再以 RMS 音量閾值剪掉長段靜音、拼成「純語音」檔
+（`flows.extract_speech_segments`，不使用 Silero），回傳結構化結果。是否要採用純語音檔
+（例如語音佔比閾值判斷）由呼叫端依情境決定。
 
-`transcription/flows.py`（單檔轉錄）與 `tasks/batch_core.py`（批次轉錄）
-皆需要先把音檔轉成 wav，再以 RMS 音量閾值剪掉長段靜音、拼成「純語音」檔
-（`flows.extract_speech_segments`，不使用 Silero），這裡集中該流程，回傳結構化
-結果。是否要採用純語音檔（例如語音佔比閾值判斷）由呼叫端依情境決定。
+單檔任務已經改走去靜音的唯一入口 :func:`app.services.silence_removal.speech_view`；這裡只剩
+批次（`tasks/batch_core.py`，改用語音視圖是 #115）、VAD 測試端點與 tests/ 底下的工具腳本在用。
 
 Silero VAD 只做兩件事：長音檔分段時找切點，以及 Gemini 轉錄失敗後的切割重試
 （`flows.split_audio_on_silence`）。

@@ -44,7 +44,8 @@ class ModelCapabilities:
     supports_batch: bool
     pricing: Literal["per_token", "free"]
     remove_silence: bool
-    """轉錄前要不要剪掉靜音。"""
+    """轉錄前要不要剪掉靜音；不剪的照樣找出靜音當分段轉錄的切點（見
+    :mod:`app.services.silence_removal`）。"""
 
 
 @dataclass(frozen=True)
