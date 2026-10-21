@@ -19,11 +19,10 @@ import soundfile as sf
 
 from app.core.task_status import TaskStatus
 from app.exceptions import TransientError
-from app.provider import registry
 from app.runtime import run_mode
 from app.runtime.celery_redis import CHANNEL, CeleryRedisRunMode
 from app.runtime.run_mode import TRANSIENT_RETRIES
-from tests.support.fake_provider import FAKE_MODEL, FakeProvider
+from tests.support.fake_provider import FAKE_MODEL
 from tests.support.waiting import cancel_when_dispatched
 
 LINES = [(0.2, 1.5, 0, "おはよう。"), (2.3, 3.6, 1, "こんにちは。")]
@@ -44,31 +43,6 @@ def synthetic_audio() -> bytes:
 
 
 # ─── fixtures ────────────────────────────────────────────────────────────────
-
-@pytest.fixture
-def uploads(tmp_path, monkeypatch):
-    """上傳檔、保留音檔、去靜音產物都寫進暫存資料夾。"""
-    from app.core.config import get_settings
-
-    settings = get_settings()
-    assert not settings.is_standalone, "這裡測的是 Docker 模式"
-    folder = tmp_path / "temp_uploads"
-    folder.mkdir()
-    monkeypatch.setattr(settings, "temp_uploads_dir", str(folder))
-    monkeypatch.setattr(settings, "audio_store_dir", str(tmp_path / "audio_store"))
-    monkeypatch.setattr(settings, "vad_artifacts_dir", str(tmp_path / "vad_artifacts"))
-    return folder
-
-
-@pytest.fixture
-def task_db(test_engine):
-    """任務用 SessionLocal 寫紀錄；指到測試資料庫。"""
-    from app.database.session import SessionLocal, engine
-
-    SessionLocal.configure(bind=test_engine)
-    yield
-    SessionLocal.configure(bind=engine)
-
 
 @pytest.fixture
 def redis_server():
@@ -105,14 +79,6 @@ def broadcasts(redis_server):
 
 
 @pytest.fixture
-def fake():
-    provider = FakeProvider()
-    previous = registry.register("fake", provider)
-    yield provider
-    registry.register("fake", previous)
-
-
-@pytest.fixture
 def transcribe_media_task(monkeypatch, uploads, task_db, redis_run_mode, fake):
     """eager 執行的單檔 Celery 任務；broker 與結果後端都放記憶體。
 
@@ -120,6 +86,9 @@ def transcribe_media_task(monkeypatch, uploads, task_db, redis_run_mode, fake):
     """
     from app.celery.celery import celery_app
     from app.celery.task import transcribe_media_task as task
+    from app.core.config import get_settings
+
+    assert not get_settings().is_standalone, "這裡測的是 Docker 模式"
 
     monkeypatch.setitem(celery_app.conf, "broker_url", "memory://")
     monkeypatch.setitem(celery_app.conf, "result_backend", "cache+memory://")
