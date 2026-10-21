@@ -262,6 +262,14 @@ class GeminiProvider:
     def capabilities() -> Dict[str, ModelCapabilities]:
         return {model: _capabilities() for model in MODELS}
 
+    @staticmethod
+    def check_ready(model: str, api_key: str) -> str:
+        """設定頁的「測試」：用金鑰連一次 Gemini API（列出模型），結果和所選的模型無關。"""
+        status = GeminiClient(api_key=api_key).test_connection()
+        if not status.success:
+            raise ValueError(status.message or "測試失敗，但未提供具體原因。")
+        return "Gemini API (Google) 測試成功。"
+
     def transcribe(
         self, audio_path: Path, request: TranscribeRequest, progress: ProgressAndCancel,
     ) -> TranscriptionTaskResult:
