@@ -17,6 +17,7 @@ from app.core.task_status import TaskStatus
 from app.database.session import SessionLocal, get_db
 from app.provider.registry import UnsupportedModelError, check_request
 from app.repositories.batch_job_repository import BatchJobRepository
+from app.services import audio_store
 from app.services.api_keys import resolve_api_key
 from app.utils.logger import setup_logger
 from app.utils.paths import UnsafeUploadFilenameError, resolve_upload_path
@@ -187,6 +188,9 @@ def start_batch_task_sync(payload_str: str, batch_id: str) -> list[dict]:
                                     prompt=all_prompts, batch=True)
     except UnsupportedModelError as e:
         logger.warning(f"批次 {batch_id} 被拒: {e}")
+        # 被拒絕的批次不會執行：上傳檔不留在電腦上（前端重新送出時會重新上傳）
+        for f in request_data.files:
+            audio_store.discard_upload(f.filename, TEMP_UPLOADS_DIR)
         return [{
             "client_id": batch_id,
             "file_uid": f.file_uid,

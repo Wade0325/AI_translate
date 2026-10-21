@@ -188,7 +188,7 @@ def task_env(tmp_path, monkeypatch, test_engine, in_process_run_mode):
 
     calls = []
     monkeypatch.setattr(in_process_run_mode, "submit_transcription",
-                        lambda params, queue: calls.append(params) or "task-id")
+                        lambda task_id, params, queue: calls.append(params))
     monkeypatch.setattr(in_process_run_mode, "submit_batch",
                         lambda params: calls.append(params) or "task-id")
     return calls

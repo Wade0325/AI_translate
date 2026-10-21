@@ -1,16 +1,18 @@
 """接縫 3：Gemini 轉接器，用假的 google-genai 用戶端（#107）。
 
 只從轉接器的公開介面觀察：轉錄結果、用量、實際用到的處理模式、拋出的錯誤，
-以及遠端還留著哪些檔案（假用戶端的 ``stored``，等同去 Gemini 查）。
+以及遠端還留著哪些檔案、送出了哪些生成請求（假用戶端的 ``stored`` 與 ``generated``，
+等同去 Gemini 查）。
 """
+import threading
 from contextlib import suppress
 
 import pytest
 from google.genai import types
 
-from app.exceptions import GeminiPermanentError, GeminiTransientError
+from app.exceptions import GeminiPermanentError, GeminiTransientError, TranscriptionCancelledError
 from app.provider.base import ProgressAndCancel, TranscribeRequest
-from app.provider.google.provider import GeminiProvider
+from app.provider.google.provider import FLEX_MAX_RETRIES, GeminiProvider
 from tests.support.fake_genai import (
     Blocked,
     FakeGenaiClient,
@@ -70,6 +72,78 @@ class TestTranscribe:
 
         assert not result.success
         assert "PROHIBITED_CONTENT" in result.text
+
+
+def cancellable() -> tuple[threading.Event, ProgressAndCancel]:
+    """使用者可以取消的進度與取消物件：set 回傳的 Event 就是按下取消。"""
+    cancel = threading.Event()
+    return cancel, ProgressAndCancel(report=lambda text: None, cancel_requested=cancel.is_set)
+
+
+class TestCancel:
+    """使用者取消之後，音檔不再往外送、也不再送出要收費的生成請求。"""
+
+    def test_cancelled_before_upload_sends_nothing(self, gemini, genai, audio):
+        cancel, progress = cancellable()
+        cancel.set()
+
+        with pytest.raises(TranscriptionCancelledError):
+            gemini.transcribe(audio, request(), progress)
+
+        assert genai.stored == {}
+        assert genai.generated == []
+
+    def test_cancelled_while_gemini_processes_the_upload_stops_waiting(self, genai, audio):
+        cancel, progress = cancellable()
+        # 等 Gemini 處理上傳檔的期間，使用者按下取消
+        gemini = GeminiProvider(MODEL, client=genai, sleep=lambda seconds: cancel.set())
+        genai.processing_polls = 3
+
+        with pytest.raises(TranscriptionCancelledError):
+            gemini.transcribe(audio, request(), progress)
+        # 不等 Gemini 處理完就停下，也沒有送出生成
+        assert [f.state for f in genai.stored.values()] == [types.FileState.PROCESSING]
+        assert genai.generated == []
+
+        gemini.release()
+        assert genai.stored == {}  # 已經上傳的遠端檔，任務結束時照樣刪掉
+
+    @pytest.mark.parametrize("service_tier", [None, "flex"], ids=["standard", "flex"])
+    def test_cancelled_after_the_upload_sends_no_generation(
+            self, gemini, genai, audio, service_tier):
+        # 上傳一處理完，使用者就按下取消
+        progress = ProgressAndCancel(report=lambda text: None,
+                                     cancel_requested=lambda: bool(genai.stored))
+
+        with pytest.raises(TranscriptionCancelledError):
+            gemini.transcribe(audio, request(service_tier=service_tier), progress)
+
+        assert genai.generated == []
+
+    def test_cancelled_while_waiting_to_retry_flex_sends_nothing_more(self, genai, audio):
+        cancel, progress = cancellable()
+        # Flex 回 503、等著重試的期間，使用者按下取消
+        gemini = GeminiProvider(MODEL, client=genai, sleep=lambda seconds: cancel.set())
+        genai.replies = [unavailable()]
+
+        with pytest.raises(TranscriptionCancelledError):
+            gemini.transcribe(audio, request(service_tier="flex"), progress)
+
+        # 不再重試 Flex，也不退回標準
+        assert genai.generated == ["flex"]
+
+    def test_cancelled_during_the_last_flex_attempt_does_not_fall_back_to_standard(
+            self, gemini, genai, audio):
+        genai.overloaded = {"flex"}
+        # 最後一次 Flex 送出之後，使用者按下取消
+        progress = ProgressAndCancel(
+            report=lambda text: None,
+            cancel_requested=lambda: len(genai.generated) == FLEX_MAX_RETRIES)
+
+        with pytest.raises(TranscriptionCancelledError):
+            gemini.transcribe(audio, request(service_tier="flex"), progress)
+
+        assert genai.generated == ["flex"] * FLEX_MAX_RETRIES
 
 
 def processing_failed(genai):

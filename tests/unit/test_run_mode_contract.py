@@ -1,6 +1,7 @@
 """執行模式的契約測試：同一組測試跑行程內轉接器與 Redis 轉接器（fakeredis）。
 
-涵蓋兩者共有的行為：狀態廣播與訂閱、取消旗標的要求／查詢／清除、任務登記與查詢。
+涵蓋兩者共有的行為：狀態廣播與訂閱、取消旗標的要求／查詢／清除、任務登記與查詢、
+任務結束時清掉登記與旗標。
 Celery 本身的派送與撤銷不納入；行程內執行緒池的派送、撤銷與重試見 test_local_executor.py。
 """
 import asyncio
@@ -13,6 +14,7 @@ import pytest
 
 from app.runtime.celery_redis import CeleryRedisRunMode
 from app.runtime.in_process import InProcessRunMode
+from app.runtime.run_mode import RegisteredTask
 
 
 def _in_process():
@@ -59,16 +61,60 @@ def test_cancel_request_is_idempotent(mode):
 
 def test_task_registration(mode):
     assert mode.registered_task("f1") is None
-    mode.register_task("f1", "task-a")
-    assert mode.registered_task("f1") == "task-a"
+    mode.register_task("f1", "task-a", can_terminate=True)
+    assert mode.registered_task("f1") == RegisteredTask("task-a", can_terminate=True)
     # 同一檔案再開任務時覆蓋
-    mode.register_task("f1", "task-b")
-    assert mode.registered_task("f1") == "task-b"
+    mode.register_task("f1", "task-b", can_terminate=False)
+    assert mode.registered_task("f1") == RegisteredTask("task-b", can_terminate=False)
     assert mode.registered_task("f2") is None
 
 
 def test_empty_task_id_liveness_is_unknown(mode):
     assert mode.is_alive("") is None
+
+
+def test_task_ended_clears_its_registration_and_cancel_flag(mode):
+    mode.register_task("f1", "task-a", can_terminate=False)
+    mode.request_cancel("f1")
+
+    mode.task_ended("f1", "task-a")
+
+    assert mode.registered_task("f1") is None
+    assert mode.is_cancel_requested("f1") is False
+    mode.task_ended("f1", "task-a")  # 重複收尾不報錯
+
+
+def test_task_ended_leaves_a_newer_task_of_the_same_file_alone(mode):
+    # 同一個檔案已經派送了新的任務，舊任務才收尾：不能清掉新任務的登記與取消
+    mode.register_task("f1", "task-b", can_terminate=False)
+    mode.request_cancel("f1")
+
+    mode.task_ended("f1", "task-a")
+
+    assert mode.registered_task("f1").task_id == "task-b"
+    assert mode.is_cancel_requested("f1") is True
+
+
+def test_task_ended_without_a_registration_clears_the_cancel_flag(mode):
+    mode.request_cancel("f1")
+
+    mode.task_ended("f1", "task-a")
+
+    assert mode.is_cancel_requested("f1") is False
+
+
+def test_redis_registration_written_before_the_upgrade_is_still_found():
+    # 升級前（Docker 模式，登記留在 Redis 最多 24 小時）登記的只有 task_id：照樣找得到、
+    # 收尾時照樣清掉；不知道能不能強制終止，就當成不能
+    server = fakeredis.FakeServer()
+    client = fakeredis.FakeRedis(server=server)
+    client.set("transcription:task_id:f1", "task-a")
+    mode = CeleryRedisRunMode(
+        client, lambda: fakeredis.aioredis.FakeRedis(server=server, decode_responses=True))
+
+    assert mode.registered_task("f1") == RegisteredTask("task-a", can_terminate=False)
+    mode.task_ended("f1", "task-a")
+    assert mode.registered_task("f1") is None
 
 
 # ── 狀態廣播與訂閱 ──────────────────────────────────────────────────────
