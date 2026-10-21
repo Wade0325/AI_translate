@@ -92,6 +92,11 @@ class FakeProvider:
         # 看到取消時改丟這個例外：模擬 503 剛好在取消之後回來，或執行模式強制終止執行中的
         # 任務（Docker 模式的 gevent worker 在任務裡丟 GreenletExit）
         self.raises_when_cancelled: Optional[BaseException] = None
+        # 設定頁的「測試」（check_ready）：就緒時回傳 ready_message；not_ready 設定後改拋它。
+        # checked_keys 是每次檢查收到的 API 金鑰
+        self.ready_message = "假供應商可以轉錄"
+        self.not_ready: Optional[ValueError] = None
+        self.checked_keys: List[str] = []
 
     # ── ProviderFactory ──────────────────────────────────────────
     def capabilities(self):
@@ -100,6 +105,12 @@ class FakeProvider:
     def __call__(self, model: str, api_key: str) -> "FakeProvider":
         self.opened += 1
         return self
+
+    def check_ready(self, model: str, api_key: str) -> str:
+        self.checked_keys.append(api_key)
+        if self.not_ready is not None:
+            raise self.not_ready
+        return self.ready_message
 
     # ── Provider ─────────────────────────────────────────────────
     def transcribe(

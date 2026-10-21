@@ -125,7 +125,7 @@ docker compose --env-file .env down
 ### 步驟 1️⃣ — 設定 API 金鑰
 
 1. 點擊左側選單 **⚙️ 設定 (Settings)**。
-2. 在 **Gemini** 的卡片貼上你的 [Gemini API Key](https://aistudio.google.com/apikey)。本機不需要 API 金鑰。
+2. 在 **Gemini** 的卡片貼上你的 [Gemini API Key](https://aistudio.google.com/apikey)。本機不需要 API 金鑰，卡片上沒有金鑰欄位；免安裝版裡，本機卡片的 **Test Connection** 會檢查顯卡與所選模型的模型權重是否就緒（Docker 模式的本機轉錄在主機端的 GPU worker 執行，設定頁檢查不到）。
 3. 選擇預設模型（推薦 `gemini-2.5-flash`，速度與品質平衡）並儲存。轉錄頁目前不會套用這個預設模型，要在轉錄頁自己選。
 
 ### 步驟 2️⃣ — 上傳並設定轉錄參數
