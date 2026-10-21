@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from fastapi import status
 
 from app.schemas.schemas import ProviderConfigRequest, ProviderConfigResponse, ModelConfigurationSchema, ServiceStatus, ProviderTestRequest, ProviderTestResponse
-from app.database.session import get_db
+from app.database.session import describe_db_error, get_db
 from app.repositories.model_manager_repository import ModelSettingsRepository
 from app.provider.google.gemini import GeminiClient
 from app.services.api_keys import (
@@ -47,9 +47,9 @@ async def save_model_setting(
         await run_in_threadpool(repo.save, db, config_to_save)
         return {"success": True}
     except Exception as e:
-        message = f"保存模型設定時發生意外錯誤:'{config.provider}'. Error: {e}"
-        logger.error(message)
-        raise HTTPException(status_code=500, detail=message) from e
+        logger.error(f"保存模型設定失敗 (provider={config.provider!r}): {describe_db_error(e)}")
+        raise HTTPException(
+            status_code=500, detail="設定沒有存進資料庫，請再試一次；一直失敗的話請回報問題。") from e
 
 
 @router.get("/models/{provider}", response_model=Optional[ProviderConfigResponse])
@@ -75,9 +75,9 @@ async def get_model_setting(
         else:
             return None
     except Exception as e:
-        message = f"Failed to retrieve model setting for '{provider}'. Error: {e}"
-        logger.error(message)
-        raise HTTPException(status_code=500, detail=message) from e
+        logger.error(f"讀取模型設定失敗 (provider={provider!r}): {describe_db_error(e)}")
+        raise HTTPException(
+            status_code=500, detail="讀不到資料庫裡的設定，請再試一次；一直失敗的話請回報問題。") from e
 
 
 @router.post("/test", response_model=ProviderTestResponse)
