@@ -959,6 +959,7 @@ class TestModelCapabilitiesEndpoint:
             "accepts_prompt": False,
             "accepts_user_text": True,
             "supports_batch": False,
+            "supports_flex": False,
             "pricing": "free",
             "remove_silence": True,
         }
@@ -972,6 +973,15 @@ class TestModelCapabilitiesEndpoint:
         assert {"gemini-3.5-flash", "gemini-2.5-flash"} <= set(gemini)
         assert not any(c["accepts_prompt"] or c["accepts_user_text"] for c in local.values())
         assert all(c["accepts_prompt"] and c["accepts_user_text"] for c in gemini.values())
+
+    def test_only_gemini_models_take_flex_and_batch(self, api):
+        # 轉錄頁依這兩項停用本機選不了的處理模式（#162）
+        listed = listed_capabilities(api)
+
+        for (provider, model), c in listed.items():
+            if provider in ("local", "google"):
+                expected = provider == "google"
+                assert (c["supports_flex"], c["supports_batch"]) == (expected, expected), model
 
     def test_says_which_providers_need_the_users_api_key(self, api):
         # 轉錄頁送出前依這一項確認設定了金鑰，不再寫死哪個供應商不用（#97）
@@ -1033,7 +1043,7 @@ class TestModelCapabilitiesEndpoint:
         source = FRONTEND_PROVIDER_LIST_READER.read_text(encoding="utf-8")
         read = set(re.findall(r"\.([a-z]+(?:_[a-z]+)+)\b", source))
 
-        assert {"accepts_prompt", "accepts_user_text", "supports_batch",
+        assert {"accepts_prompt", "accepts_user_text", "supports_batch", "supports_flex",
                 "requires_api_key"} <= read
         assert read <= listed_fields(api)
 
@@ -1097,6 +1107,44 @@ class TestInputsTheModelDoesNotTake:
 
         assert "不支援批次" in reason
         assert fake.opened == 0
+
+
+# ─── 模型不支援的處理模式（#162） ─────────────────────────────────────────────
+
+class TestProcessingModeTheModelDoesNotSupport:
+    def test_flex_on_model_without_flex_is_rejected_with_clear_error(self, api, fake):
+        # 送給本機的 service_tier 以前會被默默忽略
+        fake.model_capabilities = replace(fake.model_capabilities, supports_flex=False)
+
+        reason = task_rejection(api, "uid-flex-unsupported", service_tier="flex")
+
+        assert FAKE_MODEL in reason
+        assert "不支援 Flex" in reason
+        assert fake.opened == 0
+
+    def test_local_model_rejects_flex(self, api):
+        reason = task_rejection(
+            api, "uid-local-flex", provider="local", model="moss-align", service_tier="flex")
+
+        assert "moss-align" in reason
+        assert "不支援 Flex" in reason
+
+    def test_flex_on_model_with_flex_runs(self, api, fake):
+        fake.model_capabilities = replace(fake.model_capabilities, supports_flex=True)
+        fake.script = list(SCRIPT)
+
+        messages = transcribe(api, "uid-flex-supported", service_tier="flex")
+
+        assert codes(messages)[-1] == TaskStatus.COMPLETED
+
+    @pytest.mark.parametrize("service_tier", [None, "standard"])
+    def test_standard_runs_on_model_without_flex(self, api, fake, service_tier):
+        fake.model_capabilities = replace(fake.model_capabilities, supports_flex=False)
+        fake.script = list(SCRIPT)
+
+        messages = transcribe(api, "uid-standard", service_tier=service_tier)
+
+        assert codes(messages)[-1] == TaskStatus.COMPLETED
 
 
 # ─── 取消 ────────────────────────────────────────────────────────────────────

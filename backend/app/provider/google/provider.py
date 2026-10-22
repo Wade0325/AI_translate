@@ -79,6 +79,7 @@ def _capabilities() -> ModelCapabilities:
         accepts_prompt=True,
         accepts_user_text=True,
         supports_batch=True,
+        supports_flex=True,
         pricing="per_token",
         remove_silence=True,
     )

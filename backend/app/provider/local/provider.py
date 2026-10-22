@@ -63,6 +63,7 @@ def _capabilities(model: str) -> ModelCapabilities:
         accepts_prompt=False,
         accepts_user_text=False,
         supports_batch=False,
+        supports_flex=False,
         pricing="free",
         remove_silence=True,
     )

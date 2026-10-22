@@ -47,7 +47,8 @@ def start_transcription_task_sync(payload_str: str, file_uid: str) -> None:
     try:
         provider, capabilities = check_request(
             request_data.provider, request_data.model,
-            prompt=request_data.prompt, user_text=request_data.original_text)
+            prompt=request_data.prompt, user_text=request_data.original_text,
+            service_tier=request_data.service_tier)
     except UnsupportedModelError:
         # 被拒絕的請求不會變成任務：上傳檔不留在電腦上（前端重新送出時會重新上傳）
         audio_store.discard_upload(request_data.filename, TEMP_UPLOADS_DIR)

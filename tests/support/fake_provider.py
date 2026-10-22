@@ -36,6 +36,7 @@ CAPABILITIES = ModelCapabilities(
     accepts_prompt=True,
     accepts_user_text=True,
     supports_batch=False,
+    supports_flex=False,
     pricing="free",
     remove_silence=True,
 )
