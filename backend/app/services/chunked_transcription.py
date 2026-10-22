@@ -9,10 +9,15 @@
    下一個來源；連正中間都切不開，就以失敗回報，不整段送出。
 2. 逐段轉錄：依時間先後一段一段送進轉接器（Gemini 的說話者編號依送進來的先後編號），每一段送出之前
    都查一次取消。
-3. 轉一段（:meth:`_ChunkedTranscription._transcribe_chunk`）是單一的步驟。失敗時，模型能力允許切段
-   重試、這一段又不短於下限（``TRANSCRIPTION_MAX_DURATION_SECONDS``）時，只把這一段用同一套切點來源
-   切成兩段，依序轉錄，兩段各自又失敗時照同一條規則；不允許或太短，整個分段轉錄以失敗結束。
-4. 合併：每一段的片段平移到它在語音視圖上的起點，片段 key 加上這一段的前綴。
+3. 轉一段（:meth:`_ChunkedTranscription._transcribe_chunk`）是單一的步驟，#94 的接續之後接在它的最後：
+   - 暫時錯誤（429、503 之類）：等一段時間再轉這一段，已完成的段不重送。回應建議了等待秒數就照它，
+     沒有時從起始等待開始每次加倍，都不超過上限；等待前廣播，期間取消就停。重試用完，整個分段轉錄以
+     失敗結束。暫時錯誤不切段重試：把段切小，對配額用完與超載都沒有幫助。
+   - 其他失敗：模型能力允許切段重試、這一段又不短於下限（``TRANSCRIPTION_MAX_DURATION_SECONDS``）時，
+     只把這一段用同一套切點來源切成兩段，依序轉錄，兩段各自又失敗時照同一條規則；不允許或太短，整個
+     分段轉錄以失敗結束。
+4. 合併：每一段的片段平移到它在語音視圖上的起點，片段 key 加上這一段的前綴。#93 的跨段說話者編號
+   之後接在這裡：拿得到所有轉完的段，每一段帶著音檔、位置與段內片段。
 5. 時間還原回原音檔，依開始時間排好、重編序號。
 
 片段 key：依單次長度切出的兩段前綴是 ``a``、``b``，切段重試切出的兩段是 ``s0``、``s1``，由外往內接，
@@ -119,7 +124,8 @@ class _Halves:
     first: _Chunk
     second: _Chunk
     at_silence: bool
-    """切在靜音處（已知的靜音邊界或 Silero 找到的）；False 是找不到靜音，切在正中間。"""
+    """切在靜音處（已知的靜音邊界或 Silero 給的切點）；False 是找不到靜音，切在正中間。Silero 在有語音
+    卻沒有夠長的靜音時，自己也會給正中間。"""
 
 
 @dataclass(frozen=True)
@@ -200,7 +206,8 @@ class _ChunkedTranscription:
         self._transcribe_in_order(halves.second)
 
     def _transcribe_chunk(self, chunk: _Chunk) -> None:
-        """轉一段：送進轉接器；失敗時模型能力允許、這一段又夠長，只把這一段切成兩段重試。"""
+        """轉一段：送進轉接器（暫時錯誤在 :meth:`_attempt` 裡重試）；失敗時模型能力允許、這一段又夠長，
+        只把這一段切成兩段重試。"""
         result = self._attempt(chunk)
         if result.success:
             self._transcribed.append(_TranscribedChunk(chunk, result))
