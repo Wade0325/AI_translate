@@ -1,4 +1,4 @@
-"""Docker 模式的單檔任務：Celery 任務包裝層接上 Celery＋Redis 執行模式（#113）。
+"""Docker 模式的單檔任務與批次：Celery 任務包裝層接上 Celery＋Redis 執行模式（#113、#115）。
 
 Celery 任務在測試行程裡以 eager 方式執行（``apply``），Redis 換成 fakeredis，供應商換成假供應商；任務生命週期、分段轉錄、ffmpeg 與 SQLite
 測試資料庫都走真的。經 broker 的派送不在 CI 測。
@@ -6,38 +6,25 @@ Celery 任務在測試行程裡以 eager 方式執行（``apply``），Redis 換
 測試只從外部觀察：Celery 回報的結果、執行模式廣播的狀態訊息、供應商被呼叫幾次，
 以及 API 查到的任務紀錄。
 """
-import io
 import json
 import uuid
 from dataclasses import replace
 
 import fakeredis
 import fakeredis.aioredis
-import numpy as np
 import pytest
-import soundfile as sf
 
 from app.core.task_status import TaskStatus
 from app.exceptions import TransientError
 from app.runtime import run_mode
 from app.runtime.celery_redis import CHANNEL, CeleryRedisRunMode
-from tests.support.fake_provider import FAKE_MODEL
+from tests.support.fake_provider import FAKE_MODEL, Fail
+from tests.support.synthetic_audio import synthetic_audio
+from tests.support.task_api import file_results
 from tests.support.waiting import cancel_when_dispatched
 
 LINES = [(0.2, 1.5, 0, "おはよう。"), (2.3, 3.6, 1, "こんにちは。")]
 TERMINAL = {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED}
-
-
-def synthetic_audio() -> bytes:
-    """有聲 2 秒、靜音 3 秒交錯的合成 wav，共 12 秒。"""
-    rate = 16000
-    samples = np.zeros(12 * rate, dtype=np.float32)
-    for start in (0, 5, 10):
-        t = np.arange(2 * rate) / rate
-        samples[start * rate:(start + 2) * rate] = 0.3 * np.sin(2 * np.pi * 440 * t)
-    buffer = io.BytesIO()
-    sf.write(buffer, samples, rate, format="WAV")
-    return buffer.getvalue()
 
 
 # ─── fixtures ────────────────────────────────────────────────────────────────
@@ -77,13 +64,12 @@ def broadcasts(redis_server):
 
 
 @pytest.fixture
-def transcribe_media_task(monkeypatch, uploads, task_db, redis_run_mode, fake):
-    """eager 執行的單檔 Celery 任務；broker 與結果後端都放記憶體。
+def celery_in_memory(monkeypatch, uploads, task_db, redis_run_mode, fake):
+    """eager 執行 Celery 任務：broker 與結果後端都放記憶體。
 
     預設的結果後端是 Postgres：測試不能連它，也不能寫進開發者本機的資料庫。
     """
     from app.celery.celery import celery_app
-    from app.celery.task import transcribe_media_task as task
     from app.core.config import get_settings
 
     assert not get_settings().is_standalone, "這裡測的是 Docker 模式"
@@ -92,6 +78,13 @@ def transcribe_media_task(monkeypatch, uploads, task_db, redis_run_mode, fake):
     monkeypatch.setitem(celery_app.conf, "result_backend", "cache+memory://")
     # 這個執行緒之前建立過的結果後端用的是舊設定，換掉
     monkeypatch.delattr(celery_app._local, "backend", raising=False)
+
+
+@pytest.fixture
+def transcribe_media_task(celery_in_memory):
+    """eager 執行的單檔 Celery 任務。"""
+    from app.celery.task import transcribe_media_task as task
+
     return task
 
 
@@ -285,3 +278,69 @@ def test_revoked_signal_leaves_a_terminated_task_to_its_own_finishing(
     # 執行中被強制終止的任務，由它自己的生命週期在 finally 收尾：訊號這邊不重複收尾
     assert client.get(f"/api/v1/history/{task_id}").status_code == 404
     assert [p.name for p in uploads.iterdir()] == ["uid-terminated.wav"]
+
+
+# ─── 批次 ────────────────────────────────────────────────────────────────────
+
+@pytest.fixture
+def batch_tasks(celery_in_memory, fake):
+    """eager 執行的批次 Celery 任務（執行與復原）；假供應商支援批次。"""
+    from app.celery.batch_task import batch_recover_task, batch_transcribe_task
+
+    fake.model_capabilities = replace(fake.model_capabilities, supports_batch=True)
+    return batch_transcribe_task, batch_recover_task
+
+
+def batch_params(uploads, batch_id: str, file_uids: list[str]) -> dict:
+    """上傳合成音檔，回傳 API 派送給批次 Celery 任務的參數。"""
+    files = []
+    for file_uid in file_uids:
+        path = uploads / f"{file_uid}.wav"
+        path.write_bytes(synthetic_audio())
+        files.append({"file_path": str(path), "original_filename": path.name, "file_uid": file_uid})
+    return {"files": files, "provider": "fake", "model": FAKE_MODEL, "api_keys": "",
+            "source_lang": "ja", "client_id": batch_id, "batch_id": batch_id}
+
+
+def test_batch_files_end_like_tasks_in_docker_mode(batch_tasks, uploads, fake, broadcasts, client):
+    # 和免安裝模式一樣：每個檔案的結果廣播到 Redis 的狀態頻道，存下任務紀錄與片段；一個檔案失敗
+    # 不影響另一個，Celery 照樣回報批次跑完
+    run, _ = batch_tasks
+    fake.script = [list(LINES), Fail("音檔無法解碼")]
+
+    result = run.apply(args=[batch_params(uploads, "batch-docker", ["docker-a", "docker-b"])],
+                       task_id=str(uuid.uuid4()))
+
+    messages = broadcasts()
+    assert result.state == "SUCCESS"
+    ends = file_results(messages)
+    assert {uid: m["status_code"] for uid, m in ends.items()} == {
+        "docker-a": TaskStatus.COMPLETED, "docker-b": TaskStatus.FAILED}
+    segments = client.get(f"/api/v1/transcripts/{ends['docker-a']['task_uuid']}").json()["segments"]
+    assert [s["text"] for s in segments] == ["おはよう。", "こんにちは。"]
+    failed = client.get(f"/api/v1/history/{ends['docker-b']['task_uuid']}").json()
+    assert (failed["status"], failed["is_batch"]) == (TaskStatus.FAILED, True)
+    assert messages[-1]["status_code"] == TaskStatus.BATCH_COMPLETED
+    assert list(uploads.iterdir()) == []
+
+
+def test_batch_recovers_in_docker_mode(batch_tasks, uploads, fake, broadcasts, client):
+    # 輪詢中斷，檔案先記成失敗；復原的 Celery 任務接著把它結束成完成，片段落在原音檔的時間軸上
+    run, recover = batch_tasks
+    fake.script = [list(LINES)]
+    fake.batch_polls = [RuntimeError("連線中斷")]
+    run.apply(args=[batch_params(uploads, "batch-docker-recover", ["docker-recover"])],
+              task_id=str(uuid.uuid4()))
+    first = file_results(broadcasts())["docker-recover"]
+    assert first["status_code"] == TaskStatus.FAILED
+
+    result = recover.apply(args=["batch-docker-recover", "test-key"])
+
+    recovered = file_results(broadcasts())["docker-recover"]
+    assert result.state == "SUCCESS"
+    assert (recovered["status_code"], recovered["task_uuid"]) == (
+        TaskStatus.COMPLETED, first["task_uuid"])
+    segments = client.get(f"/api/v1/transcripts/{first['task_uuid']}").json()["segments"]
+    # 去靜音之後 2.3 秒是第二個有聲段的開頭（有聲段前後各留 0.3 秒）
+    assert [(s["start"], s["text"]) for s in segments] == [
+        (pytest.approx(0.2), "おはよう。"), (pytest.approx(4.7), "こんにちは。")]

@@ -12,8 +12,7 @@ class TranscriptionTaskResult(BaseModel):
         "",
         description="給使用者看的說明：失敗時是原因；成功但沒有片段時是為什麼沒有（例如 Gemini "
                     "的回應沒有任何帶時間戳的文字），整個任務都沒有片段時任務生命週期拿它回報失敗。"
-                    "有片段時是空的：轉錄結果就是 segments。只有批次的結果還放 Gemini 寫的 LRC "
-                    "文字（#115 改掉）。",
+                    "有片段時是空的：轉錄結果就是 segments。",
     )
     input_tokens: int = Field(0, description="輸入 token 數量")
     output_tokens: int = Field(0, description="輸出 token 數量")

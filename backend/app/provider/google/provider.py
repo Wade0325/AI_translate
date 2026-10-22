@@ -7,8 +7,7 @@
   header 為準，回報在 ``service_tier_used``，計價據此決定要不要打折。
 - LRC 解析：Gemini 寫的 LRC 在這裡解析一次就變成轉錄結果（片段，規則見 :func:`_segments_from_lrc`），
   之後的流程不再碰 LRC 文字。
-- 批次：送出與輪詢；成功結束時把每個請求的回應換成轉錄結果。批次暫時還不解析，結果帶的是
-  Gemini 寫的 LRC 文字（#115 改）。
+- 批次：送出與輪詢；成功結束時每個請求的回應和單檔一樣解析成轉錄結果。
 - 取消：上傳前、等 Gemini 處理上傳檔的每次輪詢、每次送出生成（含 Flex 的每次重試）之前，都經
   進度與取消物件查一次；使用者取消時拋 :class:`~app.exceptions.TranscriptionCancelledError`，
   音檔不再往外送、也不再送出要收費的請求。已經上傳的遠端檔照樣在 :meth:`GeminiProvider.release`
@@ -400,28 +399,15 @@ def _batch_request(gemini_file: Any, prompt: str) -> Dict[str, Any]:
 
 
 def _batch_item_result(inline: Any) -> TranscriptionTaskResult:
-    """批次裡一個請求的回應；成功時 text 是 Gemini 寫的 LRC（#115 之前批次還處理 LRC 文字），
-    失敗時是要存進任務紀錄的錯誤訊息。"""
+    """批次裡一個請求的回應，和單檔的回應一樣解析成轉錄結果（見 :func:`_transcription_result`），
+    處理模式是 batch。每個請求是一個任務，說話者編號各自從 S0 起算。Gemini 回報這個請求失敗時，
+    text 是給使用者看的原因。"""
     response = inline.response
     if not response:
-        return _batch_failure(f"轉錄失敗: {inline.error or '未知錯誤'}")
-    if not response.candidates:
-        text = "轉錄失敗：Gemini 回應被阻擋"
-        try:
-            text = f"轉錄失敗：請求被 Gemini 以 '{response.prompt_feedback.block_reason}' 原因阻擋"
-        except Exception:
-            pass
-        return _batch_failure(text)
-    input_tokens, output_tokens, total_tokens = _usage(response)
-    return TranscriptionTaskResult(
-        success=True, text=response.text or "", input_tokens=input_tokens,
-        output_tokens=output_tokens, total_tokens=total_tokens, service_tier_used="batch")
-
-
-def _batch_failure(text: str) -> TranscriptionTaskResult:
-    return TranscriptionTaskResult(
-        success=False, text=text, input_tokens=0, output_tokens=0, total_tokens=0,
-        service_tier_used="batch")
+        return TranscriptionTaskResult(
+            success=False, text=f"[[Gemini 回報這個請求失敗：{inline.error or '未知錯誤'}]]",
+            service_tier_used="batch")
+    return _transcription_result(response, "batch", _SpeakerIds())
 
 
 class GeminiProvider:

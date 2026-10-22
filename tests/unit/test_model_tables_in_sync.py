@@ -77,8 +77,8 @@ def test_free_models_cost_nothing_in_the_price_table():
 
 
 def test_price_table_has_no_model_that_is_off_the_list():
-    # 拿掉價格的代價：升級前送出、升級後才完成的任務仍照 token 計價（lifecycle 的 _pricing、
-    # 批次的 batch_core），查不到價格就改以 default 入帳。#42 選擇不留孤兒，接受這個代價
+    # 拿掉價格的代價：升級前送出、升級後才完成的任務（包括批次的檔案）仍照 token 計價（lifecycle 的
+    # _pricing），查不到價格就改以 default 入帳。#42 選擇不留孤兒，接受這個代價
     listed = {item.model for _, item in _listed()}
     orphans = sorted(set(MODEL_PRICES) - listed - {"default"})
     assert not orphans, (

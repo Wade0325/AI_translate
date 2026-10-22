@@ -18,7 +18,8 @@
      分段轉錄以失敗結束。
 4. 合併：每一段的片段平移到它在語音視圖上的起點，片段 key 加上這一段的前綴。#93 的跨段說話者編號
    之後接在這裡：拿得到所有轉完的段，每一段帶著音檔、位置與段內片段。
-5. 時間還原回原音檔，依開始時間排好、重編序號。
+5. 放回原音檔的時間軸（:meth:`SpeechTimeline.in_original_order`）：時間還原回原音檔，依開始時間
+   排好、重編序號。批次不分段，結果回來之後也經過同一步。
 
 片段 key：依單次長度切出的兩段前綴是 ``a``、``b``，切段重試切出的兩段是 ``s0``、``s1``，由外往內接，
 例如 ``a.b.0003``、``b.s1.0002``；沒有分段時就是轉接器給的 key。
@@ -267,19 +268,13 @@ class _ChunkedTranscription:
                 self._wait_before_retrying(chunk, error, retries)
 
     def _wait_before_retrying(self, chunk: _Chunk, error: TransientError, retry: int) -> None:
-        """第 ``retry`` 次重試之前：先廣播要等多久、為什麼，再等；期間取消就停。
-
-        供應商建議了等待秒數時照它，沒有時從起始等待開始每次加倍；都不超過上限。
-        """
-        settings = get_settings()
-        suggested = error.retry_after
-        if suggested is None:
-            suggested = settings.transient_error_initial_wait_seconds * 2 ** (retry - 1)
-        seconds = max(0.0, min(suggested, settings.transient_error_max_wait_seconds))
+        """第 ``retry`` 次重試之前：先廣播要等多久（見 :meth:`TransientError.wait_seconds`）、為什麼，
+        再等；期間取消就停。"""
+        seconds = error.wait_seconds(retry)
         # 使用者已經取消（例如 503 剛好在取消之後回來）：不再宣告要重試
         self._progress.raise_if_cancelled()
         notice = (f"{self._which(chunk)}遇到暫時錯誤（{_why(error)}），{seconds:g} 秒後第 {retry} 次"
-                  f"重試（最多 {settings.transient_error_retries} 次）...")
+                  f"重試（最多 {get_settings().transient_error_retries} 次）...")
         logger.warning(f"{notice} {error}")
         self._progress.report(notice)
         self._progress.wait(seconds)
@@ -359,18 +354,13 @@ class _ChunkedTranscription:
 
     # ── 合併與結果 ───────────────────────────────────────────────
     def _merged(self) -> TranscriptionTaskResult:
-        """合併轉完的段、時間還原回原音檔，回傳成功的轉錄結果。
-
-        時間還原之後才排序：還原後開始時間相同的片段照合併的先後，和以前（任務生命週期在還原之後
-        才排序）一樣。
-        """
+        """合併轉完的段、放回原音檔的時間軸，回傳成功的轉錄結果。"""
         segments = _merge(self._transcribed)
         if self._view.removed_silence:
             self._progress.report("時間還原回原音檔...")
-            segments = self._view.restore(segments)
-            logger.info("時間已還原回原音檔的時間軸")
+            logger.info("片段的時間還原回原音檔的時間軸")
         return self._result(success=True, text=_why_no_segments(segments, self._transcribed),
-                            segments=_in_time_order(segments))
+                            segments=self._view.timeline.in_original_order(segments))
 
     def _result(self, *, success: bool, text: str,
                 segments: Sequence[Dict[str, Any]] = ()) -> TranscriptionTaskResult:
@@ -433,14 +423,6 @@ def _shifted(span: Mapping[str, Any], chunk: _Chunk) -> Dict[str, Any]:
         if shifted.get(key) is not None:
             shifted[key] = chunk.to_view(shifted[key])
     return shifted
-
-
-def _in_time_order(segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """依開始時間排好、重編序號：各段合併之後序號才會連續。"""
-    ordered = sorted(segments, key=lambda s: s.get("start", 0.0))
-    for i, segment in enumerate(ordered):
-        segment["seq"] = i
-    return ordered
 
 
 def _why_no_segments(segments: Sequence[Mapping[str, Any]],

@@ -1,11 +1,13 @@
 """集中定義的自訂例外類別。
 
-Celery autoretry_for 與上層錯誤處理依賴此分類來決定是否重試。
+上層錯誤處理依賴此分類來決定是否重試。
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Optional
+
+from app.core.config import get_settings
 
 if TYPE_CHECKING:
     from app.services.transcription.models import TranscriptionTaskResult
@@ -18,8 +20,9 @@ class AppError(Exception):
 class TransientError(AppError):
     """供應商的暫時錯誤（429/503/網路抖動）：稍後再試可能就會好，不是這一段失敗。
 
-    單檔任務由分段轉錄等一段時間再轉出錯的那一段（見 :mod:`app.services.chunked_transcription`）；
-    批次交給執行模式重試整個批次。
+    在出錯的那一步等一段時間（:meth:`wait_seconds`）再做一次，已經做完的不重做：單檔任務由分段轉錄
+    重轉出錯的那一段（見 :mod:`app.services.chunked_transcription`），批次重做上傳、送出或查詢的那一次
+    （見 :mod:`app.tasks.batch_core`）。執行模式不重試整個任務或批次。
     """
 
     def __init__(self, message: str = "", retry_after: Optional[float] = None,
@@ -30,6 +33,16 @@ class TransientError(AppError):
         self.reason = reason
         """給使用者看的簡短原因，例如「503 UNAVAILABLE」；沒有時用例外訊息。例外訊息照錄供應商的錯誤，
         可能長得不適合放在畫面上。"""
+
+    def wait_seconds(self, retry: int) -> float:
+        """第 ``retry`` 次重試（從 1 起算）之前等幾秒：供應商建議了等待秒數時照它，沒有時從起始等待
+        （``TRANSIENT_ERROR_INITIAL_WAIT_SECONDS``）開始每次加倍；都不超過上限
+        （``TRANSIENT_ERROR_MAX_WAIT_SECONDS``）。最多重試幾次是 ``TRANSIENT_ERROR_RETRIES``。"""
+        settings = get_settings()
+        suggested = self.retry_after
+        if suggested is None:
+            suggested = settings.transient_error_initial_wait_seconds * 2 ** (retry - 1)
+        return max(0.0, min(suggested, settings.transient_error_max_wait_seconds))
 
 
 class GeminiTransientError(TransientError):

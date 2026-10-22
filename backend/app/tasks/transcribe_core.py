@@ -17,7 +17,7 @@ from app.provider.registry import open_provider
 from app.services import chunked_transcription
 from app.services.silence_removal import speech_view
 from app.services.transcription.models import TranscriptionTaskResult
-from app.tasks.lifecycle import TaskLifecycle
+from app.tasks.lifecycle import Task, TaskLifecycle
 from app.utils.audio import get_audio_duration
 from app.utils.logger import setup_logger
 from app.utils.paths import delete_temp_files
@@ -31,7 +31,7 @@ def run_transcription(task_params_dict: dict, task_uuid: str) -> dict:
     暫時錯誤在分段轉錄裡重試出錯的那一段，執行模式不重試整個任務。
     """
     params = TranscriptionTaskParams.model_validate(task_params_dict)
-    return TaskLifecycle(task_uuid, params).run(
+    return TaskLifecycle(task_uuid, _task(params)).run(
         lambda audio, progress: _transcribe(params, task_uuid, audio, progress))
 
 
@@ -41,7 +41,21 @@ def abandon_transcription(task_params_dict: dict, task_uuid: str, *, cancelled: 
     執行模式在任務不會再執行時呼叫：在佇列中被撤銷（``cancelled``），或應用程式關閉時還在排隊。
     """
     params = TranscriptionTaskParams.model_validate(task_params_dict)
-    TaskLifecycle(task_uuid, params).abandon(cancelled=cancelled)
+    TaskLifecycle(task_uuid, _task(params)).abandon(cancelled=cancelled)
+
+
+def _task(params: TranscriptionTaskParams) -> Task:
+    return Task(
+        file_path=params.file_path,
+        file_uid=params.file_uid,
+        client_id=params.client_id,
+        original_filename=params.original_filename,
+        provider=params.provider,
+        model=params.model,
+        source_lang=params.source_lang,
+        target_lang=params.target_lang,
+        session_id=params.session_id,
+    )
 
 
 def _transcribe(

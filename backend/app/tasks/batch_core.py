@@ -1,683 +1,533 @@
-"""批次轉錄任務本體（純同步 Python，與任務框架無關）。
+"""批次（純同步 Python，與任務框架無關）：以批次模式一起送出的一組任務，每個音檔仍各是一個任務。
 
-Docker 模式由 `app.celery.batch_task` 的 Celery shim 包裝執行，
-免安裝模式由 `app.runtime.in_process.InProcessRunMode.submit_batch / submit_recover`
-丟進行程內執行緒池；兩邊共用這裡的同一份流程。
+Docker 模式由 :mod:`app.celery.batch_task` 的 Celery shim 包裝執行，免安裝模式由
+:class:`app.runtime.in_process.InProcessRunMode` 丟進行程內執行緒池；兩邊共用這裡的同一份流程。
+
+每個檔案都走任務生命週期（:mod:`app.tasks.lifecycle`），和單檔任務一樣有任務紀錄、片段、計價與
+狀態廣播；去靜音也和單檔任務一樣經語音視圖（:func:`app.services.silence_removal.speech_view`）。
+兩個入口：
+
+- 執行（:func:`run_batch`）：開始每個檔案 → 去靜音、上傳 → 送出 → 輪詢到批次結束 → 結束送出的檔案
+- 復原（:func:`run_recover`）：重啟或輪詢中斷之後查一次批次，結束了就結束送出的檔案
+
+結束送出的檔案只有一份流程（:func:`_end_submitted`）：兩個入口都讀送出時存下的每個檔案（任務紀錄、
+長度、上傳檔，以及語音視圖的序列化形式），供應商的結果用存下的語音視圖放回原音檔的時間軸，再交給
+任務生命週期記下完成或失敗、收尾、宣告。執行時用自己的任務生命週期，復原時從任務紀錄接回。這些先存在
+批次紀錄現有的 JSON 欄位，搬進 batch_files 資料表是 #116。
+
+送出之前就失敗的檔案（開不了供應商、上傳失敗、送不出去）當場結束；輪詢中斷時，送出的檔案照失敗結束，
+之後還能從復原入口結束成完成。上傳、送出與查詢遇到暫時錯誤（429、503）時，等一段時間再做一次那一步
+（:meth:`~app.exceptions.TransientError.wait_seconds`）。執行模式不重試整個批次：檔案都已經開始，
+整個批次再執行一次會替同一個音檔再開一個任務。資料庫出錯時照任務生命週期的規則，不轉述例外
+（:func:`~app.tasks.lifecycle.without_db_details`）。
 """
 
-import time
-import uuid
-import traceback
-from pathlib import Path
-import json
-from datetime import datetime
+from __future__ import annotations
 
-from app.celery.models import BatchTranscriptionTaskParams
-from app.runtime.run_mode import publish_status
+import json
+import time
+import traceback
+import uuid
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional, TypeVar, Union
+
+from sqlalchemy.orm import Session
+
+from app.celery.models import BatchFileItemParams, BatchTranscriptionTaskParams
 from app.core.config import get_settings
 from app.core.default_prompt import build_prompt
 from app.core.task_status import TaskStatus
+from app.database.models import BatchJob
 from app.database.session import SessionLocal
-from app.exceptions import GeminiTransientError
-from app.provider.registry import open_batch_provider, reopen_batch_provider
-from app.repositories.transcription_log_repository import TranscriptionLogRepository
+from app.exceptions import TransientError
+from app.provider.base import BatchProvider, BatchStatus
+from app.provider.registry import open_batch_provider, provider_info, reopen_batch_provider
 from app.repositories.batch_job_repository import BatchJobRepository
-from app.services.calculator.service import CalculatorService
-from app.services.calculator.models import CalculationItem
-from app.services.converter.service import convert_from_lrc
-from app.services.transcription.models import TranscriptionResponse, TranscriptionTaskResult
-from app.services.transcription.flows import remap_lrc_timestamps
-from app.services.vad.preprocess import run_vad_extraction
-from app.services.vad.artifacts import persist_speech_extraction
-from app.utils.audio import get_audio_duration
+from app.runtime.run_mode import publish_status
+from app.services.silence_removal import SpeechTimeline, SpeechView, speech_view
+from app.services.transcription.models import TranscriptionTaskResult
+from app.tasks.lifecycle import Task, TaskLifecycle, shown_to_user, without_db_details
 from app.utils.logger import setup_logger
-from app.utils.paths import is_temp_upload
+from app.utils.paths import delete_temp_files
 
 logger = setup_logger(__name__)
 
-_settings = get_settings()
-BATCH_COST_DISCOUNT = _settings.batch_cost_discount
-# 語音佔比超過此閾值時，視為音檔幾乎全是語音，跳過去靜音
-VAD_SPEECH_RATIO_SKIP_THRESHOLD = _settings.vad_speech_ratio_skip_threshold
+T = TypeVar("T")
+
+FIRST_POLL_SECONDS = 10.0
+"""送出之後等幾秒才第一次查；之後每次多等一半，最多 :data:`MAX_POLL_SECONDS`。"""
+MAX_POLL_SECONDS = 60.0
+
+Publish = Callable[..., None]
+"""批次層級的狀態廣播：``publish(text, status_code=TaskStatus.PROCESSING)``。"""
 
 
-def _publish_batch_status(
-    batch_id: str,
-    task_uuid: str,
-    status_text: str,
-    status_code: TaskStatus = TaskStatus.PROCESSING,
-    result_data: dict = None,
-    file_uid: str = None,
-):
-    """批次的 publish_status 薄包裝，自動附上 batch_id。"""
-    publish_status(
-        batch_id,
-        task_uuid,
-        status_text,
-        status_code=status_code,
-        file_uid=file_uid,
-        result_data=result_data,
-        extra={"batch_id": batch_id},
-    )
+class _BatchError(Exception):
+    """批次讓一個檔案失敗的原因，例如上傳失敗、整個批次失敗；訊息給使用者看。"""
 
 
-def _cleanup_local_file(file_path: str):
-    """清理本地暫存檔案"""
+def run_batch(task_params_dict: dict, task_uuid: str) -> None:
+    """執行一個批次；``task_uuid`` 是執行模式給這次執行的代號，批次層級的廣播帶著它。
+
+    Raises:
+        Exception: 中途出錯時，還沒結束的檔案都照失敗結束、批次記成失敗之後，原本的例外往上拋，
+            讓執行模式記下失敗；資料庫例外換成 :class:`~app.exceptions.TaskDatabaseError`。
+    """
+    _Run(BatchTranscriptionTaskParams.model_validate(task_params_dict), task_uuid).run()
+
+
+def run_recover(batch_id: str, api_key: str) -> None:
+    """復原：重啟或輪詢中斷之後查一次批次，結束了就結束送出的每個檔案，和執行同一份流程。
+
+    還沒結束、查不到、建立不了供應商轉接器或中途出錯時，批次留在輪詢中，之後可以再復原。
+    不往上拋例外：出錯只記 log。
+    """
+    publish = _publisher(batch_id, "")
+    started_at = time.time()
+
+    def keep_polling(text: str) -> None:
+        try:
+            with SessionLocal() as db:
+                BatchJobRepository().update_job(db, batch_id, {"status": "POLLING"})
+        except Exception as e:
+            logger.error(f"批次 {batch_id} 無法記回輪詢中: {without_db_details(e)}")
+        publish(text, TaskStatus.BATCH_COMPLETED)
+
     try:
-        path = Path(file_path)
-        if path.exists() and is_temp_upload(path):
-            path.unlink()
-            logger.info(f"已刪除暫存檔案: {path.name}")
+        with SessionLocal() as db:
+            job = BatchJobRepository().get_job(db, batch_id)
+            name = job.gemini_job_name if job else None
+            stored = json.loads(job.task_params_json) if job and job.task_params_json else {}
+        if job is None:
+            logger.error(f"復原找不到批次: {batch_id}")
+            return
+        if not name:
+            logger.error(f"批次 {batch_id} 還沒有送出，無法復原")
+            keep_polling("批次還沒有送出，無法恢復")
+            return
+
+        publish("正在恢復批次的結果...")
+        try:
+            # 復原不驗證模型：升級後模型清單拿掉了送出時的模型，進行中的批次也收得回來
+            adapter = reopen_batch_provider(
+                stored.get("provider", "google"), stored.get("model", ""), api_key)
+        except ValueError as e:
+            logger.warning(f"復原批次 {batch_id} 無法建立供應商轉接器: {e}")
+            keep_polling("API Key 無效")
+            return
+        try:
+            try:
+                status = adapter.poll_batch(name)
+            except Exception as e:
+                keep_polling(f"查詢批次失敗: {e}")
+                return
+            logger.info(f"復原批次 {batch_id}: 狀態 = {status.state}")
+            if not status.done:
+                keep_polling(f"批次仍在進行中 ({status.state})")
+                return
+            _end_submitted(batch_id, status, publish, _resumed, started_at=started_at)
+        finally:
+            # 接手批次的轉接器一樣要釋放（見 BatchProvider）
+            adapter.release()
     except Exception as e:
-        logger.warning(f"刪除暫存檔案失敗: {e}")
+        error = without_db_details(e)
+        logger.error(f"復原批次 {batch_id} 失敗:\n{''.join(traceback.format_exception(error))}")
+        keep_polling(f"恢復批次失敗: {shown_to_user(error)}")
 
 
-def _vad_preprocess_file(
-    file_path: Path,
-    temp_dir: Path,
-    *,
-    file_uid: str | None = None,
-    original_filename: str | None = None,
-):
-    """對單一音檔執行去靜音（批次用）。
+def abandon_batch(task_params_dict: dict) -> None:
+    """收尾一個不會再執行的批次（應用程式關閉時還在排隊）：和單檔任務一樣，每個檔案都留下任務紀錄、
+    照保留設定處理上傳檔（:meth:`TaskLifecycle.abandon`）；批次記成失敗。
 
-    回傳 (上傳用的檔案路徑, 有聲區間 or None, 需清理的暫存檔列表)。
-    若語音佔比 >= ``VAD_SPEECH_RATIO_SKIP_THRESHOLD`` 或去靜音失敗，
-    則回傳原始路徑與 None。
+    批次沒有撤銷的入口，不會再執行的只有這一種。
     """
-    result = run_vad_extraction(file_path, temp_dir)
-    if not result.success:
-        return file_path, None, result.cleanup_files
-
-    artifact_id = file_uid or file_path.stem
-    artifact_name = original_filename or file_path.name
-    used_for_transcription = result.speech_ratio < VAD_SPEECH_RATIO_SKIP_THRESHOLD
-    if result.speech_only_path:
-        persist_speech_extraction(
-            task_id=artifact_id,
-            original_filename=artifact_name,
-            speech_only_path=result.speech_only_path,
-            segments=result.segments,
-            speech_ratio=result.speech_ratio,
-            speech_duration=result.speech_duration,
-            used_for_transcription=used_for_transcription,
-        )
-
-    if used_for_transcription:
-        logger.info(
-            f"VAD 前處理完成 ({file_path.name}): "
-            f"語音佔比 {result.speech_ratio*100:.1f}%, "
-            f"{len(result.segments)} 個語音片段, "
-            f"純語音時長 {result.speech_duration:.1f}s"
-        )
-        return result.speech_only_path, result.segments, result.cleanup_files
-
-    logger.info(
-        f"語音佔比 {result.speech_ratio*100:.1f}% "
-        f"(>={VAD_SPEECH_RATIO_SKIP_THRESHOLD*100:.0f}%) ({file_path.name}), 跳過 VAD 前處理"
-    )
-    return file_path, None, result.cleanup_files
-
-
-def _process_single_result(
-    result: TranscriptionTaskResult,
-    file_item,
-    task_params,
-    file_task_uuid: str,
-    audio_duration: float,
-    start_time: float,
-    db,
-    log_repo,
-    update_fn,
-    vad_segments=None,
-):
-    """處理批次中單一檔案的結果：時間戳重映射、格式轉換、計費、寫 DB。"""
-    file_uid = file_item.file_uid
-
-    if not result.success:
-        logger.error(f"檔案 {file_item.original_filename} 批次轉錄失敗: {result.text}")
-        update_fn(result.text, status_code=TaskStatus.FAILED, file_uid=file_uid)
-        log_repo.update_log(db, file_task_uuid, {
-            "status": TaskStatus.FAILED,
-            "error_message": result.text,
-            "processing_time_seconds": time.time() - start_time,
-        })
-        return
-
-    raw_lrc_text = result.text
-    input_tokens = result.input_tokens
-    output_tokens = result.output_tokens
-    total_tokens = result.total_tokens
-
-    logger.info(
-        f"檔案 {file_item.original_filename} 轉錄完成, "
-        f"Tokens: input={input_tokens}, output={output_tokens}, total={total_tokens}"
-    )
-
-    final_lrc_text = raw_lrc_text
-    if vad_segments:
-        final_lrc_text = remap_lrc_timestamps(final_lrc_text, vad_segments)
-        logger.info(f"檔案 {file_item.original_filename}: 時間戳已重映射回原始時間軸")
-
-    transcripts_model = convert_from_lrc(final_lrc_text)
-    final_transcripts = transcripts_model.model_dump() if transcripts_model else {}
-
-    processing_time_seconds = time.time() - start_time
-    items = []
-    if total_tokens > 0:
-        items.append(
-            CalculationItem(
-                task_name="total_transcription",
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-                content_type="audio",
-            )
-        )
-
-    calculator = CalculatorService()
-    metrics = calculator.calculate_metrics(
-        items=items,
-        model=task_params.model,
-        processing_time_seconds=processing_time_seconds,
-        audio_duration_seconds=audio_duration,
-    )
-
-    batch_cost = metrics.cost * BATCH_COST_DISCOUNT
-
-    if not log_repo.update_log(db, file_task_uuid, {
-        "status": TaskStatus.COMPLETED,
-        "audio_duration_seconds": audio_duration,
-        "processing_time_seconds": processing_time_seconds,
-        "total_tokens": metrics.total_tokens,
-        "cost": batch_cost,
-        "completed_at": datetime.now(),
-        "lrc_content": final_lrc_text or None,
-        "service_tier_used": "batch",
-    }):
-        logger.warning(
-            f"無法更新 transcription_log: task_uuid={file_task_uuid} "
-            f"file={file_item.original_filename}")
-
-    file_response = TranscriptionResponse(
-        task_uuid=file_task_uuid,
-        transcripts=final_transcripts,
-        tokens_used=metrics.total_tokens,
-        cost=batch_cost,
-        model=task_params.model,
-        # 恢復路徑的 file_item 是 SimpleNamespace，不一定帶 per-file 欄位，故用 getattr
-        source_language=getattr(file_item, "source_lang", None) or task_params.source_lang,
-        audio_duration_seconds=audio_duration,
-    )
-
-    result_dict = file_response.model_dump()
-    if "task_uuid" in result_dict and hasattr(result_dict["task_uuid"], "hex"):
-        result_dict["task_uuid"] = str(result_dict["task_uuid"])
-
-    update_fn("任務完成", status_code=TaskStatus.COMPLETED, result_data=result_dict, file_uid=file_uid)
-    logger.info(f"檔案 {file_item.original_filename} 處理完成, 費用: ${batch_cost:.6f}")
-
-
-def run_batch(task_params_dict: dict, task_uuid: str):
-    """
-    使用 Gemini Batch API 進行批次轉錄。
-
-    流程：
-    1. 將所有音訊檔案上傳至 Gemini File API
-    2. 建立 Batch API 任務 (inline requests)
-    3. 輪詢直到任務完成
-    4. 逐一處理每個檔案的結果 (格式轉換、費用計算)
-    5. 發布個別檔案與整體批次的狀態更新
-
-    暫時性錯誤（GeminiTransientError）往上拋，由外層重試機制處理。
-    """
-    task_params = BatchTranscriptionTaskParams.model_validate(task_params_dict)
-    batch_id = task_params.batch_id
-
-    def update_status(
-        status_text, status_code=TaskStatus.PROCESSING, result_data=None, file_uid=None
-    ):
-        _publish_batch_status(
-            batch_id, task_uuid, status_text, status_code, result_data, file_uid
-        )
-
-    db = SessionLocal()
-    log_repo = TranscriptionLogRepository()
-    batch_repo = BatchJobRepository()
-    vad_cleanup_files = []
-    adapter = None
-    start_time = time.time()
-    # {file_uid: 任務紀錄的 task_uuid}；在 try 之前給值：建立任務紀錄之前就出錯時，except 也用得到
-    file_log_uuids = {}
-
+    params = BatchTranscriptionTaskParams.model_validate(task_params_dict)
     try:
-        # 模型不支援批次、金鑰無效都在這裡失敗
-        adapter = open_batch_provider(
-            task_params.provider, task_params.model, task_params.api_keys)
+        with SessionLocal() as db:
+            _create_record(db, params, run_id=None)
+            BatchJobRepository().update_job(db, params.batch_id, {"status": "FAILED"})
+    except Exception as e:
+        # 任務紀錄記在批次紀錄底下，建立不了也照樣處理每個檔案的上傳檔
+        logger.error(f"批次 {params.batch_id} 無法建立批次紀錄: {without_db_details(e)}")
+    for item in params.files:
+        TaskLifecycle(str(uuid.uuid4()), _task(item, params)).abandon(cancelled=False)
 
-        def prompt_for(file_item) -> str:
-            """組出單一檔案的 prompt：per-file 設定優先，未提供時退回批次層級 fallback。"""
-            per_file_multi = getattr(file_item, "multi_speaker", None)
-            return build_prompt(
-                source_lang=getattr(file_item, "source_lang", None) or task_params.source_lang,
-                target_lang=getattr(file_item, "target_lang", None) or task_params.target_lang,
-                multi_speaker=per_file_multi if per_file_multi is not None else task_params.multi_speaker,
-                template=(getattr(file_item, "prompt", None) or task_params.prompt) or None,
-            )
 
-        # 批次層級的預設 prompt（存入 BatchJob 記錄）；實際送給 Gemini 的是每檔各自的 prompt
-        prompt = build_prompt(
-            source_lang=task_params.source_lang,
-            target_lang=task_params.target_lang,
-            multi_speaker=task_params.multi_speaker,
-            template=task_params.prompt or None,
-        )
-        total_files = len(task_params.files)
-        update_status(f"正在初始化批次任務 ({total_files} 個檔案)...")
+# ── 執行 ─────────────────────────────────────────────────────────
 
-        # === 持久化節點 1：任務開始，建立 BatchJob 記錄 ===
-        batch_repo.create_job(db, batch_id, json.dumps({
-            "model": task_params.model,
-            "provider": task_params.provider,
-            "source_lang": task_params.source_lang,
-            "target_lang": task_params.target_lang,
-            "prompt": prompt,
-        }))
-        session_id = task_params.session_id or batch_id
-        batch_repo.update_job(db, batch_id, {
-            "celery_task_id": task_uuid,
-            "file_count": len(task_params.files),
-            "session_id": session_id,
-        })
+@dataclass
+class _File:
+    """執行中的一個檔案：它的任務生命週期，以及送出之前的語音視圖與上傳的代號。"""
 
-        # --- 取得音訊時長 & 建立資料庫日誌 ---
-        file_durations = {}
+    item: BatchFileItemParams
+    lifecycle: TaskLifecycle
+    view: Optional[SpeechView] = None
+    handle: Any = None
+    """:meth:`BatchProvider.upload` 的代號。"""
+    ended: bool = False
+    """已經交給任務生命週期結束了。"""
 
-        for file_item in task_params.files:
-            local_path = Path(file_item.file_path)
-            duration = get_audio_duration(local_path) or 0.0
-            file_durations[file_item.file_uid] = duration
 
-            file_task_uuid = str(uuid.uuid4())
-            file_log_uuids[file_item.file_uid] = file_task_uuid
-            log_repo.insert_log(db, {
-                "status": TaskStatus.PROCESSING,
-                "original_filename": file_item.original_filename,
-                "model_used": task_params.model,
-                "source_language": file_item.source_lang or task_params.source_lang,
-                "task_uuid": file_task_uuid,
-                "is_batch": True,
-                "batch_id": batch_id,
-                "provider": task_params.provider,
-                "target_language": file_item.target_lang or task_params.target_lang,
-                "session_id": session_id,
-                "file_uid": file_item.file_uid,
+class _Run:
+    """一個批次的一次執行。"""
+
+    def __init__(self, params: BatchTranscriptionTaskParams, run_id: str):
+        self._params = params
+        self._batch_id = params.batch_id
+        self._run_id = run_id
+        self._publish = _publisher(params.batch_id, run_id)
+        self._started_at = time.time()
+        self._files = [_File(item, TaskLifecycle(str(uuid.uuid4()), _task(item, params)))
+                       for item in params.files]
+
+    def run(self) -> None:
+        adapter: Optional[BatchProvider] = None
+        failure: Optional[Exception] = None
+        try:
+            with SessionLocal() as db:
+                _create_record(db, self._params, run_id=self._run_id)
+            self._publish(f"正在初始化批次 ({len(self._files)} 個檔案)...")
+            for file in self._files:
+                file.lifecycle.start()
+            # 模型不支援批次、金鑰無效都在這裡失敗：每個檔案都照失敗結束
+            adapter = open_batch_provider(
+                self._params.provider, self._params.model, self._params.api_keys)
+            label = provider_info(self._params.provider).label
+
+            uploaded = self._upload(adapter)
+            if not uploaded:
+                self._fail_batch("所有檔案都沒有上傳成功，批次結束")
+                return
+            name = self._submit(adapter, uploaded)
+            self._save_submitted(name, uploaded)
+            self._publish(f"批次已送出給 {label}，共 {len(uploaded)} 個檔案，等待處理中...",
+                          TaskStatus.BATCH_SUBMITTED)
+
+            status = self._poll(adapter, name, label)
+            logger.info(f"批次 {self._batch_id} 結束，狀態: {status.state}")
+            _end_submitted(self._batch_id, status, self._publish, self._own_lifecycle,
+                           started_at=self._started_at)
+            # 存下來的檔案清單少了誰（不該發生）：那個檔案照樣要結束，不停在處理中
+            for file in uploaded:
+                self._end(file, _BatchError("批次紀錄裡找不到這個檔案，無法取回結果"))
+        except Exception as e:
+            failure = without_db_details(e)
+            # 還沒結束的檔案都照失敗結束：畫面靠每個檔案自己的結果離開處理中
+            for file in self._files:
+                self._end(file, failure)
+            self._fail_batch(f"批次失敗: {shown_to_user(failure)}")
+        finally:
+            if adapter is not None:
+                # 刪掉上傳到供應商的遠端檔
+                adapter.release()
+        if failure is not None:
+            raise failure
+
+    def _end(self, file: _File, result: Union[TranscriptionTaskResult, Exception]) -> None:
+        """還沒結束的檔案交給它的任務生命週期結束；已經結束的不動。"""
+        if not file.ended:
+            file.ended = True
+            file.lifecycle.end(result)
+
+    def _own_lifecycle(self, submitted: _Submitted) -> Optional[TaskLifecycle]:
+        """執行時結束送出的檔案，用這次執行自己的任務生命週期（:func:`_end_submitted`）。"""
+        for file in self._files:
+            if file.item.file_uid == submitted.file_uid and not file.ended:
+                file.ended = True
+                return file.lifecycle
+        return None
+
+    def _upload(self, adapter: BatchProvider) -> List[_File]:
+        """每個檔案去靜音拿到語音視圖，上傳要送進模型的音檔；上傳失敗的檔案當場結束。
+
+        回傳上傳成功的檔案。語音視圖的暫存檔（轉成的 wav、只剩語音的音檔）上傳之後就用不到，馬上清掉。
+        """
+        remove_silence = adapter.capabilities()[self._params.model].remove_silence
+        temp_dir = get_settings().temp_uploads_path
+        uploaded: List[_File] = []
+        for number, file in enumerate(self._files, start=1):
+            name = file.item.original_filename
+            file.lifecycle.progress.report(f"前處理與上傳 ({number}/{len(self._files)}): {name}")
+            try:
+                file.view = speech_view(
+                    Path(file.item.file_path),
+                    file.lifecycle.duration,
+                    remove_silence=remove_silence,
+                    temp_dir=temp_dir,
+                    task_id=file.lifecycle.task_uuid,
+                    original_filename=name,
+                )
+                file.handle = self._retrying(f"上傳 {name} ", adapter.upload, file.view.audio)
+            except Exception as e:
+                logger.error(f"上傳檔案失敗 {name}: {e}", exc_info=True)
+                self._end(file, _BatchError(f"檔案上傳失敗: {e}"))
+                continue
+            finally:
+                if file.view is not None:
+                    delete_temp_files(file.view.temp_files)
+            uploaded.append(file)
+        return uploaded
+
+    def _submit(self, adapter: BatchProvider, uploaded: List[_File]) -> str:
+        requests = [(file.handle, self._prompt(file.item)) for file in uploaded]
+        try:
+            name = self._retrying("送出批次", adapter.submit_batch, requests,
+                                  f"transcription-{self._batch_id[:8]}")
+        except Exception as e:
+            raise _BatchError(f"送出批次失敗: {e}") from e
+        logger.info(f"批次已送出: {name}")
+        return name
+
+    def _save_submitted(self, name: str, uploaded: List[_File]) -> None:
+        """存下送出的批次與每個檔案（依送出的順序）：結果回來時（可能在重啟之後）從這裡結束每個
+        檔案的任務；語音視圖存它的序列化形式。"""
+        files = {
+            str(i): {
+                "file_uid": file.item.file_uid,
+                "original_filename": file.item.original_filename,
+                "file_path": file.item.file_path,
+                "vad_segments": file.view.serialized(),
+            }
+            for i, file in enumerate(uploaded)
+        }
+        with SessionLocal() as db:
+            BatchJobRepository().update_job(db, self._batch_id, {
+                "gemini_job_name": name,
+                "status": "POLLING",
+                "file_mapping_json": json.dumps(files),
+                "file_durations_json": json.dumps(
+                    {file.item.file_uid: file.lifecycle.duration for file in uploaded}),
+                "file_log_uuids_json": json.dumps(
+                    {file.item.file_uid: file.lifecycle.task_uuid for file in uploaded}),
             })
 
-        # --- 去靜音 + 上傳所有檔案至 Gemini ---
-        file_gemini_mapping = {}
-        file_vad_segments = {}   # {file_uid: segments_list or None}
-
-        for i, file_item in enumerate(task_params.files):
-            update_status(
-                f"前處理與上傳 ({i + 1}/{total_files}): {file_item.original_filename}",
-                file_uid=file_item.file_uid,
-            )
-            local_path = Path(file_item.file_path)
-
-            upload_path, segments, cleanup = _vad_preprocess_file(
-                local_path, local_path.parent,
-                file_uid=file_item.file_uid,
-                original_filename=file_item.original_filename,
-            )
-            file_vad_segments[file_item.file_uid] = segments
-            vad_cleanup_files.extend(cleanup)
-
-            try:
-                gemini_file = adapter.upload(upload_path)
-                file_gemini_mapping[i] = (file_item, gemini_file)
-            except Exception as e:
-                logger.error(f"上傳檔案失敗 {file_item.original_filename}: {e}")
-                update_status(
-                    f"檔案上傳失敗: {e}",
-                    status_code=TaskStatus.FAILED,
-                    file_uid=file_item.file_uid,
-                )
-                log_repo.update_log(db, file_log_uuids[file_item.file_uid], {
-                    "status": TaskStatus.FAILED,
-                    "error_message": f"檔案上傳失敗: {str(e)}",
-                    "processing_time_seconds": time.time() - start_time,
-                })
-
-        if not file_gemini_mapping:
-            update_status("所有檔案上傳失敗，批次任務終止", status_code=TaskStatus.BATCH_COMPLETED)
-            return
-
-        # --- 建立 Gemini Batch 任務 ---
-        update_status(f"建立 Gemini 批次任務 ({len(file_gemini_mapping)} 個檔案)...")
-
-        ordered_indices = sorted(file_gemini_mapping.keys())
-        job_name = adapter.submit_batch(
-            [(file_gemini_mapping[i][1], prompt_for(file_gemini_mapping[i][0]))
-             for i in ordered_indices],
-            display_name=f"transcription-{batch_id[:8]}",
-        )
-        logger.info(f"Gemini 批次已建立: {job_name}")
-
-        # === 持久化節點 2：Gemini batch job 建立後，存入 job_name 和檔案映射 ===
-        file_mapping = {
-            str(i): {
-                "file_uid": file_gemini_mapping[i][0].file_uid,
-                "original_filename": file_gemini_mapping[i][0].original_filename,
-                "vad_segments": file_vad_segments.get(file_gemini_mapping[i][0].file_uid),
-            }
-            for i in ordered_indices
-        }
-        batch_repo.update_job(db, batch_id, {
-            "gemini_job_name": job_name,
-            "status": "POLLING",
-            "file_mapping_json": json.dumps(file_mapping),
-            "file_durations_json": json.dumps(file_durations),
-            "file_log_uuids_json": json.dumps(file_log_uuids),
-        })
-
-        # 通知前端：檔案已全部提交，可以釋放 UI（結果可稍後恢復）
-        update_status(
-            f"批次任務已提交至 Gemini，共 {len(file_gemini_mapping)} 個檔案，等待處理中...",
-            status_code=TaskStatus.BATCH_SUBMITTED,
-        )
-
-        # --- 輪詢等待完成 ---
-        poll_interval = 10
-
+    def _poll(self, adapter: BatchProvider, name: str, label: str) -> BatchStatus:
+        """輪詢到批次結束；查詢遇到暫時錯誤時等一段時間再查（見 :meth:`_retrying`）。"""
+        interval = FIRST_POLL_SECONDS
         while True:
-            batch_status = adapter.poll_batch(job_name)
-            if batch_status.done:
-                break
-
-            elapsed = int(time.time() - start_time)
-            update_status(f"Gemini 批次處理中... (已等待 {elapsed} 秒, 狀態: {batch_status.state})")
-
-            time.sleep(poll_interval)
-            poll_interval = min(poll_interval * 1.5, 60)
-
-        logger.info(f"批次結束，狀態: {batch_status.state}")
-
-        if not batch_status.succeeded:
-            error_msg = f"批次任務失敗，狀態: {batch_status.state}"
-            logger.error(error_msg)
-            for file_item in task_params.files:
-                file_uid = file_item.file_uid
-                if file_uid in file_log_uuids:
-                    update_status(error_msg, status_code=TaskStatus.FAILED, file_uid=file_uid)
-                    log_repo.update_log(db, file_log_uuids[file_uid], {
-                        "status": TaskStatus.FAILED,
-                        "error_message": error_msg,
-                        "processing_time_seconds": time.time() - start_time,
-                    })
-            update_status(error_msg, status_code=TaskStatus.BATCH_COMPLETED)
-            return
-
-        # --- 逐一處理結果 ---
-        update_status("批次任務完成，正在處理結果...")
-
-        # 包裝 update_status 以捕獲各檔案結果（供恢復時使用）
-        captured_results = {}
-
-        def update_status_capture(
-            status_text, status_code=TaskStatus.PROCESSING, result_data=None, file_uid=None
-        ):
-            update_status(status_text, status_code, result_data, file_uid)
-            if file_uid and result_data and status_code == TaskStatus.COMPLETED:
-                captured_results[file_uid] = result_data
-
-        if batch_status.results:
-            for response_idx, result in enumerate(batch_status.results):
-                if response_idx >= len(ordered_indices):
-                    break
-
-                original_idx = ordered_indices[response_idx]
-                file_item = file_gemini_mapping[original_idx][0]
-                file_uid = file_item.file_uid
-                file_task_uuid = file_log_uuids[file_uid]
-                audio_duration = file_durations.get(file_uid, 0.0)
-
-                update_status(
-                    f"處理結果 ({response_idx + 1}/{len(ordered_indices)}): "
-                    f"{file_item.original_filename}",
-                    file_uid=file_uid,
-                )
-
-                try:
-                    _process_single_result(
-                        result=result,
-                        file_item=file_item,
-                        task_params=task_params,
-                        file_task_uuid=file_task_uuid,
-                        audio_duration=audio_duration,
-                        start_time=start_time,
-                        db=db,
-                        log_repo=log_repo,
-                        update_fn=update_status_capture,
-                        vad_segments=file_vad_segments.get(file_uid),
-                    )
-                except Exception as e:
-                    logger.error(
-                        f"處理檔案 {file_item.original_filename} 結果時發生錯誤: {e}",
-                        exc_info=True,
-                    )
-                    update_status(
-                        f"處理結果失敗: {e}", status_code=TaskStatus.FAILED, file_uid=file_uid
-                    )
-                    log_repo.update_log(db, file_task_uuid, {
-                        "status": TaskStatus.FAILED,
-                        "error_message": str(e),
-                        "processing_time_seconds": time.time() - start_time,
-                    })
-        else:
-            logger.warning("批次成功但沒有回傳結果")
-
-        # --- 批次完成 ---
-        # === 持久化節點 3a：任務完成，同時存入結果 ===
-        batch_repo.update_job(db, batch_id, {
-            "status": "COMPLETED",
-            "results_json": json.dumps(captured_results, default=str, ensure_ascii=False),
-        })
-
-        elapsed = time.time() - start_time
-        update_status(
-            f"批次任務全部完成 (耗時 {elapsed:.1f} 秒)", status_code=TaskStatus.BATCH_COMPLETED
-        )
-        logger.info(f"批次完成: {batch_id}, 耗時 {elapsed:.1f} 秒")
-
-    except GeminiTransientError as e:
-        # 暫時性錯誤：交給外層重試機制，狀態保留 POLLING/UPLOADING 以便恢復
-        logger.warning(f"批次 {batch_id} 遇到 Gemini 的暫時性錯誤，將重試: {e}")
-        update_status(f"暫時性錯誤，將重試: {e}", status_code=TaskStatus.PROCESSING)
-        raise
-    except Exception as e:
-        error_message = traceback.format_exc()
-        logger.error(f"批次發生嚴重錯誤: {error_message}")
-
-        # === 持久化節點 3b：任務失敗 ===
-        batch_repo.update_job(db, batch_id, {"status": "FAILED"})
-
-        # 每個檔案都廣播失敗：畫面靠它離開處理中。還沒建立任務紀錄的檔案只廣播
-        for file_item in task_params.files:
-            file_uid = file_item.file_uid
-            if file_uid in file_log_uuids:
-                log_repo.update_log(db, file_log_uuids[file_uid], {
-                    "status": TaskStatus.FAILED,
-                    "error_message": str(e),
-                    "processing_time_seconds": time.time() - start_time,
-                })
-            update_status(f"批次任務失敗: {e}", status_code=TaskStatus.FAILED, file_uid=file_uid)
-
-        update_status(f"批次任務失敗: {e}", status_code=TaskStatus.BATCH_COMPLETED)
-        raise e
-
-    finally:
-        # 刪掉上傳到供應商的遠端檔
-        if adapter:
-            adapter.release()
-
-        # 清理本地暫存檔案
-        for file_item in task_params.files:
-            _cleanup_local_file(file_item.file_path)
-
-        # 清理去靜音的暫存檔案
-        for vad_file in vad_cleanup_files:
             try:
-                if vad_file.exists() and is_temp_upload(vad_file):
-                    vad_file.unlink()
-                    logger.info(f"已清理 VAD 暫存檔: {vad_file.name}")
+                status = self._retrying("查詢批次狀態", adapter.poll_batch, name)
             except Exception as e:
-                logger.warning(f"清理 VAD 暫存檔失敗: {e}")
+                raise _BatchError(f"查詢批次狀態失敗: {e}") from e
+            if status.done:
+                return status
+            waited = int(time.time() - self._started_at)
+            self._publish(f"{label} 批次處理中... (已等待 {waited} 秒, 狀態: {status.state})")
+            time.sleep(interval)
+            interval = min(interval * 1.5, MAX_POLL_SECONDS)
 
-        db.close()
+    def _retrying(self, step: str, call: Callable[..., T], *args: Any) -> T:
+        """做一步；遇到暫時錯誤時先廣播，等一段時間（:meth:`TransientError.wait_seconds`）再做一次，
+        最多重試 ``TRANSIENT_ERROR_RETRIES`` 次，用完就往上拋。
 
+        和分段轉錄重試一段的規則相同；差在批次沒有使用者取消，等待不必邊等邊查取消。
+        """
+        retries = get_settings().transient_error_retries
+        retry = 0
+        while True:
+            try:
+                return call(*args)
+            except TransientError as error:
+                if retry >= retries:
+                    raise
+                retry += 1
+                seconds = error.wait_seconds(retry)
+                notice = (f"{step}遇到暫時錯誤（{error.reason or error}），{seconds:g} 秒後第 "
+                          f"{retry} 次重試（最多 {retries} 次）...")
+                logger.warning(f"{notice} {error}")
+                self._publish(notice)
+                time.sleep(seconds)
 
-def process_gemini_batch_results(batch_id: str, api_key: str, db, batch_repo, log_repo):
-    """
-    從 db 和 Gemini 恢復批次結果（同步函式）。
-    由 API endpoints 或任務執行器呼叫。
-    """
-    from types import SimpleNamespace
-
-    adapter = None
-    try:
-        job = batch_repo.get_job(db, batch_id)
-        if not job:
-            logger.error(f"恢復任務找不到 batch_id: {batch_id}")
-            return {"status": "ERROR", "files": []}
-
-        if not job.gemini_job_name:
-            logger.error(f"恢復任務 {batch_id} 沒有 gemini_job_name")
-            batch_repo.update_job(db, batch_id, {"status": "POLLING"})
-            return {"status": "POLLING", "files": []}
-
-        def update_status(status_text, status_code=TaskStatus.PROCESSING, result_data=None, file_uid=None):
-            _publish_batch_status(batch_id, "", status_text, status_code, result_data, file_uid)
-
-        update_status("正在從 Gemini 恢復批次任務結果...")
-
-        task_params_data = json.loads(job.task_params_json) if job.task_params_json else {}
-        task_params = SimpleNamespace(
-            model=task_params_data.get("model", ""),
-            provider=task_params_data.get("provider", "google"),
-            source_lang=task_params_data.get("source_lang", ""),
-            target_lang=task_params_data.get("target_lang"),
-            prompt=task_params_data.get("prompt", ""),
+    def _prompt(self, item: BatchFileItemParams) -> str:
+        """這個檔案的提示詞：個別檔案的設定優先，沒設定的用批次的。"""
+        params = self._params
+        return build_prompt(
+            source_lang=item.source_lang or params.source_lang,
+            target_lang=item.target_lang or params.target_lang,
+            multi_speaker=params.multi_speaker if item.multi_speaker is None else item.multi_speaker,
+            template=(item.prompt or params.prompt) or None,
         )
-        try:
-            adapter = reopen_batch_provider(task_params.provider, task_params.model, api_key)
-        except ValueError as e:
-            logger.warning(f"恢復任務 {batch_id} 無法建立供應商轉接器: {e}")
-            update_status("API Key 無效", status_code=TaskStatus.BATCH_COMPLETED)
-            batch_repo.update_job(db, batch_id, {"status": "POLLING"})
-            return {"status": "POLLING", "files": []}
 
+    def _fail_batch(self, text: str) -> None:
+        """批次沒有正常結束：批次紀錄記成失敗，再宣告批次結束。記不下來只記 log。"""
         try:
-            batch_status = adapter.poll_batch(job.gemini_job_name)
+            with SessionLocal() as db:
+                BatchJobRepository().update_job(db, self._batch_id, {"status": "FAILED"})
         except Exception as e:
-            update_status(f"查詢 Gemini 失敗: {e}", status_code=TaskStatus.BATCH_COMPLETED)
-            batch_repo.update_job(db, batch_id, {"status": "POLLING"})
-            return {"status": "POLLING", "files": []}
+            logger.error(f"批次 {self._batch_id} 無法記成失敗: {without_db_details(e)}")
+        self._publish(text, TaskStatus.BATCH_COMPLETED)
 
-        state_name = batch_status.state
-        logger.info(f"恢復任務 {batch_id}: Gemini 狀態 = {state_name}")
 
-        if not batch_status.done:
-            logger.info(f"恢復任務 {batch_id}: 任務尚未完成，狀態={state_name}")
-            update_status(f"任務仍在進行中 ({state_name})", status_code=TaskStatus.BATCH_COMPLETED)
-            batch_repo.update_job(db, batch_id, {"status": "POLLING"})
-            return {"status": "POLLING", "files": []}
+# ── 結束送出的檔案（執行與復原共用）─────────────────────────────
 
-        if not batch_status.succeeded:
-            logger.info(f"恢復任務 {batch_id}: 任務失敗，狀態={state_name}")
-            batch_repo.update_job(db, batch_id, {"status": "FAILED"})
-            update_status(f"任務失敗 ({state_name})", status_code=TaskStatus.BATCH_COMPLETED)
-            return {"status": "FAILED", "files": []}
+@dataclass(frozen=True)
+class _Submitted:
+    """送出的一個檔案，從批次紀錄讀回來的樣子。"""
 
-        logger.info(f"恢復任務 {batch_id}: 任務成功，開始處理結果...")
+    position: int
+    """送出時的順序，批次的結果也照這個順序。"""
+    file_uid: str
+    original_filename: str
+    task_uuid: str
+    duration: float
+    file_path: Optional[str]
+    """上傳檔；改版前送出的批次沒有存。"""
+    timeline: SpeechTimeline
+    """送進模型的語音視圖怎麼對回原音檔，從序列化形式讀回。"""
 
-        file_mapping = json.loads(job.file_mapping_json) if job.file_mapping_json else {}
-        file_durations = json.loads(job.file_durations_json) if job.file_durations_json else {}
-        file_log_uuids = json.loads(job.file_log_uuids_json) if job.file_log_uuids_json else {}
 
-        start_time = time.time()
-        captured_results = {}
+def _resumed(file: _Submitted) -> Optional[TaskLifecycle]:
+    """復原時結束送出的檔案：從它的任務紀錄接回任務生命週期；紀錄不在了時是 None。"""
+    return TaskLifecycle.resume(file.task_uuid, file_path=file.file_path, duration=file.duration)
 
-        def update_status_capture(status_text, status_code=TaskStatus.PROCESSING, result_data=None, file_uid=None):
-            update_status(status_text, status_code, result_data, file_uid)
-            if file_uid and result_data and status_code == TaskStatus.COMPLETED:
-                captured_results[file_uid] = result_data
 
-        ordered_indices = sorted(file_mapping.keys(), key=int)
+def _end_submitted(
+    batch_id: str,
+    status: BatchStatus,
+    publish: Publish,
+    lifecycle_of: Callable[[_Submitted], Optional[TaskLifecycle]],
+    *,
+    started_at: float,
+) -> None:
+    """結束送出的每個檔案（執行與復原共用），記下批次的結果，再宣告批次結束。
 
-        if batch_status.results:
-            for response_idx, result in enumerate(batch_status.results):
-                if response_idx >= len(ordered_indices):
-                    break
+    每個檔案讀送出時存下的資料，由 ``lifecycle_of`` 給它的任務生命週期：執行時用這次執行自己的，
+    復原時從任務紀錄接回（:func:`_resumed`）；給不出來的（例如使用者把紀錄刪掉了）略過。供應商的
+    結果用存下的語音視圖放回原音檔的時間軸，記下完成或失敗、收尾、宣告；整個批次失敗、或供應商沒給
+    某個檔案結果時，那些檔案照失敗結束。一個檔案出錯不影響其他檔案。
 
-                idx_str = ordered_indices[response_idx]
-                entry = file_mapping[idx_str]
-                file_uid = entry["file_uid"]
-                original_filename = entry["original_filename"]
-                vad_segments = entry.get("vad_segments")
-
-                file_item = SimpleNamespace(file_uid=file_uid, original_filename=original_filename)
-
-                update_status(
-                    f"恢復 ({response_idx + 1}/{len(ordered_indices)}): {original_filename}",
-                    file_uid=file_uid,
-                )
-
-                try:
-                    _process_single_result(
-                        result=result,
-                        file_item=file_item,
-                        task_params=task_params,
-                        file_task_uuid=file_log_uuids.get(file_uid, ""),
-                        audio_duration=file_durations.get(file_uid, 0.0),
-                        start_time=start_time,
-                        db=db,
-                        log_repo=log_repo,
-                        update_fn=update_status_capture,
-                        vad_segments=vad_segments,
-                    )
-                except Exception as e:
-                    logger.error(f"恢復檔案 {original_filename} 失敗: {e}", exc_info=True)
-                    update_status(f"恢復失敗: {e}", status_code=TaskStatus.FAILED, file_uid=file_uid)
-
-        batch_repo.update_job(db, batch_id, {
-            "status": "COMPLETED",
-            "results_json": json.dumps(captured_results, default=str, ensure_ascii=False),
-        })
-
-        elapsed = time.time() - start_time
-        update_status(f"恢復完成 (耗時 {elapsed:.1f} 秒)", status_code=TaskStatus.BATCH_COMPLETED)
-        logger.info(f"批次 {batch_id} 恢復完成，{len(captured_results)} 個檔案")
-        return {"status": "COMPLETED", "files": captured_results}
-
-    except Exception as e:
-        logger.error(f"恢復任務 {batch_id} 失敗: {e}", exc_info=True)
+    批次紀錄記成完成（整個批次失敗時是失敗），連同每個完成的檔案送給畫面的結果
+    （``results_json``，取回結果的端點直接讀它）。
+    """
+    jobs = BatchJobRepository()
+    with SessionLocal() as db:
+        job = jobs.get_job(db, batch_id)
+        submitted = _submitted(job) if job else []
+    publish("批次結束，正在處理結果..." if status.succeeded else _failed_state(status))
+    completed: Dict[str, dict] = {}
+    for file in submitted:
         try:
-            batch_repo.update_job(db, batch_id, {"status": "POLLING"})
-        except Exception:
-            pass
-        return {"status": "ERROR", "files": []}
-    finally:
-        # 接手批次的轉接器一樣要釋放（見 BatchProvider）
-        if adapter:
-            adapter.release()
+            outcome = _result_of(status, file)
+        except Exception as e:
+            # 結果放不回原音檔的時間軸（例如片段的時間不是數字）：這個檔案照失敗結束
+            outcome = _BatchError(f"結果放不回原音檔的時間軸: {e}")
+        try:
+            lifecycle = lifecycle_of(file)
+        except Exception as e:
+            logger.error(f"批次 {batch_id} 的 {file.file_uid} 接不回任務: {without_db_details(e)}")
+            continue
+        if lifecycle is None:
+            logger.warning(f"批次 {batch_id} 的 {file.file_uid} 找不到任務，略過")
+            continue
+        # 拿到任務生命週期之後一定結束：回報進度與 end 都不往上拋例外
+        lifecycle.progress.report(
+            f"處理結果 ({file.position + 1}/{len(submitted)}): {file.original_filename}")
+        result = lifecycle.end(outcome)
+        if result is not None:
+            completed[file.file_uid] = result
+    with SessionLocal() as db:
+        jobs.update_job(db, batch_id, {
+            "status": "COMPLETED" if status.succeeded else "FAILED",
+            "results_json": json.dumps(completed, default=str, ensure_ascii=False),
+        })
+    logger.info(f"批次 {batch_id}: {len(completed)}/{len(submitted)} 個檔案完成")
+    publish(f"批次全部完成 (耗時 {time.time() - started_at:.1f} 秒)" if status.succeeded
+            else _failed_state(status), TaskStatus.BATCH_COMPLETED)
 
 
-def run_recover(batch_id: str, api_key: str):
-    """恢復批次結果的入口：開自己的 DB session 並呼叫核心恢復流程。"""
-    db = SessionLocal()
-    batch_repo = BatchJobRepository()
-    log_repo = TranscriptionLogRepository()
-    try:
-        process_gemini_batch_results(batch_id, api_key, db, batch_repo, log_repo)
-    finally:
-        db.close()
+def _submitted(job: BatchJob) -> List[_Submitted]:
+    """批次紀錄存下的送出的檔案，依送出的順序；沒有任務紀錄 id 的略過（記 log）。
+
+    語音視圖的序列化形式存在每個檔案的 ``vad_segments``，和改版前存的去靜音區間同一個形狀。
+    """
+    files = json.loads(job.file_mapping_json) if job.file_mapping_json else {}
+    durations = json.loads(job.file_durations_json) if job.file_durations_json else {}
+    task_uuids = json.loads(job.file_log_uuids_json) if job.file_log_uuids_json else {}
+    submitted: List[_Submitted] = []
+    for position, key in enumerate(sorted(files, key=int)):
+        entry = files[key]
+        file_uid = entry["file_uid"]
+        task_uuid = task_uuids.get(file_uid)
+        if not task_uuid:
+            logger.warning(f"批次 {job.batch_id} 的 {file_uid} 沒有任務紀錄 id，略過")
+            continue
+        submitted.append(_Submitted(
+            position=position,
+            file_uid=file_uid,
+            original_filename=entry.get("original_filename") or file_uid,
+            task_uuid=task_uuid,
+            duration=float(durations.get(file_uid) or 0.0),
+            file_path=entry.get("file_path"),
+            timeline=SpeechTimeline.from_serialized(entry.get("vad_segments")),
+        ))
+    return submitted
+
+
+def _result_of(status: BatchStatus,
+               file: _Submitted) -> Union[TranscriptionTaskResult, Exception]:
+    """這個檔案的結果：供應商給的轉錄結果放回原音檔的時間軸；整個批次失敗、或沒有這個檔案的結果時，
+    是讓它失敗的原因。"""
+    if not status.succeeded:
+        return _BatchError(_failed_state(status))
+    if file.position >= len(status.results):
+        return _BatchError("供應商沒有回傳這個檔案的結果")
+    result = status.results[file.position]
+    if not result.success:
+        return result
+    return result.model_copy(update={"segments": file.timeline.in_original_order(result.segments)})
+
+
+def _failed_state(status: BatchStatus) -> str:
+    """整個批次失敗時給使用者看的原因：帶著供應商回報的狀態。"""
+    return f"批次失敗，狀態: {status.state}"
+
+
+# ── 小工具 ───────────────────────────────────────────────────────
+
+def _task(item: BatchFileItemParams, params: BatchTranscriptionTaskParams) -> Task:
+    """批次裡的一個檔案是一個任務：個別檔案的設定優先，沒設定的用批次的。"""
+    return Task(
+        file_path=item.file_path,
+        file_uid=item.file_uid,
+        client_id=params.batch_id,
+        original_filename=item.original_filename,
+        provider=params.provider,
+        model=params.model,
+        source_lang=item.source_lang or params.source_lang,
+        target_lang=item.target_lang or params.target_lang,
+        session_id=params.session_id or params.batch_id,
+        batch_id=params.batch_id,
+    )
+
+
+def _create_record(db: Session, params: BatchTranscriptionTaskParams,
+                   run_id: Optional[str]) -> None:
+    """建立批次紀錄（上傳中）：每個檔案的任務紀錄記在它底下。存下的任務參數不含 API 金鑰，提示詞
+    是批次層級的預設；實際送出的是每個檔案各自的提示詞。"""
+    jobs = BatchJobRepository()
+    jobs.create_job(db, params.batch_id, json.dumps({
+        "model": params.model,
+        "provider": params.provider,
+        "source_lang": params.source_lang,
+        "target_lang": params.target_lang,
+        "prompt": build_prompt(
+            source_lang=params.source_lang,
+            target_lang=params.target_lang,
+            multi_speaker=params.multi_speaker,
+            template=params.prompt or None,
+        ),
+    }))
+    jobs.update_job(db, params.batch_id, {
+        "celery_task_id": run_id,
+        "file_count": len(params.files),
+        "session_id": params.session_id or params.batch_id,
+    })
+
+
+def _publisher(batch_id: str, run_id: str) -> Publish:
+    """批次層級的狀態廣播（沒有 file_uid）：送到批次的連線，帶著 batch_id 與這次執行的代號。"""
+    def publish(text: str, status_code: TaskStatus = TaskStatus.PROCESSING) -> None:
+        publish_status(batch_id, run_id, text, status_code=status_code,
+                       extra={"batch_id": batch_id})
+    return publish

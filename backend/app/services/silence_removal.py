@@ -1,7 +1,9 @@
-"""去靜音模組：單檔任務的去靜音只有一個入口 :func:`speech_view`，回傳語音視圖。
+"""去靜音模組：去靜音只有一個入口 :func:`speech_view`，回傳語音視圖；單檔任務與批次都用它。
 
 語音視圖（:class:`SpeechView`）是實際送進模型的音檔，以及把其中的時間還原回原音檔的對照；
-分段轉錄照它決定送什麼、切在哪裡，轉錄完把時間還原回原音檔。剪不剪看兩件事：
+分段轉錄照它決定送什麼、切在哪裡，轉錄完把片段放回原音檔的時間軸（:meth:`SpeechTimeline.in_original_order`）。
+批次不分段，把它的序列化形式存進資料庫（:meth:`SpeechView.serialized`），結果回來時（可能在重啟
+之後）用它把片段放回原音檔的時間軸。剪不剪看兩件事：
 
 - 模型能力的「轉錄前要不要剪掉靜音」：不剪的模型送原音檔，但照樣找出靜音，每段靜音的正中間
   當分段轉錄的切點。
@@ -12,9 +14,8 @@
 沒有 Silero 也照樣去靜音。找不到有聲段（全段靜音、轉檔失敗）時送原音檔。開了
 ``VAD_KEEP_ARTIFACTS`` 時，只剩語音的音檔與有聲段存進 vad_artifacts/，給本機檢查切得對不對。
 
-批次（tasks/batch_core.py）還自己判斷門檻與存檔，改用語音視圖是 #115；它還原 LRC 時間用的已經是
-這裡的 :class:`SpeechTimeline`。VAD 測試端點（services/vad/test.py）不轉錄，只顯示去靜音找到的
-有聲段，判斷會不會剪用這裡的 :func:`worth_removing`。
+VAD 測試端點（services/vad/test.py）不轉錄，只顯示去靜音找到的有聲段，判斷會不會剪用這裡的
+:func:`worth_removing`。
 """
 
 from __future__ import annotations
@@ -109,6 +110,18 @@ class SpeechTimeline:
             restored.append(new)
         return restored
 
+    def in_original_order(self, segments: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]]:
+        """轉錄結果的片段放回原音檔的時間軸，回傳新的片段：去靜音過的還原時間（:meth:`restore`），
+        再依開始時間排好、重編序號。分段轉錄合併之後、批次的結果回來之後都經過這裡。
+
+        還原之後才排序：還原後開始時間相同的片段照傳進來的先後。沒有去靜音時時間不變。
+        """
+        placed = self.restore(segments) if self.voiced else [dict(s) for s in segments]
+        placed.sort(key=lambda segment: segment.get("start", 0.0))
+        for seq, segment in enumerate(placed):
+            segment["seq"] = seq
+        return placed
+
     def _restored_word(self, word: Mapping[str, Any]) -> Dict[str, Any]:
         start, end = self._restored_interval(word.get("start"), word.get("end"))
         return {**word, "start": start, "end": end}
@@ -123,6 +136,20 @@ class SpeechTimeline:
         if start <= end and restored_end < restored_start:
             restored_end = restored_start
         return restored_start, restored_end
+
+    def serialized(self) -> List[Dict[str, float]]:
+        """存進資料庫的形式（可以直接寫成 JSON）：有聲段在原音檔上的起訖，沒有去靜音時是空的。
+
+        和 vad_artifacts/ 的 segments.json、改版前批次存的去靜音區間同一個形狀，升級前送出的批次
+        也用 :meth:`from_serialized` 讀回來。
+        """
+        return [{"start": start, "end": end} for start, end in self.voiced]
+
+    @classmethod
+    def from_serialized(cls, stored: Optional[Sequence[Mapping[str, float]]]) -> SpeechTimeline:
+        """:meth:`serialized` 存下來的形式讀回時間對照；空的或 None（改版前沒有去靜音的檔案）是
+        沒有去靜音，時間原樣對回去。"""
+        return cls(tuple((float(span["start"]), float(span["end"])) for span in stored or ()))
 
 
 @dataclass(frozen=True)
@@ -154,6 +181,11 @@ class SpeechView:
         """轉錄結果的片段還原回原音檔的時間軸，見 :meth:`SpeechTimeline.restore`。"""
         return self.timeline.restore(segments)
 
+    def serialized(self) -> List[Dict[str, float]]:
+        """存進資料庫的形式，見 :meth:`SpeechTimeline.serialized`。只留時間對照：音檔與暫存檔在
+        任務結束之後就不在了，讀回來（:meth:`SpeechTimeline.from_serialized`）只用來還原時間。"""
+        return self.timeline.serialized()
+
 
 def worth_removing(speech_ratio: float) -> bool:
     """語音佔比低於門檻（``VAD_SPEECH_RATIO_SKIP_THRESHOLD``，預設 90%）才值得剪掉靜音：幾乎全是
@@ -170,7 +202,7 @@ def speech_view(
     task_id: str,
     original_filename: str,
 ) -> SpeechView:
-    """單檔任務的去靜音只有這個入口：這段音檔的語音視圖。剪不剪見模組說明。
+    """去靜音只有這個入口：這段音檔的語音視圖。剪不剪見模組說明。
 
     ``duration`` 是 ``audio`` 的長度（秒），沒剪靜音時就是語音視圖的長度；``remove_silence``
     是模型能力的「轉錄前要不要剪掉靜音」。產生的暫存檔放在 ``temp_dir``，列在語音視圖的

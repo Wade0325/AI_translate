@@ -2,9 +2,8 @@
 不使用 Silero），需要時接成只剩語音的音檔，回傳結構化結果。是否要採用只剩語音的音檔
 （例如語音佔比閾值判斷）由呼叫端依情境決定。
 
-單檔任務的去靜音經 :func:`app.services.silence_removal.speech_view` 拿到語音視圖，它也用這裡找有聲段。
-還直接呼叫這裡的：批次（`tasks/batch_core.py`，改用語音視圖是 #115）、VAD 測試端點與 tests/
-底下的工具腳本。
+單檔任務與批次的去靜音經 :func:`app.services.silence_removal.speech_view` 拿到語音視圖，它也用這裡找
+有聲段。還直接呼叫這裡的：VAD 測試端點與 tests/ 底下的工具腳本。
 
 Silero VAD 只在分段轉錄找切點時用（`flows.split_audio_on_silence`，見
 :mod:`app.services.chunked_transcription`）：依單次長度分段與失敗後的切段重試用同一套切點。
