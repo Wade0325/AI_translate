@@ -79,8 +79,11 @@ async def upload_file(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"保存檔案失敗: {e}")
+        # 例外的文字可能帶著使用者電腦上的路徑：原因只記在 log，回應給固定訊息
+        logger.error(f"保存檔案失敗: {type(e).__name__}: {e}")
         raise HTTPException(
-            status_code=500, detail=f"Could not save file: {e}") from e
+            status_code=500,
+            detail="檔案沒有存進電腦，請確認磁碟空間足夠後再上傳一次；一直失敗的話請回報問題。",
+        ) from e
     finally:
         await file.close()

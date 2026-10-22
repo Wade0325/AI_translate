@@ -2,8 +2,11 @@
 整合測試：檔案上傳 API
 測試範圍：POST /api/v1/upload
 """
+import shutil
 from unittest.mock import patch
 from fastapi.testclient import TestClient
+
+from app.api import upload  # noqa: F401  app_log 只收得到已經建立的 logger
 
 
 # ─── 上傳成功 ────────────────────────────────────────────────────────────────
@@ -104,6 +107,24 @@ class TestUploadFailure:
             )
         assert response.status_code == 400
         assert "empty" in response.json()["detail"].lower()
+
+    def test_save_failure_returns_500_without_the_exception_text(
+            self, client: TestClient, tmp_path, monkeypatch, app_log):
+        """存不進磁碟時回固定訊息：例外的文字帶著使用者電腦上的路徑，原因只記在 log"""
+        def disk_full(src, dst):
+            raise OSError(28, "No space left on device",
+                          r"C:\Users\wang.xiaoming\AppData\Local\Temp\meeting.mp3")
+
+        monkeypatch.setattr(shutil, "copyfileobj", disk_full)
+        with patch("app.api.upload.TEMP_UPLOADS_DIR", tmp_path):
+            response = client.post(
+                "/api/v1/upload",
+                files={"file": ("meeting.mp3", b"\x00" * 512, "audio/mpeg")},
+            )
+        assert response.status_code == 500
+        assert "wang.xiaoming" not in response.text
+        assert "No space left on device" not in response.text
+        assert "No space left on device" in "\n".join(app_log)
 
     def test_missing_file_field_returns_422(self, client: TestClient):
         """未提供 file 欄位應回傳 422"""
