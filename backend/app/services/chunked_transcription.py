@@ -1,8 +1,5 @@
 """分段轉錄模組：單檔任務的轉錄只有一個入口 :func:`transcribe`，回傳在原音檔時間軸上的轉錄結果。
 
-批次不分段，一次送出整個語音視圖；結果用 :func:`on_original_timeline` 放回原音檔的時間軸，和這裡
-合併之後的時間還原與排序是同一套。
-
 呼叫端給語音視圖、供應商轉接器、轉錄設定與進度與取消物件；單次長度與能不能切段重試，讀轉接器回報的
 模型能力。送什麼、切在哪裡、時間怎麼還原都在語音視圖裡，分段轉錄不必知道去靜音。內部依序：
 
@@ -21,7 +18,8 @@
      分段轉錄以失敗結束。
 4. 合併：每一段的片段平移到它在語音視圖上的起點，片段 key 加上這一段的前綴。#93 的跨段說話者編號
    之後接在這裡：拿得到所有轉完的段，每一段帶著音檔、位置與段內片段。
-5. 時間還原回原音檔，依開始時間排好、重編序號。
+5. 放回原音檔的時間軸（:meth:`SpeechTimeline.in_original_order`）：時間還原回原音檔，依開始時間
+   排好、重編序號。批次不分段，結果回來之後也經過同一步。
 
 片段 key：依單次長度切出的兩段前綴是 ``a``、``b``，切段重試切出的兩段是 ``s0``、``s1``，由外往內接，
 例如 ``a.b.0003``、``b.s1.0002``；沒有分段時就是轉接器給的 key。
@@ -43,7 +41,7 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 from app.core.config import get_settings
 from app.exceptions import TranscriptionCancelledError, TransientError
 from app.provider.base import ProgressAndCancel, Provider, TranscribeRequest
-from app.services.silence_removal import SpeechTimeline, SpeechView
+from app.services.silence_removal import SpeechView
 from app.services.transcription.models import TranscriptionTaskResult
 from app.services.vad.artifacts import persist_split
 from app.services.vad.service import get_vad_service
@@ -80,21 +78,6 @@ def transcribe(
         view, provider, request, progress,
         temp_dir=temp_dir, task_id=task_id, original_filename=original_filename,
     ).run()
-
-
-def on_original_timeline(
-    result: TranscriptionTaskResult, timeline: SpeechTimeline,
-) -> TranscriptionTaskResult:
-    """一次轉錄整個語音視圖的結果（批次的每個檔案）放回原音檔的時間軸：和分段轉錄只有一段時合併之後
-    相同，片段的時間還原回原音檔，依開始時間排好、重編序號。失敗的結果原樣傳回。
-
-    ``timeline`` 是那個語音視圖的時間對照；批次從存下來的序列化形式讀回（見
-    :meth:`SpeechTimeline.from_serialized`）。
-    """
-    if not result.success:
-        return result
-    return result.model_copy(
-        update={"segments": _in_time_order(timeline.restore(result.segments))})
 
 
 @dataclass(frozen=True)
@@ -371,18 +354,13 @@ class _ChunkedTranscription:
 
     # ── 合併與結果 ───────────────────────────────────────────────
     def _merged(self) -> TranscriptionTaskResult:
-        """合併轉完的段、時間還原回原音檔，回傳成功的轉錄結果。
-
-        時間還原之後才排序：還原後開始時間相同的片段照合併的先後，和以前（任務生命週期在還原之後
-        才排序）一樣。
-        """
+        """合併轉完的段、放回原音檔的時間軸，回傳成功的轉錄結果。"""
         segments = _merge(self._transcribed)
         if self._view.removed_silence:
             self._progress.report("時間還原回原音檔...")
-            segments = self._view.restore(segments)
-            logger.info("時間已還原回原音檔的時間軸")
+            logger.info("片段的時間還原回原音檔的時間軸")
         return self._result(success=True, text=_why_no_segments(segments, self._transcribed),
-                            segments=_in_time_order(segments))
+                            segments=self._view.timeline.in_original_order(segments))
 
     def _result(self, *, success: bool, text: str,
                 segments: Sequence[Dict[str, Any]] = ()) -> TranscriptionTaskResult:
@@ -445,14 +423,6 @@ def _shifted(span: Mapping[str, Any], chunk: _Chunk) -> Dict[str, Any]:
         if shifted.get(key) is not None:
             shifted[key] = chunk.to_view(shifted[key])
     return shifted
-
-
-def _in_time_order(segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """依開始時間排好、重編序號：各段合併之後序號才會連續。"""
-    ordered = sorted(segments, key=lambda s: s.get("start", 0.0))
-    for i, segment in enumerate(ordered):
-        segment["seq"] = i
-    return ordered
 
 
 def _why_no_segments(segments: Sequence[Mapping[str, Any]],

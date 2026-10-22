@@ -12,8 +12,9 @@
   使用者取消之後，供應商才跑完或才出錯，都不蓋掉取消，供應商已經轉完的部分照樣記下
   用量與費用（供應商照樣收費）。其他狀態照實改寫：啟動清掃把還在跑的任務記成失敗，
   任務之後跑完就記成完成。
-- 暫時錯誤由分段轉錄重試出錯的那一段（:mod:`app.services.chunked_transcription`），執行模式不重試
-  整個任務；萬一有暫時錯誤漏到這裡，一律照失敗處理，任務不會停在處理中。
+- 暫時錯誤在出錯的那一步等一段時間再做一次：分段轉錄重試出錯的那一段
+  （:mod:`app.services.chunked_transcription`），批次重做上傳、送出或查詢（:mod:`app.tasks.batch_core`）；
+  執行模式不重試整個任務。萬一有暫時錯誤漏到這裡，一律照失敗處理，任務不會停在處理中。
 - 完成和片段一起寫：任務紀錄記成完成（連同凍結的原始轉錄副本）和片段在同一個交易，片段
   寫不進去就照失敗處理。同一個任務再完成一次時，使用者動過的片段不刪、不覆寫（ADR-0007）。
 - 計價照模型能力的計價方式；實際以 Flex 或批次完成的照設定打折。
@@ -24,8 +25,9 @@
   排隊的任務，一樣留下紀錄、保留或清理上傳檔。
 - 收尾之後才宣告結果：畫面收到完成、失敗或取消時，紀錄、片段與保留音檔都已就緒。
 - 資料庫出錯不轉述例外：資料庫例外一接到就換成只有類型與原因的
-  :class:`~app.exceptions.TaskDatabaseError`，記進 log 與往上拋給執行模式的都是它；畫面與
-  任務紀錄給看得懂的固定訊息。
+  :class:`~app.exceptions.TaskDatabaseError`（:func:`without_db_details`），記進 log 與往上拋給
+  執行模式的都是它；畫面與任務紀錄給看得懂的固定訊息（:func:`shown_to_user`）。批次在任務之外
+  出錯時也照這條規則。
 
 狀態廣播與查詢取消只經由執行模式模組（:mod:`app.runtime.run_mode`）。
 """
@@ -111,8 +113,9 @@ _DB_ERROR_MESSAGE = "轉錄結果沒有存進資料庫，請重新轉錄"
 """資料庫出錯時給使用者看的原因；開始時就建立不了任務紀錄時也一樣沒有轉錄結果。"""
 
 
-def _without_db_details(error: Exception) -> Exception:
-    """資料庫例外換成 :class:`~app.exceptions.TaskDatabaseError`，其他例外原樣傳回。
+def without_db_details(error: Exception) -> Exception:
+    """資料庫例外換成 :class:`~app.exceptions.TaskDatabaseError`，其他例外原樣傳回；記進 log、
+    往上拋或給使用者看之前都先換。
 
     資料庫例外的訊息與它的成因（DBAPI 的原始例外）都帶著 SQL 原文，Postgres 在第一行之後
     附上的 DETAIL 還可能是寫不進去的整列（見 :func:`describe_db_error`）。換掉的例外沿用
@@ -124,7 +127,7 @@ def _without_db_details(error: Exception) -> Exception:
     return TaskDatabaseError(describe_db_error(error)).with_traceback(error.__traceback__)
 
 
-def _shown_to_user(error: Exception) -> str:
+def shown_to_user(error: Exception) -> str:
     """給使用者看的失敗原因：資料庫出錯換成看得懂的固定訊息，原因只記在 log；其他例外
     （例如供應商回報的錯誤）照例外訊息。"""
     return _DB_ERROR_MESSAGE if isinstance(error, TaskDatabaseError) else str(error)
@@ -162,7 +165,7 @@ class TaskLifecycle:
             with SessionLocal() as db:
                 record = TranscriptionLogRepository().get(db, task_uuid)
         except SQLAlchemyError as e:
-            raise _without_db_details(e) from None
+            raise without_db_details(e) from None
         if record is None:
             return None
         task = Task(
@@ -221,7 +224,7 @@ class TaskLifecycle:
             with SessionLocal() as db:
                 self._start(db)
         except SQLAlchemyError as e:
-            raise _without_db_details(e) from None
+            raise without_db_details(e) from None
 
     def end(self, result: Union[TranscriptionTaskResult, Exception]) -> Optional[dict]:
         """結束一個已經開始的任務（批次的檔案）：記下完成或失敗、收尾，再宣告結果。
@@ -252,7 +255,7 @@ class TaskLifecycle:
                     self._fail_before_start(db, "應用程式關閉時任務還在排隊，沒有開始轉錄")
             except Exception as e:
                 logger.error(
-                    f"任務 {self._task_uuid} 無法更新任務紀錄: {_without_db_details(e)}")
+                    f"任務 {self._task_uuid} 無法更新任務紀錄: {without_db_details(e)}")
             finally:
                 self._finish(db)
 
@@ -266,10 +269,10 @@ class TaskLifecycle:
                 outcome = step(db)
             except Exception as e:
                 # 連任務紀錄都寫不進去（例如資料庫連不上）：照樣收尾，宣告失敗
-                error = _without_db_details(e)
+                error = without_db_details(e)
                 logger.error(f"任務 {self._task_uuid} 無法更新任務紀錄: {error}")
                 outcome = _Outcome(
-                    TaskStatus.FAILED, f"任務失敗: {_shown_to_user(error)}", error=error)
+                    TaskStatus.FAILED, f"任務失敗: {shown_to_user(error)}", error=error)
             finally:
                 # 一定收尾。被強制終止時（Docker 模式的 gevent 丟 GreenletExit，不是 Exception）
                 # 例外照樣往上拋、不宣告結果，但上傳的音檔已經保留或清掉
@@ -314,7 +317,7 @@ class TaskLifecycle:
         if self._progress.cancel_requested():
             # 使用者取消之後才冒出的錯誤（例如 503 剛好回來）也算取消：不算失敗
             return self._cancel(db)
-        return self._fail(db, _without_db_details(error))
+        return self._fail(db, without_db_details(error))
 
     def _start(self, db: Session) -> None:
         """開始：建立任務紀錄，廣播處理中。"""
@@ -425,7 +428,7 @@ class TaskLifecycle:
         logger.error(
             f"Transcription task failed for log ID: {self._task_uuid}\n"
             f"{''.join(traceback.format_exception(error))}")
-        reason = _shown_to_user(error)
+        reason = shown_to_user(error)
         failed = self._records.update_log_unless_cancelled(db, self._task_uuid, {
             "status": TaskStatus.FAILED,
             "error_message": reason,
@@ -473,7 +476,7 @@ class TaskLifecycle:
         try:
             yield
         except Exception as e:
-            logger.warning(f"{step}失敗 (task={self._task_uuid}): {_without_db_details(e)}")
+            logger.warning(f"{step}失敗 (task={self._task_uuid}): {without_db_details(e)}")
 
     # ── 進度與廣播 ────────────────────────────────────────────────
     def _report(self, text: str) -> None:

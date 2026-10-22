@@ -5,23 +5,21 @@
   （max_workers=N，對齊容器 worker 的 gevent 併發）
 - registry 記錄任務狀態，提供 :meth:`LocalExecutor.revoke` /
   :meth:`LocalExecutor.is_alive`（取代 ``control.revoke`` 與 ``AsyncResult``）
-- retry wrapper 對齊 Celery 的 ``autoretry_for`` + ``retry_backoff``
-  （full-jitter，退避上限 ``backoff_max`` 秒）
 
-撤銷之後不會再執行的任務（還沒開始的、等著重試的），改呼叫派送時給的 ``on_abandoned``
-收尾，對齊 Celery 丟掉被撤銷的任務訊息。執行中的那一次無法被強制終止（執行緒不可 kill），
-照常跑完，由任務自己看取消旗標合作式停止、收尾，與 Docker 模式的 solo pool 行為一致。
+不重試任務，和 Docker 模式的 Celery 任務一樣：暫時錯誤由任務自己重做出錯的那一步。
+
+撤銷之後不會再執行的任務（還沒開始的），改呼叫派送時給的 ``on_abandoned`` 收尾，對齊
+Celery 丟掉被撤銷的任務訊息。執行中的任務無法被強制終止（執行緒不可 kill），照常跑完，
+由任務自己看取消旗標合作式停止、收尾，與 Docker 模式的 solo pool 行為一致。
 由 :class:`app.runtime.in_process.InProcessRunMode` 持有與關閉。
 """
 
 from __future__ import annotations
 
-import random
 import threading
-import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import Callable, Optional, Tuple, Type
+from typing import Callable, Optional
 
 from app.utils.logger import setup_logger
 
@@ -45,8 +43,6 @@ class _TaskEntry:
     state: str = PENDING
     future: Optional[Future] = None
     on_abandoned: Optional[Abandoned] = None
-    revoked: bool = False
-    """已經被撤銷：執行中的這一次跑完就不再重試。"""
 
 
 class LocalExecutor:
@@ -67,15 +63,11 @@ class LocalExecutor:
         *,
         task_id: str,
         queue: str = "celery",
-        retry_on: Tuple[Type[BaseException], ...] = (),
-        max_retries: int = 3,
-        backoff_max: int = 60,
         on_abandoned: Optional[Abandoned] = None,
     ) -> str:
         """派發任務至指定佇列的執行緒池，回傳 task_id。
 
-        任務撤銷之後不會再執行（還沒開始、或等著重試）、或關閉時還在排隊時，
-        改呼叫 ``on_abandoned``。
+        任務撤銷之後不會再執行（還沒開始）、或關閉時還在排隊時，改呼叫 ``on_abandoned``。
         """
         pool = self._pools.get(queue) or self._pools["celery"]
         entry = _TaskEntry(on_abandoned=on_abandoned)
@@ -86,33 +78,13 @@ class LocalExecutor:
             with self._lock:
                 # 撤銷時 future 已經交給執行緒、取消不了：照常執行，由任務自己看取消旗標停下
                 entry.state = STARTED
-
-            attempt = 0
-            while True:
-                try:
-                    result = fn(*args)
-                except retry_on as e:
-                    if attempt >= max_retries:
-                        entry.state = FAILURE
-                        logger.error(
-                            f"任務 {task_id} 重試 {max_retries} 次後仍失敗: {e}")
-                        raise
-                    if self._stop_retrying(task_id, entry):
-                        return None
-                    delay = random.uniform(0, min(2 ** attempt, backoff_max))
-                    logger.warning(
-                        f"任務 {task_id} 遇暫時性錯誤，{delay:.1f}s 後重試"
-                        f"（第 {attempt + 1}/{max_retries} 次）: {e}")
-                    time.sleep(delay)
-                    if self._stop_retrying(task_id, entry):
-                        return None
-                    attempt += 1
-                except BaseException:
-                    entry.state = FAILURE
-                    raise
-                else:
-                    entry.state = SUCCESS
-                    return result
+            try:
+                result = fn(*args)
+            except BaseException:
+                entry.state = FAILURE
+                raise
+            entry.state = SUCCESS
+            return result
 
         entry.future = pool.submit(_run)
         return task_id
@@ -120,15 +92,11 @@ class LocalExecutor:
     def revoke(self, task_id: str) -> None:
         """撤銷任務：還沒開始的不再執行，呼叫它的 ``on_abandoned``。
 
-        已經開始的這一次照常跑完（執行緒不可 kill，靠合作式旗標停止），跑完之前都還算
-        存活；這一次以暫時錯誤結束時不再重試，改呼叫 ``on_abandoned``。
+        已經開始的照常跑完（執行緒不可 kill，靠合作式旗標停止），跑完之前都還算存活。
         """
         with self._lock:
             entry = self._registry.get(task_id)
-            if entry is None or entry.state not in _ACTIVE_STATES:
-                return
-            entry.revoked = True
-            if entry.state != PENDING:
+            if entry is None or entry.state != PENDING:
                 return
             entry.state = REVOKED
             abandoned = entry.future is not None and entry.future.cancel()
@@ -166,17 +134,6 @@ class LocalExecutor:
         if wait:
             for pool in self._pools.values():
                 pool.shutdown(wait=True)
-
-    def _stop_retrying(self, task_id: str, entry: _TaskEntry) -> bool:
-        """等著重試的任務被撤銷了：不再重試，改呼叫收尾；收尾完才算結束。"""
-        with self._lock:
-            if not entry.revoked:
-                return False
-        logger.info(f"任務 {task_id} 已被撤銷，不再重試")
-        self._abandon(task_id, entry, revoked=True)
-        with self._lock:
-            entry.state = REVOKED
-        return True
 
     @staticmethod
     def _abandon(task_id: str, entry: _TaskEntry, *, revoked: bool) -> None:

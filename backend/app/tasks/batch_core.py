@@ -11,20 +11,22 @@ Docker 模式由 :mod:`app.celery.batch_task` 的 Celery shim 包裝執行，免
 - 復原（:func:`run_recover`）：重啟或輪詢中斷之後查一次批次，結束了就結束送出的檔案
 
 結束送出的檔案只有一份流程（:func:`_end_submitted`）：兩個入口都讀送出時存下的每個檔案（任務紀錄、
-長度、上傳檔，以及語音視圖的序列化形式），供應商的結果用存下的語音視圖還原回原音檔的時間軸，再交給
-任務生命週期記下完成或失敗、收尾、宣告。這些先存在批次紀錄現有的 JSON 欄位，搬進 batch_files
-資料表是 #116。
+長度、上傳檔，以及語音視圖的序列化形式），供應商的結果用存下的語音視圖放回原音檔的時間軸，再交給
+任務生命週期記下完成或失敗、收尾、宣告。執行時用自己的任務生命週期，復原時從任務紀錄接回。這些先存在
+批次紀錄現有的 JSON 欄位，搬進 batch_files 資料表是 #116。
 
 送出之前就失敗的檔案（開不了供應商、上傳失敗、送不出去）當場結束；輪詢中斷時，送出的檔案照失敗結束，
 之後還能從復原入口結束成完成。上傳、送出與查詢遇到暫時錯誤（429、503）時，等一段時間再做一次那一步
 （:meth:`~app.exceptions.TransientError.wait_seconds`）。執行模式不重試整個批次：檔案都已經開始，
-重跑會替同一個音檔再開一個任務。
+整個批次再執行一次會替同一個音檔再開一個任務。資料庫出錯時照任務生命週期的規則，不轉述例外
+（:func:`~app.tasks.lifecycle.without_db_details`）。
 """
 
 from __future__ import annotations
 
 import json
 import time
+import traceback
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -43,10 +45,9 @@ from app.provider.base import BatchProvider, BatchStatus
 from app.provider.registry import open_batch_provider, provider_info, reopen_batch_provider
 from app.repositories.batch_job_repository import BatchJobRepository
 from app.runtime.run_mode import publish_status
-from app.services import chunked_transcription
 from app.services.silence_removal import SpeechTimeline, SpeechView, speech_view
 from app.services.transcription.models import TranscriptionTaskResult
-from app.tasks.lifecycle import Task, TaskLifecycle
+from app.tasks.lifecycle import Task, TaskLifecycle, shown_to_user, without_db_details
 from app.utils.logger import setup_logger
 from app.utils.paths import delete_temp_files
 
@@ -71,7 +72,7 @@ def run_batch(task_params_dict: dict, task_uuid: str) -> None:
 
     Raises:
         Exception: 中途出錯時，還沒結束的檔案都照失敗結束、批次記成失敗之後，原本的例外往上拋，
-            讓執行模式記下失敗。
+            讓執行模式記下失敗；資料庫例外換成 :class:`~app.exceptions.TaskDatabaseError`。
     """
     _Run(BatchTranscriptionTaskParams.model_validate(task_params_dict), task_uuid).run()
 
@@ -79,62 +80,68 @@ def run_batch(task_params_dict: dict, task_uuid: str) -> None:
 def run_recover(batch_id: str, api_key: str) -> None:
     """復原：重啟或輪詢中斷之後查一次批次，結束了就結束送出的每個檔案，和執行同一份流程。
 
-    還沒結束、查不到或建立不了供應商轉接器時，批次留在輪詢中，之後可以再復原。
+    還沒結束、查不到、建立不了供應商轉接器或中途出錯時，批次留在輪詢中，之後可以再復原。
+    不往上拋例外：出錯只記 log。
     """
     publish = _publisher(batch_id, "")
-    jobs = BatchJobRepository()
-    with SessionLocal() as db:
-        job = jobs.get_job(db, batch_id)
+    started_at = time.time()
+
+    def keep_polling(text: str) -> None:
+        try:
+            with SessionLocal() as db:
+                BatchJobRepository().update_job(db, batch_id, {"status": "POLLING"})
+        except Exception as e:
+            logger.error(f"批次 {batch_id} 無法記回輪詢中: {without_db_details(e)}")
+        publish(text, TaskStatus.BATCH_COMPLETED)
+
+    try:
+        with SessionLocal() as db:
+            job = BatchJobRepository().get_job(db, batch_id)
+            name = job.gemini_job_name if job else None
+            stored = json.loads(job.task_params_json) if job and job.task_params_json else {}
         if job is None:
             logger.error(f"復原找不到批次: {batch_id}")
             return
-        if not job.gemini_job_name:
+        if not name:
             logger.error(f"批次 {batch_id} 還沒有送出，無法復原")
-            jobs.update_job(db, batch_id, {"status": "POLLING"})
+            keep_polling("批次還沒有送出，無法恢復")
             return
-        name = job.gemini_job_name
-        stored = json.loads(job.task_params_json) if job.task_params_json else {}
 
-    def keep_polling(text: str) -> None:
-        with SessionLocal() as db:
-            jobs.update_job(db, batch_id, {"status": "POLLING"})
-        publish(text, TaskStatus.BATCH_COMPLETED)
-
-    publish("正在恢復批次的結果...")
-    try:
-        # 復原不驗證模型：升級後模型清單拿掉了送出時的模型，進行中的批次也收得回來
-        adapter = reopen_batch_provider(
-            stored.get("provider", "google"), stored.get("model", ""), api_key)
-    except ValueError as e:
-        logger.warning(f"復原批次 {batch_id} 無法建立供應商轉接器: {e}")
-        keep_polling("API Key 無效")
-        return
-
-    started_at = time.time()
-    try:
+        publish("正在恢復批次的結果...")
         try:
-            status = adapter.poll_batch(name)
-        except Exception as e:
-            keep_polling(f"查詢批次失敗: {e}")
+            # 復原不驗證模型：升級後模型清單拿掉了送出時的模型，進行中的批次也收得回來
+            adapter = reopen_batch_provider(
+                stored.get("provider", "google"), stored.get("model", ""), api_key)
+        except ValueError as e:
+            logger.warning(f"復原批次 {batch_id} 無法建立供應商轉接器: {e}")
+            keep_polling("API Key 無效")
             return
-        logger.info(f"復原批次 {batch_id}: 狀態 = {status.state}")
-        if not status.done:
-            keep_polling(f"批次仍在進行中 ({status.state})")
-            return
-        _end_submitted(batch_id, status, publish)
-        publish(f"恢復完成 (耗時 {time.time() - started_at:.1f} 秒)" if status.succeeded
-                else f"批次失敗，狀態: {status.state}", TaskStatus.BATCH_COMPLETED)
+        try:
+            try:
+                status = adapter.poll_batch(name)
+            except Exception as e:
+                keep_polling(f"查詢批次失敗: {e}")
+                return
+            logger.info(f"復原批次 {batch_id}: 狀態 = {status.state}")
+            if not status.done:
+                keep_polling(f"批次仍在進行中 ({status.state})")
+                return
+            _end_submitted(batch_id, status, publish, _resumed, started_at=started_at)
+        finally:
+            # 接手批次的轉接器一樣要釋放（見 BatchProvider）
+            adapter.release()
     except Exception as e:
-        logger.error(f"復原批次 {batch_id} 失敗: {e}", exc_info=True)
-        keep_polling(f"恢復批次失敗: {e}")
-    finally:
-        # 接手批次的轉接器一樣要釋放（見 BatchProvider）
-        adapter.release()
+        error = without_db_details(e)
+        logger.error(f"復原批次 {batch_id} 失敗:\n{''.join(traceback.format_exception(error))}")
+        keep_polling(f"恢復批次失敗: {shown_to_user(error)}")
 
 
-def abandon_batch(task_params_dict: dict, *, cancelled: bool) -> None:
+def abandon_batch(task_params_dict: dict) -> None:
     """收尾一個不會再執行的批次（應用程式關閉時還在排隊）：和單檔任務一樣，每個檔案都留下任務紀錄、
-    照保留設定處理上傳檔（:meth:`TaskLifecycle.abandon`）；批次記成失敗。"""
+    照保留設定處理上傳檔（:meth:`TaskLifecycle.abandon`）；批次記成失敗。
+
+    批次沒有撤銷的入口，不會再執行的只有這一種。
+    """
     params = BatchTranscriptionTaskParams.model_validate(task_params_dict)
     try:
         with SessionLocal() as db:
@@ -142,9 +149,9 @@ def abandon_batch(task_params_dict: dict, *, cancelled: bool) -> None:
             BatchJobRepository().update_job(db, params.batch_id, {"status": "FAILED"})
     except Exception as e:
         # 任務紀錄記在批次紀錄底下，建立不了也照樣處理每個檔案的上傳檔
-        logger.error(f"批次 {params.batch_id} 無法建立批次紀錄: {e}")
+        logger.error(f"批次 {params.batch_id} 無法建立批次紀錄: {without_db_details(e)}")
     for item in params.files:
-        TaskLifecycle(str(uuid.uuid4()), _task(item, params)).abandon(cancelled=cancelled)
+        TaskLifecycle(str(uuid.uuid4()), _task(item, params)).abandon(cancelled=False)
 
 
 # ── 執行 ─────────────────────────────────────────────────────────
@@ -159,7 +166,7 @@ class _File:
     handle: Any = None
     """:meth:`BatchProvider.upload` 的代號。"""
     ended: bool = False
-    """已經交給任務生命週期結束（或由 :func:`_end_submitted` 結束）了。"""
+    """已經交給任務生命週期結束了。"""
 
 
 class _Run:
@@ -176,6 +183,7 @@ class _Run:
 
     def run(self) -> None:
         adapter: Optional[BatchProvider] = None
+        failure: Optional[Exception] = None
         try:
             with SessionLocal() as db:
                 _create_record(db, self._params, run_id=self._run_id)
@@ -189,7 +197,7 @@ class _Run:
 
             uploaded = self._upload(adapter)
             if not uploaded:
-                self._finished("所有檔案都沒有上傳成功，批次結束")
+                self._fail_batch("所有檔案都沒有上傳成功，批次結束")
                 return
             name = self._submit(adapter, uploaded)
             self._save_submitted(name, uploaded)
@@ -198,26 +206,37 @@ class _Run:
 
             status = self._poll(adapter, name, label)
             logger.info(f"批次 {self._batch_id} 結束，狀態: {status.state}")
-            # 送出的檔案一個一個交給 _end_submitted 結束，它不因為一個檔案出錯而停下
+            _end_submitted(self._batch_id, status, self._publish, self._own_lifecycle,
+                           started_at=self._started_at)
+            # 存下來的檔案清單少了誰（不該發生）：那個檔案照樣要結束，不停在處理中
             for file in uploaded:
-                file.ended = True
-            _end_submitted(self._batch_id, status, self._publish)
-            elapsed = time.time() - self._started_at
-            self._publish(f"批次全部完成 (耗時 {elapsed:.1f} 秒)" if status.succeeded
-                          else f"批次失敗，狀態: {status.state}", TaskStatus.BATCH_COMPLETED)
-            logger.info(f"批次完成: {self._batch_id}, 耗時 {elapsed:.1f} 秒")
+                self._end(file, _BatchError("批次紀錄裡找不到這個檔案，無法取回結果"))
         except Exception as e:
+            failure = without_db_details(e)
             # 還沒結束的檔案都照失敗結束：畫面靠每個檔案自己的結果離開處理中
             for file in self._files:
-                if not file.ended:
-                    file.ended = True
-                    file.lifecycle.end(e)
-            self._finished(f"批次失敗: {e}")
-            raise
+                self._end(file, failure)
+            self._fail_batch(f"批次失敗: {shown_to_user(failure)}")
         finally:
             if adapter is not None:
                 # 刪掉上傳到供應商的遠端檔
                 adapter.release()
+        if failure is not None:
+            raise failure
+
+    def _end(self, file: _File, result: Union[TranscriptionTaskResult, Exception]) -> None:
+        """還沒結束的檔案交給它的任務生命週期結束；已經結束的不動。"""
+        if not file.ended:
+            file.ended = True
+            file.lifecycle.end(result)
+
+    def _own_lifecycle(self, submitted: _Submitted) -> Optional[TaskLifecycle]:
+        """執行時結束送出的檔案，用這次執行自己的任務生命週期（:func:`_end_submitted`）。"""
+        for file in self._files:
+            if file.item.file_uid == submitted.file_uid and not file.ended:
+                file.ended = True
+                return file.lifecycle
+        return None
 
     def _upload(self, adapter: BatchProvider) -> List[_File]:
         """每個檔案去靜音拿到語音視圖，上傳要送進模型的音檔；上傳失敗的檔案當場結束。
@@ -242,8 +261,7 @@ class _Run:
                 file.handle = self._retrying(f"上傳 {name} ", adapter.upload, file.view.audio)
             except Exception as e:
                 logger.error(f"上傳檔案失敗 {name}: {e}", exc_info=True)
-                file.ended = True
-                file.lifecycle.end(_BatchError(f"檔案上傳失敗: {e}"))
+                self._end(file, _BatchError(f"檔案上傳失敗: {e}"))
                 continue
             finally:
                 if file.view is not None:
@@ -262,7 +280,7 @@ class _Run:
         return name
 
     def _save_submitted(self, name: str, uploaded: List[_File]) -> None:
-        """存下送出的批次與每個檔案（依送出的順序）：結果回來時（可能在重啟之後）從這裡接回每個
+        """存下送出的批次與每個檔案（依送出的順序）：結果回來時（可能在重啟之後）從這裡結束每個
         檔案的任務；語音視圖存它的序列化形式。"""
         files = {
             str(i): {
@@ -301,7 +319,10 @@ class _Run:
 
     def _retrying(self, step: str, call: Callable[..., T], *args: Any) -> T:
         """做一步；遇到暫時錯誤時先廣播，等一段時間（:meth:`TransientError.wait_seconds`）再做一次，
-        最多重試 ``TRANSIENT_ERROR_RETRIES`` 次，用完就往上拋。"""
+        最多重試 ``TRANSIENT_ERROR_RETRIES`` 次，用完就往上拋。
+
+        和分段轉錄重試一段的規則相同；差在批次沒有使用者取消，等待不必邊等邊查取消。
+        """
         retries = get_settings().transient_error_retries
         retry = 0
         while True:
@@ -328,13 +349,13 @@ class _Run:
             template=(item.prompt or params.prompt) or None,
         )
 
-    def _finished(self, text: str) -> None:
+    def _fail_batch(self, text: str) -> None:
         """批次沒有正常結束：批次紀錄記成失敗，再宣告批次結束。記不下來只記 log。"""
         try:
             with SessionLocal() as db:
                 BatchJobRepository().update_job(db, self._batch_id, {"status": "FAILED"})
         except Exception as e:
-            logger.error(f"批次 {self._batch_id} 無法記成失敗: {e}")
+            logger.error(f"批次 {self._batch_id} 無法記成失敗: {without_db_details(e)}")
         self._publish(text, TaskStatus.BATCH_COMPLETED)
 
 
@@ -356,10 +377,23 @@ class _Submitted:
     """送進模型的語音視圖怎麼對回原音檔，從序列化形式讀回。"""
 
 
-def _end_submitted(batch_id: str, status: BatchStatus, publish: Publish) -> None:
-    """結束送出的每個檔案（執行與復原共用），最後記下批次的結果。
+def _resumed(file: _Submitted) -> Optional[TaskLifecycle]:
+    """復原時結束送出的檔案：從它的任務紀錄接回任務生命週期；紀錄不在了時是 None。"""
+    return TaskLifecycle.resume(file.task_uuid, file_path=file.file_path, duration=file.duration)
 
-    每個檔案讀送出時存下的資料，接回它的任務生命週期（:meth:`TaskLifecycle.resume`）。供應商的
+
+def _end_submitted(
+    batch_id: str,
+    status: BatchStatus,
+    publish: Publish,
+    lifecycle_of: Callable[[_Submitted], Optional[TaskLifecycle]],
+    *,
+    started_at: float,
+) -> None:
+    """結束送出的每個檔案（執行與復原共用），記下批次的結果，再宣告批次結束。
+
+    每個檔案讀送出時存下的資料，由 ``lifecycle_of`` 給它的任務生命週期：執行時用這次執行自己的，
+    復原時從任務紀錄接回（:func:`_resumed`）；給不出來的（例如使用者把紀錄刪掉了）略過。供應商的
     結果用存下的語音視圖放回原音檔的時間軸，記下完成或失敗、收尾、宣告；整個批次失敗、或供應商沒給
     某個檔案結果時，那些檔案照失敗結束。一個檔案出錯不影響其他檔案。
 
@@ -370,22 +404,26 @@ def _end_submitted(batch_id: str, status: BatchStatus, publish: Publish) -> None
     with SessionLocal() as db:
         job = jobs.get_job(db, batch_id)
         submitted = _submitted(job) if job else []
-    publish("批次結束，正在處理結果..." if status.succeeded
-            else f"批次失敗，狀態: {status.state}")
+    publish("批次結束，正在處理結果..." if status.succeeded else _failed_state(status))
     completed: Dict[str, dict] = {}
     for file in submitted:
         try:
-            lifecycle = TaskLifecycle.resume(
-                file.task_uuid, file_path=file.file_path, duration=file.duration)
-            if lifecycle is None:
-                logger.warning(f"批次 {batch_id} 的 {file.file_uid} 找不到任務紀錄（可能被刪掉了），略過")
-                continue
-            lifecycle.progress.report(
-                f"處理結果 ({file.position + 1}/{len(submitted)}): {file.original_filename}")
-            result = lifecycle.end(_result_of(status, file))
+            outcome = _result_of(status, file)
         except Exception as e:
-            logger.error(f"結束批次 {batch_id} 的 {file.file_uid} 時出錯: {e}")
+            # 結果放不回原音檔的時間軸（例如片段的時間不是數字）：這個檔案照失敗結束
+            outcome = _BatchError(f"結果放不回原音檔的時間軸: {e}")
+        try:
+            lifecycle = lifecycle_of(file)
+        except Exception as e:
+            logger.error(f"批次 {batch_id} 的 {file.file_uid} 接不回任務: {without_db_details(e)}")
             continue
+        if lifecycle is None:
+            logger.warning(f"批次 {batch_id} 的 {file.file_uid} 找不到任務，略過")
+            continue
+        # 拿到任務生命週期之後一定結束：回報進度與 end 都不往上拋例外
+        lifecycle.progress.report(
+            f"處理結果 ({file.position + 1}/{len(submitted)}): {file.original_filename}")
+        result = lifecycle.end(outcome)
         if result is not None:
             completed[file.file_uid] = result
     with SessionLocal() as db:
@@ -394,6 +432,8 @@ def _end_submitted(batch_id: str, status: BatchStatus, publish: Publish) -> None
             "results_json": json.dumps(completed, default=str, ensure_ascii=False),
         })
     logger.info(f"批次 {batch_id}: {len(completed)}/{len(submitted)} 個檔案完成")
+    publish(f"批次全部完成 (耗時 {time.time() - started_at:.1f} 秒)" if status.succeeded
+            else _failed_state(status), TaskStatus.BATCH_COMPLETED)
 
 
 def _submitted(job: BatchJob) -> List[_Submitted]:
@@ -429,10 +469,18 @@ def _result_of(status: BatchStatus,
     """這個檔案的結果：供應商給的轉錄結果放回原音檔的時間軸；整個批次失敗、或沒有這個檔案的結果時，
     是讓它失敗的原因。"""
     if not status.succeeded:
-        return _BatchError(f"批次失敗，狀態: {status.state}")
+        return _BatchError(_failed_state(status))
     if file.position >= len(status.results):
         return _BatchError("供應商沒有回傳這個檔案的結果")
-    return chunked_transcription.on_original_timeline(status.results[file.position], file.timeline)
+    result = status.results[file.position]
+    if not result.success:
+        return result
+    return result.model_copy(update={"segments": file.timeline.in_original_order(result.segments)})
+
+
+def _failed_state(status: BatchStatus) -> str:
+    """整個批次失敗時給使用者看的原因：帶著供應商回報的狀態。"""
+    return f"批次失敗，狀態: {status.state}"
 
 
 # ── 小工具 ───────────────────────────────────────────────────────

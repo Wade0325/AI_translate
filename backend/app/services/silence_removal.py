@@ -1,8 +1,9 @@
 """去靜音模組：去靜音只有一個入口 :func:`speech_view`，回傳語音視圖；單檔任務與批次都用它。
 
 語音視圖（:class:`SpeechView`）是實際送進模型的音檔，以及把其中的時間還原回原音檔的對照；
-分段轉錄照它決定送什麼、切在哪裡，轉錄完把時間還原回原音檔。批次把它的序列化形式存進資料庫
-（:meth:`SpeechView.serialized`），結果回來時（可能在重啟之後）用它還原時間。剪不剪看兩件事：
+分段轉錄照它決定送什麼、切在哪裡，轉錄完把片段放回原音檔的時間軸（:meth:`SpeechTimeline.in_original_order`）。
+批次不分段，把它的序列化形式存進資料庫（:meth:`SpeechView.serialized`），結果回來時（可能在重啟
+之後）用它把片段放回原音檔的時間軸。剪不剪看兩件事：
 
 - 模型能力的「轉錄前要不要剪掉靜音」：不剪的模型送原音檔，但照樣找出靜音，每段靜音的正中間
   當分段轉錄的切點。
@@ -108,6 +109,18 @@ class SpeechTimeline:
                 new["words"] = [self._restored_word(word) for word in segment["words"]]
             restored.append(new)
         return restored
+
+    def in_original_order(self, segments: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]]:
+        """轉錄結果的片段放回原音檔的時間軸，回傳新的片段：去靜音過的還原時間（:meth:`restore`），
+        再依開始時間排好、重編序號。分段轉錄合併之後、批次的結果回來之後都經過這裡。
+
+        還原之後才排序：還原後開始時間相同的片段照傳進來的先後。沒有去靜音時時間不變。
+        """
+        placed = self.restore(segments) if self.voiced else [dict(s) for s in segments]
+        placed.sort(key=lambda segment: segment.get("start", 0.0))
+        for seq, segment in enumerate(placed):
+            segment["seq"] = seq
+        return placed
 
     def _restored_word(self, word: Mapping[str, Any]) -> Dict[str, Any]:
         start, end = self._restored_interval(word.get("start"), word.get("end"))

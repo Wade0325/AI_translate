@@ -20,6 +20,7 @@ from app.runtime import run_mode
 from app.runtime.celery_redis import CHANNEL, CeleryRedisRunMode
 from tests.support.fake_provider import FAKE_MODEL, Fail
 from tests.support.synthetic_audio import synthetic_audio
+from tests.support.task_api import file_results
 from tests.support.waiting import cancel_when_dispatched
 
 LINES = [(0.2, 1.5, 0, "おはよう。"), (2.3, 3.6, 1, "こんにちは。")]
@@ -301,12 +302,6 @@ def batch_params(uploads, batch_id: str, file_uids: list[str]) -> dict:
             "source_lang": "ja", "client_id": batch_id, "batch_id": batch_id}
 
 
-def file_ends(messages: list[dict]) -> dict[str, dict]:
-    """每個檔案最後一則完成或失敗的廣播。"""
-    return {m["file_uid"]: m for m in messages
-            if m.get("file_uid") and m["status_code"] in (TaskStatus.COMPLETED, TaskStatus.FAILED)}
-
-
 def test_batch_files_end_like_tasks_in_docker_mode(batch_tasks, uploads, fake, broadcasts, client):
     # 和免安裝模式一樣：每個檔案的結果廣播到 Redis 的狀態頻道，存下任務紀錄與片段；一個檔案失敗
     # 不影響另一個，Celery 照樣回報批次跑完
@@ -318,7 +313,7 @@ def test_batch_files_end_like_tasks_in_docker_mode(batch_tasks, uploads, fake, b
 
     messages = broadcasts()
     assert result.state == "SUCCESS"
-    ends = file_ends(messages)
+    ends = file_results(messages)
     assert {uid: m["status_code"] for uid, m in ends.items()} == {
         "docker-a": TaskStatus.COMPLETED, "docker-b": TaskStatus.FAILED}
     segments = client.get(f"/api/v1/transcripts/{ends['docker-a']['task_uuid']}").json()["segments"]
@@ -336,12 +331,12 @@ def test_batch_recovers_in_docker_mode(batch_tasks, uploads, fake, broadcasts, c
     fake.batch_polls = [RuntimeError("連線中斷")]
     run.apply(args=[batch_params(uploads, "batch-docker-recover", ["docker-recover"])],
               task_id=str(uuid.uuid4()))
-    first = file_ends(broadcasts())["docker-recover"]
+    first = file_results(broadcasts())["docker-recover"]
     assert first["status_code"] == TaskStatus.FAILED
 
     result = recover.apply(args=["batch-docker-recover", "test-key"])
 
-    recovered = file_ends(broadcasts())["docker-recover"]
+    recovered = file_results(broadcasts())["docker-recover"]
     assert result.state == "SUCCESS"
     assert (recovered["status_code"], recovered["task_uuid"]) == (
         TaskStatus.COMPLETED, first["task_uuid"])

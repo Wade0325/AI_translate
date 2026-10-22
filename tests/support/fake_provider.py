@@ -125,6 +125,8 @@ class FakeProvider:
         self.submit_errors: List[Exception] = []
         self.batch_polls: List[BatchPoll] = []
         self.batch_outcome = "SUCCEEDED"
+        # 成功結束時，最後這麼多個請求沒有結果（供應商少給了）
+        self.missing_results = 0
         self.submitted: Dict[str, Tuple[TranscriptionTaskResult, ...]] = {}
         """送出的批次：名稱 → 每個請求的結果。"""
 
@@ -206,8 +208,9 @@ class FakeProvider:
         if isinstance(step, BaseException):
             raise step
         if step == "SUCCEEDED":
+            results = self.submitted[name]
             return BatchStatus(state=f"JOB_STATE_{step}", done=True, succeeded=True,
-                               results=self.submitted[name])
+                               results=results[:len(results) - self.missing_results])
         return BatchStatus(state=f"JOB_STATE_{step}", done=step in BATCH_DONE)
 
     def _result(self, step: Union[Sequence[Line], Fail],

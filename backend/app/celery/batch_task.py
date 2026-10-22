@@ -11,8 +11,8 @@ from app.tasks.batch_core import run_batch, run_recover
 def batch_transcribe_task(self, task_params_dict: dict):
     """批次轉錄的 Celery 任務。
 
-    不自動重試：暫時錯誤在批次裡重做出錯的那一步，和免安裝模式相同；檔案都已經開始，重跑整個批次會
-    替同一個音檔再開一個任務。
+    不自動重試：暫時錯誤在批次裡重做出錯的那一步，和免安裝模式相同；檔案都已經開始，整個批次再執行
+    一次會替同一個音檔再開一個任務。
     """
     return run_batch(task_params_dict, self.request.id)
 

@@ -54,8 +54,8 @@ class InProcessRunMode:
         task_id = str(uuid.uuid4())
 
         def abandoned(revoked: bool) -> None:
-            # 關閉時還在排隊：批次不會執行，每個檔案照樣收尾
-            abandon_batch(task_params_dict, cancelled=revoked)
+            # 關閉時還在排隊：批次不會執行，每個檔案照樣收尾。批次沒有撤銷的入口，revoked 一定是 False
+            abandon_batch(task_params_dict)
 
         # 不重試整個批次：暫時錯誤在批次裡重做出錯的那一步，和 Docker 模式相同
         self._executor.submit(

@@ -8,7 +8,6 @@ sqlite、行程內執行模式、WebSocket 狀態廣播、ffmpeg 與去靜音。
 tests/unit/test_gemini_adapter.py。
 """
 import threading
-from concurrent.futures import ThreadPoolExecutor, wait
 
 import pytest
 from fastapi.testclient import TestClient
@@ -17,11 +16,11 @@ from app.core.task_status import TaskStatus
 from app.provider import registry
 from app.provider.google.provider import GeminiProvider
 from tests.support.fake_genai import FakeGenaiClient, Reply, invalid_argument, unavailable
-from tests.support.synthetic_audio import VOICED, synthetic_audio
-from tests.support.waiting import wait_until
+from tests.support.synthetic_audio import VOICED
+from tests.support.task_api import receive_until, upload
+from tests.support.waiting import TIMEOUT, wait_until
 
 MODEL = "gemini-2.5-flash"
-TIMEOUT = 30
 
 # 使用者的提示詞照樣代入變數，裡面的 JSON 之類的大括號原樣送給 Gemini（#143）
 JSON_PROMPT = '請轉錄{source_lang}音檔，每一行寫成 {"speaker": "S0", "text": "…"}'
@@ -68,36 +67,18 @@ def api(gemini, api):
 
 # ─── helpers ─────────────────────────────────────────────────────────────────
 
-_reader = ThreadPoolExecutor(max_workers=2)
-
-
 def transcribe(api: TestClient, run_mode, name: str, **fields) -> list[dict]:
     """上傳、送出單檔任務，收下所有廣播直到任務結束。file_uid 就是檔名。
 
     fields 是請求的其他欄位，例如提示詞。
     """
-    response = api.post("/api/v1/upload", files={"file": (name, synthetic_audio(), "audio/wav")})
-    assert response.status_code == 200, response.text
-
+    filename = upload(api, name)
     with api.websocket_connect(f"/api/v1/ws/{name}") as ws:
-        ws.send_json({"filename": response.json()["filename"], "original_filename": name,
+        ws.send_json({"filename": filename, "original_filename": name,
                       "provider": "Google", "model": MODEL, "source_lang": "ja", **fields})
         messages = receive_until(ws, TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED)
     # 結束的廣播之後任務還在收尾（刪遠端檔就在這裡），等它整個跑完
     wait_until(lambda: not run_mode.is_alive(messages[-1]["task_uuid"]))
-    return messages
-
-
-def receive_until(ws, *end: TaskStatus, timeout: float = TIMEOUT) -> list[dict]:
-    """收廣播直到收到其中一種結束狀態。
-
-    等一則廣播超過 timeout 秒就斷言失敗，附上已經收到的廣播，不讓 CI 卡住。
-    """
-    messages = []
-    while not messages or messages[-1]["status_code"] not in end:
-        done, _ = wait([_reader.submit(ws.receive_json)], timeout=timeout)
-        assert done, f"{timeout} 秒內沒有新的廣播，還沒收到 {'、'.join(end)}；已經收到：{messages}"
-        messages.append(done.pop().result())
     return messages
 
 
@@ -172,9 +153,9 @@ def test_cancelling_a_running_task_stops_it_before_the_generation(
     # 音檔上傳之後，Gemini 還要處理一下；使用者在等的期間按下取消
     gemini.sleep = sleep
     genai.processing_polls = 3
-    response = api.post("/api/v1/upload", files={"file": (name, synthetic_audio(), "audio/wav")})
+    filename = upload(api, name)
     with api.websocket_connect(f"/api/v1/ws/{name}") as ws:
-        ws.send_json({"filename": response.json()["filename"], "original_filename": name,
+        ws.send_json({"filename": filename, "original_filename": name,
                       "provider": "Google", "model": MODEL, "source_lang": "ja"})
         assert polling.wait(TIMEOUT)
         assert api.post(f"/api/v1/transcription/{name}/cancel").json()["cancelled"] is True

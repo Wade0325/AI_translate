@@ -6,7 +6,6 @@
 可以下載的輸出格式與保留音檔、暫存資料夾裡還留著哪些檔案，以及假供應商收到了什麼。
 """
 import threading
-from concurrent.futures import ThreadPoolExecutor, wait
 from dataclasses import replace
 
 import pytest
@@ -15,11 +14,19 @@ from fastapi.testclient import TestClient
 from app.core.task_status import TaskStatus
 from app.exceptions import TransientError
 from app.runtime import run_mode
+from app.tasks import batch_core  # noqa: F401  app_log 只收得到已經建立的 logger
 from tests.support.fake_provider import FAKE_MODEL, Fail
 from tests.support.synthetic_audio import VOICED, synthetic_audio
-from tests.support.waiting import wait_until
-
-TIMEOUT = 30
+from tests.support.task_api import (
+    download,
+    file_results,
+    flat_times,
+    leftovers,
+    receive_until,
+    stored_segments,
+    upload,
+)
+from tests.support.waiting import TIMEOUT, wait_until
 
 LINES = [(0.2, 1.5, 0, "おはよう。"), (3.0, 3.6, 1, "こんにちは。"), (5.5, 6.2, 0, "またね。")]
 """送進假供應商的轉錄結果，時間軸是去靜音之後 7.2 秒的語音視圖（見 VOICED）。"""
@@ -39,26 +46,6 @@ def batch_fake(fake):
 
 
 # ─── helpers ─────────────────────────────────────────────────────────────────
-
-_reader = ThreadPoolExecutor(max_workers=2)
-
-
-def receive_until(ws, *end: TaskStatus) -> list[dict]:
-    """收廣播直到收到其中一種結束狀態；等一則廣播超過 TIMEOUT 秒就斷言失敗，不讓 CI 卡住。"""
-    messages = []
-    while not messages or messages[-1]["status_code"] not in end:
-        done, _ = wait([_reader.submit(ws.receive_json)], timeout=TIMEOUT)
-        assert done, f"{TIMEOUT} 秒內沒有新的廣播，還沒收到 {'、'.join(end)}；已經收到：{messages}"
-        messages.append(done.pop().result())
-    return messages
-
-
-def upload(api: TestClient, name: str, voiced=VOICED) -> str:
-    response = api.post("/api/v1/upload", files={"file": (name, synthetic_audio(voiced=voiced),
-                                                          "audio/wav")})
-    assert response.status_code == 200, response.text
-    return response.json()["filename"]
-
 
 def batch_request(api: TestClient, names: list[str], voiced=VOICED,
                   fields_per_file: dict[str, dict] | None = None, **fields) -> dict:
@@ -89,17 +76,13 @@ def of_file(messages: list[dict], file_uid: str) -> list[dict]:
 
 
 def ends(messages: list[dict], names: list[str]) -> list[dict]:
-    """每個檔案最後一則廣播（它的結果），依 names 的順序。"""
-    return [of_file(messages, name)[-1] for name in names]
+    """每個檔案的結果（最後一則完成或失敗的廣播），依 names 的順序。"""
+    results = file_results(messages)
+    return [results[name] for name in names]
 
 
 def codes(messages: list[dict]) -> list[str]:
     return [m["status_code"] for m in messages]
-
-
-def flat_times(spans: list[dict]) -> list[float]:
-    """片段的起訖時間依序攤平：[開始, 結束, 開始, 結束, …]。"""
-    return [t for span in spans for t in (span["start"], span["end"])]
 
 
 def transcribe_single(api: TestClient, file_uid: str, name: str) -> list[dict]:
@@ -111,23 +94,8 @@ def transcribe_single(api: TestClient, file_uid: str, name: str) -> list[dict]:
         return receive_until(ws, TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED)
 
 
-def stored_segments(api: TestClient, task_uuid: str) -> list[dict]:
-    return api.get(f"/api/v1/transcripts/{task_uuid}").json()["segments"]
-
-
 def record(api: TestClient, task_uuid: str) -> dict:
     return api.get(f"/api/v1/history/{task_uuid}").json()
-
-
-def download(api: TestClient, task_uuid: str, fmt: str) -> str:
-    response = api.get(f"/api/v1/history/{task_uuid}/download/{fmt}")
-    assert response.status_code == 200
-    return response.text
-
-
-def leftovers(data_dir) -> list[str]:
-    """暫存上傳資料夾裡還留著的檔案：上傳檔，以及去靜音產生的暫存檔。"""
-    return sorted(p.name for p in (data_dir / "temp_uploads").iterdir())
 
 
 # ─── 每個檔案都走任務生命週期 ───────────────────────────────────────────────
@@ -297,6 +265,35 @@ def test_every_file_fails_when_the_batch_cannot_be_submitted(api, in_process_run
         assert end["status_code"] == TaskStatus.FAILED
         assert "送出批次失敗: 請求太大" in record(api, end["task_uuid"])["error_message"]
     assert TaskStatus.BATCH_SUBMITTED not in codes(messages)
+
+
+def test_a_file_without_a_result_fails_instead_of_staying_in_progress(
+        api, in_process_run_mode, batch_fake):
+    # 批次成功結束，供應商卻少給了最後一個檔案的結果：那個檔案記成失敗，不停在處理中
+    batch_fake.script = [list(LINES), list(LINES)]
+    batch_fake.missing_results = 1
+
+    messages = run_batch(api, in_process_run_mode, "batch-missing-result", NAMES[:2])
+
+    first, missing = ends(messages, NAMES[:2])
+    assert codes([first, missing]) == [TaskStatus.COMPLETED, TaskStatus.FAILED]
+    assert "沒有回傳這個檔案的結果" in record(api, missing["task_uuid"])["error_message"]
+
+
+def test_database_errors_are_not_passed_on(api, in_process_run_mode, batch_fake, app_log):
+    # 批次紀錄寫不進資料庫（這裡是同一個批次 id 又送了一次）：每個檔案照樣結束，畫面與 log 都不轉述
+    # 資料庫的例外，例外裡有 SQL 原文（ADR-0005）
+    batch_fake.script = [list(LINES)]
+    run_batch(api, in_process_run_mode, "batch-twice", ["twice-a.wav"])
+
+    messages = run_batch(api, in_process_run_mode, "batch-twice", ["twice-b.wav"])
+
+    end = of_file(messages, "twice-b.wav")[-1]
+    assert end["status_code"] == TaskStatus.FAILED
+    assert "轉錄結果沒有存進資料庫" in end["status_text"]
+    assert "轉錄結果沒有存進資料庫" in messages[-1]["status_text"]
+    assert not any("INSERT" in m["status_text"] for m in messages)
+    assert not any("INSERT INTO" in entry for entry in app_log)
 
 
 def test_every_file_fails_when_the_whole_batch_fails(api, in_process_run_mode, batch_fake):

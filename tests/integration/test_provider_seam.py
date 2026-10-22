@@ -13,7 +13,6 @@ import subprocess
 import sys
 import textwrap
 import threading
-from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
@@ -21,7 +20,6 @@ from urllib.parse import unquote
 
 import pytest
 import soundfile as sf
-from fastapi.testclient import TestClient
 from gevent import GreenletExit
 from starlette.websockets import WebSocketDisconnect
 
@@ -30,6 +28,14 @@ from app.exceptions import TransientError
 from app.runtime import run_mode
 from tests.support.fake_provider import FAKE_MODEL, Fail, ServedAs
 from tests.support.synthetic_audio import VOICED, synthetic_audio
+from tests.support.task_api import (
+    download,
+    flat_times,
+    leftovers,
+    receive,
+    stored_segments,
+    upload,
+)
 from tests.support.waiting import cancel_when_dispatched, wait_until
 
 TIMEOUT = 30
@@ -148,14 +154,6 @@ def api(api, run_mode_spy, fake):
 
 # ─── helpers ─────────────────────────────────────────────────────────────────
 
-_reader = ThreadPoolExecutor(max_workers=4)
-
-
-def receive(ws) -> dict:
-    """收下一則廣播；逾時直接失敗，不讓 CI 卡住。"""
-    return _reader.submit(ws.receive_json).result(timeout=TIMEOUT)
-
-
 def receive_until_terminal(ws) -> list[dict]:
     messages = []
     while True:
@@ -163,14 +161,6 @@ def receive_until_terminal(ws) -> list[dict]:
         messages.append(message)
         if message["status_code"] in TERMINAL:
             return messages
-
-
-def upload(api: TestClient, name: str = "voice.wav", voiced=VOICED) -> str:
-    fmt, content_type = ("FLAC", "audio/flac") if name.endswith(".flac") else ("WAV", "audio/wav")
-    response = api.post(
-        "/api/v1/upload", files={"file": (name, synthetic_audio(fmt, voiced), content_type)})
-    assert response.status_code == 200, response.text
-    return response.json()["filename"]
 
 
 def submit(ws, filename: str, provider: str = "fake", model: str = FAKE_MODEL, **fields):
@@ -231,21 +221,6 @@ def batch_rejection(api, file_fields: dict | None = None, **fields) -> str:
     return message["status_text"]
 
 
-def stored_segments(api, task_uuid: str) -> list[dict]:
-    return api.get(f"/api/v1/transcripts/{task_uuid}").json()["segments"]
-
-
-def flat_times(spans: list[dict]) -> list[float]:
-    """片段（或詞）的起訖時間依序攤平：[開始, 結束, 開始, 結束, …]。"""
-    return [t for span in spans for t in (span["start"], span["end"])]
-
-
-def download(api, task_uuid: str, fmt: str) -> str:
-    response = api.get(f"/api/v1/history/{task_uuid}/download/{fmt}")
-    assert response.status_code == 200
-    return response.text
-
-
 def frozen_original(engine, task_uuid: str) -> str | None:
     """任務紀錄裡凍結的原始轉錄副本（ADR-0007）。
 
@@ -261,11 +236,6 @@ def frozen_original(engine, task_uuid: str) -> str | None:
 
 def in_voiced_region(t: float) -> bool:
     return any(lo - 0.5 <= t <= hi + 0.5 for lo, hi in VOICED)
-
-
-def leftovers(data_dir) -> list[str]:
-    """暫存上傳資料夾裡還留著的檔案：上傳檔，以及去靜音、分段產生的暫存檔。"""
-    return sorted(p.name for p in (data_dir / "temp_uploads").iterdir())
 
 
 def retained_files(data_dir) -> list[str]:
