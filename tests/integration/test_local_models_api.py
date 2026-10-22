@@ -79,7 +79,7 @@ def test_unknown_model_is_rejected(client, fake_env):
 
 
 def test_failed_download_shows_a_fixed_message(client, fake_env, monkeypatch, app_log):
-    """下載失敗時畫面上是固定訊息：例外的文字可能帶著本機路徑，原因只記在 log。"""
+    """下載失敗時畫面上是固定訊息：例外的文字可能帶著使用者電腦上的路徑，原因只記在 log。"""
     def no_permission(repo_id, **kwargs):
         raise PermissionError(13, "Permission denied",
                               r"C:\Users\wang.xiaoming\hf_cache\models--OpenMOSS")
