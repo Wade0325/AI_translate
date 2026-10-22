@@ -18,21 +18,38 @@ import itertools
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Set, Union
 
+import httpx
 from google.genai import errors, types
 
 
-def _error(cls, code: int, status: str, message: str):
-    return cls(code, {"error": {"code": code, "message": message, "status": status}})
+def _error(cls, code: int, status: str, message: str, *,
+           retry_delay: Optional[str] = None, retry_after: Optional[str] = None):
+    """``retry_delay`` 是錯誤內容裡 RetryInfo 建議的等待（例如 ``"37s"``），``retry_after`` 是回應的
+    Retry-After 標頭；兩者都是 Gemini 建議等多久再重試的方式。"""
+    error: Dict[str, Any] = {"code": code, "message": message, "status": status}
+    if retry_delay is not None:
+        # 和 Gemini 配額用完時一樣，RetryInfo 排在配額說明後面
+        error["details"] = [
+            {"@type": "type.googleapis.com/google.rpc.QuotaFailure",
+             "violations": [{"quotaMetric": "generativelanguage.googleapis.com/generate_content"}]},
+            {"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": retry_delay},
+        ]
+    response = httpx.Response(code, headers={"Retry-After": retry_after}) if retry_after else None
+    return cls(code, {"error": error}, response)
 
 
-def unavailable() -> errors.ServerError:
+def unavailable(*, retry_delay: Optional[str] = None,
+                retry_after: Optional[str] = None) -> errors.ServerError:
     """503：模型超載，可以重試。"""
-    return _error(errors.ServerError, 503, "UNAVAILABLE", "The model is overloaded.")
+    return _error(errors.ServerError, 503, "UNAVAILABLE", "The model is overloaded.",
+                  retry_delay=retry_delay, retry_after=retry_after)
 
 
-def rate_limited() -> errors.ClientError:
+def rate_limited(*, retry_delay: Optional[str] = None,
+                 retry_after: Optional[str] = None) -> errors.ClientError:
     """429：配額用完，可以重試。"""
-    return _error(errors.ClientError, 429, "RESOURCE_EXHAUSTED", "Resource has been exhausted.")
+    return _error(errors.ClientError, 429, "RESOURCE_EXHAUSTED", "Resource has been exhausted.",
+                  retry_delay=retry_delay, retry_after=retry_after)
 
 
 def invalid_argument(message: str = "Request contains an invalid argument.") -> errors.ClientError:

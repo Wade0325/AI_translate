@@ -358,7 +358,7 @@ def _align_with_fallback(
 
 
 def _build_segment_records(entries: List[dict], source: str = "qwen") -> List[dict]:
-    """把片段整理成上層要持久化的結構（時間軸＝輸入檔，由 flows 負責 remap）。
+    """把片段整理成上層要持久化的結構（時間軸＝輸入檔，由分段轉錄平移、還原回原音檔）。
 
     ``seg_key`` 是序號而非時間，因為重新轉錄時片段順序穩定、時間可能微幅
     浮動；以序號為鍵才能覆寫而不是長出重複資料。``source`` 記錄主要文字的來源模型。

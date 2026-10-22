@@ -2,8 +2,12 @@
 
 import re
 from pathlib import Path
+from typing import Iterable
 
 from app.core.config import get_settings
+from app.utils.logger import setup_logger
+
+logger = setup_logger(__name__)
 
 # 磁碟機代號開頭（C:\x、C:/x、磁碟機相對路徑 C:x）
 _DRIVE_PREFIX = re.compile(r"^[A-Za-z]:")
@@ -37,6 +41,21 @@ def is_temp_upload(path) -> bool:
     temp 目錄改到 data/ 下（免安裝模式）時仍然有效。
     """
     return is_within(path, get_settings().temp_uploads_path)
+
+
+def delete_temp_files(paths: Iterable[Path]) -> None:
+    """刪掉自己產生的暫存檔；只刪 temp_uploads 裡的，路徑異常時寧可不刪。刪不掉只記 log。"""
+    for path in dict.fromkeys(paths):
+        try:
+            if not path.exists():
+                continue
+            if is_temp_upload(path):
+                path.unlink()
+                logger.info(f"已清理暫存檔案: {path.name}")
+            else:
+                logger.warning(f"已跳過清理不在 temp_uploads 目錄中的檔案: {path}")
+        except Exception as e:
+            logger.warning(f"清理本地檔案 {path} 失敗: {e}")
 
 
 def resolve_upload_path(filename, base_dir=None) -> Path:

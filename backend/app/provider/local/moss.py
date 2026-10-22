@@ -168,7 +168,7 @@ def single_pass_limit_seconds() -> float:
 
 
 def max_single_pass_seconds() -> float:
-    """這台機器上 MOSS 單次推論能處理的最長音檔（秒）；更長的檔由 flows 分段轉錄。
+    """這台機器上 MOSS 單次推論能處理的最長音檔（秒）；更長的檔分段轉錄。
 
     :func:`single_pass_limit_seconds` 再依顯卡容量收斂（16 GB 約 79 分、12 GB 約 52 分、
     8 GB 約 26 分；估算值至少 300 秒——實測 275 秒峰值 2.32 GiB，4 GB 卡即可容納）。

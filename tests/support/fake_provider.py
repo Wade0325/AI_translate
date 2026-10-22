@@ -50,8 +50,15 @@ class Fail:
     message: str = "假供應商：轉錄失敗"
 
 
-Step = Union[Sequence[Line], Fail, Exception]
-"""劇本的一步：這一段的轉錄結果、回報失敗，或拋出這個例外。"""
+@dataclass
+class ServedAs:
+    """劇本裡的這一段照樣轉錄成功，實際用到的處理模式卻不同（例如 Flex 退回標準）。"""
+    service_tier: str
+    lines: Sequence[Line]
+
+
+Step = Union[Sequence[Line], Fail, ServedAs, Exception]
+"""劇本的一步：這一段的轉錄結果、回報失敗、用了別的處理模式，或拋出這個例外。"""
 
 
 def _segment(i: int, line: Line) -> dict:
@@ -71,6 +78,8 @@ class FakeProvider:
         self.script: List[Step] = list(script)
         self.model_capabilities = CAPABILITIES
         self.opened = 0
+        # 建立轉接器時拋的錯，例如金鑰無效時的 ValueError
+        self.open_error: Optional[Exception] = None
         self.calls: List[Path] = []
         # 每一段轉錄收到的音檔有多長（秒）：看得出送進來的是只剩語音的音檔還是原音檔，以及切在哪裡
         self.durations: List[Optional[float]] = []
@@ -79,7 +88,8 @@ class FakeProvider:
         self.cancelled = 0
         # 每一段轉錄經進度與取消物件回報的進度文字
         self.reports: List[str] = []
-        # 每一段轉錄成功時回報的用量（輸入、輸出 token）與實際用到的處理模式
+        # 每一段轉錄回報的用量（輸入、輸出 token）與實際用到的處理模式；失敗的回應照樣帶用量，
+        # 和 Gemini 的回應被阻擋時一樣照樣收費
         self.usage: Tuple[int, int] = (0, 0)
         self.service_tier: Optional[str] = None
         # hold 設定後，轉錄會停在這裡直到 hold 被 set 或使用者取消
@@ -102,6 +112,8 @@ class FakeProvider:
 
     def __call__(self, model: str, api_key: str) -> "FakeProvider":
         self.opened += 1
+        if self.open_error is not None:
+            raise self.open_error
         return self
 
     def check_ready(self, model: str, api_key: str) -> str:
@@ -133,16 +145,18 @@ class FakeProvider:
         step = self.script.pop(0) if self.script else []
         if isinstance(step, Exception):
             raise step
+        input_tokens, output_tokens = self.usage
+        usage = {"input_tokens": input_tokens, "output_tokens": output_tokens,
+                 "total_tokens": input_tokens + output_tokens, "service_tier_used": self.service_tier}
         if isinstance(step, Fail):
-            return TranscriptionTaskResult(success=False, text=f"[[{step.message}]]")
+            return TranscriptionTaskResult(success=False, text=f"[[{step.message}]]", **usage)
+        if isinstance(step, ServedAs):
+            usage["service_tier_used"] = step.service_tier
+            step = step.lines
 
         # 和真的轉接器一樣，轉錄結果只有片段與用量，不附著 LRC 文字
         segments = [_segment(i, line) for i, line in enumerate(step)]
-        input_tokens, output_tokens = self.usage
-        return TranscriptionTaskResult(
-            success=bool(step), segments=segments,
-            input_tokens=input_tokens, output_tokens=output_tokens,
-            total_tokens=input_tokens + output_tokens, service_tier_used=self.service_tier)
+        return TranscriptionTaskResult(success=bool(step), segments=segments, **usage)
 
     def release(self) -> None:
         self.released += 1

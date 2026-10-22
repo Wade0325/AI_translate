@@ -3,16 +3,33 @@
 Celery autoretry_for 與上層錯誤處理依賴此分類來決定是否重試。
 """
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:
+    from app.services.transcription.models import TranscriptionTaskResult
+
 
 class AppError(Exception):
     """所有自訂例外的基底。"""
 
 
 class TransientError(AppError):
-    """供應商的暫時錯誤（429/503/網路抖動）：不是失敗，整個任務交給執行模式重試。
+    """供應商的暫時錯誤（429/503/網路抖動）：稍後再試可能就會好，不是這一段失敗。
 
-    任務生命週期不寫 FAILED、保留輸入音檔給重試；分段轉錄不把它當成這一段失敗。
+    單檔任務由分段轉錄等一段時間再轉出錯的那一段（見 :mod:`app.services.chunked_transcription`）；
+    批次交給執行模式重試整個批次。
     """
+
+    def __init__(self, message: str = "", retry_after: Optional[float] = None,
+                 reason: Optional[str] = None):
+        super().__init__(message)
+        self.retry_after = retry_after
+        """供應商建議等幾秒再試（例如回應的 Retry-After）；沒有建議時是 None。"""
+        self.reason = reason
+        """給使用者看的簡短原因，例如「503 UNAVAILABLE」；沒有時用例外訊息。例外訊息照錄供應商的錯誤，
+        可能長得不適合放在畫面上。"""
 
 
 class GeminiTransientError(TransientError):
@@ -37,7 +54,7 @@ class TranscriptionCancelledError(AppError):
 
     def __init__(self, message: str = "使用者已取消任務"):
         super().__init__(message)
-        self.billed_usage = None
+        self.billed_usage: Optional[TranscriptionTaskResult] = None
         """取消前已經向供應商轉錄完的段落的用量（只帶 token 數與處理模式的
         ``TranscriptionTaskResult``），沒有時是 None。供應商照樣收費，任務生命週期把它記在
         已取消的紀錄上。"""

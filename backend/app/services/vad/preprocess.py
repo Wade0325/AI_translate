@@ -6,8 +6,8 @@
 還直接呼叫這裡的：批次（`tasks/batch_core.py`，改用語音視圖是 #115）、VAD 測試端點與 tests/
 底下的工具腳本。
 
-Silero VAD 只做兩件事：長音檔分段時找切點，以及 Gemini 轉錄失敗後的切割重試
-（`flows.split_audio_on_silence`）。
+Silero VAD 只在分段轉錄找切點時用（`flows.split_audio_on_silence`，見
+:mod:`app.services.chunked_transcription`）：依單次長度分段與失敗後的切段重試用同一套切點。
 """
 
 from __future__ import annotations
