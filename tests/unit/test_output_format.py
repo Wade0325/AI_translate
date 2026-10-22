@@ -214,7 +214,28 @@ class TestLineBreaksFromWordTimings:
         assert lrc_lines(segment) == ["[00:50.00][S0] おはよう。こんにちは。"]
 
 
-# ─── 本機的逐字時間都用得上 ──────────────────────────────────────────────────
+# ─── 秒數進位到 60（#154） ───────────────────────────────────────────────────
+
+class TestLrcSecondsRollOverIntoMinutes:
+    """秒數四捨五入到兩位小數後是 60 時進到分鐘，不寫成 [mm:60.00]。"""
+
+    @pytest.mark.parametrize("start, stamp, srt_start", [
+        # 浮點數的 59.995 其實是 59.99499…，修正前後都捨成 59.99
+        (59.995, "[00:59.99]", "00:00:59,990"),
+        (59.996, "[01:00.00]", "00:01:00,000"),
+        (59.999, "[01:00.00]", "00:01:00,000"),
+        (119.999, "[02:00.00]", "00:02:00,000"),
+        (3599.999, "[60:00.00]", "01:00:00,000"),
+        (59.994, "[00:59.99]", "00:00:59,990"),
+    ])
+    def test_lrc_stamp_and_unchanged_srt_start(self, start, stamp, srt_start):
+        # SRT 的開始時間是 LRC 時間戳讀回來的值；以前讀 [00:60.00] 也是 60 秒，所以不變
+        result = formats({"start": start, "end": start + 1, "speaker": "S0", "text": "はい。"})
+        assert result.lrc == f"{stamp}[S0] はい。"
+        assert result.srt.split("\n")[1].startswith(f"{srt_start} --> ")
+
+
+# ─── 本機的逐字時間都用得上──────────────────────────────────────────────────
 
 class TestLocalWordTimingsAreUsed:
     """本機存下來的逐字時間是真的對齊器斷的詞；這裡照同樣的規則斷詞，兩邊一個一個相同才用得上，
