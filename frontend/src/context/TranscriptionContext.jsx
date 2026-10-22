@@ -16,7 +16,7 @@ import {
   withProvider,
 } from '../utils/providerList';
 import { forRetranscription, requestDefaults } from '../utils/transcribeRequest';
-import { cancelNotice } from '../utils/cancelNotice';
+import { cancelOutcome } from '../utils/cancelOutcome';
 import { api } from '../services/api';
 
 const TranscriptionContext = createContext(null);
@@ -183,8 +183,8 @@ export const TranscriptionProvider = ({ children }) => {
     message.success('已清除所有任務');
   }, [socketManager]);
 
-  // 取消單檔轉錄：後端設置取消旗標並 revoke，最終狀態由 WS 的 CANCELLED 訊息更新。
-  // 沒有取消時，訊息照後端回的原因說（還沒提交到佇列，或已經結束），見 utils/cancelNotice.js
+  // 取消單檔轉錄：後端設置取消旗標並 revoke，最終狀態由 WS 的 CANCELLED 訊息更新；
+  // 顯示的提示見 utils/cancelOutcome.js
   const cancelTranscription = useCallback(async (uid) => {
     const target = fileList.find((f) => f.uid === uid);
     if (!target || target.status !== 'processing') return;
@@ -193,9 +193,9 @@ export const TranscriptionProvider = ({ children }) => {
       current.map((f) => (f.uid === uid ? { ...f, statusText: '正在取消...' } : f))
     );
     try {
-      const res = await api.transcription.cancel(uid);
-      message.open(cancelNotice(res, target.name));
-      if (!res.cancelled) {
+      const { cancelled, notice } = cancelOutcome(await api.transcription.cancel(uid), target.name);
+      message.open(notice);
+      if (!cancelled) {
         setFileList((current) =>
           current.map((f) =>
             f.uid === uid && f.status === 'processing'

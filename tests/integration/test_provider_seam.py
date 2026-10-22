@@ -1101,6 +1101,10 @@ class TestInputsTheModelDoesNotTake:
 
 # ─── 取消 ────────────────────────────────────────────────────────────────────
 
+# 前端只在這裡讀取消端點的回應，並依沒有取消的原因顯示不同的提示（#161）
+FRONTEND_CANCEL_RESPONSE_READER = REPO_ROOT / "frontend" / "src" / "utils" / "cancelOutcome.js"
+
+
 class TestCancel:
     @pytest.mark.parametrize("terminate", [False, True])
     def test_cancel_queued_and_running_without_provider(
@@ -1377,6 +1381,21 @@ class TestCancel:
         assert api.get(f"/api/v1/history/{earlier['task_uuid']}").json()["status"] == TaskStatus.FAILED
         # 新任務照常跑完
         assert transcribe(api, "uid-again")[-1]["status_code"] == TaskStatus.COMPLETED
+
+    def test_frontend_recognises_every_reason_the_endpoint_returns(self, api):
+        # 沒有取消時，前端照原因說明（#161）：端點回的每一種原因前端都要認得。認不得的只會
+        # 說「任務沒有取消」，使用者分不出要不要再按一次
+        never_sent = api.post("/api/v1/transcription/uid-never-sent/cancel").json()
+        # 登記了、執行模式卻不認得的任務已經結束
+        run_mode.get().register_task("uid-ended", "task-already-gone", can_terminate=True)
+        ended = api.post("/api/v1/transcription/uid-ended/cancel").json()
+        reasons = {never_sent["reason"], ended["reason"]}
+
+        source = FRONTEND_CANCEL_RESPONSE_READER.read_text(encoding="utf-8")
+        handled = re.findall(r"case '([\w-]+)':", source)
+
+        assert reasons == {"not-started", "finished"}
+        assert sorted(handled) == sorted(reasons)
 
     def test_cancelled_before_start_is_recorded_without_calling_the_provider(
             self, api, fake, data_dir):
