@@ -1,4 +1,5 @@
 """Local 模型權重 API：必要／選用權重的狀態與下載目標。"""
+import huggingface_hub
 import pytest
 
 from app.api import local_models
@@ -75,3 +76,30 @@ def test_download_specific_model(client, fake_env):
 
 def test_unknown_model_is_rejected(client, fake_env):
     assert client.post(DOWNLOAD_URL, params={"model": "nope"}).status_code == 400
+
+
+def test_failed_download_shows_a_fixed_message(client, fake_env, monkeypatch, app_log):
+    """下載失敗時畫面上是固定訊息：例外的文字可能帶著使用者電腦上的路徑，原因只記在 log。"""
+    def no_permission(repo_id, **kwargs):
+        raise PermissionError(13, "Permission denied",
+                              r"C:\Users\wang.xiaoming\hf_cache\models--OpenMOSS")
+
+    class RunNow:
+        """下載執行緒當場跑完。"""
+
+        def __init__(self, target, args=(), **kwargs):
+            self.target, self.args = target, args
+
+        def start(self):
+            self.target(*self.args)
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", no_permission)
+    monkeypatch.setattr(local_models.threading, "Thread", RunNow)
+
+    assert client.post(DOWNLOAD_URL, params={"model": "all"}).json()["started"] is True
+    download = client.get(STATUS_URL).json()["download"]
+    assert download["state"] == "failed"
+    assert download["error"]
+    assert "wang.xiaoming" not in download["error"]
+    assert "Permission denied" not in download["error"]
+    assert "Permission denied" in "\n".join(app_log)

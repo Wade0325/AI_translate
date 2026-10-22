@@ -66,9 +66,10 @@ def _download_worker(repos: list[str]):
             _state.update(state="completed", current_repo=None)
         logger.info("Local 模型權重下載完成")
     except Exception as e:
-        logger.error(f"Local 模型權重下載失敗: {e}")
+        # 例外的文字可能帶著使用者電腦上的路徑：原因只記在 log，畫面給固定訊息
+        logger.error(f"Local 模型權重下載失敗: {type(e).__name__}: {e}")
         with _lock:
-            _state.update(state="failed", error=str(e))
+            _state.update(state="failed", error="請確認網路連線與磁碟空間，一直失敗的話請回報問題")
 
 
 def _target_repos(model: Optional[str]) -> tuple[str, ...]:
