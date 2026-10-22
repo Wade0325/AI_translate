@@ -1,7 +1,6 @@
 """Docker 模式的單檔任務：Celery 任務包裝層接上 Celery＋Redis 執行模式（#113）。
 
-Celery 任務在測試行程裡以 eager 方式執行（``apply``：autoretry 照樣重試，不等退避），
-Redis 換成 fakeredis，供應商換成假供應商；任務生命週期、分段轉錄、ffmpeg 與 SQLite
+Celery 任務在測試行程裡以 eager 方式執行（``apply``），Redis 換成 fakeredis，供應商換成假供應商；任務生命週期、分段轉錄、ffmpeg 與 SQLite
 測試資料庫都走真的。經 broker 的派送不在 CI 測。
 
 測試只從外部觀察：Celery 回報的結果、執行模式廣播的狀態訊息、供應商被呼叫幾次，
@@ -10,6 +9,7 @@ Redis 換成 fakeredis，供應商換成假供應商；任務生命週期、分�
 import io
 import json
 import uuid
+from dataclasses import replace
 
 import fakeredis
 import fakeredis.aioredis
@@ -21,12 +21,10 @@ from app.core.task_status import TaskStatus
 from app.exceptions import TransientError
 from app.runtime import run_mode
 from app.runtime.celery_redis import CHANNEL, CeleryRedisRunMode
-from app.runtime.run_mode import TRANSIENT_RETRIES
 from tests.support.fake_provider import FAKE_MODEL
 from tests.support.waiting import cancel_when_dispatched
 
 LINES = [(0.2, 1.5, 0, "おはよう。"), (2.3, 3.6, 1, "こんにちは。")]
-WILL_RETRY = "暫時性錯誤，將重試"
 TERMINAL = {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED}
 
 
@@ -114,12 +112,22 @@ def task_params(uploads, file_uid: str) -> dict:
 
 
 def retry_notices(messages: list[dict]) -> int:
-    return sum(WILL_RETRY in m["status_text"] for m in messages)
+    """分段轉錄等待重試前的廣播有幾則。"""
+    return sum(m["status_code"] == TaskStatus.PROCESSING and "遇到暫時錯誤" in m["status_text"]
+               for m in messages)
+
+
+@pytest.fixture
+def quick_retries(monkeypatch):
+    """暫時錯誤重試前的等待從 0.01 秒起跳，測試不必真的等。"""
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "transient_error_initial_wait_seconds", 0.01)
 
 
 def worker_discards_revoked(task, params: dict, task_id: str, *, terminated: bool = False) -> None:
-    """worker 丟掉被撤銷的任務時送出的訊號：還沒執行的（在佇列中、或等著重試）照樣送，
-    執行中被強制終止的帶 ``terminated``。訊號帶的 request 和 worker 的一樣，有任務參數。"""
+    """worker 丟掉被撤銷的任務時送出的訊號：還沒執行的（在佇列中）照樣送，執行中被強制終止的帶
+    ``terminated``。訊號帶的 request 和 worker 的一樣，有任務參數。"""
     from celery.app.task import Context
     from celery.signals import task_revoked
 
@@ -131,14 +139,17 @@ def results(messages: list[dict]) -> list[str]:
     return [m["status_code"] for m in messages if m["status_code"] in TERMINAL]
 
 
-# ─── 暫時錯誤交給 Celery 重試 ────────────────────────────────────────────────
+# ─── 暫時錯誤在分段轉錄裡重試那一段，Celery 不重試整個任務 ──────────────────
 
-# 每一次執行都要知道之後還剩幾次重試（3、2、1、0）：還有重試就宣告「將重試」、交給
-# Celery；剩 0 次時照失敗處理。連續幾次暫時錯誤之後成功，就能看出每一次剩下的次數
 @pytest.mark.parametrize("transient_errors", [1, 2, 3])
-def test_retries_until_the_provider_recovers(
-        transcribe_media_task, uploads, fake, broadcasts, client, transient_errors):
-    fake.script = [TransientError("503 服務暫時無法使用")] * transient_errors + [list(LINES)]
+def test_transient_errors_retry_only_that_chunk_and_the_task_completes(
+        transcribe_media_task, uploads, fake, broadcasts, client, quick_retries, transient_errors):
+    # 單次只能處理 5 秒：去靜音之後 7.2 秒的語音視圖切成 4.9 秒與 2.3 秒兩段。第二段遇到暫時錯誤時，
+    # 在任務裡等一段時間再轉那一段：第一段不重送，和免安裝模式一樣
+    fake.model_capabilities = replace(fake.model_capabilities, single_pass_seconds=5.0)
+    fake.script = ([[(0.2, 0.8, 0, "おはよう。")]]
+                   + [TransientError("503 服務暫時無法使用")] * transient_errors
+                   + [[(0.2, 0.8, 1, "こんにちは。")]])
     task_id = str(uuid.uuid4())
 
     result = transcribe_media_task.apply(args=[task_params(uploads, "uid-recovers")],
@@ -146,10 +157,44 @@ def test_retries_until_the_provider_recovers(
 
     messages = broadcasts()
     assert result.state == "SUCCESS"
-    assert len(fake.calls) == transient_errors + 1
+    assert fake.durations == pytest.approx([4.9] + [2.3] * (transient_errors + 1), abs=0.01)
     assert retry_notices(messages) == transient_errors
     assert results(messages) == [TaskStatus.COMPLETED]
     assert client.get(f"/api/v1/history/{task_id}").json()["status"] == TaskStatus.COMPLETED
+
+
+def test_task_fails_when_the_retries_run_out_and_celery_does_not_rerun_it(
+        transcribe_media_task, uploads, fake, broadcasts, client, quick_retries):
+    fake.script = [TransientError("503 服務暫時無法使用")] * 4
+    task_id = str(uuid.uuid4())
+
+    result = transcribe_media_task.apply(args=[task_params(uploads, "uid-gives-up")],
+                                         task_id=task_id)
+
+    # 重試 3 次都失敗：照失敗處理，任務不會一直停在處理中；Celery 也不再重試整個任務
+    messages = broadcasts()
+    assert result.state == "FAILURE"
+    assert len(fake.calls) == 4
+    assert retry_notices(messages) == 3
+    assert results(messages) == [TaskStatus.FAILED]
+    record = client.get(f"/api/v1/history/{task_id}").json()
+    assert record["status"] == TaskStatus.FAILED
+    assert "暫時錯誤重試 3 次仍失敗（503 服務暫時無法使用）" in record["error_message"]
+
+
+def test_transient_error_reaching_the_task_is_a_failure_and_celery_does_not_rerun_it(
+        transcribe_media_task, uploads, fake, broadcasts, client):
+    # 萬一有暫時錯誤沒經過分段轉錄就漏到任務（這裡是建立轉接器時）：照失敗處理，Celery 不重試
+    fake.open_error = TransientError("503 服務暫時無法使用")
+    task_id = str(uuid.uuid4())
+
+    result = transcribe_media_task.apply(args=[task_params(uploads, "uid-escaped")],
+                                         task_id=task_id)
+
+    assert result.state == "FAILURE"
+    assert fake.opened == 1
+    assert results(broadcasts()) == [TaskStatus.FAILED]
+    assert client.get(f"/api/v1/history/{task_id}").json()["status"] == TaskStatus.FAILED
 
 
 def test_cancel_after_the_task_completed_finds_nothing_to_cancel(
@@ -194,38 +239,6 @@ def test_task_revoked_before_it_runs_is_recorded_and_its_upload_handled(
     again = client.post("/api/v1/transcription/uid-revoked/cancel").json()
     assert again["reason"] == "not-started"
     assert redis_run_mode.is_cancel_requested("uid-revoked") is False
-
-
-@pytest.mark.parametrize("retain_audio", [True, False], ids=["retain", "no-retain"])
-def test_task_revoked_while_waiting_to_retry_is_recorded_and_its_upload_handled(
-        transcribe_media_task, uploads, fake, redis_run_mode, client, monkeypatch, retain_audio):
-    from app.core.config import get_settings
-    from app.tasks.transcribe_core import run_transcription
-
-    monkeypatch.setattr(get_settings(), "retain_audio", retain_audio)
-    task_id = str(uuid.uuid4())
-    params = task_params(uploads, "uid-retry-revoked")
-    redis_run_mode.register_task("uid-retry-revoked", task_id, can_terminate=True)
-    fake.script = [TransientError("503 服務暫時無法使用")]
-    # 第一次執行遇到暫時錯誤：輸入音檔與旗標留給重試，Celery 排好重試
-    with pytest.raises(TransientError):
-        run_transcription(params, task_id, retries_left=1)
-
-    # 等重試的期間使用者按下取消：worker 丟掉被撤銷的重試，任務不會再執行
-    redis_run_mode.request_cancel("uid-retry-revoked")
-    worker_discards_revoked(transcribe_media_task, params, task_id)
-
-    assert len(fake.calls) == 1
-    assert client.get(f"/api/v1/history/{task_id}").json()["status"] == TaskStatus.CANCELLED
-    audio = client.get(f"/api/v1/transcripts/{task_id}/audio")
-    if retain_audio:
-        assert audio.content == synthetic_audio()
-    else:
-        assert audio.status_code == 404
-    assert list(uploads.iterdir()) == []
-    again = client.post("/api/v1/transcription/uid-retry-revoked/cancel").json()
-    assert again["reason"] == "not-started"
-    assert redis_run_mode.is_cancel_requested("uid-retry-revoked") is False
 
 
 class QueuedInBroker:
@@ -278,23 +291,3 @@ def test_revoked_signal_leaves_a_terminated_task_to_its_own_finishing(
     # 執行中被強制終止的任務，由它自己的生命週期在 finally 收尾：訊號這邊不重複收尾
     assert client.get(f"/api/v1/history/{task_id}").status_code == 404
     assert [p.name for p in uploads.iterdir()] == ["uid-terminated.wav"]
-
-
-def test_last_transient_error_is_a_failure(
-        transcribe_media_task, uploads, fake, broadcasts, client):
-    attempts = 1 + TRANSIENT_RETRIES
-    fake.script = [TransientError("503 服務暫時無法使用")] * attempts
-    task_id = str(uuid.uuid4())
-
-    result = transcribe_media_task.apply(args=[task_params(uploads, "uid-gives-up")],
-                                         task_id=task_id)
-
-    # 前三次宣告將重試；最後一次照失敗處理，任務不會一直停在處理中
-    messages = broadcasts()
-    assert result.state == "FAILURE"
-    assert len(fake.calls) == attempts
-    assert retry_notices(messages) == TRANSIENT_RETRIES
-    assert results(messages) == [TaskStatus.FAILED]
-    record = client.get(f"/api/v1/history/{task_id}").json()
-    assert record["status"] == TaskStatus.FAILED
-    assert "503" in record["error_message"]

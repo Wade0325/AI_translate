@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Literal, Mapping, Optional, Protocol, Sequence, Tuple
@@ -22,6 +23,9 @@ from app.services.transcription.models import TranscriptionTaskResult
 LOCAL_QUEUE = "local_asr"
 """GPU 佇列：Docker 模式由主機端 GPU worker 消化，免安裝模式是序列化的執行緒池。"""
 DEFAULT_QUEUE = "celery"
+
+CANCEL_CHECK_SECONDS = 0.2
+"""等待時（:meth:`ProgressAndCancel.wait`）多久查一次使用者取消了沒有。"""
 
 
 @dataclass(frozen=True)
@@ -98,6 +102,17 @@ class ProgressAndCancel:
         if self.cancel_requested():
             raise TranscriptionCancelledError("使用者已取消任務")
 
+    def wait(self, seconds: float) -> None:
+        """等 ``seconds`` 秒；期間使用者取消就不等了，拋
+        :class:`~app.exceptions.TranscriptionCancelledError`。"""
+        deadline = time.monotonic() + seconds
+        while True:
+            self.raise_if_cancelled()
+            left = deadline - time.monotonic()
+            if left <= 0:
+                return
+            time.sleep(min(left, CANCEL_CHECK_SECONDS))
+
 
 class Provider(Protocol):
     """一個任務專用的供應商轉接器；任務結束時呼叫 :meth:`release`。
@@ -120,8 +135,8 @@ class Provider(Protocol):
 
         進度經 ``progress`` 回報。使用者取消時拋
         :class:`~app.exceptions.TranscriptionCancelledError`；暫時錯誤（429、503 之類）拋
-        :class:`~app.exceptions.TransientError`，整個任務交給執行模式重試。
-        其他錯誤由分段轉錄當成這一段失敗處理。
+        :class:`~app.exceptions.TransientError`，回應建議了等待秒數時帶在 ``retry_after``，
+        分段轉錄等一段時間再轉這一段。其他錯誤由分段轉錄當成這一段失敗處理。
         """
 
     def release(self) -> None:

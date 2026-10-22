@@ -25,22 +25,20 @@ from app.utils.paths import delete_temp_files
 logger = setup_logger(__name__)
 
 
-def run_transcription(task_params_dict: dict, task_uuid: str, retries_left: int = 0) -> dict:
+def run_transcription(task_params_dict: dict, task_uuid: str) -> dict:
     """單檔轉錄：去靜音 → 轉錄 → 格式轉換 → 計費 → 寫 DB。
 
-    暫時錯誤會往上拋，由執行模式重試（Celery autoretry 或 LocalExecutor 的 retry wrapper）；
-    ``retries_left`` 是這次之後還會重試幾次，0 時暫時錯誤照失敗處理。
+    暫時錯誤在分段轉錄裡重試出錯的那一段，執行模式不重試整個任務。
     """
     params = TranscriptionTaskParams.model_validate(task_params_dict)
-    return TaskLifecycle(task_uuid, params, retries_left=retries_left).run(
+    return TaskLifecycle(task_uuid, params).run(
         lambda audio, progress: _transcribe(params, task_uuid, audio, progress))
 
 
 def abandon_transcription(task_params_dict: dict, task_uuid: str, *, cancelled: bool) -> None:
     """收尾一個不會再執行的單檔任務（見 :meth:`TaskLifecycle.abandon`）。
 
-    執行模式在任務不會再執行時呼叫：在佇列中或等重試時被撤銷（``cancelled``），
-    或應用程式關閉時還在排隊。
+    執行模式在任務不會再執行時呼叫：在佇列中被撤銷（``cancelled``），或應用程式關閉時還在排隊。
     """
     params = TranscriptionTaskParams.model_validate(task_params_dict)
     TaskLifecycle(task_uuid, params).abandon(cancelled=cancelled)
@@ -74,7 +72,8 @@ def _transcribe_speech_view(
         logger.error(f"無法取得音訊時長 {audio.name}")
         return TranscriptionTaskResult(success=False, text=f"[[無法讀取檔案 {audio.name}]]")
 
-    # 不用 audio.parent：重試時輸入音檔在保留區，暫存檔寫到那裡就清不掉
+    # 不用 audio.parent：同一個任務再執行一次時（Docker 模式的重派）輸入音檔在保留區，
+    # 暫存檔寫到那裡就清不掉
     temp_dir = get_settings().temp_uploads_path
     original_filename = params.original_filename or audio.name
     progress.report("分析語音活動...")

@@ -206,14 +206,28 @@ class _ChunkedTranscription:
             self._transcribed.append(_TranscribedChunk(chunk, result))
             return
         if not self._may_split_retry(chunk):
-            raise _Failed(result.text)
+            raise _Failed(self._failure(chunk, result.text))
         self._progress.raise_if_cancelled()
         halves = self._split(chunk, "s0", "s1")
         if halves is None:
-            raise _Failed(result.text)
+            raise _Failed(self._failure(chunk, result.text))
         logger.info(f"轉錄失敗，把 {chunk.duration:.1f} 秒的段切成兩段重試")
         self._transcribe_chunk(halves.first)
         self._transcribe_chunk(halves.second)
+
+    def _failure(self, chunk: _Chunk, reason: str) -> str:
+        """給使用者看的失敗原因：分段轉錄時寫明是第幾段、在原音檔的哪裡。"""
+        reason = reason.strip().removeprefix("[[").removesuffix("]]")
+        if not chunk.key_prefix:
+            return f"[[{reason}]]"
+        return f"[[{self._which(chunk)}：{reason}]]"
+
+    def _which(self, chunk: _Chunk) -> str:
+        """「分段轉錄的第幾段（在原音檔的起訖）」：依時間先後，前面的段都已經轉完。"""
+        timeline = self._view.timeline
+        start = timeline.to_original(chunk.start)
+        end = timeline.to_original(chunk.start + chunk.duration, end=True)
+        return f"分段轉錄的第 {len(self._transcribed) + 1} 段（{_clock(start)}–{_clock(end)}）"
 
     def _may_split_retry(self, chunk: _Chunk) -> bool:
         if not self._split_retry:
@@ -226,6 +240,41 @@ class _ChunkedTranscription:
         return True
 
     def _attempt(self, chunk: _Chunk) -> TranscriptionTaskResult:
+        """把這一段送進轉接器：暫時錯誤等一段時間再送一次，已經轉完的段不重送。
+
+        暫時錯誤不切段重試：把段切小，對配額用完與超載都沒有幫助。重試用完，整個分段轉錄以失敗結束。
+        """
+        retries = 0
+        while True:
+            try:
+                return self._call(chunk)
+            except TransientError as error:
+                if retries >= get_settings().transient_error_retries:
+                    raise _Failed(self._failure(
+                        chunk, f"暫時錯誤重試 {retries} 次仍失敗（{error}）")) from error
+                retries += 1
+                self._wait_before_retrying(chunk, error, retries)
+
+    def _wait_before_retrying(self, chunk: _Chunk, error: TransientError, retry: int) -> None:
+        """第 ``retry`` 次重試之前：先廣播要等多久、為什麼，再等；期間取消就停。
+
+        供應商建議了等待秒數時照它，沒有時從起始等待開始每次加倍；都不超過上限。
+        """
+        settings = get_settings()
+        suggested = error.retry_after
+        if suggested is None:
+            suggested = settings.transient_error_initial_wait_seconds * 2 ** (retry - 1)
+        seconds = max(0.0, min(suggested, settings.transient_error_max_wait_seconds))
+        # 使用者已經取消（例如 503 剛好在取消之後回來）：不再宣告要重試
+        self._progress.raise_if_cancelled()
+        which = self._which(chunk) if chunk.key_prefix else ""
+        notice = (f"{which}遇到暫時錯誤（{error}），{seconds:g} 秒後第 {retry} 次重試"
+                  f"（最多 {settings.transient_error_retries} 次）...")
+        logger.warning(notice)
+        self._progress.report(notice)
+        self._progress.wait(seconds)
+
+    def _call(self, chunk: _Chunk) -> TranscriptionTaskResult:
         """把這一段送進轉接器一次；一般例外轉成失敗結果，交給上層決定要不要切段重試。
 
         每次呼叫供應商之前都查一次取消：供應商不理會取消、照樣轉完手上這一段時，下一段也不會再送出去。
@@ -329,6 +378,13 @@ class _ChunkedTranscription:
             service_tier_used=usage.service_tier_used,
             segments=list(segments),
         )
+
+
+def _clock(seconds: float) -> str:
+    """原音檔上的時間寫成 MM:SS，一小時以上寫成 H:MM:SS；秒以下捨去。"""
+    minutes, secs = divmod(int(seconds), 60)
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}:{minutes:02d}:{secs:02d}" if hours else f"{minutes:02d}:{secs:02d}"
 
 
 def _nearest_to_middle(silences: Sequence[float], duration: float) -> Optional[float]:

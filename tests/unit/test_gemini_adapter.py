@@ -422,6 +422,33 @@ class TestErrors:
         with pytest.raises(GeminiTransientError):
             gemini.transcribe(audio, request(), PROGRESS)
 
+    @pytest.mark.parametrize("error, suggested", [
+        (rate_limited(retry_delay="37s"), 37.0),
+        (rate_limited(retry_delay="1.500s"), 1.5),
+        (unavailable(retry_after="30"), 30.0),
+    ], ids=["retry-info", "retry-info-fraction", "retry-after-header"])
+    def test_transient_error_carries_the_suggested_wait(
+            self, gemini, genai, audio, error, suggested):
+        # 回應建議了等多久再重試（錯誤內容裡的 RetryInfo，或 Retry-After 標頭）：暫時錯誤帶著那個秒數，
+        # 分段轉錄照它等，不必懂 Gemini 的回應格式
+        genai.replies = [error]
+        with pytest.raises(GeminiTransientError) as raised:
+            gemini.transcribe(audio, request(), PROGRESS)
+        assert raised.value.retry_after == suggested
+
+    def test_suggested_wait_on_an_upload_error_too(self, gemini, genai, audio):
+        genai.failing["files.upload"] = rate_limited(retry_delay="20s")
+        with pytest.raises(GeminiTransientError) as raised:
+            gemini.transcribe(audio, request(), PROGRESS)
+        assert raised.value.retry_after == 20.0
+
+    @pytest.mark.parametrize("error", [unavailable(), rate_limited()], ids=["503", "429"])
+    def test_transient_error_without_a_suggestion_carries_none(self, gemini, genai, audio, error):
+        genai.replies = [error]
+        with pytest.raises(GeminiTransientError) as raised:
+            gemini.transcribe(audio, request(), PROGRESS)
+        assert raised.value.retry_after is None
+
     def test_other_errors_are_permanent(self, gemini, genai, audio):
         genai.replies = [invalid_argument("API key not valid.")]
         with pytest.raises(GeminiPermanentError, match="API key not valid"):

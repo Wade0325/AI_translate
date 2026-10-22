@@ -273,8 +273,12 @@ def test_cancelling_a_running_task_stops_it_before_the_generation(
     assert history(api, name)["status"] == TaskStatus.CANCELLED
 
 
-def test_single_file_is_retried_after_a_transient_error(api, in_process_run_mode, genai):
-    # 503 是暫時錯誤：分段轉錄不把它當成這一段失敗，交給執行模式重試整個任務
+def test_single_file_is_retried_after_a_transient_error(
+        api, in_process_run_mode, genai, monkeypatch):
+    # 503 是暫時錯誤：分段轉錄不把它當成這一段失敗，等一段時間（這裡調成 0.01 秒）再轉那一段
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "transient_error_initial_wait_seconds", 0.01)
     genai.replies = [unavailable(), Reply(text="[00:01.00]おはよう。")]
 
     messages = transcribe(api, in_process_run_mode, "gemini-single-transient.wav")
@@ -283,7 +287,7 @@ def test_single_file_is_retried_after_a_transient_error(api, in_process_run_mode
     assert messages[-1]["status_code"] == TaskStatus.COMPLETED
     assert "おはよう。" in messages[-1]["result"]["transcripts"]["srt"]
     assert history(api, "gemini-single-transient.wav")["status"] == TaskStatus.COMPLETED
-    assert genai.stored == {}  # 兩次執行上傳的遠端檔都刪掉了
+    assert genai.stored == {}  # 兩次上傳的遠端檔都刪掉了
 
 
 def test_single_file_prompt_with_braces_reaches_gemini_as_written(api, in_process_run_mode, genai):
@@ -346,11 +350,11 @@ def test_speaker_ids_are_consistent_across_chunks(api, in_process_run_mode, gena
 
 def test_task_fails_only_when_no_chunk_has_any_line(
         api, in_process_run_mode, genai, three_chunks, monkeypatch):
-    # 整個任務合併完一個片段都沒有才算失敗，原因寫明。沒有內容不是轉錄失敗，檔案夠長也不切段重試
-    # （重試的話會因為測試環境沒有 Silero 找不到切點，原因變成「無法分割音訊檔案」）
+    # 整個任務合併完一個片段都沒有才算失敗，原因寫明。沒有內容不是轉錄失敗：每一段都長過切段重試
+    # 的下限（調成 1 秒），也不切段重試（重試的話，後面的回應會被切出的段用掉，任務反而完成）
     from app.core.config import get_settings
 
-    monkeypatch.setattr(get_settings(), "transcription_max_duration_seconds", 5)
+    monkeypatch.setattr(get_settings(), "transcription_max_duration_seconds", 1)
     genai.replies = [Reply(text=""), Reply(text="這段聽不出任何語音。"), Reply(text="[00:01.00]")]
 
     end = transcribe(api, in_process_run_mode, "gemini-chunks-empty.wav")[-1]

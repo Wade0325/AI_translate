@@ -16,9 +16,9 @@ import threading
 import uuid
 from typing import AsyncIterator, Optional
 
-from app.exceptions import GeminiTransientError, TransientError
+from app.exceptions import GeminiTransientError
 from app.runtime.executor import LocalExecutor
-from app.runtime.run_mode import TRANSIENT_RETRIES, RegisteredTask
+from app.runtime.run_mode import RegisteredTask
 from app.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -26,8 +26,8 @@ logger = setup_logger(__name__)
 
 class InProcessRunMode:
     def __init__(self, concurrency: int = 4, retry_backoff_max: int = 60):
-        """``retry_backoff_max``：暫時錯誤重試前最多等幾秒，對齊 Celery 任務的
-        ``retry_backoff_max``；測試傳 0，不必真的等。"""
+        """``retry_backoff_max``：批次遇到暫時錯誤、重試整個批次前最多等幾秒，對齊 Celery 批次任務
+        的 ``retry_backoff_max``；測試傳 0，不必真的等。"""
         self._executor = LocalExecutor(concurrency)
         self._retry_backoff_max = retry_backoff_max
         self._lock = threading.Lock()
@@ -39,24 +39,16 @@ class InProcessRunMode:
     def submit_transcription(self, task_id: str, task_params_dict: dict, queue: str) -> None:
         from app.tasks.transcribe_core import abandon_transcription, run_transcription
 
-        # 執行器遇到暫時錯誤會再呼叫一次；每次都告訴任務之後還會重試幾次，
-        # 對齊 Celery 的 request.retries
-        retries_left = iter(range(TRANSIENT_RETRIES, -1, -1))
-
-        def attempt():
-            return run_transcription(task_params_dict, task_id, next(retries_left))
-
         def abandoned(revoked: bool) -> None:
             # 在佇列中被撤銷、或關閉時還在排隊：任務不會執行，照樣收尾
             abandon_transcription(task_params_dict, task_id, cancelled=revoked)
 
+        # 不重試整個任務：暫時錯誤在分段轉錄裡重試出錯的那一段，和 Docker 模式相同
         self._executor.submit(
-            attempt,
+            run_transcription,
+            args=(task_params_dict, task_id),
             task_id=task_id,
             queue=queue,
-            retry_on=(TransientError,),
-            max_retries=TRANSIENT_RETRIES,
-            backoff_max=self._retry_backoff_max,
             on_abandoned=abandoned,
         )
 

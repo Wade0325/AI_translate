@@ -25,9 +25,6 @@ if TYPE_CHECKING:
 
 logger = setup_logger(__name__)
 
-TRANSIENT_RETRIES = 3
-"""單檔任務遇到暫時錯誤時，兩個轉接器都最多再重試幾次（不含第一次執行）。"""
-
 
 @dataclass(frozen=True)
 class RegisteredTask:

@@ -13,8 +13,9 @@
   進度與取消物件查一次；使用者取消時拋 :class:`~app.exceptions.TranscriptionCancelledError`，
   音檔不再往外送、也不再送出要收費的請求。已經上傳的遠端檔照樣在 :meth:`GeminiProvider.release`
   刪掉。已經送出的生成不中斷，回應照樣回報：Google 照樣收費，任務生命週期把用量記在已取消的紀錄上。
-- 錯誤：429／503 是暫時錯誤（:class:`~app.exceptions.GeminiTransientError`，外層會重試
-  整個任務），其他是永久錯誤（:class:`~app.exceptions.GeminiPermanentError`）。
+- 錯誤：429／503 是暫時錯誤（:class:`~app.exceptions.GeminiTransientError`），帶著回應建議的
+  等待秒數（Retry-After 標頭或錯誤內容裡的 RetryInfo），分段轉錄照它等一段時間再轉那一段；
+  其他是永久錯誤（:class:`~app.exceptions.GeminiPermanentError`）。
 
 google-genai 用戶端與 sleep 可以從外面傳進來：測試用假的用戶端，也不必真的等。
 用 API 金鑰建立用戶端在 :mod:`app.provider.google.gemini`，設定頁的連線測試也用它。
@@ -23,6 +24,7 @@ google-genai 用戶端與 sleep 可以從外面傳進來：測試用假的用戶
 from __future__ import annotations
 
 import hashlib
+import math
 import re
 import time
 import unicodedata
@@ -105,10 +107,50 @@ def _is_retryable(err: Exception) -> bool:
 
 
 def _classify(err: Exception) -> Exception:
-    """把 google-genai 的例外分成暫時與永久；呼叫端 ``raise _classify(e) from e``。"""
+    """把 google-genai 的例外分成暫時與永久；呼叫端 ``raise _classify(e) from e``。
+
+    暫時錯誤帶著回應建議的等待秒數（見 :func:`_suggested_wait`），分段轉錄照它等。
+    """
     if _is_retryable(err):
-        return GeminiTransientError(str(err))
+        return GeminiTransientError(str(err), retry_after=_suggested_wait(err))
     return GeminiPermanentError(str(err))
+
+
+_RETRY_INFO = "type.googleapis.com/google.rpc.RetryInfo"
+_DURATION_RE = re.compile(r"\s*(\d+(?:\.\d+)?)s\s*")
+"""google.protobuf.Duration 寫成 JSON 的樣子，例如 ``"37s"``、``"1.500s"``。"""
+
+
+def _suggested_wait(err: Exception) -> Optional[float]:
+    """回應建議等幾秒再重試：Retry-After 標頭，或錯誤內容裡的 RetryInfo（例如配額用完的 429 寫的
+    ``retryDelay: "37s"``）。都讀不到時是 None。"""
+    seconds = _retry_after_header(err)
+    return seconds if seconds is not None else _retry_info_delay(err)
+
+
+def _retry_after_header(err: Exception) -> Optional[float]:
+    """Retry-After 標頭寫的秒數；沒有、或寫成日期時是 None。"""
+    headers = getattr(getattr(err, "response", None), "headers", None)
+    if headers is None or not hasattr(headers, "get"):
+        return None
+    value = headers.get("Retry-After") or headers.get("retry-after")
+    try:
+        seconds = float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+    return max(0.0, seconds) if seconds is not None and math.isfinite(seconds) else None
+
+
+def _retry_info_delay(err: Exception) -> Optional[float]:
+    """錯誤內容（google.rpc.Status 的 details）裡 RetryInfo 的 retryDelay。"""
+    details = getattr(err, "details", None)
+    status = details.get("error", details) if isinstance(details, dict) else None
+    items = status.get("details") if isinstance(status, dict) else None
+    for item in items if isinstance(items, list) else ():
+        if isinstance(item, dict) and item.get("@type") == _RETRY_INFO:
+            match = _DURATION_RE.fullmatch(str(item.get("retryDelay", "")))
+            return float(match.group(1)) if match else None
+    return None
 
 
 def _thinking_config(model: str) -> types.ThinkingConfig:

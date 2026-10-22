@@ -1,6 +1,6 @@
 """任務生命週期模組：一個單檔任務的狀態轉換與副作用都在這裡。
 
-    開始 → 進度 … → 完成／失敗／取消／暫時錯誤 → 收尾 → 宣告結果
+    開始 → 進度 … → 完成／失敗／取消 → 收尾 → 宣告結果
 
 呼叫端只給「怎麼轉錄」：拿到輸入音檔與進度與取消物件，回傳轉錄結果。任務紀錄與片段、
 計價、狀態廣播、取消旗標、保留音檔與清理輸入音檔都在這裡，每條規則只寫一次：
@@ -9,14 +9,15 @@
   使用者取消之後，供應商才跑完或才出錯，都不蓋掉取消，供應商已經轉完的部分照樣記下
   用量與費用（供應商照樣收費）。其他狀態照實改寫：啟動清掃把還在跑的任務記成失敗，
   任務之後跑完就記成完成。
-- 暫時錯誤不寫 FAILED：輸入音檔與取消旗標留給執行模式的重試；沒有重試了才照失敗處理。
+- 暫時錯誤由分段轉錄重試出錯的那一段（:mod:`app.services.chunked_transcription`），執行模式不重試
+  整個任務；萬一有暫時錯誤漏到這裡，一律照失敗處理，任務不會停在處理中。
 - 完成和片段一起寫：任務紀錄記成完成（連同凍結的原始轉錄副本）和片段在同一個交易，片段
   寫不進去就照失敗處理。同一個任務再完成一次時，使用者動過的片段不刪、不覆寫（ADR-0007）。
 - 先保留音檔，再清理：不論結果（連被強制終止也一樣），輸入音檔先搬進保留區。關掉保留
   音檔時刪掉上傳檔；開著卻保留不成時，上傳檔是唯一的一份，留在暫存區。最後清掉任務
   登記與取消旗標。收尾的每一步各自保護，失敗只記 log。
-- 不會再執行的任務也收尾（:meth:`TaskLifecycle.abandon`）：在佇列中或等重試時被撤銷、
-  應用程式關閉時還在排隊的任務，一樣留下紀錄、保留或清理上傳檔。
+- 不會再執行的任務也收尾（:meth:`TaskLifecycle.abandon`）：在佇列中被撤銷、應用程式關閉時還在
+  排隊的任務，一樣留下紀錄、保留或清理上傳檔。
 - 收尾之後才宣告結果：畫面收到完成、失敗或取消時，紀錄、片段與保留音檔都已就緒。
 - 資料庫出錯不轉述例外：資料庫例外一接到就換成只有類型與原因的
   :class:`~app.exceptions.TaskDatabaseError`，記進 log 與往上拋給執行模式的都是它；畫面與
@@ -42,7 +43,7 @@ from app.celery.models import TranscriptionTaskParams
 from app.core.config import get_settings
 from app.core.task_status import TaskStatus
 from app.database.session import SessionLocal, describe_db_error
-from app.exceptions import TaskDatabaseError, TranscriptionCancelledError, TransientError
+from app.exceptions import TaskDatabaseError, TranscriptionCancelledError
 from app.provider.base import ProgressAndCancel
 from app.provider.registry import UnsupportedModelError, model_capabilities
 from app.repositories.transcript_segment_repository import TranscriptSegmentRepository
@@ -73,9 +74,7 @@ class _Outcome:
     broadcast_result: Optional[dict] = None
     """完成時隨宣告送給畫面的結果。"""
     error: Optional[Exception] = None
-    """收尾之後往上拋，讓執行模式記下失敗或安排重試。"""
-    retry: bool = False
-    """暫時錯誤：執行模式會再跑一次這個任務。"""
+    """收尾之後往上拋，讓執行模式記下失敗。"""
     return_value: Optional[dict] = None
     """:meth:`TaskLifecycle.run` 回傳給執行模式的值。"""
 
@@ -108,16 +107,11 @@ def _shown_to_user(error: Exception) -> str:
 
 
 class TaskLifecycle:
-    """一個單檔任務的生命週期；每次執行（含重試）建立一個。
+    """一個單檔任務的生命週期；每次執行建立一個（Docker 模式的重派會讓同一個任務再執行一次）。"""
 
-    ``retries_left`` 是執行模式在這次之後還會重試幾次；0 代表這是最後一次，
-    暫時錯誤就照失敗處理，任務不會一直停在處理中。
-    """
-
-    def __init__(self, task_uuid: str, params: TranscriptionTaskParams, *, retries_left: int = 0):
+    def __init__(self, task_uuid: str, params: TranscriptionTaskParams):
         self._task_uuid = task_uuid
         self._params = params
-        self._retries_left = retries_left
         self._input = _resolve_input(params.file_path, task_uuid)
         self._started_at = time.time()
         self._duration = 0.0
@@ -129,13 +123,11 @@ class TaskLifecycle:
 
         ``transcribe`` 拿到輸入音檔與進度與取消物件，回傳轉錄結果。它自己產生的暫存檔與
         供應商資源要自己清，輸入音檔不能動。使用者取消時拋
-        :class:`~app.exceptions.TranscriptionCancelledError`，暫時錯誤拋
-        :class:`~app.exceptions.TransientError`，其他例外都算失敗。
+        :class:`~app.exceptions.TranscriptionCancelledError`，其他例外都算失敗。
 
         Raises:
-            Exception: 失敗或暫時錯誤時，收尾與宣告都做完之後，原本的例外往上拋，
-                讓執行模式記下失敗或安排重試；資料庫例外換成
-                :class:`~app.exceptions.TaskDatabaseError`。
+            Exception: 失敗時，收尾與宣告都做完之後，原本的例外往上拋，讓執行模式記下失敗；
+                資料庫例外換成 :class:`~app.exceptions.TaskDatabaseError`。
         """
         outcome: Optional[_Outcome] = None
         with SessionLocal() as db:
@@ -150,7 +142,7 @@ class TaskLifecycle:
             finally:
                 # 一定收尾。被強制終止時（Docker 模式的 gevent 丟 GreenletExit，不是 Exception）
                 # 例外照樣往上拋、不宣告結果，但上傳的音檔已經保留或清掉
-                self._finish(db, retry=outcome is not None and outcome.retry)
+                self._finish(db)
         # 收尾之後才宣告：畫面收到結果時，紀錄、片段與保留音檔都已就緒
         self._announce(outcome)
         if outcome.error is not None:
@@ -158,8 +150,7 @@ class TaskLifecycle:
         return outcome.return_value or {}
 
     def abandon(self, *, cancelled: bool) -> None:
-        """收尾一個不會再執行的任務：在佇列中或等重試時被撤銷（``cancelled``），或應用程式
-        關閉時還在排隊。
+        """收尾一個不會再執行的任務：在佇列中被撤銷（``cancelled``），或應用程式關閉時還在排隊。
 
         和開始前就取消的任務一樣留下任務紀錄（被撤銷的記成已取消，關閉時還在排隊的記成
         失敗），再照一般的收尾保留或清理上傳檔、清掉登記與取消旗標。不宣告結果：撤銷時
@@ -175,7 +166,7 @@ class TaskLifecycle:
                 logger.error(
                     f"任務 {self._task_uuid} 無法更新任務紀錄: {_without_db_details(e)}")
             finally:
-                self._finish(db, retry=False)
+                self._finish(db)
 
     # ── 狀態轉換 ──────────────────────────────────────────────────
     def _attempt(self, db: Session, transcribe: Transcribe) -> _Outcome:
@@ -202,10 +193,8 @@ class TaskLifecycle:
                 # 取消前已經轉完的段落，供應商照樣收費：用量照記
                 return self._cancel(db, e.billed_usage)
             if self._progress.cancel_requested():
-                # 使用者取消之後才冒出的錯誤（例如 503 剛好回來）也算取消：不重試、不算失敗
+                # 使用者取消之後才冒出的錯誤（例如 503 剛好回來）也算取消：不算失敗
                 return self._cancel(db)
-            if isinstance(e, TransientError) and self._retries_left > 0:
-                return self._transient(e)
             return self._fail(db, _without_db_details(e))
 
     def _start(self, db: Session) -> None:
@@ -295,8 +284,7 @@ class TaskLifecycle:
         """開始前就取消：建立已取消的任務紀錄（重試時改寫第一次執行的紀錄），不呼叫供應商。
 
         任務在佇列等待時被取消，revoke 卻沒送到 worker（例如 worker 當時離線），
-        任務照樣會開始，靠取消旗標在這裡攔下；免安裝模式在等重試時被取消，重試開始時也在
-        這裡攔下。不會再執行的任務（:meth:`abandon`）也記成這樣。
+        任務照樣會開始，靠取消旗標在這裡攔下。不會再執行的任務（:meth:`abandon`）也記成這樣。
         """
         logger.info(
             f"任務 {self._task_uuid} 在啟動前已被取消 (file_uid={self._params.file_uid})")
@@ -312,13 +300,6 @@ class TaskLifecycle:
             "error_message": reason,
             "completed_at": datetime.now(),
         })
-
-    def _transient(self, error: Exception) -> _Outcome:
-        """暫時錯誤：不寫 FAILED，交給執行模式重試。"""
-        logger.warning(
-            f"Transcription task {self._task_uuid} hit transient error, will retry: {error}")
-        return _Outcome(TaskStatus.PROCESSING, f"暫時性錯誤，將重試: {error}",
-                        error=error, retry=True)
 
     def _fail(self, db: Session, error: Exception) -> _Outcome:
         """失敗：任務紀錄寫 FAILED 與錯誤訊息。"""
@@ -336,13 +317,13 @@ class TaskLifecycle:
             return self._cancel(db)
         return _Outcome(TaskStatus.FAILED, f"任務失敗: {reason}", error=error)
 
-    def _finish(self, db: Session, *, retry: bool) -> None:
+    def _finish(self, db: Session) -> None:
         """收尾：先保留音檔，再清理。
 
         每一步各自保護：失敗只記 log，不中斷後面的步驟，也不蓋掉任務的結果。
         """
-        # 音檔搬進保留區：成功要給校正介面重播，失敗／取消要留給再開任務與診斷，
-        # 暫時錯誤時重試從保留區找回它
+        # 音檔搬進保留區：成功要給校正介面重播，失敗／取消要留給再開任務與診斷；
+        # 同一個任務再執行一次時（Docker 模式的重派）從保留區找回它
         retained = None
         with self._best_effort("保留音檔"):
             retained = audio_store.retain(self._input, self._task_uuid)
@@ -352,10 +333,6 @@ class TaskLifecycle:
                 db.rollback()
                 self._records.update_log(db, self._task_uuid, {"audio_filename": retained})
 
-        if retry:
-            # 輸入音檔與取消旗標都留給重試：沒保留的上傳檔原地不動，
-            # 使用者在兩次執行之間的取消，重試開始時才看得到
-            return
         if not retained:
             if audio_store.enabled():
                 # 開著保留音檔卻沒保留成（例如保留區寫不進去）：上傳檔是唯一的一份，不刪，
@@ -490,9 +467,9 @@ def _output_formats(result: TranscriptionTaskResult) -> dict:
 
 
 def _resolve_input(file_path: str, task_uuid: str) -> Path:
-    """輸入音檔；暫時錯誤的重試時，上傳檔已經搬進保留區，改從那裡找。
+    """輸入音檔；同一個任務再執行一次時（Docker 模式的重派），上傳檔已經搬進保留區，改從那裡找。
 
-    Celery 重試沿用同一個 task id，所以保留檔名找得到。
+    重派沿用同一個 task id，所以保留檔名找得到。
     """
     path = Path(file_path)
     if path.exists():
