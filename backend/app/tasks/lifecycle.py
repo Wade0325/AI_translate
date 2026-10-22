@@ -1,9 +1,12 @@
-"""任務生命週期模組：一個單檔任務的狀態轉換與副作用都在這裡。
+"""任務生命週期模組：一個任務的狀態轉換與副作用都在這裡，單檔任務與批次的每個檔案都一樣。
 
     開始 → 進度 … → 完成／失敗／取消 → 收尾 → 宣告結果
 
-呼叫端只給「怎麼轉錄」：拿到輸入音檔與進度與取消物件，回傳轉錄結果。任務紀錄與片段、
-計價、狀態廣播、取消旗標、保留音檔與清理輸入音檔都在這裡，每條規則只寫一次：
+單檔任務一次跑完（:meth:`TaskLifecycle.run`）：呼叫端只給「怎麼轉錄」，拿到輸入音檔與進度與取消
+物件，回傳轉錄結果。批次的每個檔案分兩段：送出之前開始（:meth:`TaskLifecycle.start`），批次的
+結果回來時結束（:meth:`TaskLifecycle.end`）；結果可能在重啟之後才從復原入口回來，這時從任務紀錄
+接回（:meth:`TaskLifecycle.resume`）。任務紀錄與片段、計價、狀態廣播、取消旗標、保留音檔與清理
+輸入音檔都在這裡，每條規則只寫一次：
 
 - 取消不是失敗：任務紀錄寫 CANCELLED。開始前就取消的任務也有紀錄，不呼叫供應商；
   使用者取消之後，供應商才跑完或才出錯，都不蓋掉取消，供應商已經轉完的部分照樣記下
@@ -13,6 +16,7 @@
   整個任務；萬一有暫時錯誤漏到這裡，一律照失敗處理，任務不會停在處理中。
 - 完成和片段一起寫：任務紀錄記成完成（連同凍結的原始轉錄副本）和片段在同一個交易，片段
   寫不進去就照失敗處理。同一個任務再完成一次時，使用者動過的片段不刪、不覆寫（ADR-0007）。
+- 計價照模型能力的計價方式；實際以 Flex 或批次完成的照設定打折。
 - 先保留音檔，再清理：不論結果（連被強制終止也一樣），輸入音檔先搬進保留區。關掉保留
   音檔時刪掉上傳檔；開著卻保留不成時，上傳檔是唯一的一份，留在暫存區。最後清掉任務
   登記與取消旗標。收尾的每一步各自保護，失敗只記 log。
@@ -34,12 +38,11 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Iterator, Optional
+from typing import Callable, Iterator, Optional, Union
 
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from app.celery.models import TranscriptionTaskParams
 from app.core.config import get_settings
 from app.core.task_status import TaskStatus
 from app.database.session import SessionLocal, describe_db_error
@@ -62,6 +65,27 @@ logger = setup_logger(__name__)
 
 Transcribe = Callable[[Path, ProgressAndCancel], TranscriptionTaskResult]
 """轉錄輸入音檔；見 :meth:`TaskLifecycle.run`。"""
+
+
+@dataclass(frozen=True)
+class Task:
+    """任務生命週期要知道的一個任務：任務紀錄的欄位、狀態廣播送到哪裡，以及輸入音檔。"""
+
+    file_path: Optional[str]
+    """輸入音檔（上傳檔），收尾時保留或清理。不知道在哪裡時是 None：改版前送出、升級後才從復原入口
+    結束的批次沒有存下上傳檔。"""
+    file_uid: str
+    """畫面上的檔案代號：取消旗標與任務登記以它為鍵，狀態廣播也帶著它。"""
+    client_id: str
+    """狀態廣播送到哪一條 WebSocket：單檔任務是 ``file_uid``，批次的檔案是批次。"""
+    original_filename: str
+    provider: str
+    model: str
+    source_lang: str
+    target_lang: Optional[str] = None
+    session_id: Optional[str] = None
+    batch_id: Optional[str] = None
+    """所屬的批次；單檔任務是 None。批次的檔案記在批次底下，狀態廣播也帶著它。"""
 
 
 @dataclass(frozen=True)
@@ -107,16 +131,68 @@ def _shown_to_user(error: Exception) -> str:
 
 
 class TaskLifecycle:
-    """一個單檔任務的生命週期；每次執行建立一個（Docker 模式的重派會讓同一個任務再執行一次）。"""
+    """一個任務的生命週期；每次執行建立一個（Docker 模式的重派會讓同一個任務再執行一次），
+    批次的檔案在結果回來時另外接回一個（:meth:`resume`）。"""
 
-    def __init__(self, task_uuid: str, params: TranscriptionTaskParams):
+    def __init__(self, task_uuid: str, task: Task, *, duration: float = 0.0,
+                 started_at: Optional[float] = None):
+        """``duration`` 與 ``started_at`` 給接回的任務用：開始時量到的長度，以及開始的時間（處理時間
+        從這裡算起）。新的任務在開始時才量長度，從建立這個物件時算起。"""
         self._task_uuid = task_uuid
-        self._params = params
-        self._input = _resolve_input(params.file_path, task_uuid)
-        self._started_at = time.time()
-        self._duration = 0.0
+        self._task = task
+        self._input = _resolve_input(task.file_path, task_uuid)
+        self._started_at = time.time() if started_at is None else started_at
+        self._duration = duration
         self._records = TranscriptionLogRepository()
         self._progress = ProgressAndCancel(self._report, self._cancel_requested)
+
+    @classmethod
+    def resume(cls, task_uuid: str, *, file_path: Optional[str],
+               duration: float) -> Optional[TaskLifecycle]:
+        """接回一個已經開始的任務，接著結束它（:meth:`end`）：批次的檔案在結果回來時，可能已經是
+        另一個行程（重啟之後從復原入口）。
+
+        任務的資訊讀它自己的任務紀錄，處理時間從紀錄建立的時間算起；``file_path`` 與 ``duration``
+        是開始時的輸入音檔與量到的長度。紀錄不在了（例如使用者把它刪掉了）時回 None。
+
+        Raises:
+            TaskDatabaseError: 讀不到任務紀錄（資料庫出錯）。
+        """
+        try:
+            with SessionLocal() as db:
+                record = TranscriptionLogRepository().get(db, task_uuid)
+        except SQLAlchemyError as e:
+            raise _without_db_details(e) from None
+        if record is None:
+            return None
+        task = Task(
+            file_path=file_path,
+            file_uid=record.file_uid or "",
+            client_id=record.batch_id or record.file_uid or "",
+            original_filename=record.original_filename or "",
+            provider=record.provider or "",
+            model=record.model_used or "",
+            source_lang=record.source_language or "",
+            target_lang=record.target_language,
+            session_id=record.session_id,
+            batch_id=record.batch_id,
+        )
+        started_at = record.request_timestamp.timestamp() if record.request_timestamp else None
+        return cls(str(task_uuid), task, duration=duration, started_at=started_at)
+
+    @property
+    def task_uuid(self) -> str:
+        return self._task_uuid
+
+    @property
+    def progress(self) -> ProgressAndCancel:
+        """這個任務的進度與取消物件；批次在送出之前用它回報這個檔案的進度。"""
+        return self._progress
+
+    @property
+    def duration(self) -> float:
+        """輸入音檔的長度（秒），開始時量；量不到時是 0。"""
+        return self._duration
 
     def run(self, transcribe: Transcribe) -> dict:
         """跑完這個任務，回傳給執行模式的結果。
@@ -129,25 +205,37 @@ class TaskLifecycle:
             Exception: 失敗時，收尾與宣告都做完之後，原本的例外往上拋，讓執行模式記下失敗；
                 資料庫例外換成 :class:`~app.exceptions.TaskDatabaseError`。
         """
-        outcome: Optional[_Outcome] = None
-        with SessionLocal() as db:
-            try:
-                outcome = self._attempt(db, transcribe)
-            except Exception as e:
-                # 連任務紀錄都寫不進去（例如資料庫連不上）：照樣收尾，宣告失敗
-                error = _without_db_details(e)
-                logger.error(f"任務 {self._task_uuid} 無法更新任務紀錄: {error}")
-                outcome = _Outcome(
-                    TaskStatus.FAILED, f"任務失敗: {_shown_to_user(error)}", error=error)
-            finally:
-                # 一定收尾。被強制終止時（Docker 模式的 gevent 丟 GreenletExit，不是 Exception）
-                # 例外照樣往上拋、不宣告結果，但上傳的音檔已經保留或清掉
-                self._finish(db)
-        # 收尾之後才宣告：畫面收到結果時，紀錄、片段與保留音檔都已就緒
-        self._announce(outcome)
+        outcome = self._to_the_end(lambda db: self._attempt(db, transcribe))
         if outcome.error is not None:
             raise outcome.error
         return outcome.return_value or {}
+
+    def start(self) -> None:
+        """開始：建立任務紀錄並廣播處理中，量輸入音檔的長度。批次在送出之前對每個檔案呼叫一次，
+        之後由 :meth:`end` 結束。
+
+        Raises:
+            TaskDatabaseError: 任務紀錄寫不進去。
+        """
+        try:
+            with SessionLocal() as db:
+                self._start(db)
+        except SQLAlchemyError as e:
+            raise _without_db_details(e) from None
+
+    def end(self, result: Union[TranscriptionTaskResult, Exception]) -> Optional[dict]:
+        """結束一個已經開始的任務（批次的檔案）：記下完成或失敗、收尾，再宣告結果。
+
+        ``result`` 是供應商的轉錄結果，時間已經在原音檔的時間軸上；或是讓這個任務失敗的例外，例如
+        上傳失敗、整個批次失敗。回傳完成時送給畫面的結果，沒有完成時是 None。不往上拋例外：一個
+        檔案失敗不影響同一批的其他檔案。
+        """
+        if isinstance(result, Exception):
+            error = result
+            outcome = self._to_the_end(lambda db: self._failed_attempt(db, error))
+        else:
+            outcome = self._to_the_end(lambda db: self._conclude(db, result))
+        return outcome.broadcast_result if outcome.status == TaskStatus.COMPLETED else None
 
     def abandon(self, *, cancelled: bool) -> None:
         """收尾一個不會再執行的任務：在佇列中被撤銷（``cancelled``），或應用程式關閉時還在排隊。
@@ -169,12 +257,39 @@ class TaskLifecycle:
                 self._finish(db)
 
     # ── 狀態轉換 ──────────────────────────────────────────────────
+    def _to_the_end(self, step: Callable[[Session], _Outcome]) -> _Outcome:
+        """做完一次狀態轉換之後一定收尾，收尾之後才宣告：畫面收到結果時，紀錄、片段與保留音檔都已
+        就緒。"""
+        outcome: Optional[_Outcome] = None
+        with SessionLocal() as db:
+            try:
+                outcome = step(db)
+            except Exception as e:
+                # 連任務紀錄都寫不進去（例如資料庫連不上）：照樣收尾，宣告失敗
+                error = _without_db_details(e)
+                logger.error(f"任務 {self._task_uuid} 無法更新任務紀錄: {error}")
+                outcome = _Outcome(
+                    TaskStatus.FAILED, f"任務失敗: {_shown_to_user(error)}", error=error)
+            finally:
+                # 一定收尾。被強制終止時（Docker 模式的 gevent 丟 GreenletExit，不是 Exception）
+                # 例外照樣往上拋、不宣告結果，但上傳的音檔已經保留或清掉
+                self._finish(db)
+        self._announce(outcome)
+        return outcome
+
     def _attempt(self, db: Session, transcribe: Transcribe) -> _Outcome:
         try:
             if self._progress.cancel_requested():
                 return self._cancel_before_start(db)
             self._start(db)
             result = transcribe(self._input, self._progress)
+        except Exception as e:
+            return self._failed_attempt(db, e)
+        return self._conclude(db, result)
+
+    def _conclude(self, db: Session, result: TranscriptionTaskResult) -> _Outcome:
+        """供應商轉錄完了：記下完成；使用者已經取消、或沒有轉錄結果時，改記取消或失敗。"""
+        try:
             if self._progress.cancel_requested():
                 # 供應商沒理會取消、照樣跑完：使用者已經取消，不採用這次的結果（用量照記）
                 return self._cancel(db, result)
@@ -187,25 +302,29 @@ class TaskLifecycle:
                 raise ValueError(f"轉錄失敗: {result.text or '沒有轉錄出任何內容'}")
             return self._complete(db, result)
         except Exception as e:
-            # 失敗的寫入可能讓 session 停在 pending rollback，先復原才寫得進紀錄
-            db.rollback()
-            if isinstance(e, TranscriptionCancelledError):
-                # 取消前已經轉完的段落，供應商照樣收費：用量照記
-                return self._cancel(db, e.billed_usage)
-            if self._progress.cancel_requested():
-                # 使用者取消之後才冒出的錯誤（例如 503 剛好回來）也算取消：不算失敗
-                return self._cancel(db)
-            return self._fail(db, _without_db_details(e))
+            return self._failed_attempt(db, e)
+
+    def _failed_attempt(self, db: Session, error: Exception) -> _Outcome:
+        """這一次沒有完成：使用者取消的記成取消，其他記成失敗。"""
+        # 失敗的寫入可能讓 session 停在 pending rollback，先復原才寫得進紀錄
+        db.rollback()
+        if isinstance(error, TranscriptionCancelledError):
+            # 取消前已經轉完的段落，供應商照樣收費：用量照記
+            return self._cancel(db, error.billed_usage)
+        if self._progress.cancel_requested():
+            # 使用者取消之後才冒出的錯誤（例如 503 剛好回來）也算取消：不算失敗
+            return self._cancel(db)
+        return self._fail(db, _without_db_details(error))
 
     def _start(self, db: Session) -> None:
         """開始：建立任務紀錄，廣播處理中。"""
+        task = self._task
         self._records.insert_log(db, {"status": TaskStatus.PROCESSING, **self._record_fields()})
-        if self._params.session_id:
+        if task.session_id:
             logger.info(
-                f"TranscriptionLog created session_id={self._params.session_id} "
-                f"file_uid={self._params.file_uid}")
+                f"TranscriptionLog created session_id={task.session_id} file_uid={task.file_uid}")
         else:
-            logger.warning(f"TranscriptionLog missing session_id file_uid={self._params.file_uid}")
+            logger.warning(f"TranscriptionLog missing session_id file_uid={task.file_uid}")
         logger.info(f"Transcription task started. Task ID: {self._task_uuid}")
 
         self._progress.report("檔案處理與分析...")
@@ -259,8 +378,8 @@ class TaskLifecycle:
             transcripts=transcripts,
             tokens_used=tokens,
             cost=cost,
-            model=self._params.model,
-            source_language=self._params.source_lang,
+            model=self._task.model,
+            source_language=self._task.source_lang,
             audio_duration_seconds=self._duration,
         ).model_dump()
         response["task_uuid"] = response["task_uuid"].hex
@@ -287,7 +406,7 @@ class TaskLifecycle:
         任務照樣會開始，靠取消旗標在這裡攔下。不會再執行的任務（:meth:`abandon`）也記成這樣。
         """
         logger.info(
-            f"任務 {self._task_uuid} 在啟動前已被取消 (file_uid={self._params.file_uid})")
+            f"任務 {self._task_uuid} 在啟動前已被取消 (file_uid={self._task.file_uid})")
         self._records.insert_log(db, {**self._record_fields(), **self._cancelled_fields()})
         return _cancelled()
 
@@ -323,17 +442,18 @@ class TaskLifecycle:
         每一步各自保護：失敗只記 log，不中斷後面的步驟，也不蓋掉任務的結果。
         """
         # 音檔搬進保留區：成功要給校正介面重播，失敗／取消要留給再開任務與診斷；
-        # 同一個任務再執行一次時（Docker 模式的重派）從保留區找回它
+        # 同一個任務再執行一次時（Docker 模式的重派、批次從復原入口再結束一次）從保留區找回它
         retained = None
-        with self._best_effort("保留音檔"):
-            retained = audio_store.retain(self._input, self._task_uuid)
+        if self._input is not None:
+            with self._best_effort("保留音檔"):
+                retained = audio_store.retain(self._input, self._task_uuid)
         if retained:
             with self._best_effort("記下保留音檔"):
                 # 前面失敗的寫入可能讓 session 停在 pending rollback，先復原才寫得進去
                 db.rollback()
                 self._records.update_log(db, self._task_uuid, {"audio_filename": retained})
 
-        if not retained:
+        if not retained and self._input is not None:
             if audio_store.enabled():
                 # 開著保留音檔卻沒保留成（例如保留區寫不進去）：上傳檔是唯一的一份，不刪，
                 # 留在暫存區，之後由啟動清掃處理
@@ -345,7 +465,7 @@ class TaskLifecycle:
         # 任務結束後登記與旗標都已無作用，清掉：取消端點才不會去撤銷早已結束的任務，
         # 旗標也不會影響同一檔案之後再開的任務（同一檔案已經登記了新任務時不動它的）
         with self._best_effort("清除任務登記與取消旗標"):
-            run_mode.get().task_ended(self._params.file_uid, self._task_uuid)
+            run_mode.get().task_ended(self._task.file_uid, self._task_uuid)
 
     @contextmanager
     def _best_effort(self, step: str) -> Iterator[None]:
@@ -360,34 +480,37 @@ class TaskLifecycle:
         self._publish(text, TaskStatus.PROCESSING)
 
     def _cancel_requested(self) -> bool:
-        return run_mode.get().is_cancel_requested(self._params.file_uid)
+        return run_mode.get().is_cancel_requested(self._task.file_uid)
 
     def _announce(self, outcome: _Outcome) -> None:
         self._publish(outcome.text, outcome.status, outcome.broadcast_result)
 
     def _publish(self, text: str, status: TaskStatus, result: Optional[dict] = None) -> None:
+        task = self._task
         publish_status(
-            self._params.client_id,
+            task.client_id,
             self._task_uuid,
             text,
             status_code=status,
-            file_uid=self._params.file_uid,
+            file_uid=task.file_uid,
             result_data=result,
+            extra={"batch_id": task.batch_id} if task.batch_id else None,
         )
 
     # ── 小工具 ────────────────────────────────────────────────────
     def _record_fields(self) -> dict:
-        params = self._params
+        task = self._task
         return {
-            "original_filename": params.original_filename,
-            "model_used": params.model,
-            "source_language": params.source_lang,
+            "original_filename": task.original_filename,
+            "model_used": task.model,
+            "source_language": task.source_lang,
             "task_uuid": self._task_uuid,
-            "provider": params.provider,
-            "target_language": params.target_lang,
-            "is_batch": False,
-            "session_id": params.session_id,
-            "file_uid": params.file_uid,
+            "provider": task.provider,
+            "target_language": task.target_lang,
+            "is_batch": task.batch_id is not None,
+            "batch_id": task.batch_id,
+            "session_id": task.session_id,
+            "file_uid": task.file_uid,
         }
 
     def _cancelled_fields(self) -> dict:
@@ -423,24 +546,24 @@ class TaskLifecycle:
             ))
         metrics = CalculatorService().calculate_metrics(
             items=items,
-            model=self._params.model,
+            model=self._task.model,
             processing_time_seconds=elapsed,
             audio_duration_seconds=self._duration,
         )
         if self._pricing() == "free":
             return metrics.total_tokens, 0.0
         cost = metrics.cost
-        # 實際以 Flex 完成（不是退回標準）才打折
-        if result.service_tier_used == "flex":
-            discount = get_settings().flex_cost_discount
+        # 實際以 Flex 完成（不是退回標準）或以批次完成才打折
+        discount = _discount(result.service_tier_used)
+        if discount is not None:
             cost *= discount
-            logger.info(f"Flex 處理模式生效，費用套用 {int(discount * 100)}% 折扣")
+            logger.info(f"處理模式是 {result.service_tier_used}，費用套用 {int(discount * 100)}% 折扣")
         logger.info(f"Metrics calculated. Task ID: {self._task_uuid}. Cost: ${cost:.6f}")
         return metrics.total_tokens, cost
 
     def _pricing(self) -> str:
         try:
-            return model_capabilities(self._params.provider, self._params.model).pricing
+            return model_capabilities(self._task.provider, self._task.model).pricing
         except UnsupportedModelError:
             # 派送時驗證過；之後才從模型清單拿掉的模型照 token 計價
             return "per_token"
@@ -449,7 +572,7 @@ class TaskLifecycle:
         """片段是校正介面的資料來源；同一個任務再完成一次時，使用者動過的片段不刪、不覆寫
         （ADR-0007），其他片段換成這次的結果。只寫進目前的交易，由 :meth:`_complete` 提交。
 
-        片段由分段轉錄依開始時間排好、序號連續。
+        片段已經依開始時間排好、序號連續（分段轉錄合併時、批次放回原音檔的時間軸時排好）。
         """
         if not result.segments:
             return
@@ -460,17 +583,27 @@ class TaskLifecycle:
         return time.time() - self._started_at
 
 
+def _discount(service_tier: Optional[str]) -> Optional[float]:
+    """這個處理模式的折扣率（費用乘上它）：Flex 與批次照設定，其他不打折，是 None。"""
+    settings = get_settings()
+    return {"flex": settings.flex_cost_discount,
+            "batch": settings.batch_cost_discount}.get(service_tier or "")
+
+
 def _output_formats(result: TranscriptionTaskResult) -> dict:
     """完成時送給畫面的四種輸出格式，由輸出格式模組產生：和之後下載的內容相同；
     凍結的原始轉錄副本也是這裡的 LRC。"""
     return output_format.for_result(result).model_dump()
 
 
-def _resolve_input(file_path: str, task_uuid: str) -> Path:
-    """輸入音檔；同一個任務再執行一次時（Docker 模式的重派），上傳檔已經搬進保留區，改從那裡找。
+def _resolve_input(file_path: Optional[str], task_uuid: str) -> Optional[Path]:
+    """輸入音檔；同一個任務再執行一次時（Docker 模式的重派、批次從復原入口再結束一次），上傳檔
+    已經搬進保留區，改從那裡找。不知道上傳檔在哪裡時是 None。
 
     重派沿用同一個 task id，所以保留檔名找得到。
     """
+    if not file_path:
+        return None
     path = Path(file_path)
     if path.exists():
         return path

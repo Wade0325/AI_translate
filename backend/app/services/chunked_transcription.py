@@ -1,5 +1,8 @@
 """分段轉錄模組：單檔任務的轉錄只有一個入口 :func:`transcribe`，回傳在原音檔時間軸上的轉錄結果。
 
+批次不分段，一次送出整個語音視圖；結果用 :func:`on_original_timeline` 放回原音檔的時間軸，和這裡
+合併之後的時間還原與排序是同一套。
+
 呼叫端給語音視圖、供應商轉接器、轉錄設定與進度與取消物件；單次長度與能不能切段重試，讀轉接器回報的
 模型能力。送什麼、切在哪裡、時間怎麼還原都在語音視圖裡，分段轉錄不必知道去靜音。內部依序：
 
@@ -40,7 +43,7 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 from app.core.config import get_settings
 from app.exceptions import TranscriptionCancelledError, TransientError
 from app.provider.base import ProgressAndCancel, Provider, TranscribeRequest
-from app.services.silence_removal import SpeechView
+from app.services.silence_removal import SpeechTimeline, SpeechView
 from app.services.transcription.models import TranscriptionTaskResult
 from app.services.vad.artifacts import persist_split
 from app.services.vad.service import get_vad_service
@@ -77,6 +80,21 @@ def transcribe(
         view, provider, request, progress,
         temp_dir=temp_dir, task_id=task_id, original_filename=original_filename,
     ).run()
+
+
+def on_original_timeline(
+    result: TranscriptionTaskResult, timeline: SpeechTimeline,
+) -> TranscriptionTaskResult:
+    """一次轉錄整個語音視圖的結果（批次的每個檔案）放回原音檔的時間軸：和分段轉錄只有一段時合併之後
+    相同，片段的時間還原回原音檔，依開始時間排好、重編序號。失敗的結果原樣傳回。
+
+    ``timeline`` 是那個語音視圖的時間對照；批次從存下來的序列化形式讀回（見
+    :meth:`SpeechTimeline.from_serialized`）。
+    """
+    if not result.success:
+        return result
+    return result.model_copy(
+        update={"segments": _in_time_order(timeline.restore(result.segments))})
 
 
 @dataclass(frozen=True)
@@ -267,19 +285,13 @@ class _ChunkedTranscription:
                 self._wait_before_retrying(chunk, error, retries)
 
     def _wait_before_retrying(self, chunk: _Chunk, error: TransientError, retry: int) -> None:
-        """第 ``retry`` 次重試之前：先廣播要等多久、為什麼，再等；期間取消就停。
-
-        供應商建議了等待秒數時照它，沒有時從起始等待開始每次加倍；都不超過上限。
-        """
-        settings = get_settings()
-        suggested = error.retry_after
-        if suggested is None:
-            suggested = settings.transient_error_initial_wait_seconds * 2 ** (retry - 1)
-        seconds = max(0.0, min(suggested, settings.transient_error_max_wait_seconds))
+        """第 ``retry`` 次重試之前：先廣播要等多久（見 :meth:`TransientError.wait_seconds`）、為什麼，
+        再等；期間取消就停。"""
+        seconds = error.wait_seconds(retry)
         # 使用者已經取消（例如 503 剛好在取消之後回來）：不再宣告要重試
         self._progress.raise_if_cancelled()
         notice = (f"{self._which(chunk)}遇到暫時錯誤（{_why(error)}），{seconds:g} 秒後第 {retry} 次"
-                  f"重試（最多 {settings.transient_error_retries} 次）...")
+                  f"重試（最多 {get_settings().transient_error_retries} 次）...")
         logger.warning(f"{notice} {error}")
         self._progress.report(notice)
         self._progress.wait(seconds)

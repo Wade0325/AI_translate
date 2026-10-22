@@ -2,6 +2,9 @@
 
 它同時是自己的 ProviderFactory：``registry.register("fake", fake)`` 之後，
 每個任務建立轉接器時拿到的都是同一個實例，測試可以事後檢查它被怎麼用。
+
+模型能力設成支援批次（``supports_batch``）時也能跑批次：送出時照劇本給每個請求一份結果，
+查到成功結束時附上，和 Gemini 一樣。
 """
 
 from __future__ import annotations
@@ -9,10 +12,11 @@ from __future__ import annotations
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 from app.provider.base import (
     LOCAL_QUEUE,
+    BatchStatus,
     ModelCapabilities,
     ProgressAndCancel,
     ProviderInfo,
@@ -58,7 +62,13 @@ class ServedAs:
 
 
 Step = Union[Sequence[Line], Fail, ServedAs, Exception]
-"""劇本的一步：這一段的轉錄結果、回報失敗、用了別的處理模式，或拋出這個例外。"""
+"""劇本的一步：這一段的轉錄結果、回報失敗、用了別的處理模式，或拋出這個例外。批次的請求只能是
+轉錄結果或回報失敗。"""
+
+BatchPoll = Union[str, BaseException]
+"""查一次批次的結果：Gemini 的狀態名稱去掉 ``JOB_STATE_``（例如 ``"RUNNING"``），或拋出這個例外。"""
+
+BATCH_DONE = frozenset({"SUCCEEDED", "FAILED", "CANCELLED", "EXPIRED"})
 
 
 def _segment(i: int, line: Line) -> dict:
@@ -77,6 +87,8 @@ class FakeProvider:
     def __init__(self, script: Sequence[Step] = ()):
         self.script: List[Step] = list(script)
         self.model_capabilities = CAPABILITIES
+        # 模型清單拿掉了這個模型（例如升級之後）：查模型能力時列不出它，建立轉接器照樣可以
+        self.withdrawn = False
         self.opened = 0
         # 建立轉接器時拋的錯，例如金鑰無效時的 ValueError
         self.open_error: Optional[Exception] = None
@@ -105,10 +117,20 @@ class FakeProvider:
         self.ready_message = "假供應商可以轉錄"
         self.not_ready: Optional[ValueError] = None
         self.checked_keys: List[str] = []
+        # 依序收到的提示詞：每一段轉錄一則，送出的批次每個請求一則
+        self.prompts: List[str] = []
+        # 批次：上傳時依序拋的錯（None 代表那一個照常上傳）、送出時依序拋的錯，以及每次查詢依序
+        # 的結果；查詢用完之後一律回報 batch_outcome，"SUCCEEDED" 時附上送出時照劇本轉錄的結果
+        self.upload_errors: List[Optional[Exception]] = []
+        self.submit_errors: List[Exception] = []
+        self.batch_polls: List[BatchPoll] = []
+        self.batch_outcome = "SUCCEEDED"
+        self.submitted: Dict[str, Tuple[TranscriptionTaskResult, ...]] = {}
+        """送出的批次：名稱 → 每個請求的結果。"""
 
     # ── ProviderFactory ──────────────────────────────────────────
     def capabilities(self):
-        return {FAKE_MODEL: self.model_capabilities}
+        return {} if self.withdrawn else {FAKE_MODEL: self.model_capabilities}
 
     def __call__(self, model: str, api_key: str) -> "FakeProvider":
         self.opened += 1
@@ -128,6 +150,7 @@ class FakeProvider:
     ) -> TranscriptionTaskResult:
         self.calls.append(audio_path)
         self.durations.append(get_audio_duration(audio_path))
+        self.prompts.append(request.prompt)
         self.started.set()
         for text in self.reports:
             progress.report(text)
@@ -145,18 +168,56 @@ class FakeProvider:
         step = self.script.pop(0) if self.script else []
         if isinstance(step, Exception):
             raise step
-        input_tokens, output_tokens = self.usage
-        usage = {"input_tokens": input_tokens, "output_tokens": output_tokens,
-                 "total_tokens": input_tokens + output_tokens, "service_tier_used": self.service_tier}
-        if isinstance(step, Fail):
-            return TranscriptionTaskResult(success=False, text=f"[[{step.message}]]", **usage)
+        service_tier = self.service_tier
         if isinstance(step, ServedAs):
-            usage["service_tier_used"] = step.service_tier
-            step = step.lines
-
-        # 和真的轉接器一樣，轉錄結果只有片段與用量，不附著 LRC 文字
-        segments = [_segment(i, line) for i, line in enumerate(step)]
-        return TranscriptionTaskResult(success=bool(step), segments=segments, **usage)
+            service_tier, step = step.service_tier, step.lines
+        return self._result(step, service_tier)
 
     def release(self) -> None:
         self.released += 1
+
+    # ── BatchProvider ────────────────────────────────────────────
+    def upload(self, audio_path: Path) -> Any:
+        """批次的上傳：和轉錄一樣記下收到的音檔與它的長度；hold 設定後停在這裡直到放行。"""
+        self.calls.append(audio_path)
+        self.durations.append(get_audio_duration(audio_path))
+        self.started.set()
+        if self.hold is not None:
+            self.hold.wait(30)
+        error = self.upload_errors.pop(0) if self.upload_errors else None
+        if error is not None:
+            raise error
+        return audio_path
+
+    def submit_batch(self, requests: Sequence[Tuple[Any, str]], display_name: str) -> str:
+        """照劇本給每個請求一份結果，一個請求一步、依送出的順序；處理模式是批次。"""
+        self.prompts.extend(prompt for _, prompt in requests)
+        if self.submit_errors:
+            raise self.submit_errors.pop(0)
+        name = f"fake-batches/{len(self.submitted) + 1}"
+        steps = [self.script.pop(0) if self.script else [] for _ in requests]
+        assert all(isinstance(step, (Fail, list, tuple)) for step in steps), (
+            "批次的請求只能照劇本轉錄成功或回報失敗")
+        self.submitted[name] = tuple(self._result(step, "batch") for step in steps)
+        return name
+
+    def poll_batch(self, name: str) -> BatchStatus:
+        step = self.batch_polls.pop(0) if self.batch_polls else self.batch_outcome
+        if isinstance(step, BaseException):
+            raise step
+        if step == "SUCCEEDED":
+            return BatchStatus(state=f"JOB_STATE_{step}", done=True, succeeded=True,
+                               results=self.submitted[name])
+        return BatchStatus(state=f"JOB_STATE_{step}", done=step in BATCH_DONE)
+
+    def _result(self, step: Union[Sequence[Line], Fail],
+                service_tier: Optional[str]) -> TranscriptionTaskResult:
+        """劇本的一步換成轉錄結果，帶著用量與處理模式。"""
+        input_tokens, output_tokens = self.usage
+        usage = {"input_tokens": input_tokens, "output_tokens": output_tokens,
+                 "total_tokens": input_tokens + output_tokens, "service_tier_used": service_tier}
+        if isinstance(step, Fail):
+            return TranscriptionTaskResult(success=False, text=f"[[{step.message}]]", **usage)
+        # 和真的轉接器一樣，轉錄結果只有片段與用量，不附著 LRC 文字
+        segments = [_segment(i, line) for i, line in enumerate(step)]
+        return TranscriptionTaskResult(success=bool(step), segments=segments, **usage)

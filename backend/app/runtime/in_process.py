@@ -16,7 +16,6 @@ import threading
 import uuid
 from typing import AsyncIterator, Optional
 
-from app.exceptions import GeminiTransientError
 from app.runtime.executor import LocalExecutor
 from app.runtime.run_mode import RegisteredTask
 from app.utils.logger import setup_logger
@@ -25,11 +24,8 @@ logger = setup_logger(__name__)
 
 
 class InProcessRunMode:
-    def __init__(self, concurrency: int = 4, retry_backoff_max: int = 60):
-        """``retry_backoff_max``：批次遇到暫時錯誤、重試整個批次前最多等幾秒，對齊批次的 Celery 任務
-        （``batch_transcribe_task``）的 ``retry_backoff_max``；測試傳 0，不必真的等。"""
+    def __init__(self, concurrency: int = 4):
         self._executor = LocalExecutor(concurrency)
-        self._retry_backoff_max = retry_backoff_max
         self._lock = threading.Lock()
         self._cancel_flags: set[str] = set()
         self._tasks: dict[str, RegisteredTask] = {}
@@ -53,15 +49,20 @@ class InProcessRunMode:
         )
 
     def submit_batch(self, task_params_dict: dict) -> str:
-        from app.tasks.batch_core import run_batch
+        from app.tasks.batch_core import abandon_batch, run_batch
 
         task_id = str(uuid.uuid4())
+
+        def abandoned(revoked: bool) -> None:
+            # 關閉時還在排隊：批次不會執行，每個檔案照樣收尾
+            abandon_batch(task_params_dict, cancelled=revoked)
+
+        # 不重試整個批次：暫時錯誤在批次裡重做出錯的那一步，和 Docker 模式相同
         self._executor.submit(
             run_batch,
             args=(task_params_dict, task_id),
             task_id=task_id,
-            retry_on=(GeminiTransientError,),
-            backoff_max=self._retry_backoff_max,
+            on_abandoned=abandoned,
         )
         return task_id
 

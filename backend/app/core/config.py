@@ -155,8 +155,9 @@ class Settings(BaseSettings):
     # Transcription tuning
     # 切段重試的下限（秒）：分段轉錄失敗的段不短於此值、模型能力又允許時，只把那一段切成兩段重試
     transcription_max_duration_seconds: int = 180
-    # 暫時錯誤（429、503 之類）：分段轉錄等一段時間再轉出錯的那一段，最多再重試幾次。回應沒有建議
-    # 等待秒數時，第一次等 initial 秒、之後每次加倍；有建議時照它。不論哪種都不超過 max 秒
+    # 暫時錯誤（429、503 之類）：分段轉錄等一段時間再轉出錯的那一段、批次再做一次出錯的那一步，最多再
+    # 重試幾次。回應沒有建議等待秒數時，第一次等 initial 秒、之後每次加倍；有建議時照它。不論哪種都不
+    # 超過 max 秒
     transient_error_retries: int = 3
     transient_error_initial_wait_seconds: float = 10.0
     transient_error_max_wait_seconds: float = 120.0

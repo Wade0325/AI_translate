@@ -153,9 +153,9 @@ class BatchStatus:
     """批次已經結束（成功或失敗），不必再查。"""
     succeeded: bool = False
     results: Tuple[TranscriptionTaskResult, ...] = ()
-    """成功結束時每個請求一份轉錄結果，順序和送出時相同；
-    失敗的請求 ``success=False``，``text`` 是給使用者看的失敗原因。
-    成功的請求暫時還沒有片段，``text`` 是 Gemini 寫的 LRC 文字：批次改成處理轉錄結果是 #115。"""
+    """成功結束時每個請求一份轉錄結果，順序和送出時相同，處理模式（``service_tier_used``）是
+    ``"batch"``。片段的時間軸是上傳的那個音檔，和 :meth:`Provider.transcribe` 一樣；失敗的請求
+    ``success=False``，``text`` 是給使用者看的失敗原因。"""
 
 
 class BatchProvider(Provider, Protocol):

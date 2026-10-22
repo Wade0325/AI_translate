@@ -77,8 +77,7 @@ def in_process_run_mode():
     from app.runtime import run_mode
     from app.runtime.in_process import InProcessRunMode
 
-    # 測試不等暫時錯誤重試前的退避
-    mode = InProcessRunMode(concurrency=1, retry_backoff_max=0)
+    mode = InProcessRunMode(concurrency=1)
     previous = run_mode.use(mode)
     yield mode
     run_mode.use(previous)

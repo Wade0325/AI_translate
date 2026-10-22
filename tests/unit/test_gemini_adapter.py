@@ -494,9 +494,24 @@ class TestBatch:
         ]
         final = polls[-1]
         assert final.succeeded
-        # 假用戶端把請求的提示詞當成轉錄文字：結果的順序和送出時相同
-        assert [r.text for r in final.results] == ["[00:00.00]轉錄 A", "[00:00.00]轉錄 B"]
-        assert [(r.success, r.total_tokens) for r in final.results] == [(True, 1200)] * 2
+        # 假用戶端把請求的提示詞當成轉錄文字：每個請求的 LRC 和單檔一樣解析成轉錄結果（片段），
+        # 順序和送出時相同；處理模式是批次
+        assert [transcript(r) for r in final.results] == [
+            [(0.0, None, "轉錄 A")], [(0.0, None, "轉錄 B")]]
+        assert [(r.success, r.total_tokens, r.service_tier_used) for r in final.results] == [
+            (True, 1200, "batch")] * 2
+
+    def test_each_request_numbers_its_own_speakers(self, gemini, genai, tmp_path):
+        # 每個請求是一個任務：說話者編號各自依代號第一次出現的順序從 S0 起算
+        genai.batch_outcomes = {
+            0: Reply(text="[00:01.00]Speaker 2: おはよう。"),
+            1: Reply(text="[00:01.00]Speaker 1: はい。\n[00:02.00]Speaker 2: ええ。"),
+        }
+
+        results = gemini.poll_batch(submit(gemini, tmp_path, ["轉錄 A", "轉錄 B"])).results
+
+        assert [transcript(r) for r in results] == [
+            [(1.0, "S0", "おはよう。")], [(1.0, "S0", "はい。"), (2.0, "S1", "ええ。")]]
 
     @pytest.mark.parametrize("state", ["JOB_STATE_FAILED", "JOB_STATE_CANCELLED", "JOB_STATE_EXPIRED"])
     def test_polls_until_failed(self, gemini, genai, tmp_path, state):
@@ -517,7 +532,7 @@ class TestBatch:
         assert [r.success for r in results] == [False, False, True]
         assert "音檔無法解碼" in results[0].text
         assert "PROHIBITED_CONTENT" in results[1].text
-        assert results[2].text == "[00:00.00]轉錄 C"
+        assert transcript(results[2]) == [(0.0, None, "轉錄 C")]
 
     @pytest.mark.parametrize("operation", ["batches.create", "batches.get"])
     def test_transient_errors_are_reported_as_transient(self, gemini, genai, tmp_path, operation):

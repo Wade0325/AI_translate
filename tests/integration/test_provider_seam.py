@@ -6,7 +6,6 @@
 保留音檔，以及暫存資料夾裡有沒有留下檔案。唯一的例外是凍結的原始轉錄副本（ADR-0007）：
 還沒有讀它的介面，只能從任務紀錄看（見 :func:`frozen_original`）。
 """
-import io
 import json
 import os
 import re
@@ -15,12 +14,11 @@ import sys
 import textwrap
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 from urllib.parse import unquote
 
-import numpy as np
 import pytest
 import soundfile as sf
 from fastapi.testclient import TestClient
@@ -31,24 +29,11 @@ from app.core.task_status import TaskStatus
 from app.exceptions import TransientError
 from app.runtime import run_mode
 from tests.support.fake_provider import FAKE_MODEL, Fail, ServedAs
+from tests.support.synthetic_audio import VOICED, synthetic_audio
 from tests.support.waiting import cancel_when_dispatched, wait_until
 
-SAMPLE_RATE = 16000
 TIMEOUT = 30
 TERMINAL = {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED}
-# 合成音檔的有聲段（秒）：有聲 2、靜音 3 交錯，共 12 秒
-VOICED = [(0.0, 2.0), (5.0, 7.0), (10.0, 12.0)]
-
-
-def synthetic_audio(fmt: str = "WAV", voiced=VOICED) -> bytes:
-    """有聲段（正弦波）與靜音段交錯的合成音檔，到最後一個有聲段結束；預設見 VOICED。"""
-    samples = np.zeros(int(voiced[-1][1] * SAMPLE_RATE), dtype=np.float32)
-    for start, end in voiced:
-        t = np.arange(int((end - start) * SAMPLE_RATE)) / SAMPLE_RATE
-        samples[int(start * SAMPLE_RATE):int(end * SAMPLE_RATE)] = 0.3 * np.sin(2 * np.pi * 440 * t)
-    buffer = io.BytesIO()
-    sf.write(buffer, samples, SAMPLE_RATE, format=fmt)
-    return buffer.getvalue()
 
 
 # ─── fixtures ────────────────────────────────────────────────────────────────
@@ -156,36 +141,9 @@ def run_mode_spy(in_process_run_mode):
 
 
 @pytest.fixture
-def api(test_engine, data_dir, task_db, run_mode_spy, fake):
-    """啟動時選行程內執行模式、啟動 WebSocket 狀態監聽器的 TestClient。"""
-    from sqlalchemy.orm import sessionmaker
-
-    from app.database.session import get_db
-    from app.websocket.manager import manager
-    from main import app
-
-    TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=test_engine)
-
-    def override_get_db():
-        db = TestingSessionLocal()
-        try:
-            yield db
-        finally:
-            db.close()
-
-    @asynccontextmanager
-    async def lifespan(_app):
-        manager.start()
-        yield
-        await manager.shutdown()
-
-    original = app.router.lifespan_context
-    app.router.lifespan_context = lifespan
-    app.dependency_overrides[get_db] = override_get_db
-    with TestClient(app) as client:
-        yield client
-    app.router.lifespan_context = original
-    app.dependency_overrides.clear()
+def api(api, run_mode_spy, fake):
+    """換上記錄撤銷的執行模式與假供應商。結束時假供應商先放行還停著的轉錄，再等任務跑完。"""
+    return api
 
 
 # ─── helpers ─────────────────────────────────────────────────────────────────
