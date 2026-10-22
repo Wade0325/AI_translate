@@ -6,7 +6,6 @@
 轉檔與去靜音。測試只從外部觀察：狀態廣播、API 回應、存下來的任務紀錄與片段、可以下載的輸出格式與
 保留音檔、暫存資料夾裡還留著哪些檔案、假供應商收到了什麼，以及批次存進資料庫的樣子。
 """
-import json
 import threading
 from dataclasses import replace
 
@@ -20,12 +19,13 @@ from app.tasks import batch_core
 from tests.support.db_faults import writes_fail
 from tests.support.fake_provider import FAKE_MODEL, Fail, Restart
 from tests.support.older_batches import (
-    NOT_SENT,
     SPANS,
+    OlderFile,
     finished_by_previous_release,
     sent_between_115_and_116,
     sent_by_previous_release,
     start_this_version,
+    unreadable_older_batch,
 )
 from tests.support.synthetic_audio import VOICED, synthetic_audio
 from tests.support.task_api import (
@@ -610,19 +610,26 @@ def test_files_whose_result_status_cannot_be_recorded_are_still_retrieved(
 
 # ─── 舊版送出的批次（#117）──────────────────────────────────────────────────
 
+@pytest.mark.parametrize("sent_before_start", [True, False],
+                         ids=["sent-before-this-version-started", "sent-after-it-started"])
 def test_a_batch_sent_by_the_previous_release_is_finished_from_recovery(
-        api, in_process_run_mode, batch_fake, db_session, test_engine):
+        api, in_process_run_mode, batch_fake, db_session, test_engine, sent_before_start):
     # 上一個發布版本送出的批次還在供應商那邊跑時升級：三個檔案，第二個上傳失敗沒有送出；第一個去靜音
-    # 過，第三個沒有。升級後從復原入口接手，和這一版送出的批次走同一個狀態機結束
+    # 過，第三個沒有。從復原入口接手，和這一版送出的批次走同一個狀態機結束。舊版的 worker 也可能在
+    # 這一版啟動之後才送出（Docker 模式升級時）：啟動時沒補到列的，復原入口當場補
+    batch_id = f"batch-older-{sent_before_start}"
     batch_fake.model_capabilities = replace(batch_fake.model_capabilities, pricing="per_token")
     batch_fake.usage = (200_000, 40_000)
     batch_fake.script = [list(LINES), [(0.2, 1.5, 1, "三つ目。")]]
+    if not sent_before_start:
+        start_this_version(test_engine)
     name = batch_fake.submit_batch([(None, "")] * 2, "older")  # 舊版送出的兩個請求
-    task_uuids = sent_by_previous_release(db_session, "batch-older", name, [
-        ("older-a", SPANS), ("older-b", NOT_SENT), ("older-c", None)])
+    task_uuids = sent_by_previous_release(db_session, batch_id, name, [
+        OlderFile("older-a", SPANS), OlderFile("older-b", sent=False), OlderFile("older-c")])
 
-    start_this_version(test_engine)
-    messages = recover(api, "batch-older")
+    if sent_before_start:
+        start_this_version(test_engine)
+    messages = recover(api, batch_id)
     in_process_run_mode.close(wait=True)  # 等復原整個跑完再查 API
 
     # 送出的兩個檔案：和這一版的批次一樣，處理中……之後宣告完成，廣播帶著舊版開始的那個任務
@@ -644,7 +651,7 @@ def test_a_batch_sent_by_the_previous_release_is_finished_from_recovery(
     # 沒有送出的檔案在舊版就結束了，復原不再動它
     assert of_file(messages, "older-b") == []
     assert record(api, task_uuids["older-b"])["status"] == TaskStatus.FAILED
-    assert listed(api, "batch-older")["status"] == "COMPLETED"
+    assert listed(api, batch_id)["status"] == "COMPLETED"
 
 
 def test_an_upload_recorded_by_an_older_version_is_retained_after_recovery(
@@ -674,7 +681,7 @@ def test_results_of_a_batch_the_previous_release_finished_can_still_be_retrieved
     # 一次也一樣，不再去問供應商
     lrc = "[00:00.20]おはよう。\n[00:05.40]こんにちは。\n[00:10.30]またね。"
     task_uuids = sent_by_previous_release(db_session, "batch-older-done", "batches/older-done",
-                                          [("older-done", SPANS), ("older-garbled", None)])
+                                          [OlderFile("older-done", SPANS), OlderFile("older-garbled")])
     finished_by_previous_release(db_session, "batch-older-done", task_uuids,
                                  {"older-done": lrc, "older-garbled": None})
 
@@ -701,7 +708,7 @@ def test_the_batch_list_names_each_file_of_a_batch_sent_by_the_previous_release(
     # 任務頁列出舊版批次的每個檔案，依在批次裡的順序，連沒有送出的也列；每次啟動都會補列，補過的
     # 不再補一次
     sent_by_previous_release(db_session, "batch-older-listed", "batches/older-listed", [
-        ("listed-a", SPANS), ("listed-b", NOT_SENT), ("listed-c", None)])
+        OlderFile("listed-a", SPANS), OlderFile("listed-b", sent=False), OlderFile("listed-c")])
 
     start_this_version(test_engine)
     start_this_version(test_engine)
@@ -715,16 +722,12 @@ def test_the_batch_list_names_each_file_of_a_batch_sent_by_the_previous_release(
 @pytest.mark.parametrize("status", ["POLLING", "FAILED", "COMPLETED"])
 def test_an_older_batch_whose_file_list_cannot_be_read_is_left_as_it_was(
         api, db_session, test_engine, status):
-    # 舊版的檔案清單讀不懂（這裡沒有記下任務紀錄 id），啟動時補不了列：取回或復原都回看得懂的錯誤，
-    # 批次的狀態不動，也不派送復原
+    # 舊版的檔案清單讀不懂（這裡沒有記下任務紀錄 id），啟動時與復原入口都補不了列：取回或復原都回看得懂
+    # 的錯誤，批次的狀態不動，也不派送復原
     from app.database.models import BatchJob
 
     batch_id = f"batch-unreadable-{status}"
-    db_session.add(BatchJob(
-        batch_id=batch_id, status=status, gemini_job_name="batches/unreadable", file_count=1,
-        file_mapping_json=json.dumps({"0": {"file_uid": "unreadable", "original_filename": "unreadable.wav"}}),
-        results_json=json.dumps({}) if status == "COMPLETED" else None))
-    db_session.commit()
+    unreadable_older_batch(db_session, batch_id, status)
 
     start_this_version(test_engine)
     response = api.post(f"/api/v1/batch/{batch_id}/recover", json={"api_keys": "test-key"})
@@ -738,13 +741,9 @@ def test_an_older_batch_whose_file_list_cannot_be_read_is_left_as_it_was(
 
 def test_an_unreadable_older_batch_does_not_hold_back_the_others(api, db_session, test_engine):
     # 啟動時一個舊版批次讀不懂（這裡檔案清單不是 JSON）：不補它的列，其他舊版批次照樣補上
-    from app.database.models import BatchJob
-
-    db_session.add(BatchJob(batch_id="batch-garbled", status="POLLING", file_count=1,
-                            gemini_job_name="batches/garbled", file_mapping_json="{not json"))
-    db_session.commit()
+    unreadable_older_batch(db_session, "batch-garbled", file_list="{not json")
     sent_by_previous_release(db_session, "batch-after-garbled", "batches/after-garbled",
-                             [("after-garbled", None)])
+                             [OlderFile("after-garbled")])
 
     start_this_version(test_engine)
 

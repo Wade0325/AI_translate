@@ -19,7 +19,12 @@ from app.exceptions import TransientError
 from app.runtime import run_mode
 from app.runtime.celery_redis import CHANNEL, CeleryRedisRunMode
 from tests.support.fake_provider import FAKE_MODEL, Fail, Restart
-from tests.support.older_batches import SPANS, sent_by_previous_release, start_this_version
+from tests.support.older_batches import (
+    SPANS,
+    OlderFile,
+    sent_by_previous_release,
+    unreadable_older_batch,
+)
 from tests.support.synthetic_audio import synthetic_audio
 from tests.support.task_api import file_results
 from tests.support.waiting import cancel_when_dispatched
@@ -358,16 +363,15 @@ def test_batch_restarted_while_polling_recovers_in_docker_mode(
 
 
 def test_a_batch_sent_by_the_previous_release_recovers_in_docker_mode(
-        batch_tasks, fake, broadcasts, client, db_session, test_engine):
-    # 上一個發布版本送出的批次只有舊的 JSON 欄位：升級後啟動時補上每個檔案的列，復原的 Celery 任務把
-    # 舊版開始的任務結束成完成，片段落在原音檔的時間軸上
+        batch_tasks, fake, broadcasts, client, db_session):
+    # 上一個發布版本送出的批次只有舊的 JSON 欄位。升級時舊版的 worker 在 API 啟動之後才送出，啟動時沒
+    # 補到列：復原的 Celery 任務當場補上，把舊版開始的任務結束成完成，片段落在原音檔的時間軸上
     _, recover = batch_tasks
     fake.script = [list(LINES)]
     name = fake.submit_batch([(None, "")], "older")  # 舊版送出的請求
     task_uuids = sent_by_previous_release(db_session, "batch-docker-older", name,
-                                          [("docker-older", SPANS)])
+                                          [OlderFile("docker-older", SPANS)])
 
-    start_this_version(test_engine)
     result = recover.apply(args=["batch-docker-older", "test-key"])
 
     recovered = file_results(broadcasts())["docker-older"]
@@ -381,19 +385,14 @@ def test_a_batch_sent_by_the_previous_release_recovers_in_docker_mode(
 
 
 def test_an_older_batch_whose_file_list_cannot_be_read_is_left_alone_in_docker_mode(
-        batch_tasks, fake, broadcasts, db_session, test_engine):
-    # 舊版的檔案清單讀不懂（這裡沒有記下任務紀錄 id），啟動時補不了列：復原的 Celery 任務不接手、
-    # 不開供應商，批次的狀態不動
+        batch_tasks, fake, broadcasts, db_session):
+    # 舊版的檔案清單讀不懂（這裡沒有記下任務紀錄 id），補不了列：復原的 Celery 任務不接手、不開
+    # 供應商，批次的狀態不動
     from app.database.models import BatchJob
 
     _, recover = batch_tasks
-    db_session.add(BatchJob(
-        batch_id="batch-docker-unreadable", status="FAILED", gemini_job_name="batches/unreadable",
-        file_mapping_json=json.dumps({"0": {"file_uid": "unreadable",
-                                            "original_filename": "unreadable.wav"}})))
-    db_session.commit()
+    unreadable_older_batch(db_session, "batch-docker-unreadable", "FAILED")
 
-    start_this_version(test_engine)
     result = recover.apply(args=["batch-docker-unreadable", "test-key"])
 
     assert result.state == "SUCCESS"
