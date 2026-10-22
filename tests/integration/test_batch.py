@@ -333,6 +333,22 @@ def test_a_transient_error_is_retried_where_it_happened(
     assert len(batch_fake.submitted) == 1
 
 
+def test_submitting_that_keeps_hitting_transient_errors_fails_every_file(
+        api, in_process_run_mode, batch_fake, data_dir, quick_transient_retries):
+    # 送出一直遇到暫時錯誤（#164）：重試 3 次之後每個檔案都記成失敗、批次結束，暫存區不留檔；
+    # 執行模式也不重跑整個批次
+    batch_fake.submit_errors = [transient() for _ in range(4)]
+
+    messages = run_batch(api, in_process_run_mode, "batch-submit-gives-up", NAMES[:2])
+
+    for end in ends(messages, NAMES[:2]):
+        assert end["status_code"] == TaskStatus.FAILED
+        assert "送出批次失敗" in record(api, end["task_uuid"])["error_message"]
+    assert messages[-1]["status_code"] == TaskStatus.BATCH_COMPLETED
+    assert len(batch_fake.calls) == 2  # 每個檔案只上傳一次
+    assert leftovers(data_dir) == []
+
+
 def test_polling_that_keeps_failing_ends_the_files_as_failed(
         api, in_process_run_mode, batch_fake, quick_transient_retries):
     # 查詢一直遇到暫時錯誤：重試 3 次之後輪詢中斷，檔案記成失敗（之後還能從復原入口取回）
