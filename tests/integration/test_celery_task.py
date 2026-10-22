@@ -18,7 +18,7 @@ from app.core.task_status import TaskStatus
 from app.exceptions import TransientError
 from app.runtime import run_mode
 from app.runtime.celery_redis import CHANNEL, CeleryRedisRunMode
-from tests.support.fake_provider import FAKE_MODEL, Fail
+from tests.support.fake_provider import FAKE_MODEL, Fail, Restart
 from tests.support.synthetic_audio import synthetic_audio
 from tests.support.task_api import file_results
 from tests.support.waiting import cancel_when_dispatched
@@ -321,6 +321,30 @@ def test_batch_files_end_like_tasks_in_docker_mode(batch_tasks, uploads, fake, b
     failed = client.get(f"/api/v1/history/{ends['docker-b']['task_uuid']}").json()
     assert (failed["status"], failed["is_batch"]) == (TaskStatus.FAILED, True)
     assert messages[-1]["status_code"] == TaskStatus.BATCH_COMPLETED
+    assert list(uploads.iterdir()) == []
+
+
+def test_batch_restarted_while_polling_recovers_in_docker_mode(
+        batch_tasks, uploads, fake, broadcasts, client):
+    # worker 在查詢批次時重啟：檔案停在處理中；復原的 Celery 任務接著把它結束成完成
+    run, recover = batch_tasks
+    fake.script = [list(LINES)]
+    fake.batch_polls = [Restart()]
+    with pytest.raises(Restart):
+        run.apply(args=[batch_params(uploads, "batch-docker-restart", ["docker-restart"])],
+                  task_id=str(uuid.uuid4()))
+    started = [m for m in broadcasts() if m.get("file_uid") == "docker-restart"]
+    assert {m["status_code"] for m in started} == {TaskStatus.PROCESSING}
+
+    result = recover.apply(args=["batch-docker-restart", "test-key"])
+
+    recovered = file_results(broadcasts())["docker-restart"]
+    assert result.state == "SUCCESS"
+    assert (recovered["status_code"], recovered["task_uuid"]) == (
+        TaskStatus.COMPLETED, started[-1]["task_uuid"])
+    segments = client.get(f"/api/v1/transcripts/{recovered['task_uuid']}").json()["segments"]
+    assert [(s["start"], s["text"]) for s in segments] == [
+        (pytest.approx(0.2), "おはよう。"), (pytest.approx(4.7), "こんにちは。")]
     assert list(uploads.iterdir()) == []
 
 

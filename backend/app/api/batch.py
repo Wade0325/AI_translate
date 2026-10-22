@@ -1,5 +1,4 @@
 from datetime import datetime
-import json
 
 from fastapi import (
     APIRouter,
@@ -12,6 +11,7 @@ from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session
 from app.celery.models import BatchTranscriptionTaskParams, BatchFileItemParams
 from app.runtime import run_mode
+from app.core.batch_state import IN_PROGRESS, BatchState
 from app.core.config import get_settings
 from app.core.task_status import TaskStatus
 from app.database.session import SessionLocal, get_db
@@ -19,6 +19,7 @@ from app.provider.registry import UnsupportedModelError, check_request
 from app.repositories.batch_job_repository import BatchJobRepository
 from app.services import audio_store
 from app.services.api_keys import resolve_api_key
+from app.tasks import batch_core
 from app.utils.logger import setup_logger
 from app.utils.paths import UnsafeUploadFilenameError, resolve_upload_path
 from app.websocket.manager import manager
@@ -52,17 +53,12 @@ def get_batch_tasks(db: Session = Depends(get_db)):
         logger.info(f"自動歸檔 {archived} 個超過 24 小時的已完成批次")
 
     jobs = batch_repo.get_active_tasks(db)
+    files_of = batch_repo.files_of(db, [job.batch_id for job in jobs])
     results = []
     for job in jobs:
-        files = []
-        if job.file_mapping_json:
-            mapping = json.loads(job.file_mapping_json)
-            for idx in sorted(mapping.keys(), key=int):
-                entry = mapping[idx]
-                files.append(BatchTaskFile(
-                    file_uid=entry["file_uid"],
-                    original_filename=entry["original_filename"],
-                ))
+        # 每個檔案在 batch_files 各一列，建立批次時就有（#116）
+        files = [BatchTaskFile(file_uid=row.file_uid, original_filename=row.original_filename)
+                 for row in files_of.get(job.batch_id, [])]
 
         elapsed = None
         if job.created_at:
@@ -71,7 +67,7 @@ def get_batch_tasks(db: Session = Depends(get_db)):
             elapsed = (datetime.now() - job.created_at).total_seconds()
 
         is_alive = None
-        if job.status in ("UPLOADING", "POLLING", "RECOVERING"):
+        if job.status in IN_PROGRESS:
             alive = run_mode.get().is_alive(job.celery_task_id)
             if alive is not None:
                 is_alive = alive
@@ -108,42 +104,32 @@ def recover_batch(batch_id: str, body: RecoverBatchRequest, db: Session = Depend
     """
     恢復指定批次的結果。
 
-    - status=COMPLETED 且有 results_json：直接從 DB 讀取結果
-    - 其他情況：透過 Celery task 從 Gemini 取得結果（batches.get 只能在 worker 中運行）
+    - 批次已經完成（或結束之後取回過）：回傳完成的檔案的結果，從任務紀錄與片段讀出
+    - 其他情況：派送復原入口接手批次（batches.get 只能在 worker 中運行），接著輪詢到批次結束；
+      還有任務看著這個批次（執行還在輪詢、或接手的復原還在跑）時不另外接手
     """
     job = batch_repo.get_job(db, batch_id)
     if not job:
         raise HTTPException(status_code=404, detail="找不到此批次任務")
 
-    file_mapping = json.loads(job.file_mapping_json) if job.file_mapping_json else {}
-
     # ============================================================
-    # 快速路徑：有存檔結果 → 直接從 DB 回傳
+    # 快速路徑：批次已經結束 → 直接從 DB 回傳
     # ============================================================
-    if job.status in ("COMPLETED", "RETRIEVED", "RECOVERING") and job.results_json:
-        logger.info(f"恢復批次 {batch_id}: 從 DB 讀取已存檔的結果 (status={job.status})")
-        stored_results = json.loads(job.results_json)
-
-        file_results = []
-        for file_uid, result_data in stored_results.items():
-            original_filename = file_uid
-            for entry in file_mapping.values():
-                if entry.get("file_uid") == file_uid:
-                    original_filename = entry.get("original_filename", file_uid)
-                    break
-
-            file_results.append(RecoverFileResult(
-                file_uid=file_uid,
-                original_filename=original_filename,
-                status=TaskStatus.COMPLETED,
-                result=result_data,
-            ))
-
-        batch_repo.update_job(db, batch_id, {"status": "RETRIEVED"})
+    completed = (batch_core.completed_results(db, batch_id)
+                 if job.status in (BatchState.COMPLETED, BatchState.RETRIEVED) else None)
+    if completed is not None:
+        logger.info(f"恢復批次 {batch_id}: 從 DB 讀取完成的結果 (status={job.status})")
+        file_results = [RecoverFileResult(
+            file_uid=row.file_uid,
+            original_filename=row.original_filename,
+            status=TaskStatus.COMPLETED,
+            result=result,
+        ) for row, result in completed]
+        batch_repo.mark_as_retrieved(db, batch_id)
         return RecoverBatchResponse(batch_id=batch_id, files=file_results)
 
     # ============================================================
-    # Celery 路徑：派送 Celery task 從 Gemini 取得結果
+    # 復原路徑：派送背景任務從 Gemini 取得結果
     # ============================================================
     if not job.gemini_job_name:
         raise HTTPException(status_code=400, detail="此任務尚未建立 Gemini batch job，無法恢復")
@@ -157,13 +143,22 @@ def recover_batch(batch_id: str, body: RecoverBatchRequest, db: Session = Depend
                    "請先到 Settings 設定 Google API 金鑰",
         )
 
+    mode = run_mode.get()
+    if mode.is_alive(job.celery_task_id):
+        # 有人看著這個批次：不另外接手，不會有兩邊同時結束同一個檔案
+        logger.info(f"恢復批次 {batch_id}: 還有任務看著這個批次，不另外接手 (當前狀態={job.status})")
+        return RecoverBatchResponse(batch_id=batch_id, files=[])
+    if not batch_repo.move(db, batch_id, BatchState.RECOVERING):
+        # 剛好結束或被歸檔了：之後再取回就走快速路徑
+        logger.info(f"恢復批次 {batch_id}: 批次已經不在可以接手的狀態 (當前狀態={job.status})")
+        return RecoverBatchResponse(batch_id=batch_id, files=[])
+
     logger.info(f"恢復批次 {batch_id}: 派送背景任務從 Gemini 取得結果 (當前狀態={job.status})")
+    # 派送背景任務非同步處理，它就是之後看著這個批次的任務。結果稍後透過 WebSocket 通知前端
+    task_id = mode.submit_recover(batch_id, api_key)
+    batch_repo.update_job(db, batch_id, {"celery_task_id": task_id})
 
-    # 派送背景任務非同步處理。結果稍後透過 WebSocket / pending API 通知前端
-    batch_repo.update_job(db, batch_id, {"status": "RECOVERING"})
-    run_mode.get().submit_recover(batch_id, api_key)
-
-    # 立刻回傳空結果；前端應透過 WebSocket 或重新查詢 /pending 取得最新狀態
+    # 立刻回傳空結果；前端應透過 WebSocket 或重新查詢 /tasks 取得最新狀態
     return RecoverBatchResponse(batch_id=batch_id, files=[])
 
 
