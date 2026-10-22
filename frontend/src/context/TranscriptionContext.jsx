@@ -35,7 +35,7 @@ export const TranscriptionProvider = ({ children }) => {
   const [targetLang, setTargetLang] = useState('zh-TW');
   const [isProcessing, setIsProcessing] = useState(false);
   // 使用者選的處理模式：'standard' | 'flex' | 'batch'。實際用的是下面的 processingMode
-  const [chosenProcessingMode, setProcessingMode] = useState('standard');
+  const [chosenProcessingMode, setChosenProcessingMode] = useState('batch');
   const [multiSpeaker, setMultiSpeaker] = useState(false);
   // 轉錄頁的全域提示詞：送給沒有每檔設定提示詞的檔案（不必先按 Apply to All）
   const [globalPrompt, setGlobalPrompt] = useState('');
@@ -80,7 +80,7 @@ export const TranscriptionProvider = ({ children }) => {
 
   // 換到不支援所選處理模式的模型時退回標準，之後換回來也維持標準（#162）
   const processingMode = allowedProcessingMode(chosenProcessingMode, supports);
-  if (processingMode !== chosenProcessingMode) setProcessingMode(processingMode);
+  if (processingMode !== chosenProcessingMode) setChosenProcessingMode(processingMode);
   const useBatchMode = processingMode === 'batch';
 
   const [isPreviewModalVisible, setIsPreviewModalVisible] = useState(false);
@@ -276,7 +276,7 @@ export const TranscriptionProvider = ({ children }) => {
     disabledReasons: reasons,
     isProcessing,
     processingMode,
-    setProcessingMode,
+    setProcessingMode: setChosenProcessingMode,
     multiSpeaker,
     setMultiSpeaker,
     globalPrompt,

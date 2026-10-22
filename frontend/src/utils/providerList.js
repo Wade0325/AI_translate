@@ -104,13 +104,11 @@ export function modelSupports(capabilities) {
   };
 }
 
-/** 停用欄位時顯示的原因，鍵和 modelSupports 相同；支援的那一項是 null。 */
+/** 停用輸入欄位時顯示的原因（{ prompt, userText }）；支援的那一項是 null。處理模式見 processingModeNote。 */
 export function disabledReasonsFor(supports) {
   return {
     prompt: supports.prompt ? null : '所選的模型不支援提示詞，送出時不會帶上',
     userText: supports.userText ? null : '所選的模型不支援使用者文稿，送出時不會帶上',
-    batch: supports.batch ? null : '所選的模型不支援批次，請改用標準',
-    flex: supports.flex ? null : '所選的模型不支援 Flex，請改用標準',
   };
 }
 

@@ -37,7 +37,8 @@ def start_transcription_task_sync(payload_str: str, file_uid: str) -> None:
 
     Raises:
         UnsafeUploadFilenameError: filename 不是 temp_uploads 內的單純檔名。
-        UnsupportedModelError: 模型不屬於所選的供應商，或填了模型不吃的提示詞或使用者文稿
+        UnsupportedModelError: 模型不屬於所選的供應商、模型不支援請求的處理模式（Flex），
+            或填了模型不吃的提示詞或使用者文稿
             （:class:`~app.provider.registry.UnsupportedInputError`）。
     """
     request_data = WebSocketTranscriptionRequest.model_validate_json(

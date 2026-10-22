@@ -67,6 +67,7 @@ export default function TranscribePage() {
     } = useTranscription()
 
     const { handleEditProvider, handleEditProviderParams, handleTestProvider } = useModelManager()
+    const modeNote = processingModeNote(supports)
 
     const [currentPage, setCurrentPage] = useState(1)
     const [isTextModalVisible, setIsTextModalVisible] = useState(false)
@@ -284,15 +285,15 @@ export default function TranscribePage() {
                             }}
                         >
                             <option value="standard">標準（即時）</option>
-                            <option value="flex" disabled={Boolean(disabledReasons.flex)}>
+                            <option value="flex" disabled={!supports.flex}>
                                 Flex（50% 費用．分鐘級延遲）
                             </option>
-                            <option value="batch" disabled={Boolean(disabledReasons.batch)}>
+                            <option value="batch" disabled={!supports.batch}>
                                 批次（50% 費用．非同步）
                             </option>
                         </select>
-                        {processingModeNote(supports) ? (
-                            <ReasonText reason={processingModeNote(supports)} />
+                        {modeNote ? (
+                            <ReasonText reason={modeNote} />
                         ) : (
                             <Text style={{ fontSize: 10, color: "#8888a8" }}>
                                 {processingMode === "flex"
