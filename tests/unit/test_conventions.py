@@ -6,6 +6,7 @@
 """
 import ast
 import functools
+import textwrap
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
@@ -133,6 +134,184 @@ def test_api_joins_upload_filenames_only_through_resolve_upload_path():
         "請求就能讀到、刪到使用者其他的檔案，包括音檔。改用 backend/app/utils/paths.py 的 "
         "resolve_upload_path(filename, TEMP_UPLOADS_DIR)：它只接受單純檔名，並保留 Docker 模式"
         "的 GPU worker 共用上傳檔所需的相對路徑。")
+
+
+# ── 回應不轉述例外 ──────────────────────────────────────────────────────
+
+# 一個 except：所在檔案、函式（模組層級是 None）、接的例外（照原始碼的寫法）
+_Handler = tuple[str, str | None, str]
+
+# 訊息本來就寫給使用者看的例外類別：只接這些例外的 except 可以把例外放進回應。值是理由
+USER_FACING_ERRORS = {
+    "UnsafeUploadFilenameError":
+        "訊息固定是 backend/app/utils/paths.py 的 UNSAFE_UPLOAD_FILENAME_MESSAGE，不帶檔名",
+    "UnsupportedModelError":
+        "訊息是 backend/app/provider/registry.py 寫的固定句子，只帶請求自己送來的供應商與模型名稱",
+}
+
+# 刻意把例外的原文放進回應的 except。值是理由
+FORWARDING_HANDLERS: dict[_Handler, str] = {
+    ("backend/app/api/model_manager.py", "check_provider_ready", "ValueError"):
+        "設定頁的「測試」刻意把供應商回報的原因（例如金鑰無效、缺模型權重）給使用者看："
+        "使用者按測試，就是要知道為什麼還不能轉錄",
+}
+
+_LOG_METHODS = frozenset({"debug", "info", "warning", "error", "exception", "critical", "log"})
+
+
+def _is_log_call(node: ast.AST) -> bool:
+    """寫進 log 的呼叫，例如 ``logger.error(…)``；api 的模組都用 setup_logger 建立 logger。"""
+    return (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+            and node.func.attr in _LOG_METHODS
+            and isinstance(node.func.value, ast.Name) and node.func.value.id == "logger")
+
+
+def _except_handlers(tree: ast.Module) -> Iterator[tuple[str | None, ast.ExceptHandler]]:
+    """每個 except 與它所在的函式（模組層級是 None）。"""
+    def visit(node: ast.AST, function: str | None
+              ) -> Iterator[tuple[str | None, ast.ExceptHandler]]:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, ast.ExceptHandler):
+                yield function, child
+            yield from visit(child, child.name
+                             if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
+                             else function)
+
+    yield from visit(tree, None)
+
+
+def _caught(handler: ast.ExceptHandler) -> list[str]:
+    """except 接的例外類別：``except (A, errors.B)`` 是 A 與 B。"""
+    if handler.type is None:
+        return []
+    types = handler.type.elts if isinstance(handler.type, ast.Tuple) else [handler.type]
+    return [t.attr if isinstance(t, ast.Attribute) else ast.unparse(t) for t in types]
+
+
+def _statements_using_the_exception(handler: ast.ExceptHandler) -> set[ast.stmt]:
+    """except 區塊裡把接到的例外用在 log 與 ``raise … from`` 以外的敘述。"""
+    found: set[ast.stmt] = set()
+
+    def visit(node: ast.AST, statement: ast.stmt) -> None:
+        if isinstance(node, ast.stmt):
+            statement = node
+        if isinstance(node, ast.Name) and node.id == handler.name:
+            found.add(statement)
+        elif isinstance(node, ast.Raise):
+            if node.exc:                    # from 後面只是接起來；丟出去的例外照樣檢查
+                visit(node.exc, statement)
+        elif not (_is_log_call(node)
+                  # 裡層的 except 用同一個名稱接了別的例外：它自己另外檢查
+                  or isinstance(node, ast.ExceptHandler) and node.name == handler.name):
+            for child in ast.iter_child_nodes(node):
+                visit(child, statement)
+
+    for statement in handler.body:
+        visit(statement, statement)
+    return found
+
+
+def _forwarded_exceptions(rel: str, tree: ast.Module) -> Iterator[tuple[_Handler, ast.stmt]]:
+    """把接到的例外放進回應的敘述，連同那個 except 在 FORWARDING_HANDLERS 的鍵。
+
+    接到的例外用在 log 與 ``raise … from`` 以外的地方都算：HTTP 的 detail、回傳的內容、
+    WebSocket 的訊息，以及之後才回傳的狀態。只接 USER_FACING_ERRORS 的 except 不算。
+    只看 except 用 as 接住的名稱：在 helper 裡接住、再把例外的文字傳回來的，靠 review。
+    """
+    for function, handler in _except_handlers(tree):
+        if handler.name is None or handler.type is None:
+            continue
+        if all(name in USER_FACING_ERRORS for name in _caught(handler)):
+            continue
+        key = (rel, function, ast.unparse(handler.type))
+        for statement in _statements_using_the_exception(handler):
+            yield key, statement
+
+
+def test_api_never_puts_caught_exceptions_in_responses():
+    files = sorted(API.rglob("*.py"))
+    assert files, f"{_rel(API)} 底下沒有程式：api 搬家的話，跟著改這個測試的 API"
+    violations: set[str] = set()
+    exempted: set[_Handler] = set()
+    for path in files:
+        for handler, statement in _forwarded_exceptions(_rel(path), _tree(path)):
+            if handler in FORWARDING_HANDLERS:
+                exempted.add(handler)
+            else:
+                violations.add(f"  {handler[0]}:{statement.lineno}  "
+                               f"{ast.unparse(statement).splitlines()[0]}")
+    assert not violations, (
+        "api 把接到的例外放進了回應（HTTP 的 detail，或回傳、送給前端的內容）：\n"
+        + "\n".join(sorted(violations)) + "\n"
+        "例外的文字可能帶著明文 API 金鑰、SQL 參數（例如轉錄結果）或本機路徑；畫面上的錯誤"
+        "會被截圖附到公開的 GitHub Issues（ADR-0005）。回應改成使用者看得懂的固定訊息，原因"
+        "寫進 log（資料庫例外用 describe_db_error(e)），例外用 raise … from e 接起來。"
+        "例外類別寫明訊息就是給使用者看的，才把它加進這個測試的 USER_FACING_ERRORS；刻意要"
+        "給使用者看例外原文的 except，加進 FORWARDING_HANDLERS。兩者都要寫明理由。")
+    stale = sorted(set(FORWARDING_HANDLERS) - exempted, key=str)
+    assert not stale, (
+        "FORWARDING_HANDLERS 裡的 except 找不到，或已經不轉述例外：\n"
+        + "\n".join(f"  {path}  {function}()  except {caught}"
+                    for path, function, caught in stale) + "\n"
+        "已經不轉述例外的，從清單拿掉；搬了檔案、改了函式名稱或接的例外的，照新的寫。")
+
+
+def _endpoint_catching(except_block: str) -> ast.Module:
+    """把一段 except 接在 api 端點的 try 後面，解析成語法樹。"""
+    return ast.parse("async def endpoint():\n    try:\n        await work()\n"
+                     + textwrap.indent(textwrap.dedent(except_block), "    "))
+
+
+@pytest.mark.parametrize("except_block", [
+    pytest.param("""
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"存不進去：{e}") from e
+        """, id="http-detail"),
+    pytest.param("""
+        except ValueError as e:
+            return {"success": False, "message": str(e)}
+        """, id="returned-content"),
+    pytest.param("""
+        except OSError as e:
+            await websocket.send_json({"status_text": repr(e)})
+        """, id="websocket-message"),
+    pytest.param("""
+        except Exception as e:
+            _state.update(state="failed", error=str(e))
+        """, id="state-returned-later"),
+    pytest.param("""
+        except Exception as e:
+            message = describe_db_error(e)
+            raise HTTPException(status_code=500, detail=message) from e
+        """, id="log-description-in-response"),
+    pytest.param("""
+        except (UnsafeUploadFilenameError, OSError) as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        """, id="partly-user-facing"),
+])
+def test_forwarding_check_catches_each_way_into_a_response(except_block):
+    assert list(_forwarded_exceptions("backend/app/api/example.py",
+                                      _endpoint_catching(except_block)))
+
+
+@pytest.mark.parametrize("except_block", [
+    pytest.param("""
+        except Exception as e:
+            logger.error(f"存檔失敗: {describe_db_error(e)}", exc_info=True)
+            raise HTTPException(status_code=500, detail="設定沒有存進資料庫") from e
+        """, id="log-and-raise-from"),
+    pytest.param("""
+        except UnsafeUploadFilenameError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        """, id="user-facing-error"),
+    pytest.param("""
+        except OSError:
+            raise HTTPException(status_code=500, detail="檔案沒有存進去") from None
+        """, id="not-bound"),
+])
+def test_forwarding_check_allows_logging_and_chaining(except_block):
+    assert not list(_forwarded_exceptions("backend/app/api/example.py",
+                                          _endpoint_catching(except_block)))
 
 
 # ── 兩種執行模式 ────────────────────────────────────────────────────────
