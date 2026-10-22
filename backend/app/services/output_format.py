@@ -353,7 +353,7 @@ def _render(lines: Sequence[_Line], fmt: OutputFormat) -> str:
 
 
 def _lrc_timestamp(seconds: float) -> str:
-    """先捨到 0.01 秒再拆分鐘，59.996 才會寫成 [01:00.00] 而不是 [00:60.00]（#154）。"""
+    """先四捨五入到 0.01 秒再拆分鐘，59.996 才會寫成 [01:00.00] 而不是 [00:60.00]（#154）。"""
     seconds = round(seconds, 2)
     minutes = int(seconds // 60)
     return f"[{minutes:02d}:{seconds - minutes * 60:05.2f}]"
