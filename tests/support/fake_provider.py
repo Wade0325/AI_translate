@@ -134,9 +134,10 @@ class FakeProvider:
         self.submit_errors: List[Exception] = []
         self.batch_polls: List[BatchPoll] = []
         self.batch_outcome = "SUCCEEDED"
-        # 查了幾次批次；poll_hold 設定後，查詢停在這裡直到放行，開始等的時候 polling 會 set
+        # 查了幾次批次。poll_holds[i] 擋下第 i 次查詢（從 0 數），直到它被 set；沒列到的查詢不擋。
+        # 查詢一開始 polling 就會 set
         self.polls = 0
-        self.poll_hold: Optional[threading.Event] = None
+        self.poll_holds: List[threading.Event] = []
         self.polling = threading.Event()
         # 成功結束時，最後這麼多個請求沒有結果（供應商少給了）
         self.missing_results = 0
@@ -217,10 +218,11 @@ class FakeProvider:
         return name
 
     def poll_batch(self, name: str) -> BatchStatus:
+        poll = self.polls
         self.polls += 1
         self.polling.set()
-        if self.poll_hold is not None:
-            self.poll_hold.wait(30)
+        if poll < len(self.poll_holds):
+            self.poll_holds[poll].wait(30)
         step = self.batch_polls.pop(0) if self.batch_polls else self.batch_outcome
         if isinstance(step, BaseException):
             raise step

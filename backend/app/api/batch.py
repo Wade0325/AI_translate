@@ -11,7 +11,7 @@ from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session
 from app.celery.models import BatchTranscriptionTaskParams, BatchFileItemParams
 from app.runtime import run_mode
-from app.core.batch_state import IN_PROGRESS, BatchState
+from app.core.batch_state import IN_PROGRESS
 from app.core.config import get_settings
 from app.core.task_status import TaskStatus
 from app.database.session import SessionLocal, get_db
@@ -104,9 +104,8 @@ def recover_batch(batch_id: str, body: RecoverBatchRequest, db: Session = Depend
     """
     恢復指定批次的結果。
 
-    - 批次已經完成（或結束之後取回過）：回傳完成的檔案的結果，從任務紀錄與片段讀出
-    - 其他情況：派送復原入口接手批次（batches.get 只能在 worker 中運行），接著輪詢到批次結束；
-      還有任務看著這個批次（執行還在輪詢、或接手的復原還在跑）時不另外接手
+    - 批次已經結束：回傳完成的檔案的結果，從任務紀錄與片段讀出
+    - 其他情況：派送復原入口接手批次（batches.get 只能在 worker 中運行），接著輪詢到批次結束
     """
     job = batch_repo.get_job(db, batch_id)
     if not job:
@@ -115,8 +114,7 @@ def recover_batch(batch_id: str, body: RecoverBatchRequest, db: Session = Depend
     # ============================================================
     # 快速路徑：批次已經結束 → 直接從 DB 回傳
     # ============================================================
-    completed = (batch_core.completed_results(db, batch_id)
-                 if job.status in (BatchState.COMPLETED, BatchState.RETRIEVED) else None)
+    completed = batch_core.completed_results(db, job)
     if completed is not None:
         logger.info(f"恢復批次 {batch_id}: 從 DB 讀取完成的結果 (status={job.status})")
         file_results = [RecoverFileResult(
@@ -131,8 +129,9 @@ def recover_batch(batch_id: str, body: RecoverBatchRequest, db: Session = Depend
     # ============================================================
     # 復原路徑：派送背景任務從 Gemini 取得結果
     # ============================================================
-    if not job.gemini_job_name:
-        raise HTTPException(status_code=400, detail="此任務尚未建立 Gemini batch job，無法恢復")
+    refusal = batch_core.recovery_refusal(db, job)
+    if refusal is not None:
+        raise HTTPException(status_code=400, detail=refusal)
 
     # 前端不再保存明文金鑰：請求沒帶（或只帶遮罩值）時改用資料庫裡的 Google 金鑰
     api_key = resolve_api_key(db, "Google", body.api_keys)
@@ -143,20 +142,10 @@ def recover_batch(batch_id: str, body: RecoverBatchRequest, db: Session = Depend
                    "請先到 Settings 設定 Google API 金鑰",
         )
 
-    mode = run_mode.get()
-    if mode.is_alive(job.celery_task_id):
-        # 有人看著這個批次：不另外接手，不會有兩邊同時結束同一個檔案
-        logger.info(f"恢復批次 {batch_id}: 還有任務看著這個批次，不另外接手 (當前狀態={job.status})")
-        return RecoverBatchResponse(batch_id=batch_id, files=[])
-    if not batch_repo.move(db, batch_id, BatchState.RECOVERING):
-        # 剛好結束或被歸檔了：之後再取回就走快速路徑
-        logger.info(f"恢復批次 {batch_id}: 批次已經不在可以接手的狀態 (當前狀態={job.status})")
-        return RecoverBatchResponse(batch_id=batch_id, files=[])
-
     logger.info(f"恢復批次 {batch_id}: 派送背景任務從 Gemini 取得結果 (當前狀態={job.status})")
-    # 派送背景任務非同步處理，它就是之後看著這個批次的任務。結果稍後透過 WebSocket 通知前端
-    task_id = mode.submit_recover(batch_id, api_key)
-    batch_repo.update_job(db, batch_id, {"celery_task_id": task_id})
+    # 派送背景任務非同步處理，結果稍後透過 WebSocket 通知前端；批次剛好完成了就不派送，
+    # 之後再取回就走快速路徑
+    batch_core.start_recovery(db, batch_id, api_key)
 
     # 立刻回傳空結果；前端應透過 WebSocket 或重新查詢 /tasks 取得最新狀態
     return RecoverBatchResponse(batch_id=batch_id, files=[])

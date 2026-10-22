@@ -19,10 +19,3 @@ def test_table_compiles_for_postgres(table):
     assert ddl.strip().startswith(f"CREATE TABLE {table.name} (")
     for index in table.indexes:
         assert index.name in str(CreateIndex(index).compile(dialect=dialect))
-
-
-def test_batch_files_rows_belong_to_their_batch():
-    # 每個檔案一列，記在批次底下：批次紀錄刪掉時一起刪
-    ddl = str(CreateTable(Base.metadata.tables["batch_files"]).compile(dialect=postgresql.dialect()))
-
-    assert "FOREIGN KEY(batch_id) REFERENCES batch_jobs (batch_id) ON DELETE CASCADE" in ddl

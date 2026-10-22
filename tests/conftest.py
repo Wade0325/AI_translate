@@ -219,7 +219,7 @@ def fake():
     provider = FakeProvider()
     previous = registry.register("fake", provider)
     yield provider
-    for hold in (provider.hold, provider.poll_hold):
+    for hold in (provider.hold, *provider.poll_holds):
         if hold is not None:
             # 放行還停在 hold 的轉錄與查詢，worker 執行緒才結束得了
             hold.set()

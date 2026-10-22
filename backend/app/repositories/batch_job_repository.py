@@ -5,7 +5,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence
 from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 
-from app.core.batch_state import IN_PROGRESS, SOURCES, BatchState
+from app.core.batch_state import ALLOWED_FROM, IN_PROGRESS, BatchState
 from app.database.models import BatchFile, BatchJob
 from app.utils.identifiers import coerce_uuid
 
@@ -18,17 +18,16 @@ class BatchJobRepository:
     ``commit=False`` 時只寫進目前的交易，由呼叫端連同其他寫入一起提交。
     """
 
-    def create_job(self, db: Session, batch_id: str, fields: Dict[str, Any],
-                   files: Sequence[Dict[str, Any]]) -> None:
+    def create_job(self, db: Session, job: BatchJob, files: Sequence[BatchFile]) -> None:
         """建立批次紀錄（上傳中）與它每個檔案的一列，同一個交易。
 
         同一個批次 id 已經有紀錄時拋 IntegrityError，什麼都不寫。
         """
-        db.add(BatchJob(batch_id=batch_id, status=BatchState.UPLOADING, **fields))
+        job.status = BatchState.UPLOADING
+        db.add(job)
         # 先寫批次紀錄：檔案的列參照它
         db.flush()
-        db.add_all(BatchFile(**{**file, "task_uuid": coerce_uuid(file["task_uuid"]),
-                                "batch_id": batch_id}) for file in files)
+        db.add_all(files)
         db.commit()
 
     def update_job(self, db: Session, batch_id: str, update_data: Dict[str, Any], *,
@@ -48,16 +47,18 @@ class BatchJobRepository:
 
     def move(self, db: Session, batch_id: str, to: BatchState, *,
              only_from: Optional[Iterable[BatchState]] = None, commit: bool = True) -> bool:
-        """批次的狀態改成 ``to``，回傳有沒有改：資料庫裡現在的狀態是它的來源之一
-        （:data:`~app.core.batch_state.SOURCES`，``only_from`` 再縮小範圍）時才改。
+        """批次的狀態改成 ``to``，回傳有沒有改：資料庫裡現在的狀態是可以改過來的狀態之一
+        （:data:`~app.core.batch_state.ALLOWED_FROM`，``only_from`` 再縮小範圍）時才改。
 
         直接以條件更新，不經過 session 裡已經載入的物件：別的行程（API、另一個 worker）可能剛改了
         狀態，已經載入的物件不會自己更新。
         """
-        sources = SOURCES[to] if only_from is None else SOURCES[to] & frozenset(only_from)
+        allowed = ALLOWED_FROM[to]
+        if only_from is not None:
+            allowed = allowed & frozenset(only_from)
         moved = (
             db.query(BatchJob)
-            .filter(BatchJob.batch_id == batch_id, BatchJob.status.in_(sources))
+            .filter(BatchJob.batch_id == batch_id, BatchJob.status.in_(allowed))
             .update({BatchJob.status: to}, synchronize_session=False)
         )
         if commit:
@@ -72,12 +73,7 @@ class BatchJobRepository:
 
     def files(self, db: Session, batch_id: str) -> List[BatchFile]:
         """批次裡的每個檔案，依在批次裡的順序。"""
-        return (
-            db.query(BatchFile)
-            .filter(BatchFile.batch_id == batch_id)
-            .order_by(BatchFile.seq)
-            .all()
-        )
+        return self.files_of(db, [batch_id]).get(batch_id, [])
 
     def files_of(self, db: Session, batch_ids: Sequence[str]) -> Dict[str, List[BatchFile]]:
         """幾個批次各自的檔案（依在批次裡的順序），以 batch_id 為 key；沒有檔案的批次不在裡面。"""
@@ -113,7 +109,7 @@ class BatchJobRepository:
         """
         取得活躍的批次（Task 頁面用）：
         - 所有進行中/待取回的批次（上傳中、輪詢中、復原中、完成）
-        - 24 小時內已取回的批次，供用戶確認和下載
+        - 24 小時內已取回的批次，供使用者確認和下載
         """
         cutoff = datetime.now() - timedelta(hours=24)  # created_at/updated_at 為 DB 本地時間
         return (
@@ -145,5 +141,5 @@ class BatchJobRepository:
         return count
 
     def mark_as_retrieved(self, db: Session, batch_id: str) -> bool:
-        """將指定批次歸檔（用戶手動忽略/歸檔）；找不到批次時回 False。"""
+        """將指定批次歸檔（使用者取回結果或手動歸檔）；找不到批次時回 False。"""
         return self.move(db, batch_id, BatchState.RETRIEVED)

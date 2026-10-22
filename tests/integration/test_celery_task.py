@@ -325,27 +325,56 @@ def test_batch_files_end_like_tasks_in_docker_mode(batch_tasks, uploads, fake, b
 
 
 def test_batch_restarted_while_polling_recovers_in_docker_mode(
-        batch_tasks, uploads, fake, broadcasts, client):
-    # worker 在查詢批次時重啟：檔案停在處理中；復原的 Celery 任務接著把它結束成完成
-    run, recover = batch_tasks
+        batch_tasks, uploads, fake, broadcasts, client, monkeypatch):
+    # worker 在查詢批次時重啟：檔案停在處理中，Celery 還把那次執行當成在跑。復原端點照樣接手，派送的
+    # Celery 任務（這裡 eager 執行）把同一個任務結束成完成
+    from app.celery.celery import celery_app
+
+    run, _ = batch_tasks
     fake.script = [list(LINES)]
     fake.batch_polls = [Restart()]
+    run_id = str(uuid.uuid4())
     with pytest.raises(Restart):
         run.apply(args=[batch_params(uploads, "batch-docker-restart", ["docker-restart"])],
-                  task_id=str(uuid.uuid4()))
+                  task_id=run_id)
     started = [m for m in broadcasts() if m.get("file_uid") == "docker-restart"]
     assert {m["status_code"] for m in started} == {TaskStatus.PROCESSING}
+    # 被砍掉的 worker 來不及回報：結果後端還記著那次執行在跑（task_track_started）
+    celery_app.backend.store_result(run_id, None, "STARTED")
+    monkeypatch.setitem(celery_app.conf, "task_always_eager", True)
 
-    result = recover.apply(args=["batch-docker-restart", "test-key"])
+    response = client.post("/api/v1/batch/batch-docker-restart/recover",
+                           json={"api_keys": "test-key"})
 
+    assert response.status_code == 200, response.text
     recovered = file_results(broadcasts())["docker-restart"]
-    assert result.state == "SUCCESS"
     assert (recovered["status_code"], recovered["task_uuid"]) == (
         TaskStatus.COMPLETED, started[-1]["task_uuid"])
     segments = client.get(f"/api/v1/transcripts/{recovered['task_uuid']}").json()["segments"]
     assert [(s["start"], s["text"]) for s in segments] == [
         (pytest.approx(0.2), "おはよう。"), (pytest.approx(4.7), "こんにちは。")]
     assert list(uploads.iterdir()) == []
+
+
+def test_recovering_a_batch_sent_by_an_older_version_leaves_it_alone(
+        batch_tasks, fake, broadcasts, db_session):
+    # 舊版送出的批次只有舊的 JSON 欄位（#117 之後才讀得懂）：復原的 Celery 任務不接手、不開供應商，
+    # 批次的狀態不動
+    from app.database.models import BatchJob
+
+    _, recover = batch_tasks
+    db_session.add(BatchJob(
+        batch_id="batch-docker-older", status="FAILED", gemini_job_name="batches/older",
+        file_mapping_json=json.dumps({"0": {"file_uid": "older", "original_filename": "older.wav"}})))
+    db_session.commit()
+
+    result = recover.apply(args=["batch-docker-older", "test-key"])
+
+    assert result.state == "SUCCESS"
+    assert "舊版送出的" in broadcasts()[-1]["status_text"]
+    assert fake.opened == 0
+    db_session.expire_all()
+    assert db_session.get(BatchJob, "batch-docker-older").status == "FAILED"
 
 
 def test_batch_recovers_in_docker_mode(batch_tasks, uploads, fake, broadcasts, client):

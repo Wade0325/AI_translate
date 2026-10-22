@@ -6,6 +6,7 @@
 轉檔與去靜音。測試只從外部觀察：狀態廣播、API 回應、存下來的任務紀錄與片段、可以下載的輸出格式與
 保留音檔、暫存資料夾裡還留著哪些檔案、假供應商收到了什麼，以及批次存進資料庫的樣子。
 """
+import json
 import threading
 from dataclasses import replace
 
@@ -16,6 +17,7 @@ from app.core.task_status import TaskStatus
 from app.exceptions import TransientError
 from app.runtime import run_mode
 from app.tasks import batch_core
+from tests.support.db_faults import writes_fail
 from tests.support.fake_provider import FAKE_MODEL, Fail, Restart
 from tests.support.synthetic_audio import VOICED, synthetic_audio
 from tests.support.task_api import (
@@ -511,26 +513,112 @@ def test_recovery_that_cannot_open_the_provider_can_be_tried_again(
     assert (end["status_code"], end["task_uuid"]) == (TaskStatus.COMPLETED, task_uuid)
 
 
-def test_recovery_does_not_start_while_the_batch_is_still_watched(
-        api, in_process_run_mode, batch_fake):
-    # 執行還在輪詢（有人看著這個批次）：復原端點不另外接手，不會有兩邊同時結束同一個檔案
+@pytest.mark.parametrize("in_process_run_mode", [2], indirect=True)
+def test_two_watchers_end_each_file_once(api, in_process_run_mode, batch_fake):
+    # 執行還在輪詢時，使用者又呼叫了復原：兩邊都看著同一個批次（Docker 模式看不出執行還在不在，所以
+    # 照樣接手）。復原先看到批次結束、結束了檔案；執行晚一步看到時不再結束一次
     batch_fake.script = [list(LINES)]
-    batch_fake.poll_hold = threading.Event()
-    with api.websocket_connect("/api/v1/batch/ws/batch-watched") as ws:
-        ws.send_json(batch_request(api, ["watched.wav"]))
-        assert batch_fake.polling.wait(TIMEOUT)
-
-        response = api.post("/api/v1/batch/batch-watched/recover", json={"api_keys": "test-key"})
+    run_poll, recovery_poll = threading.Event(), threading.Event()
+    batch_fake.poll_holds = [run_poll, recovery_poll]
+    with api.websocket_connect("/api/v1/batch/ws/batch-two-watchers") as ws:
+        ws.send_json(batch_request(api, ["two-watchers.wav"]))
+        wait_until(lambda: batch_fake.polls == 1)
+        response = api.post("/api/v1/batch/batch-two-watchers/recover",
+                            json={"api_keys": "test-key"})
         assert response.status_code == 200, response.text
-        assert response.json()["files"] == []
-        assert listed(api, "batch-watched")["status"] == "POLLING"
+        wait_until(lambda: batch_fake.polls == 2)
 
-        batch_fake.poll_hold.set()
+        recovery_poll.set()
         messages = receive_until(ws, TaskStatus.BATCH_COMPLETED)
+        run_poll.set()
+        messages += receive_until(ws, TaskStatus.BATCH_COMPLETED)
     in_process_run_mode.close(wait=True)
 
-    assert of_file(messages, "watched.wav")[-1]["status_code"] == TaskStatus.COMPLETED
+    assert [m["status_code"] for m in of_file(messages, "two-watchers.wav")
+            if m["status_code"] != TaskStatus.PROCESSING] == [TaskStatus.COMPLETED]
+    assert listed(api, "batch-two-watchers")["status"] == "COMPLETED"
+
+
+def test_a_recovery_queued_behind_the_running_batch_finds_it_completed(
+        api, in_process_run_mode, batch_fake):
+    # 只有一個 worker：執行還在輪詢時又呼叫了復原，復原排在後面。執行先把批次結束了，復原開始時看到
+    # 批次已經完成，不再接手、不再去問供應商
+    batch_fake.script = [list(LINES)]
+    first_poll = threading.Event()
+    batch_fake.poll_holds = [first_poll]
+    with api.websocket_connect("/api/v1/batch/ws/batch-queued-recovery") as ws:
+        ws.send_json(batch_request(api, ["queued-recovery.wav"]))
+        assert batch_fake.polling.wait(TIMEOUT)
+        response = api.post("/api/v1/batch/batch-queued-recovery/recover",
+                            json={"api_keys": "test-key"})
+        assert response.status_code == 200, response.text
+        first_poll.set()
+        messages = receive_until(ws, TaskStatus.BATCH_COMPLETED)
+    in_process_run_mode.close(wait=True)  # 等排在後面的復原也跑完
+
+    assert [m["status_code"] for m in of_file(messages, "queued-recovery.wav")
+            if m["status_code"] != TaskStatus.PROCESSING] == [TaskStatus.COMPLETED]
     assert batch_fake.polls == 1
+    assert listed(api, "batch-queued-recovery")["status"] == "COMPLETED"
+
+
+def test_a_file_whose_record_was_deleted_does_not_hold_back_the_others(
+        api, in_process_run_mode, batch_fake):
+    # 重啟之後、復原之前，使用者在歷史紀錄刪掉了其中一個檔案：復原照樣結束另一個檔案，之後每次取回
+    # 都拿得到它的結果
+    batch_fake.script = [list(LINES), list(LINES)]
+    batch_fake.batch_polls = [Restart()]
+    started = submit_batch(api, in_process_run_mode, "batch-deleted-record", NAMES[:2])
+    deleted = of_file(started, NAMES[0])[-1]["task_uuid"]
+    assert api.delete(f"/api/v1/history/{deleted}").status_code == 200
+
+    recovered = recover(api, "batch-deleted-record")
+    in_process_run_mode.close(wait=True)
+
+    assert of_file(recovered, NAMES[1])[-1]["status_code"] == TaskStatus.COMPLETED
+    for _ in range(2):  # 第一次取回之後是已取回，再取回一次也一樣
+        files = api.post("/api/v1/batch/batch-deleted-record/recover",
+                         json={"api_keys": "test-key"}).json()["files"]
+        assert [(f["file_uid"], f["status"]) for f in files] == [(NAMES[1], TaskStatus.COMPLETED)]
+
+
+def test_files_whose_result_status_cannot_be_recorded_are_still_retrieved(
+        api, in_process_run_mode, batch_fake, test_engine):
+    # 復原時結果狀態記不回 batch_files（例如磁碟滿了）：任務紀錄已經記下完成，取回照樣拿得到結果
+    batch_fake.script = [list(LINES), list(LINES)]
+    batch_fake.batch_polls = [Restart()]
+    submit_batch(api, in_process_run_mode, "batch-status-lost", NAMES[:2])
+
+    with writes_fail(test_engine, "batch_files", "UPDATE"):
+        recovered = recover(api, "batch-status-lost")
+        in_process_run_mode.close(wait=True)
+
+    assert [of_file(recovered, name)[-1]["status_code"] for name in NAMES[:2]] == [
+        TaskStatus.COMPLETED] * 2
+    files = api.post("/api/v1/batch/batch-status-lost/recover",
+                     json={"api_keys": "test-key"}).json()["files"]
+    assert [f["file_uid"] for f in files] == NAMES[:2]
+
+
+@pytest.mark.parametrize("status", ["POLLING", "FAILED", "COMPLETED"])
+def test_a_batch_sent_by_an_older_version_is_left_as_it_was(api, db_session, status):
+    # 舊版送出的批次只有舊的 JSON 欄位、沒有 batch_files 的列（#117 之後才讀得懂）：取回或復原都回
+    # 看得懂的錯誤，批次的狀態不動，也不派送復原
+    from app.database.models import BatchJob
+
+    batch_id = f"batch-older-{status}"
+    db_session.add(BatchJob(
+        batch_id=batch_id, status=status, gemini_job_name="batches/older", file_count=1,
+        file_mapping_json=json.dumps({"0": {"file_uid": "older.wav", "original_filename": "older.wav"}}),
+        results_json=json.dumps({}) if status == "COMPLETED" else None))
+    db_session.commit()
+
+    response = api.post(f"/api/v1/batch/{batch_id}/recover", json={"api_keys": "test-key"})
+
+    assert response.status_code == 400
+    assert "舊版送出的" in response.json()["detail"]
+    db_session.expire_all()
+    assert db_session.get(BatchJob, batch_id).status == status
 
 
 def test_a_new_batch_keeps_one_row_per_file_instead_of_json_columns(
@@ -543,6 +631,7 @@ def test_a_new_batch_keeps_one_row_per_file_instead_of_json_columns(
 
     messages = run_batch(api, in_process_run_mode, "batch-rows", NAMES)
 
+    # 這條驗收講的是存進資料庫的樣子，所以直接讀資料表
     db_session.expire_all()
     job = db_session.get(BatchJob, "batch-rows")
     assert [job.file_mapping_json, job.file_durations_json, job.file_log_uuids_json,
@@ -582,7 +671,8 @@ def test_a_batch_id_sent_again_leaves_the_running_batch_alone(api, in_process_ru
     # 兩個 worker，兩次執行可以同時跑。第一次的批次還在輪詢時，同一個批次 id 又送了一次（例如前端
     # 重送）：第二次的檔案失敗，第一次的批次不受影響，照樣跑完、取回得到它的結果
     batch_fake.script = [list(LINES)]
-    batch_fake.poll_hold = threading.Event()
+    first_poll = threading.Event()
+    batch_fake.poll_holds = [first_poll]
     with api.websocket_connect("/api/v1/batch/ws/batch-again") as ws:
         ws.send_json(batch_request(api, ["again-a.wav"]))
         assert batch_fake.polling.wait(TIMEOUT)
@@ -592,7 +682,7 @@ def test_a_batch_id_sent_again_leaves_the_running_batch_alone(api, in_process_ru
 
     assert second["status_code"] == TaskStatus.FAILED
     assert listed(api, "batch-again")["status"] == "POLLING"
-    batch_fake.poll_hold.set()
+    first_poll.set()
     wait_until(lambda: listed(api, "batch-again")["status"] == "COMPLETED")
     assert listed(api, "batch-again")["files"] == [
         {"file_uid": "again-a.wav", "original_filename": "again-a.wav"}]
@@ -603,12 +693,13 @@ def test_a_batch_id_sent_again_leaves_the_running_batch_alone(api, in_process_ru
 def test_a_batch_archived_while_running_still_finishes(api, in_process_run_mode, batch_fake):
     # 歸檔只管任務頁怎麼顯示：批次照樣跑完，任務頁又列成完成，可以取回結果
     batch_fake.script = [list(LINES)]
-    batch_fake.poll_hold = threading.Event()
+    first_poll = threading.Event()
+    batch_fake.poll_holds = [first_poll]
     with api.websocket_connect("/api/v1/batch/ws/batch-archived") as ws:
         ws.send_json(batch_request(api, ["archived.wav"]))
         assert batch_fake.polling.wait(TIMEOUT)
         assert api.post("/api/v1/batch/batch-archived/dismiss").status_code == 200
-        batch_fake.poll_hold.set()
+        first_poll.set()
         messages = receive_until(ws, TaskStatus.BATCH_COMPLETED)
     wait_until(lambda: not in_process_run_mode.is_alive(messages[-1]["task_uuid"]))
 

@@ -71,12 +71,7 @@ class BatchFile(Base):
     )
 
     task_uuid = Column(UUID(as_uuid=True), primary_key=True)  # 這個檔案的任務紀錄 id
-    batch_id = Column(
-        String,
-        ForeignKey("batch_jobs.batch_id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
+    batch_id = Column(String, ForeignKey("batch_jobs.batch_id"), nullable=False, index=True)
     seq = Column(Integer, nullable=False)          # 在批次裡的順序（0 起算）
     file_uid = Column(String, nullable=False)      # 前端檔案 uid
     original_filename = Column(String, nullable=False)
