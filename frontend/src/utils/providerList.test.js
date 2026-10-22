@@ -55,7 +55,7 @@ describe('modelForProvider：選了供應商之後用哪個模型', () => {
   });
 });
 
-describe('requiresApiKey：送出前要不要確認設定了 API 金鑰', () => {
+describe('requiresApiKey：要不要使用者的 API 金鑰（送出前檢查金鑰、有沒有「編輯 API」與金鑰欄位都照它）', () => {
   it('照端點說的：Gemini 要，本機不用', () => {
     expect([requiresApiKey(PROVIDERS, 'google'), requiresApiKey(PROVIDERS, 'local')])
       .toEqual([true, false]);
@@ -80,7 +80,7 @@ describe('providerTestRequest：按「測試」送出的請求', () => {
   });
 
   it('要金鑰的供應商帶設定頁存的金鑰（遮罩值，後端換回實際金鑰），空白的不帶', () => {
-    const saved = { apiKeys: ['AIza********ABCD', ''], model: 'gemini-2.5-pro' };
+    const saved = { apiKeys: ['AIza********ABCD', ''] };
 
     expect(providerTestRequest(PROVIDERS, 'google', saved, 'gemini-2.5-pro')).toEqual({
       provider: 'google', apiKeys: ['AIza********ABCD'], model: 'gemini-2.5-pro',

@@ -177,7 +177,7 @@ const ModelManagerProvider = ({ children }) => {
     };
 
     // 按「測試」：要不要金鑰照供應商清單（本機不用，測的是顯卡與模型權重）。model 是畫面上
-    // 選的模型（設定頁的卡片、轉錄頁的模型選單），還沒儲存也算
+    // 選的模型，還沒儲存也算
     const handleTestProvider = useCallback(async (provider, model) => {
         message.loading({ content: `正在測試 ${labelOf(provider)}...`, key: 'testInterface' });
 
