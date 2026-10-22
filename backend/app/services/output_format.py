@@ -41,6 +41,7 @@ import re
 import unicodedata
 from bisect import bisect_right
 from dataclasses import dataclass, replace
+from decimal import ROUND_HALF_EVEN, Decimal
 from enum import StrEnum
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
@@ -353,8 +354,14 @@ def _render(lines: Sequence[_Line], fmt: OutputFormat) -> str:
 
 
 def _lrc_timestamp(seconds: float) -> str:
-    minutes = int(seconds // 60)
-    return f"[{minutes:02d}:{seconds - minutes * 60:05.2f}]"
+    """先把秒數取到 0.01，再拆成分鐘與秒：59.996 秒寫成 [01:00.00]。
+
+    照浮點數實際的值取最接近的 0.01，剛好一半時取偶數，和以前的 ``f"{秒:.2f}"`` 相同。以前先拆
+    分鐘才取，秒數進位到 60 時會寫成 [00:60.00]（#154）。
+    """
+    hundredths = int(Decimal(seconds).quantize(Decimal("0.01"), ROUND_HALF_EVEN) * 100)
+    minutes, rest = divmod(hundredths, 6_000)
+    return f"[{minutes:02d}:{rest // 100:02d}.{rest % 100:02d}]"
 
 
 def _lrc_seconds(seconds: float) -> float:

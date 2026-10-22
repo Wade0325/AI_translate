@@ -518,6 +518,49 @@ class TestSubtitleEndTimes:
                        {"start": 4.0, "end": None, "speaker": None, "text": "じゃあ"}).srt == expected
 
 
+# ─── LRC 時間戳的進位（#154） ────────────────────────────────────────────────
+
+def first_start(subtitles: str) -> str:
+    """SRT／VTT 第一行字幕的開始時間。"""
+    return re.findall(r"^(\S+) --> ", subtitles, flags=re.MULTILINE)[0]
+
+
+class TestLrcTimestampCarry:
+    """LRC 時間戳先把秒數取到 0.01，再拆成分鐘與秒。以前先拆才取，59.996 秒會寫成 [00:60.00]；
+    取到 0.01 的方式不變，只有這種行和以前不同。"""
+
+    @pytest.mark.parametrize("start, stamp", [
+        (59.996, "[01:00.00]"),
+        (59.999, "[01:00.00]"),
+        (119.999, "[02:00.00]"),
+        (3599.999, "[60:00.00]"),
+        # 照浮點數實際的值取：119.995 其實是 119.9950000000000045…，進位；59.995 其實是 59.99499…，
+        # 取到 59.99，和以前一樣
+        (119.995, "[02:00.00]"),
+        (59.995, "[00:59.99]"),
+        # 剛好一半時取偶數，和以前一樣（Gemini 的時間戳有三位小數，可能剛好一半）
+        (61.125, "[01:01.12]"),
+        (61.375, "[01:01.38]"),
+    ])
+    def test_seconds_are_rounded_before_the_minutes_are_split_off(self, start, stamp):
+        segment = {"start": start, "end": start + 1, "speaker": "S0", "text": "はい。"}
+        assert formats(segment).lrc == f"{stamp}[S0] はい。"
+
+    @pytest.mark.parametrize("start, stamp_before, expected", [
+        (59.996, "[00:60.00]", "00:01:00,000"),
+        (119.999, "[01:60.00]", "00:02:00,000"),
+        (3599.999, "[59:60.00]", "01:00:00,000"),
+    ])
+    def test_subtitles_start_at_the_same_time_as_before(self, start, stamp_before, expected):
+        # SRT／VTT 的開始時間取 LRC 時間戳讀回來的值：現在的 [01:00.00] 和以前的 [00:60.00]
+        # 讀回來都是 60 秒。修正前存下來的凍結副本還寫著 [00:60.00]，從它轉換的也一樣
+        result = formats({"start": start, "end": start + 1, "speaker": "S0", "text": "はい。"})
+        stored_before = output_format.convert_from_lrc(f"{stamp_before}[S0] はい。")
+        assert first_start(result.srt) == expected
+        assert first_start(result.vtt) == expected.replace(",", ".")
+        assert first_start(stored_before.srt) == expected
+
+
 # ─── 沒有片段的轉錄結果 ──────────────────────────────────────────────────────
 
 class TestResultWithoutSegments:
