@@ -119,12 +119,25 @@ export function buildTaskSessions(batchTasks = [], singleTasks = []) {
     .sort((a, b) => parseTime(b.startedAt) - parseTime(a.startedAt))
 }
 
+// 批次還在進行的狀態（backend/app/core/batch_state.py 的 IN_PROGRESS）：應該有任務看著它
+const BATCH_IN_PROGRESS = ["POLLING", "UPLOADING", "RECOVERING"]
+
+/** 批次還在處理：在進行中的狀態，而且沒有查到看著它的任務已經不在。 */
 export function isBatchProcessing(task) {
-  return ["POLLING", "UPLOADING", "RECOVERING"].includes(task.status)
+  return BATCH_IN_PROGRESS.includes(task.status) && task.is_alive !== false
+}
+
+/** 批次停住了：在進行中的狀態，看著它的任務卻已經不在（例如應用程式重啟了）。 */
+export function isBatchInterrupted(task) {
+  return BATCH_IN_PROGRESS.includes(task.status) && task.is_alive === false
 }
 
 export function isBatchCompleted(task) {
   return ["COMPLETED", "RETRIEVED"].includes(task.status)
+}
+
+export function isBatchFailed(task) {
+  return task.status === "FAILED"
 }
 
 export function isSingleProcessing(task) {

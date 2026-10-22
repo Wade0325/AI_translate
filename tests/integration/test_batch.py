@@ -54,6 +54,25 @@ def quick_polls(monkeypatch):
     monkeypatch.setattr(batch_core, "FIRST_POLL_SECONDS", 0.01)
 
 
+@pytest.fixture
+def no_google_key(db_session):
+    """資料庫裡沒有 Google 金鑰（使用者還沒到 Settings 設定）；測試結束後還原。"""
+    from sqlalchemy import func
+
+    from app.database.models import ModelConfiguration
+
+    rows = db_session.query(ModelConfiguration).filter(
+        func.lower(ModelConfiguration.provider) == "google").all()
+    saved = [(row, row.api_keys) for row in rows]
+    for row in rows:
+        row.api_keys = "[]"
+    db_session.commit()
+    yield
+    for row, keys in saved:
+        row.api_keys = keys
+    db_session.commit()
+
+
 # ─── helpers ─────────────────────────────────────────────────────────────────
 
 def batch_request(api: TestClient, names: list[str], voiced=VOICED,
@@ -103,6 +122,12 @@ def listed(api: TestClient, batch_id: str) -> dict:
     found = [batch for batch in batches if batch["batch_id"] == batch_id]
     assert len(found) == 1, batches
     return found[0]
+
+
+def shown(api: TestClient, batch_id: str) -> tuple:
+    """任務頁上的這個批次：狀態、看著它的任務還在不在，以及給不給「恢復」。"""
+    batch = listed(api, batch_id)
+    return batch["status"], batch["is_alive"], batch["recoverable"]
 
 
 def of_file(messages: list[dict], file_uid: str) -> list[dict]:
@@ -603,12 +628,13 @@ def test_files_whose_result_status_cannot_be_recorded_are_still_retrieved(
 @pytest.mark.parametrize("status", ["POLLING", "FAILED", "COMPLETED"])
 def test_a_batch_sent_by_an_older_version_is_left_as_it_was(api, db_session, status):
     # 舊版送出的批次只有舊的 JSON 欄位、沒有 batch_files 的列（#117 之後才讀得懂）：取回或復原都回
-    # 看得懂的錯誤，批次的狀態不動，也不派送復原
+    # 看得懂的錯誤，批次的狀態不動，也不派送復原；任務頁也不給「恢復」，即使看著它的任務已經不在了
     from app.database.models import BatchJob
 
     batch_id = f"batch-older-{status}"
     db_session.add(BatchJob(
         batch_id=batch_id, status=status, gemini_job_name="batches/older", file_count=1,
+        celery_task_id="gone-after-upgrade",
         file_mapping_json=json.dumps({"0": {"file_uid": "older.wav", "original_filename": "older.wav"}}),
         results_json=json.dumps({}) if status == "COMPLETED" else None))
     db_session.commit()
@@ -619,6 +645,7 @@ def test_a_batch_sent_by_an_older_version_is_left_as_it_was(api, db_session, sta
     assert "舊版送出的" in response.json()["detail"]
     db_session.expire_all()
     assert db_session.get(BatchJob, batch_id).status == status
+    assert listed(api, batch_id)["recoverable"] is False
 
 
 def test_a_new_batch_keeps_one_row_per_file_instead_of_json_columns(
@@ -658,12 +685,12 @@ def test_the_batch_list_reads_each_file_from_the_new_table(api, in_process_run_m
 
     files = [{"file_uid": name, "original_filename": name} for name in NAMES[:2]]
     assert set(uploading) == {"batch_id", "status", "file_count", "is_alive", "created_at",
-                              "elapsed_seconds", "files", "session_id"}
-    assert (uploading["status"], uploading["is_alive"], uploading["files"]) == (
-        "UPLOADING", True, files)
+                              "elapsed_seconds", "files", "session_id", "recoverable"}
+    assert (uploading["status"], uploading["is_alive"], uploading["files"],
+            uploading["recoverable"]) == ("UPLOADING", True, files, False)
     completed = listed(api, "batch-listed")
-    assert (completed["status"], completed["file_count"], completed["files"]) == (
-        "COMPLETED", 2, files)
+    assert (completed["status"], completed["file_count"], completed["files"],
+            completed["recoverable"]) == ("COMPLETED", 2, files, False)
 
 
 @pytest.mark.parametrize("in_process_run_mode", [2], indirect=True)
@@ -719,6 +746,102 @@ def test_a_batch_archived_after_a_restart_can_still_be_recovered(
 
     assert of_file(messages, "archived-restarted.wav")[-1]["status_code"] == TaskStatus.COMPLETED
     assert listed(api, "batch-archived-restarted")["status"] == "COMPLETED"
+
+
+# ─── 任務頁的恢復入口 ────────────────────────────────────────────────────────
+
+def test_a_batch_left_waiting_by_restarts_is_offered_for_recovery(
+        api, in_process_run_mode, batch_fake):
+    # 應用程式在輪詢時重啟，接手的復原又遇到一次重啟：每次都沒有任務看著批次了，任務頁給「恢復」；
+    # 恢復到完成之後不再給
+    batch_fake.script = [list(LINES)]
+    batch_fake.batch_polls = [Restart(), Restart()]
+    submit_batch(api, in_process_run_mode, "batch-offered", ["offered.wav"])
+    assert shown(api, "batch-offered") == ("POLLING", False, True)
+
+    response = api.post("/api/v1/batch/batch-offered/recover", json={"api_keys": "test-key"})
+    assert response.status_code == 200, response.text
+    wait_until(lambda: listed(api, "batch-offered")["is_alive"] is False)
+    assert shown(api, "batch-offered") == ("RECOVERING", False, True)
+
+    end = of_file(recover(api, "batch-offered"), "offered.wav")[-1]
+
+    assert end["status_code"] == TaskStatus.COMPLETED
+    assert shown(api, "batch-offered") == ("COMPLETED", None, False)
+
+
+def test_recovery_without_a_google_key_points_to_settings_and_leaves_the_batch_waiting(
+        api, in_process_run_mode, batch_fake, no_google_key):
+    # 任務頁按「恢復」時不帶金鑰，後端改用資料庫裡的；還沒設定時回看得懂的錯誤，請使用者先到
+    # Settings 設定，批次不動、照樣給「恢復」
+    batch_fake.script = [list(LINES)]
+    batch_fake.batch_polls = [Restart()]
+    submit_batch(api, in_process_run_mode, "batch-no-key", ["no-key.wav"])
+
+    response = api.post("/api/v1/batch/batch-no-key/recover", json={})
+
+    assert response.status_code == 400
+    assert "API 金鑰" in response.json()["detail"]
+    assert "Settings" in response.json()["detail"]
+    assert shown(api, "batch-no-key") == ("POLLING", False, True)
+
+
+def test_a_batch_still_being_watched_is_not_offered_for_recovery(
+        api, in_process_run_mode, batch_fake):
+    # 執行還在輪詢：有任務看著批次，任務頁不給「恢復」
+    batch_fake.script = [list(LINES)]
+    first_poll = threading.Event()
+    batch_fake.poll_holds = [first_poll]
+    with api.websocket_connect("/api/v1/batch/ws/batch-watched") as ws:
+        ws.send_json(batch_request(api, ["watched.wav"]))
+        assert batch_fake.polling.wait(TIMEOUT)
+        watched = shown(api, "batch-watched")
+        first_poll.set()
+        receive_until(ws, TaskStatus.BATCH_COMPLETED)
+
+    assert watched == ("POLLING", True, False)
+
+
+def test_a_batch_whose_polling_broke_off_is_listed_as_failed_and_offered_for_recovery(
+        api, in_process_run_mode, batch_fake):
+    # 輪詢中斷（例如網路斷了）：批次記成失敗，任務頁照樣列出來並給「恢復」，恢復之後接著完成
+    batch_fake.script = [list(LINES)]
+    batch_fake.batch_polls = [RuntimeError("連線中斷")]
+    run_batch(api, in_process_run_mode, "batch-broke-off", ["broke-off.wav"])
+    assert shown(api, "batch-broke-off") == ("FAILED", None, True)
+
+    end = of_file(recover(api, "batch-broke-off"), "broke-off.wav")[-1]
+
+    assert end["status_code"] == TaskStatus.COMPLETED
+    assert shown(api, "batch-broke-off") == ("COMPLETED", None, False)
+
+
+def test_a_batch_that_failed_before_it_was_sent_is_listed_without_recovery(
+        api, in_process_run_mode, batch_fake):
+    # 沒有一個檔案上傳成功，批次沒有送出：任務頁列出它失敗了，但沒有東西可以恢復
+    batch_fake.upload_errors = [RuntimeError("讀不到檔案")]
+
+    run_batch(api, in_process_run_mode, "batch-never-sent", ["never-sent.wav"])
+
+    assert shown(api, "batch-never-sent") == ("FAILED", None, False)
+
+
+def test_a_failed_batch_leaves_the_task_page_a_day_after_it_failed(
+        api, in_process_run_mode, batch_fake, db_session):
+    # 和已取回的批次一樣，失敗的批次在任務頁只留 24 小時，從失敗的時候算起
+    from datetime import datetime, timedelta
+
+    from app.database.models import BatchJob
+
+    batch_fake.upload_errors = [RuntimeError("讀不到檔案")]
+    run_batch(api, in_process_run_mode, "batch-failed-long-ago", ["failed-long-ago.wav"])
+
+    for hours, still_shown in [(23, True), (25, False)]:
+        db_session.query(BatchJob).filter_by(batch_id="batch-failed-long-ago").update(
+            {BatchJob.updated_at: datetime.now() - timedelta(hours=hours)})
+        db_session.commit()
+        batch_ids = [batch["batch_id"] for batch in api.get("/api/v1/batch/tasks").json()]
+        assert ("batch-failed-long-ago" in batch_ids) is still_shown, hours
 
 
 # ─── 收尾 ────────────────────────────────────────────────────────────────────

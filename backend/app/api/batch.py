@@ -47,7 +47,10 @@ batch_repo = BatchJobRepository()
 
 @router.get("/tasks", response_model=list[BatchTaskResponse])
 def get_batch_tasks(db: Session = Depends(get_db)):
-    """取得所有活躍的批次（Task 頁面用），自動歸檔超過 24 小時的已完成批次。"""
+    """取得所有活躍的批次（Task 頁面用），自動歸檔超過 24 小時的已完成批次。
+
+    每個批次附上任務頁要不要給「恢復」（:func:`~app.tasks.batch_core.recoverable`）。
+    """
     archived = batch_repo.archive_old_completed(db)
     if archived > 0:
         logger.info(f"自動歸檔 {archived} 個超過 24 小時的已完成批次")
@@ -57,8 +60,9 @@ def get_batch_tasks(db: Session = Depends(get_db)):
     results = []
     for job in jobs:
         # 每個檔案在 batch_files 各一列，建立批次時就有（#116）
+        rows = files_of.get(job.batch_id, [])
         files = [BatchTaskFile(file_uid=row.file_uid, original_filename=row.original_filename)
-                 for row in files_of.get(job.batch_id, [])]
+                 for row in rows]
 
         elapsed = None
         if job.created_at:
@@ -84,6 +88,7 @@ def get_batch_tasks(db: Session = Depends(get_db)):
             elapsed_seconds=elapsed,
             files=files,
             session_id=job.session_id or job.batch_id,
+            recoverable=batch_core.recoverable(job, rows, alive=is_alive),
         ))
     return results
 
@@ -138,8 +143,7 @@ def recover_batch(batch_id: str, body: RecoverBatchRequest, db: Session = Depend
     if not api_key:
         raise HTTPException(
             status_code=400,
-            detail="Gemini 批次任務尚在處理中，需要 API 金鑰才能查詢狀態，"
-                   "請先到 Settings 設定 Google API 金鑰",
+            detail="需要 Google API 金鑰才能向 Gemini 查詢批次的結果，請先到 Settings 設定",
         )
 
     logger.info(f"恢復批次 {batch_id}: 派送背景任務從 Gemini 取得結果 (當前狀態={job.status})")

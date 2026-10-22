@@ -4,6 +4,8 @@ import { registerTranscribeSession } from './transcribeSessions';
 import {
   buildTaskSessions,
   isBatchCompleted,
+  isBatchFailed,
+  isBatchInterrupted,
   isBatchProcessing,
   isSingleCompleted,
   isSingleProcessing,
@@ -169,18 +171,27 @@ describe('buildTaskSessions：任務頁把同一次開始的任務分成一組',
   });
 });
 
-describe('isBatchProcessing／isBatchCompleted：批次還在處理，或已經完成', () => {
-  it.each(['UPLOADING', 'POLLING', 'RECOVERING'])('%s 是還在處理', (status) => {
-    expect([isBatchProcessing({ status }), isBatchCompleted({ status })]).toEqual([true, false]);
+describe('批次還在處理、停住了、已經完成，或失敗了', () => {
+  // 依序是 isBatchProcessing、isBatchInterrupted、isBatchCompleted、isBatchFailed
+  const kinds = (task) =>
+    [isBatchProcessing, isBatchInterrupted, isBatchCompleted, isBatchFailed].map((is) => is(task));
+
+  it.each(['UPLOADING', 'POLLING', 'RECOVERING'])('%s、看著它的任務還在（或查不出來）是還在處理', (status) => {
+    for (const isAlive of [true, null, undefined]) {
+      expect(kinds({ status, is_alive: isAlive })).toEqual([true, false, false, false]);
+    }
+  });
+
+  it.each(['UPLOADING', 'POLLING', 'RECOVERING'])('%s、看著它的任務不在了是停住了', (status) => {
+    expect(kinds({ status, is_alive: false })).toEqual([false, true, false, false]);
   });
 
   it.each(['COMPLETED', 'RETRIEVED'])('%s 是已經完成', (status) => {
-    expect([isBatchProcessing({ status }), isBatchCompleted({ status })]).toEqual([false, true]);
+    expect(kinds({ status })).toEqual([false, false, true, false]);
   });
 
-  it('FAILED 兩者都不是', () => {
-    expect([isBatchProcessing({ status: 'FAILED' }), isBatchCompleted({ status: 'FAILED' })])
-      .toEqual([false, false]);
+  it('FAILED 是失敗了', () => {
+    expect(kinds({ status: 'FAILED' })).toEqual([false, false, false, true]);
   });
 });
 
@@ -207,6 +218,14 @@ describe('sessionHasProcessing：一組裡還有沒有在處理的任務', () =>
       [single({ session_id: 'session-1', status: 'COMPLETED' })],
     );
     expect(sessionHasProcessing(session)).toBe(true);
+  });
+
+  it('停住的批次不算：沒有任務看著它，等也等不到', () => {
+    const [session] = buildTaskSessions(
+      [batch({ session_id: 'session-1', status: 'POLLING', is_alive: false })],
+      [single({ session_id: 'session-1', status: 'COMPLETED' })],
+    );
+    expect(sessionHasProcessing(session)).toBe(false);
   });
 
   it('有單檔任務還在處理', () => {

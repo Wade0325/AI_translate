@@ -302,6 +302,12 @@ def batch_params(uploads, batch_id: str, file_uids: list[str]) -> dict:
             "source_lang": "ja", "client_id": batch_id, "batch_id": batch_id}
 
 
+def listed(client, batch_id: str) -> tuple:
+    """任務頁上的這個批次：狀態、看著它的任務還在不在，以及給不給「恢復」。"""
+    [batch] = [b for b in client.get("/api/v1/batch/tasks").json() if b["batch_id"] == batch_id]
+    return batch["status"], batch["is_alive"], batch["recoverable"]
+
+
 def test_batch_files_end_like_tasks_in_docker_mode(batch_tasks, uploads, fake, broadcasts, client):
     # 和免安裝模式一樣：每個檔案的結果廣播到 Redis 的狀態頻道，存下任務紀錄與片段；一個檔案失敗
     # 不影響另一個，Celery 照樣回報批次跑完
@@ -341,6 +347,8 @@ def test_batch_restarted_while_polling_recovers_in_docker_mode(
     assert {m["status_code"] for m in started} == {TaskStatus.PROCESSING}
     # 被砍掉的 worker 來不及回報：結果後端還記著那次執行在跑（task_track_started）
     celery_app.backend.store_result(run_id, None, "STARTED")
+    # 所以任務頁看不出批次停住了，不給「恢復」（已知的限制）：要直接呼叫復原端點
+    assert listed(client, "batch-docker-restart") == ("POLLING", True, False)
     monkeypatch.setitem(celery_app.conf, "task_always_eager", True)
 
     response = client.post("/api/v1/batch/batch-docker-restart/recover",
@@ -354,6 +362,31 @@ def test_batch_restarted_while_polling_recovers_in_docker_mode(
     assert [(s["start"], s["text"]) for s in segments] == [
         (pytest.approx(0.2), "おはよう。"), (pytest.approx(4.7), "こんにちは。")]
     assert list(uploads.iterdir()) == []
+
+
+def test_a_batch_whose_polling_broke_off_is_recovered_from_the_task_page_in_docker_mode(
+        batch_tasks, uploads, fake, broadcasts, client, monkeypatch):
+    # 和免安裝模式一樣：輪詢中斷的批次記成失敗，任務頁給「恢復」；按下去（復原端點）派送的 Celery
+    # 任務（這裡 eager 執行）把同一個任務結束成完成
+    from app.celery.celery import celery_app
+
+    run, _ = batch_tasks
+    fake.script = [list(LINES)]
+    fake.batch_polls = [RuntimeError("連線中斷")]
+    run.apply(args=[batch_params(uploads, "batch-docker-broke-off", ["docker-broke-off"])],
+              task_id=str(uuid.uuid4()))
+    first = file_results(broadcasts())["docker-broke-off"]
+    assert first["status_code"] == TaskStatus.FAILED
+    assert listed(client, "batch-docker-broke-off") == ("FAILED", None, True)
+    monkeypatch.setitem(celery_app.conf, "task_always_eager", True)
+
+    response = client.post("/api/v1/batch/batch-docker-broke-off/recover",
+                           json={"api_keys": "test-key"})
+
+    assert response.status_code == 200, response.text
+    recovered = file_results(broadcasts())["docker-broke-off"]
+    assert (recovered["status_code"], recovered["task_uuid"]) == (
+        TaskStatus.COMPLETED, first["task_uuid"])
 
 
 def test_recovering_a_batch_sent_by_an_older_version_leaves_it_alone(

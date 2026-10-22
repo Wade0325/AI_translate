@@ -41,7 +41,7 @@ from typing import Any, Callable, List, Optional, Sequence, Tuple, TypeVar, Unio
 from sqlalchemy.orm import Session
 
 from app.celery.models import BatchFileItemParams, BatchTranscriptionTaskParams
-from app.core.batch_state import BatchState
+from app.core.batch_state import IN_PROGRESS, BatchState
 from app.core.config import get_settings
 from app.core.default_prompt import build_prompt
 from app.core.task_status import TaskStatus
@@ -104,9 +104,27 @@ def recovery_refusal(db: Session, job: BatchJob) -> Optional[str]:
     還沒送出的不能接手；沒有記下送出的檔案的，是 #116 之前送出的批次，檔案清單只在舊的 JSON 欄位裡，
     由 #117 接手。已經完成的由 :func:`start_recovery` 擋下。
     """
+    return _refusal(job, BatchJobRepository().files(db, job.batch_id))
+
+
+def recoverable(job: BatchJob, files: Sequence[BatchFile], *, alive: Optional[bool]) -> bool:
+    """任務頁要不要給這個批次「恢復」：沒有任務看著它，而且可以從復原入口接手
+    （:func:`recovery_refusal`）。沒有任務看著的是失敗了（例如輪詢中斷），或還在進行的狀態、看著它的
+    任務卻不在了（例如應用程式重啟了）。
+
+    ``files`` 是這個批次每個檔案的列；``alive`` 是看著它的任務還在不在，執行模式查不出來時是 None。
+    Docker 模式的 worker 被砍掉之後，Celery 仍把它的任務當成執行中（見 :func:`start_recovery`），這時
+    不給。
+    """
+    unwatched = job.status == BatchState.FAILED or (job.status in IN_PROGRESS and alive is False)
+    return unwatched and _refusal(job, files) is None
+
+
+def _refusal(job: BatchJob, files: Sequence[BatchFile]) -> Optional[str]:
+    """:func:`recovery_refusal`，用已經讀出來的檔案的列。"""
     if not job.gemini_job_name:
         return "此任務尚未建立 Gemini batch job，無法恢復"
-    if not _submitted(BatchJobRepository().files(db, job.batch_id)):
+    if not _submitted(files):
         return "這個批次是舊版送出的，這一版還不能取回它的結果"
     return None
 

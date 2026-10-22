@@ -11,7 +11,9 @@ import { TASK_STATUS } from "@/constants/taskStatus"
 import {
     buildTaskSessions,
     isBatchProcessing,
+    isBatchInterrupted,
     isBatchCompleted,
+    isBatchFailed,
     isSingleProcessing,
     isSingleCompleted,
     sessionHasProcessing,
@@ -24,6 +26,7 @@ export default function TaskPage() {
     const [singleTasks, setSingleTasks] = useState([])
     const [loading, setLoading] = useState(true)
     const [retrievingIds, setRetrievingIds] = useState(new Set())
+    const [resumingIds, setResumingIds] = useState(new Set())
     const [expandedIds, setExpandedIds] = useState(new Set())
     const [taskResults, setTaskResults] = useState({})
     const pollIntervalRef = useRef(null)
@@ -69,6 +72,25 @@ export default function TaskPage() {
             message.error(`取回失敗: ${err.message}`)
         } finally {
             setRetrievingIds(prev => {
+                const next = new Set(prev)
+                next.delete(batchId)
+                return next
+            })
+        }
+    }
+
+    // 沒有任務看著的批次（停住或失敗了）：復原入口接手，接著等到批次結束，之後再取回結果
+    const resumeBatch = async (batchId) => {
+        setResumingIds(prev => new Set(prev).add(batchId))
+        try {
+            // 金鑰由後端從資料庫取用；尚未設定時後端回 400 並提示先到 Settings 設定
+            await api.batch.recover(batchId, {})
+            message.success("已開始恢復，批次結束後就能取回結果")
+            await fetchTasks()
+        } catch (err) {
+            message.error(`恢復失敗: ${err.message}`)
+        } finally {
+            setResumingIds(prev => {
                 const next = new Set(prev)
                 next.delete(batchId)
                 return next
@@ -158,8 +180,8 @@ export default function TaskPage() {
     const renderSessionItem = (item) => {
         if (item.kind === "batch") {
             const task = item.task
-            const showBatch =
-                isBatchProcessing(task) || isBatchCompleted(task)
+            const showBatch = isBatchProcessing(task) || isBatchInterrupted(task)
+                || isBatchCompleted(task) || isBatchFailed(task)
             if (!showBatch) return null
             return (
                 <TaskCard
@@ -167,9 +189,11 @@ export default function TaskPage() {
                     task={task}
                     expanded={expandedIds.has(task.batch_id)}
                     retrieving={retrievingIds.has(task.batch_id)}
+                    resuming={resumingIds.has(task.batch_id)}
                     taskResult={taskResults[task.batch_id]}
                     onToggleExpand={() => toggleExpand(task.batch_id)}
                     onRetrieve={() => retrieveResults(task.batch_id)}
+                    onResume={() => resumeBatch(task.batch_id)}
                     onDismiss={() => dismissTask(task.batch_id)}
                     onDownload={downloadResult}
                 />

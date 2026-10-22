@@ -109,6 +109,7 @@ class BatchJobRepository:
         """
         取得活躍的批次（Task 頁面用）：
         - 所有進行中/待取回的批次（上傳中、輪詢中、復原中、完成）
+        - 24 小時內失敗的批次：送出過的可以從任務頁恢復
         - 24 小時內已取回的批次，供使用者確認和下載
         """
         cutoff = datetime.now() - timedelta(hours=24)  # created_at/updated_at 為 DB 本地時間
@@ -118,7 +119,7 @@ class BatchJobRepository:
                 or_(
                     BatchJob.status.in_(IN_PROGRESS | {BatchState.COMPLETED}),
                     and_(
-                        BatchJob.status == BatchState.RETRIEVED,
+                        BatchJob.status.in_({BatchState.FAILED, BatchState.RETRIEVED}),
                         BatchJob.updated_at >= cutoff,
                     ),
                 )
