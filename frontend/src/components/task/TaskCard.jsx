@@ -12,58 +12,52 @@ import {
 import { downloadFormats } from "@/constants/downloadFormats"
 import { TASK_STATUS } from "@/constants/taskStatus"
 import { formatDateTime, formatElapsed } from "@/utils/formatters"
-import { isBatchFailed, isBatchInterrupted, isBatchProcessing } from "@/utils/taskSessions"
+import { batchDisplayStatus, isBatchFailed, isBatchInterrupted, isBatchProcessing } from "@/utils/taskSessions"
 
 const { Text } = Typography
 
 // 批次紀錄本身的狀態，屬於批次的狀態機（backend/app/core/batch_state.py），和任務狀態清單是兩回事（COMPLETED 只是同名）；
-// 取回後逐檔結果的 status 才是任務狀態，用 TASK_STATUS 比對。UPLOADING_DEAD 與 INTERRUPTED 是停住的批次
-// （看著它的任務不在了）只在畫面上用的名稱
+// 取回後逐檔結果的 status 才是任務狀態，用 TASK_STATUS 比對。UPLOADING_DEAD 與 INTERRUPTED 是停住的批次只在畫面上
+// 用的名稱（batchDisplayStatus）。notice 是狀態旁邊的說明；後端給「恢復」的批次（GET /batch/tasks 的 recoverable）
+// 改用 recoverNotice
 const statusConfig = {
     POLLING: { icon: Loader2, color: "#d4a72d", label: "Gemini 處理中", spin: true },
     UPLOADING: { icon: Loader2, color: "#47b8d4", label: "上傳中", spin: true },
-    UPLOADING_DEAD: { icon: AlertCircle, color: "#e05252", label: "上傳中斷", spin: false },
-    INTERRUPTED: { icon: AlertCircle, color: "#d4a72d", label: "已中斷", spin: false },
+    UPLOADING_DEAD: {
+        icon: AlertCircle, color: "#e05252", label: "上傳中斷", spin: false,
+        notice: "Worker 已停止，任務無法完成",
+    },
+    INTERRUPTED: {
+        icon: AlertCircle, color: "#d4a72d", label: "已中斷", spin: false,
+        notice: "沒有在等 Gemini 的結果",
+        recoverNotice: "沒有在等 Gemini 的結果，按「恢復」接著等",
+    },
     RECOVERING: { icon: Loader2, color: "#d4a72d", label: "恢復中", spin: true },
     COMPLETED: { icon: CheckCircle2, color: "#2dd4a8", label: "已完成", spin: false },
     RETRIEVED: { icon: CheckCircle2, color: "#2dd4a8", label: "已取回", spin: false },
-    FAILED: { icon: AlertCircle, color: "#e05252", label: "失敗", spin: false },
-}
-
-// 停住或失敗的批次在狀態旁邊的說明；能不能恢復由後端決定（GET /batch/tasks 的 recoverable）
-function stoppedNotice(displayStatus, recoverable) {
-    switch (displayStatus) {
-        case "UPLOADING_DEAD":
-            return "Worker 已停止，任務無法完成"
-        case "INTERRUPTED":
-            return recoverable ? "沒有在等 Gemini 的結果，按「恢復」接著等" : "沒有在等 Gemini 的結果"
-        case "FAILED":
-            return recoverable ? "已送出給 Gemini，按「恢復」再查一次結果" : "原因見 History"
-        default:
-            return null
-    }
+    FAILED: {
+        icon: AlertCircle, color: "#e05252", label: "失敗", spin: false,
+        notice: "沒有送出給 Gemini，無法恢復",
+        recoverNotice: "已送出給 Gemini，按「恢復」再查一次結果",
+    },
 }
 
 export default function TaskCard({
     task,
     expanded,
     retrieving,
-    resuming,
+    recovering,
     taskResult,
     onToggleExpand,
     onRetrieve,
-    onResume,
+    onRecover,
     onDismiss,
     onDownload,
 }) {
-    const interrupted = isBatchInterrupted(task)
-    const stopped = interrupted || isBatchFailed(task)
-    const displayStatus = interrupted
-        ? (task.status === "UPLOADING" ? "UPLOADING_DEAD" : "INTERRUPTED")
-        : task.status
-    const sc = statusConfig[displayStatus] || statusConfig.POLLING
+    const stopped = isBatchInterrupted(task) || isBatchFailed(task)
+    const sc = statusConfig[batchDisplayStatus(task)] || statusConfig.POLLING
     const StatusIcon = sc.icon
-    const notice = stoppedNotice(displayStatus, task.recoverable)
+    const notice = (task.recoverable && sc.recoverNotice) || sc.notice
     const isProcessing = isBatchProcessing(task)
     const isCompleted = task.status === "COMPLETED"
     const hasResult = !!taskResult
@@ -148,8 +142,8 @@ export default function TaskCard({
                     {task.recoverable && (
                         <Button
                             size="small"
-                            loading={resuming}
-                            onClick={(e) => { e.stopPropagation(); onResume() }}
+                            loading={recovering}
+                            onClick={(e) => { e.stopPropagation(); onRecover() }}
                             style={{ color: "#d4a72d", borderColor: "#d4a72d", fontSize: 12 }}
                         >
                             恢復

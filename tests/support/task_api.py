@@ -1,4 +1,4 @@
-"""透過 API 跑任務的整合測試共用的小工具：上傳、收狀態廣播、查片段與下載、看暫存資料夾。"""
+"""透過 API 跑任務的整合測試共用的小工具：上傳、收狀態廣播、查片段與下載、看暫存資料夾與任務頁的批次。"""
 
 from __future__ import annotations
 
@@ -64,3 +64,22 @@ def download(api: TestClient, task_uuid: str, fmt: str) -> str:
 def leftovers(data_dir) -> list[str]:
     """暫存上傳資料夾裡還留著的檔案：上傳檔，以及去靜音、分段產生的暫存檔。"""
     return sorted(p.name for p in (data_dir / "temp_uploads").iterdir())
+
+
+def listed_batch_ids(api: TestClient) -> list[str]:
+    """批次清單（任務頁）上的每個批次。"""
+    return [batch["batch_id"] for batch in api.get("/api/v1/batch/tasks").json()]
+
+
+def listed(api: TestClient, batch_id: str) -> dict:
+    """批次清單（任務頁）上的這個批次。"""
+    batches = api.get("/api/v1/batch/tasks").json()
+    found = [batch for batch in batches if batch["batch_id"] == batch_id]
+    assert len(found) == 1, batches
+    return found[0]
+
+
+def shown(api: TestClient, batch_id: str) -> tuple:
+    """任務頁上的這個批次：狀態、看著它的任務還在不在，以及給不給「恢復」。"""
+    batch = listed(api, batch_id)
+    return batch["status"], batch["is_alive"], batch["recoverable"]

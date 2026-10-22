@@ -25,7 +25,10 @@ from tests.support.task_api import (
     file_results,
     flat_times,
     leftovers,
+    listed,
+    listed_batch_ids,
     receive_until,
+    shown,
     stored_segments,
     upload,
 )
@@ -114,20 +117,6 @@ def recover(api: TestClient, batch_id: str) -> list[dict]:
         response = api.post(f"/api/v1/batch/{batch_id}/recover", json={"api_keys": "test-key"})
         assert response.status_code == 200, response.text
         return receive_until(ws, TaskStatus.BATCH_COMPLETED)
-
-
-def listed(api: TestClient, batch_id: str) -> dict:
-    """批次清單（任務頁）上的這個批次。"""
-    batches = api.get("/api/v1/batch/tasks").json()
-    found = [batch for batch in batches if batch["batch_id"] == batch_id]
-    assert len(found) == 1, batches
-    return found[0]
-
-
-def shown(api: TestClient, batch_id: str) -> tuple:
-    """任務頁上的這個批次：狀態、看著它的任務還在不在，以及給不給「恢復」。"""
-    batch = listed(api, batch_id)
-    return batch["status"], batch["is_alive"], batch["recoverable"]
 
 
 def of_file(messages: list[dict], file_uid: str) -> list[dict]:
@@ -840,8 +829,38 @@ def test_a_failed_batch_leaves_the_task_page_a_day_after_it_failed(
         db_session.query(BatchJob).filter_by(batch_id="batch-failed-long-ago").update(
             {BatchJob.updated_at: datetime.now() - timedelta(hours=hours)})
         db_session.commit()
-        batch_ids = [batch["batch_id"] for batch in api.get("/api/v1/batch/tasks").json()]
-        assert ("batch-failed-long-ago" in batch_ids) is still_shown, hours
+        assert ("batch-failed-long-ago" in listed_batch_ids(api)) is still_shown, hours
+
+
+def test_a_batch_the_provider_reports_as_failed_can_be_recovered_but_stays_failed(
+        api, in_process_run_mode, batch_fake):
+    # 供應商回報整個批次失敗（例如過期了）：資料庫分不出是輪詢中斷還是供應商回報失敗，任務頁照樣給
+    # 「恢復」。恢復時供應商還是回報失敗，檔案與批次照樣是失敗，之後照樣給「恢復」
+    batch_fake.script = [list(LINES)]
+    batch_fake.batch_outcome = "EXPIRED"
+    first = of_file(run_batch(api, in_process_run_mode, "batch-expired-again", ["expired.wav"]),
+                    "expired.wav")[-1]
+    assert first["status_code"] == TaskStatus.FAILED
+    assert shown(api, "batch-expired-again") == ("FAILED", None, True)
+
+    again = of_file(recover(api, "batch-expired-again"), "expired.wav")[-1]
+
+    assert (again["status_code"], again["task_uuid"]) == (TaskStatus.FAILED, first["task_uuid"])
+    assert record(api, first["task_uuid"])["status"] == TaskStatus.FAILED
+    assert shown(api, "batch-expired-again") == ("FAILED", None, True)
+
+
+def test_an_archived_batch_without_results_leaves_the_task_page(
+        api, in_process_run_mode, batch_fake):
+    # 歸檔記成已取回，已取回的批次在任務頁留 24 小時。沒有任何結果的不留：失敗了才歸檔的批次，
+    # 重新整理之後不會變成「已取回」回到任務頁
+    batch_fake.upload_errors = [RuntimeError("讀不到檔案")]
+    run_batch(api, in_process_run_mode, "batch-archived-failure", ["archived-failure.wav"])
+    assert "batch-archived-failure" in listed_batch_ids(api)
+
+    assert api.post("/api/v1/batch/batch-archived-failure/dismiss").status_code == 200
+
+    assert "batch-archived-failure" not in listed_batch_ids(api)
 
 
 # ─── 收尾 ────────────────────────────────────────────────────────────────────

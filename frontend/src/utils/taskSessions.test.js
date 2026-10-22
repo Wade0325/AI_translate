@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { createMemoryStorage } from '../test/memoryStorage';
 import { registerTranscribeSession } from './transcribeSessions';
 import {
+  batchDisplayStatus,
   buildTaskSessions,
   isBatchCompleted,
   isBatchFailed,
@@ -192,6 +193,17 @@ describe('批次還在處理、停住了、已經完成，或失敗了', () => {
 
   it('FAILED 是失敗了', () => {
     expect(kinds({ status: 'FAILED' })).toEqual([false, false, false, true]);
+  });
+});
+
+describe('batchDisplayStatus：任務卡片顯示的狀態', () => {
+  it('停住的批次：上傳中的是上傳中斷，輪詢中、復原中的是已中斷', () => {
+    expect(['UPLOADING', 'POLLING', 'RECOVERING'].map((status) => batchDisplayStatus({ status, is_alive: false })))
+      .toEqual(['UPLOADING_DEAD', 'INTERRUPTED', 'INTERRUPTED']);
+  });
+
+  it.each(['UPLOADING', 'POLLING', 'RECOVERING', 'COMPLETED', 'RETRIEVED', 'FAILED'])('其他的照批次的狀態：%s', (status) => {
+    expect(batchDisplayStatus({ status, is_alive: status === 'FAILED' ? null : true })).toBe(status);
   });
 });
 

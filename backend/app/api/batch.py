@@ -75,8 +75,9 @@ def get_batch_tasks(db: Session = Depends(get_db)):
             alive = run_mode.get().is_alive(job.celery_task_id)
             if alive is not None:
                 is_alive = alive
-            elif elapsed and elapsed > 300:
-                # PENDING 狀態超過 5 分鐘，極大概率已死
+            elif job.updated_at and (datetime.now() - job.updated_at).total_seconds() > 300:
+                # 查不出來（PENDING）、派出看著它的任務（或改狀態）之後又超過 5 分鐘：極大概率已死。
+                # 從派出的時候算，剛派出去、還排在佇列裡的復原不算停住。任務頁照它標「已中斷」、給「恢復」
                 is_alive = False
 
         results.append(BatchTaskResponse(
@@ -143,7 +144,7 @@ def recover_batch(batch_id: str, body: RecoverBatchRequest, db: Session = Depend
     if not api_key:
         raise HTTPException(
             status_code=400,
-            detail="需要 Google API 金鑰才能向 Gemini 查詢批次的結果，請先到 Settings 設定",
+            detail="需要 Gemini 的 API 金鑰才能查詢批次的結果，請先到 Settings 設定",
         )
 
     logger.info(f"恢復批次 {batch_id}: 派送背景任務從 Gemini 取得結果 (當前狀態={job.status})")

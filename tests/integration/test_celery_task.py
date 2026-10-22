@@ -20,7 +20,7 @@ from app.runtime import run_mode
 from app.runtime.celery_redis import CHANNEL, CeleryRedisRunMode
 from tests.support.fake_provider import FAKE_MODEL, Fail, Restart
 from tests.support.synthetic_audio import synthetic_audio
-from tests.support.task_api import file_results
+from tests.support.task_api import file_results, shown
 from tests.support.waiting import cancel_when_dispatched
 
 LINES = [(0.2, 1.5, 0, "おはよう。"), (2.3, 3.6, 1, "こんにちは。")]
@@ -302,12 +302,6 @@ def batch_params(uploads, batch_id: str, file_uids: list[str]) -> dict:
             "source_lang": "ja", "client_id": batch_id, "batch_id": batch_id}
 
 
-def listed(client, batch_id: str) -> tuple:
-    """任務頁上的這個批次：狀態、看著它的任務還在不在，以及給不給「恢復」。"""
-    [batch] = [b for b in client.get("/api/v1/batch/tasks").json() if b["batch_id"] == batch_id]
-    return batch["status"], batch["is_alive"], batch["recoverable"]
-
-
 def test_batch_files_end_like_tasks_in_docker_mode(batch_tasks, uploads, fake, broadcasts, client):
     # 和免安裝模式一樣：每個檔案的結果廣播到 Redis 的狀態頻道，存下任務紀錄與片段；一個檔案失敗
     # 不影響另一個，Celery 照樣回報批次跑完
@@ -348,7 +342,7 @@ def test_batch_restarted_while_polling_recovers_in_docker_mode(
     # 被砍掉的 worker 來不及回報：結果後端還記著那次執行在跑（task_track_started）
     celery_app.backend.store_result(run_id, None, "STARTED")
     # 所以任務頁看不出批次停住了，不給「恢復」（已知的限制）：要直接呼叫復原端點
-    assert listed(client, "batch-docker-restart") == ("POLLING", True, False)
+    assert shown(client, "batch-docker-restart") == ("POLLING", True, False)
     monkeypatch.setitem(celery_app.conf, "task_always_eager", True)
 
     response = client.post("/api/v1/batch/batch-docker-restart/recover",
@@ -377,7 +371,7 @@ def test_a_batch_whose_polling_broke_off_is_recovered_from_the_task_page_in_dock
               task_id=str(uuid.uuid4()))
     first = file_results(broadcasts())["docker-broke-off"]
     assert first["status_code"] == TaskStatus.FAILED
-    assert listed(client, "batch-docker-broke-off") == ("FAILED", None, True)
+    assert shown(client, "batch-docker-broke-off") == ("FAILED", None, True)
     monkeypatch.setitem(celery_app.conf, "task_always_eager", True)
 
     response = client.post("/api/v1/batch/batch-docker-broke-off/recover",
@@ -387,6 +381,32 @@ def test_a_batch_whose_polling_broke_off_is_recovered_from_the_task_page_in_dock
     recovered = file_results(broadcasts())["docker-broke-off"]
     assert (recovered["status_code"], recovered["task_uuid"]) == (
         TaskStatus.COMPLETED, first["task_uuid"])
+
+
+def test_a_recovery_still_in_the_queue_keeps_the_batch_recovering_in_docker_mode(
+        batch_tasks, uploads, fake, client, db_session, redis_run_mode, monkeypatch):
+    # 一小時前建立的批次輪詢中斷了。按「恢復」派出去的 Celery 任務還排在佇列裡，Celery 查不出它
+    # （PENDING）；從派出的時候算還沒超過 5 分鐘，任務頁照樣當成有任務看著：恢復中，不再給「恢復」
+    from datetime import datetime, timedelta
+
+    from app.database.models import BatchJob
+
+    run, _ = batch_tasks
+    fake.script = [list(LINES)]
+    fake.batch_polls = [RuntimeError("連線中斷")]
+    run.apply(args=[batch_params(uploads, "batch-docker-queued", ["docker-queued"])],
+              task_id=str(uuid.uuid4()))
+    db_session.query(BatchJob).filter_by(batch_id="batch-docker-queued").update(
+        {BatchJob.created_at: datetime.now() - timedelta(hours=1)})
+    db_session.commit()
+    # 沒有 worker 接派出去的任務
+    monkeypatch.setattr(redis_run_mode, "submit_recover", lambda batch_id, api_key: str(uuid.uuid4()))
+
+    response = client.post("/api/v1/batch/batch-docker-queued/recover",
+                           json={"api_keys": "test-key"})
+
+    assert response.status_code == 200, response.text
+    assert shown(client, "batch-docker-queued") == ("RECOVERING", None, False)
 
 
 def test_recovering_a_batch_sent_by_an_older_version_leaves_it_alone(

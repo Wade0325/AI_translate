@@ -112,9 +112,10 @@ def recoverable(job: BatchJob, files: Sequence[BatchFile], *, alive: Optional[bo
     （:func:`recovery_refusal`）。沒有任務看著的是失敗了（例如輪詢中斷），或還在進行的狀態、看著它的
     任務卻不在了（例如應用程式重啟了）。
 
-    ``files`` 是這個批次每個檔案的列；``alive`` 是看著它的任務還在不在，執行模式查不出來時是 None。
-    Docker 模式的 worker 被砍掉之後，Celery 仍把它的任務當成執行中（見 :func:`start_recovery`），這時
-    不給。
+    ``files`` 是這個批次每個檔案的列；``alive`` 是看著它的任務還在不在，不知道時是 None（不給）。
+    批次清單傳的是任務頁的 ``is_alive``：Docker 模式查不出來（PENDING）、派出之後又超過 5 分鐘的當成
+    不在，所以在佇列裡排了這麼久的復原也會給（重複接手是安全的，見 :func:`start_recovery`）；worker
+    被砍掉之後 Celery 仍把它的任務當成執行中，這時不給。
     """
     unwatched = job.status == BatchState.FAILED or (job.status in IN_PROGRESS and alive is False)
     return unwatched and _refusal(job, files) is None

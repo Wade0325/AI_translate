@@ -132,6 +132,15 @@ export function isBatchInterrupted(task) {
   return BATCH_IN_PROGRESS.includes(task.status) && task.is_alive === false
 }
 
+/**
+ * 任務卡片顯示的狀態：批次的狀態；停住的批次改用只在畫面上用的名稱，上傳中停住的是
+ * UPLOADING_DEAD，輪詢中、復原中停住的是 INTERRUPTED。
+ */
+export function batchDisplayStatus(task) {
+  if (!isBatchInterrupted(task)) return task.status
+  return task.status === "UPLOADING" ? "UPLOADING_DEAD" : "INTERRUPTED"
+}
+
 export function isBatchCompleted(task) {
   return ["COMPLETED", "RETRIEVED"].includes(task.status)
 }
