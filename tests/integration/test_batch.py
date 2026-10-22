@@ -19,6 +19,14 @@ from app.runtime import run_mode
 from app.tasks import batch_core
 from tests.support.db_faults import writes_fail
 from tests.support.fake_provider import FAKE_MODEL, Fail, Restart
+from tests.support.older_batches import (
+    NOT_SENT,
+    SPANS,
+    finished_by_previous_release,
+    sent_between_115_and_116,
+    sent_by_previous_release,
+    start_this_version,
+)
 from tests.support.synthetic_audio import VOICED, synthetic_audio
 from tests.support.task_api import (
     download,
@@ -600,25 +608,149 @@ def test_files_whose_result_status_cannot_be_recorded_are_still_retrieved(
     assert [f["file_uid"] for f in files] == NAMES[:2]
 
 
+# ─── 舊版送出的批次（#117）──────────────────────────────────────────────────
+
+def test_a_batch_sent_by_the_previous_release_is_finished_from_recovery(
+        api, in_process_run_mode, batch_fake, db_session, test_engine):
+    # 上一個發布版本送出的批次還在供應商那邊跑時升級：三個檔案，第二個上傳失敗沒有送出；第一個去靜音
+    # 過，第三個沒有。升級後從復原入口接手，和這一版送出的批次走同一個狀態機結束
+    batch_fake.model_capabilities = replace(batch_fake.model_capabilities, pricing="per_token")
+    batch_fake.usage = (200_000, 40_000)
+    batch_fake.script = [list(LINES), [(0.2, 1.5, 1, "三つ目。")]]
+    name = batch_fake.submit_batch([(None, "")] * 2, "older")  # 舊版送出的兩個請求
+    task_uuids = sent_by_previous_release(db_session, "batch-older", name, [
+        ("older-a", SPANS), ("older-b", NOT_SENT), ("older-c", None)])
+
+    start_this_version(test_engine)
+    messages = recover(api, "batch-older")
+    in_process_run_mode.close(wait=True)  # 等復原整個跑完再查 API
+
+    # 送出的兩個檔案：和這一版的批次一樣，處理中……之後宣告完成，廣播帶著舊版開始的那個任務
+    for file_uid in ("older-a", "older-c"):
+        own = of_file(messages, file_uid)
+        assert codes(own)[-1] == TaskStatus.COMPLETED
+        assert set(codes(own)[:-1]) == {TaskStatus.PROCESSING}
+        assert {m["task_uuid"] for m in own} == {task_uuids[file_uid]}
+        saved = record(api, task_uuids[file_uid])
+        assert saved["status"] == TaskStatus.COMPLETED
+        assert (saved["total_tokens"], saved["cost"]) == (240_000, pytest.approx(0.15))
+        assert saved["audio_duration_seconds"] == pytest.approx(12.0)
+        assert own[-1]["result"]["cost"] == pytest.approx(0.15)
+        for fmt in ("srt", "vtt", "lrc", "txt"):
+            assert download(api, task_uuids[file_uid], fmt) == own[-1]["result"]["transcripts"][fmt]
+    # 去靜音過的檔案，片段的時間還原回原音檔；沒有去靜音的原樣
+    assert flat_times(stored_segments(api, task_uuids["older-a"])) == pytest.approx(RESTORED)
+    assert flat_times(stored_segments(api, task_uuids["older-c"])) == pytest.approx([0.2, 1.5])
+    # 沒有送出的檔案在舊版就結束了，復原不再動它
+    assert of_file(messages, "older-b") == []
+    assert record(api, task_uuids["older-b"])["status"] == TaskStatus.FAILED
+    assert listed(api, "batch-older")["status"] == "COMPLETED"
+
+
+def test_an_upload_recorded_by_an_older_version_is_retained_after_recovery(
+        api, in_process_run_mode, batch_fake, db_session, test_engine, data_dir):
+    # #115 到 #116 之間的版本另外記下了上傳檔：復原之後和這一版的批次一樣，上傳檔搬進保留區，暫存區
+    # 不留檔
+    batch_fake.script = [list(LINES)]
+    name = batch_fake.submit_batch([(None, "")], "older")
+    path = data_dir / "temp_uploads" / upload(api, "kept.wav")
+    task_uuids = sent_between_115_and_116(db_session, "batch-older-upload", name,
+                                          [("kept", str(path))])
+
+    start_this_version(test_engine)
+    end = of_file(recover(api, "batch-older-upload"), "kept")[-1]
+    in_process_run_mode.close(wait=True)
+
+    assert (end["status_code"], end["task_uuid"]) == (TaskStatus.COMPLETED, task_uuids["kept"])
+    assert flat_times(stored_segments(api, end["task_uuid"])) == pytest.approx(RESTORED)
+    assert api.get(f"/api/v1/transcripts/{end['task_uuid']}/audio").content == synthetic_audio()
+    assert leftovers(data_dir) == []
+
+
+def test_results_of_a_batch_the_previous_release_finished_can_still_be_retrieved(
+        api, batch_fake, db_session, test_engine):
+    # 舊版已經結束、還沒取回的批次：完成的檔案結果只存成任務紀錄裡的 LRC，另一個檔案供應商回報失敗。
+    # 升級後「取回結果」照樣拿得到完成的那個，從任務紀錄讀出，和到歷史紀錄下載的相同；取回之後再取回
+    # 一次也一樣，不再去問供應商
+    lrc = "[00:00.20]おはよう。\n[00:05.40]こんにちは。\n[00:10.30]またね。"
+    task_uuids = sent_by_previous_release(db_session, "batch-older-done", "batches/older-done",
+                                          [("older-done", SPANS), ("older-garbled", None)])
+    finished_by_previous_release(db_session, "batch-older-done", task_uuids,
+                                 {"older-done": lrc, "older-garbled": None})
+
+    start_this_version(test_engine)
+
+    for _ in range(2):  # 第一次取回之後是已取回
+        response = api.post("/api/v1/batch/batch-older-done/recover", json={"api_keys": "test-key"})
+        assert response.status_code == 200, response.text
+        [retrieved] = response.json()["files"]
+        assert (retrieved["file_uid"], retrieved["original_filename"], retrieved["status"]) == (
+            "older-done", "older-done.wav", TaskStatus.COMPLETED)
+        transcripts = retrieved["result"]["transcripts"]
+        assert transcripts["lrc"] == lrc
+        for fmt in ("srt", "vtt", "txt"):
+            assert transcripts[fmt] == download(api, task_uuids["older-done"], fmt)
+            assert "こんにちは。" in transcripts[fmt]
+        assert retrieved["result"]["cost"] == pytest.approx(0.15)
+    assert batch_fake.polls == 0
+    assert listed(api, "batch-older-done")["status"] == "RETRIEVED"
+
+
+def test_the_batch_list_names_each_file_of_a_batch_sent_by_the_previous_release(
+        api, db_session, test_engine):
+    # 任務頁列出舊版批次的每個檔案，依在批次裡的順序，連沒有送出的也列；每次啟動都會補列，補過的
+    # 不再補一次
+    sent_by_previous_release(db_session, "batch-older-listed", "batches/older-listed", [
+        ("listed-a", SPANS), ("listed-b", NOT_SENT), ("listed-c", None)])
+
+    start_this_version(test_engine)
+    start_this_version(test_engine)
+
+    batch = listed(api, "batch-older-listed")
+    assert batch["files"] == [{"file_uid": uid, "original_filename": f"{uid}.wav"}
+                              for uid in ("listed-a", "listed-b", "listed-c")]
+    assert (batch["status"], batch["file_count"]) == ("POLLING", 3)
+
+
 @pytest.mark.parametrize("status", ["POLLING", "FAILED", "COMPLETED"])
-def test_a_batch_sent_by_an_older_version_is_left_as_it_was(api, db_session, status):
-    # 舊版送出的批次只有舊的 JSON 欄位、沒有 batch_files 的列（#117 之後才讀得懂）：取回或復原都回
-    # 看得懂的錯誤，批次的狀態不動，也不派送復原
+def test_an_older_batch_whose_file_list_cannot_be_read_is_left_as_it_was(
+        api, db_session, test_engine, status):
+    # 舊版的檔案清單讀不懂（這裡沒有記下任務紀錄 id），啟動時補不了列：取回或復原都回看得懂的錯誤，
+    # 批次的狀態不動，也不派送復原
     from app.database.models import BatchJob
 
-    batch_id = f"batch-older-{status}"
+    batch_id = f"batch-unreadable-{status}"
     db_session.add(BatchJob(
-        batch_id=batch_id, status=status, gemini_job_name="batches/older", file_count=1,
-        file_mapping_json=json.dumps({"0": {"file_uid": "older.wav", "original_filename": "older.wav"}}),
+        batch_id=batch_id, status=status, gemini_job_name="batches/unreadable", file_count=1,
+        file_mapping_json=json.dumps({"0": {"file_uid": "unreadable", "original_filename": "unreadable.wav"}}),
         results_json=json.dumps({}) if status == "COMPLETED" else None))
     db_session.commit()
 
+    start_this_version(test_engine)
     response = api.post(f"/api/v1/batch/{batch_id}/recover", json={"api_keys": "test-key"})
 
     assert response.status_code == 400
     assert "舊版送出的" in response.json()["detail"]
+    assert "讀不出它的檔案清單" in response.json()["detail"]
     db_session.expire_all()
     assert db_session.get(BatchJob, batch_id).status == status
+
+
+def test_an_unreadable_older_batch_does_not_hold_back_the_others(api, db_session, test_engine):
+    # 啟動時一個舊版批次讀不懂（這裡檔案清單不是 JSON）：不補它的列，其他舊版批次照樣補上
+    from app.database.models import BatchJob
+
+    db_session.add(BatchJob(batch_id="batch-garbled", status="POLLING", file_count=1,
+                            gemini_job_name="batches/garbled", file_mapping_json="{not json"))
+    db_session.commit()
+    sent_by_previous_release(db_session, "batch-after-garbled", "batches/after-garbled",
+                             [("after-garbled", None)])
+
+    start_this_version(test_engine)
+
+    assert listed(api, "batch-garbled")["files"] == []
+    assert listed(api, "batch-after-garbled")["files"] == [
+        {"file_uid": "after-garbled", "original_filename": "after-garbled.wav"}]
 
 
 def test_a_new_batch_keeps_one_row_per_file_instead_of_json_columns(

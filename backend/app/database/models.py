@@ -47,7 +47,8 @@ class BatchJob(Base):
     gemini_job_name = Column(String, nullable=True)      # 供應商的批次名稱，送出之後才有
     status = Column(String, default="UPLOADING", index=True)  # 批次的狀態機（app.core.batch_state）
     task_params_json = Column(Text, nullable=True)       # 序列化的任務參數（不含 api_keys）
-    # 舊的檔案清單（#116 之前）：新批次不再寫，只留給升級前就在跑的批次復原（#117），之後另開票刪掉
+    # 舊的檔案清單（#116 之前）：新批次不再寫。啟動時從這裡替舊版送出的批次補上 batch_files 的列
+    # （app.tasks.older_batches），只讀不寫；保留一個版本，之後另開票刪掉
     file_mapping_json = Column(Text, nullable=True)      # {index: {file_uid, original_filename}}
     file_durations_json = Column(Text, nullable=True)    # {file_uid: duration}
     file_log_uuids_json = Column(Text, nullable=True)    # {file_uid: task_uuid}
@@ -59,7 +60,8 @@ class BatchJob(Base):
 
 
 class BatchFile(Base):
-    """batch_files 資料表：批次裡的每個檔案一列（#116），從建立批次起就在。
+    """batch_files 資料表：批次裡的每個檔案一列（#116），從建立批次起就在；#116 之前送出的批次在
+    應用程式啟動時補上（app.tasks.older_batches）。
 
     每個檔案仍各是一個任務，以它的任務紀錄 id 為主鍵。不設外鍵到 transcription_logs：列在任務
     開始之前就建立；使用者刪掉任務紀錄之後，批次照樣列得出這個檔案。復原時從這裡讀回開始時量到的
