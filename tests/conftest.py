@@ -72,12 +72,16 @@ def db_session(test_engine):
 # ─── 3. 執行模式 ─────────────────────────────────────────────────────────────
 
 @pytest.fixture
-def in_process_run_mode():
-    """換上行程內轉接器（免安裝模式），測試結束後還原並關閉。"""
+def in_process_run_mode(request):
+    """換上行程內轉接器（免安裝模式），測試結束後還原並關閉。
+
+    一般佇列預設只有一個 worker；要兩個任務同時跑的測試以 indirect 參數給 worker 數，例如
+    ``@pytest.mark.parametrize("in_process_run_mode", [2], indirect=True)``。
+    """
     from app.runtime import run_mode
     from app.runtime.in_process import InProcessRunMode
 
-    mode = InProcessRunMode(concurrency=1)
+    mode = InProcessRunMode(concurrency=getattr(request, "param", 1))
     previous = run_mode.use(mode)
     yield mode
     run_mode.use(previous)
@@ -215,9 +219,10 @@ def fake():
     provider = FakeProvider()
     previous = registry.register("fake", provider)
     yield provider
-    if provider.hold is not None:
-        # 放行還停在 hold 的轉錄，worker 執行緒才結束得了
-        provider.hold.set()
+    for hold in (provider.hold, *provider.poll_holds):
+        if hold is not None:
+            # 放行還停在 hold 的轉錄與查詢，worker 執行緒才結束得了
+            hold.set()
     registry.register("fake", previous)
 
 

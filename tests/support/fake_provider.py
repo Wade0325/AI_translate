@@ -65,8 +65,17 @@ Step = Union[Sequence[Line], Fail, ServedAs, Exception]
 """劇本的一步：這一段的轉錄結果、回報失敗、用了別的處理模式，或拋出這個例外。批次的請求只能是
 轉錄結果或回報失敗。"""
 
+class Restart(BaseException):
+    """查詢批次時應用程式重啟（例如關掉免安裝版再打開）：批次的這次執行停在這裡。
+
+    不是 Exception，批次接不住它：和行程被關掉一樣，檔案不記成失敗，批次停在輪詢中，
+    之後從復原入口接著結束。
+    """
+
+
 BatchPoll = Union[str, BaseException]
-"""查一次批次的結果：Gemini 的狀態名稱去掉 ``JOB_STATE_``（例如 ``"RUNNING"``），或拋出這個例外。"""
+"""查一次批次的結果：Gemini 的狀態名稱去掉 ``JOB_STATE_``（例如 ``"RUNNING"``），或拋出這個例外
+（例如 :class:`Restart`）。"""
 
 BATCH_DONE = frozenset({"SUCCEEDED", "FAILED", "CANCELLED", "EXPIRED"})
 
@@ -125,6 +134,11 @@ class FakeProvider:
         self.submit_errors: List[Exception] = []
         self.batch_polls: List[BatchPoll] = []
         self.batch_outcome = "SUCCEEDED"
+        # 查了幾次批次。poll_holds[i] 擋下第 i 次查詢（從 0 數），直到它被 set；沒列到的查詢不擋。
+        # 查詢一開始 polling 就會 set
+        self.polls = 0
+        self.poll_holds: List[threading.Event] = []
+        self.polling = threading.Event()
         # 成功結束時，最後這麼多個請求沒有結果（供應商少給了）
         self.missing_results = 0
         self.submitted: Dict[str, Tuple[TranscriptionTaskResult, ...]] = {}
@@ -204,6 +218,11 @@ class FakeProvider:
         return name
 
     def poll_batch(self, name: str) -> BatchStatus:
+        poll = self.polls
+        self.polls += 1
+        self.polling.set()
+        if poll < len(self.poll_holds):
+            self.poll_holds[poll].wait(30)
         step = self.batch_polls.pop(0) if self.batch_polls else self.batch_outcome
         if isinstance(step, BaseException):
             raise step

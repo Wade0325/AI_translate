@@ -31,10 +31,10 @@ from app.database import session
 from app.database.models import ModelConfiguration, TranscriptionLog
 from app.exceptions import TaskDatabaseError
 from app.tasks.transcribe_core import abandon_transcription, run_transcription
+from tests.support.db_faults import DISK_FULL, writes_fail
 from tests.support.fake_provider import FAKE_MODEL, FakeProvider
 
 KEY = "AIzaSyLEAK-0123456789-abcdefghij-QRST"
-DISK_FULL = "database or disk is full"
 NOT_NULL = "violates not-null constraint"
 
 
@@ -49,28 +49,6 @@ def rejected_row(table: str, row: str) -> str:
 
 NOT_NULL_WITH_ROW = rejected_row(
     "model_configurations", f'Leak157Row, ["{KEY}"], null, null, 2026-10-20 12:00:00')
-
-
-@contextmanager
-def writes_fail(engine, table: str, statement: str, message: str = DISK_FULL):
-    """這段期間資料庫擋下 table 的 INSERT 或 UPDATE（statement），回報 message。"""
-    trigger = f"{table}_{statement.lower()}_fails"
-    literal = message.replace("'", "''")
-    _change_schema(engine, f"CREATE TRIGGER {trigger} BEFORE {statement} ON {table} "
-                           f"BEGIN SELECT RAISE(ABORT, '{literal}'); END")
-    try:
-        yield
-    finally:
-        _change_schema(engine, f"DROP TRIGGER {trigger}")
-
-
-def _change_schema(engine, ddl: str) -> None:
-    with engine.begin() as conn:
-        # 連線池裡的連線記著自己上次讀到的 schema，SQLite 解析 CREATE／DROP 時就照它判斷
-        # trigger 在不在：用過這條連線之後別條連線才拿掉的 trigger，在這裡還「已經存在」。
-        # 先讀一次，讓它重新載入 schema
-        conn.exec_driver_sql("SELECT count(*) FROM sqlite_master")
-        conn.exec_driver_sql(ddl)
 
 
 def _save(client: TestClient, provider: str, key: str):

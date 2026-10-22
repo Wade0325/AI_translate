@@ -39,20 +39,47 @@ class ModelConfiguration(Base):
 
 
 class BatchJob(Base):
-    """batch_jobs 資料表 — 持久化 Gemini 批次的資訊，供重啟後恢復"""
+    """batch_jobs 資料表 — 持久化 Gemini 批次的資訊，供重啟後恢復；每個檔案在 batch_files 各一列"""
     __tablename__ = 'batch_jobs'
 
     batch_id = Column(String, primary_key=True)         # 前端的 batch ID
     session_id = Column(String, nullable=True, index=True)  # 同一次 Start 的任務群組
-    gemini_job_name = Column(String, nullable=True)      # Gemini API 的 job name
-    status = Column(String, default="UPLOADING", index=True)  # UPLOADING / POLLING / BATCH_SUBMITTED / COMPLETED / FAILED / RETRIEVED / RECOVERING
+    gemini_job_name = Column(String, nullable=True)      # 供應商的批次名稱，送出之後才有
+    status = Column(String, default="UPLOADING", index=True)  # 批次的狀態機（app.core.batch_state）
     task_params_json = Column(Text, nullable=True)       # 序列化的任務參數（不含 api_keys）
+    # 舊的檔案清單（#116 之前）：新批次不再寫，只留給升級前就在跑的批次復原（#117），之後另開票刪掉
     file_mapping_json = Column(Text, nullable=True)      # {index: {file_uid, original_filename}}
     file_durations_json = Column(Text, nullable=True)    # {file_uid: duration}
     file_log_uuids_json = Column(Text, nullable=True)    # {file_uid: task_uuid}
     results_json = Column(Text, nullable=True)           # {file_uid: result_dict} — 完成後存入的結果
-    celery_task_id = Column(String, nullable=True, index=True)  # Celery task ID
+    celery_task_id = Column(String, nullable=True, index=True)  # 看著這個批次的任務：執行，或接手的復原
     file_count = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class BatchFile(Base):
+    """batch_files 資料表：批次裡的每個檔案一列（#116），從建立批次起就在。
+
+    每個檔案仍各是一個任務，以它的任務紀錄 id 為主鍵。不設外鍵到 transcription_logs：列在任務
+    開始之前就建立；使用者刪掉任務紀錄之後，批次照樣列得出這個檔案。復原時從這裡讀回開始時量到的
+    長度、上傳檔與語音視圖的序列化形式（app.tasks.batch_core）。
+    """
+    __tablename__ = 'batch_files'
+    __table_args__ = (
+        UniqueConstraint('batch_id', 'seq', name='uq_batch_files_seq'),
+    )
+
+    task_uuid = Column(UUID(as_uuid=True), primary_key=True)  # 這個檔案的任務紀錄 id
+    batch_id = Column(String, ForeignKey("batch_jobs.batch_id"), nullable=False, index=True)
+    seq = Column(Integer, nullable=False)          # 在批次裡的順序（0 起算）
+    file_uid = Column(String, nullable=False)      # 前端檔案 uid
+    original_filename = Column(String, nullable=False)
+    file_path = Column(String, nullable=True)      # 上傳檔，任務結束時保留或清理
+    audio_duration_seconds = Column(Float, nullable=True)  # 開始時量到的長度
+    speech_view_json = Column(Text, nullable=True)  # 語音視圖的序列化形式；送出之前是 NULL
+    request_index = Column(Integer, nullable=True)  # 送出的批次裡第幾個請求；沒送出的是 NULL
+    status = Column(String, nullable=False)        # 結果狀態：PROCESSING / COMPLETED / FAILED
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 

@@ -11,13 +11,14 @@
 每個任務再經 WebSocket 送回後端；任何能讀到回應的頁面都拿得到金鑰。
 """
 import json
+import uuid
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import sessionmaker
 
 from app.api import batch, transcription
-from app.database.models import BatchJob, ModelConfiguration
+from app.database.models import BatchFile, BatchJob, ModelConfiguration
 from app.provider import registry
 from app.provider.base import ProviderInfo
 from tests.support.fake_provider import FAKE_MODEL, FakeProvider
@@ -257,10 +258,16 @@ class TestRecoverUsesStoredKey:
 
     @pytest.fixture
     def polling_job(self, db_session):
+        """送出了、還在輪詢的批次，有一個送出的檔案。"""
         db_session.add(BatchJob(batch_id=self.BATCH_ID, gemini_job_name="batches/123",
-                                status="POLLING", file_mapping_json="{}"))
+                                status="POLLING"))
+        db_session.flush()
+        db_session.add(BatchFile(task_uuid=uuid.uuid4(), batch_id=self.BATCH_ID, seq=0,
+                                 file_uid="recover-key.wav", original_filename="recover-key.wav",
+                                 request_index=0, status="PROCESSING"))
         db_session.commit()
         yield
+        db_session.query(BatchFile).filter_by(batch_id=self.BATCH_ID).delete()
         db_session.query(BatchJob).filter_by(batch_id=self.BATCH_ID).delete()
         db_session.commit()
 

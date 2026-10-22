@@ -120,7 +120,11 @@ class HistoryRepository:
         *,
         backfill: bool = True,
     ) -> Optional[str]:
-        """取得任務的 LRC 內容；若 log 無資料則從 batch_jobs.results_json 回退。"""
+        """取得任務的 LRC 內容；若 log 無資料則從 batch_jobs.results_json 回退。
+
+        只有 #115 之前批次裡的任務會走到回退：之後的任務完成時都存了 LRC，#116 之後的批次也不再寫
+        results_json。
+        """
         stored = getattr(log, "lrc_content", None)
         if stored and str(stored).strip():
             return str(stored).strip()

@@ -58,7 +58,10 @@ export const withProvider = (selection, provider) => ({ ...selection, provider, 
 /** 換模型。 */
 export const withModel = (selection, model) => ({ ...selection, model });
 
-/** 轉錄要不要使用者的 API 金鑰：要的話，送出前先確認設定頁存了金鑰。 */
+/**
+ * 轉錄要不要使用者的 API 金鑰：要的話，送出前先確認設定頁存了金鑰。也只有要金鑰的供應商
+ * 有地方編輯金鑰（設定頁的金鑰欄位、轉錄頁的「編輯 API」），本機沒有。
+ */
 export const requiresApiKey = (providerList, provider) =>
   findProvider(providerList, provider)?.requires_api_key === true;
 
@@ -73,18 +76,14 @@ export const missingApiKey = (providerList, provider, providerConfig) =>
  * 按「測試」送給後端（POST /setting/test）的請求。要金鑰的供應商帶設定頁存的金鑰：那是
  * 遮罩值，後端從資料庫換回實際金鑰；不用金鑰的不帶。
  *
- * 測的模型：model 是設定頁畫面上選的（可能還沒儲存）；沒給（例如轉錄頁的按鈕）時用存過的
- * 預設模型。不屬於這個供應商時改測它的預設模型，見 modelForProvider。
+ * 測的是畫面上選的模型 model（設定頁卡片上的、轉錄頁模型選單上的，還沒儲存也算），不是設定頁
+ * 存的預設模型。不屬於這個供應商時改測它的預設模型，見 modelForProvider。
  */
-export function providerTestRequest(providerList, provider, providerConfig, model = null) {
+export function providerTestRequest(providerList, provider, providerConfig, model) {
   const apiKeys = requiresApiKey(providerList, provider)
     ? (providerConfig?.apiKeys ?? []).filter((key) => key)
     : [];
-  return {
-    provider,
-    apiKeys,
-    model: modelForProvider(providerList, provider, model ?? providerConfig?.model),
-  };
+  return { provider, apiKeys, model: modelForProvider(providerList, provider, model) };
 }
 
 /** 這個供應商的這個模型的模型能力；查不到時是 null。 */

@@ -9,7 +9,7 @@ import VadTestModal from "@/components/transcribe/VadTestModal"
 import { useTranscription } from "@/context/TranscriptionContext"
 import { useModelManager } from "@/components/ModelManager"
 import { PROVIDER_LIST_FAILED } from "@/hooks/useProviderList"
-import { modelOptions, providerOptions, providerPromptDisabledReason } from "@/utils/providerList"
+import { modelOptions, providerOptions, providerPromptDisabledReason, requiresApiKey } from "@/utils/providerList"
 import { filePrompt, followsGlobalPrompt, globalSettingsPatch, promptToSend } from "@/utils/transcribeRequest"
 import { api } from "@/services/api"
 import { DownloadOutlined } from "@ant-design/icons"
@@ -303,9 +303,12 @@ export default function TranscribePage() {
                     </div>
                     <div style={{ flex: 1 }} />
                     <Space size={6}>
-                        <Button size="small" disabled={!provider} onClick={() => handleEditProvider(provider)}>
-                            編輯 API
-                        </Button>
+                        {/* 和設定頁的金鑰欄位一樣，只有要金鑰的供應商才有（照供應商清單，本機不用） */}
+                        {requiresApiKey(providerList, provider) && (
+                            <Button size="small" onClick={() => handleEditProvider(provider)}>
+                                編輯 API
+                            </Button>
+                        )}
                         <ReasonTooltip title={promptTemplateDisabledReason}>
                             <Button
                                 size="small"
@@ -315,7 +318,8 @@ export default function TranscribePage() {
                                 編輯參數
                             </Button>
                         </ReasonTooltip>
-                        <Button size="small" disabled={!provider} onClick={() => handleTestProvider(provider)}>
+                        {/* 測模型選單上選的模型，不是設定頁存的預設模型：本機要查的是這個模型的權重 */}
+                        <Button size="small" disabled={!provider} onClick={() => handleTestProvider(provider, model)}>
                             測試 API
                         </Button>
                     </Space>

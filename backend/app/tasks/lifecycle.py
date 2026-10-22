@@ -376,16 +376,9 @@ class TaskLifecycle:
             # 片段也不寫：沒有紀錄的片段找不到，Postgres 也會擋下
             logger.warning(f"找不到任務紀錄（可能在處理中被刪掉了）: {self._task_uuid}")
 
-        response = TranscriptionResponse(
-            task_uuid=self._task_uuid,
-            transcripts=transcripts,
-            tokens_used=tokens,
-            cost=cost,
-            model=self._task.model,
-            source_language=self._task.source_lang,
-            audio_duration_seconds=self._duration,
-        ).model_dump()
-        response["task_uuid"] = response["task_uuid"].hex
+        response = _completed_response(
+            self._task_uuid, transcripts, tokens=tokens, cost=cost, model=self._task.model,
+            source_language=self._task.source_lang, duration=self._duration)
         return _Outcome(TaskStatus.COMPLETED, "任務完成", broadcast_result=response,
                         return_value={"raw_lrc_text": transcripts["lrc"]})
 
@@ -584,6 +577,36 @@ class TaskLifecycle:
 
     def _elapsed(self) -> float:
         return time.time() - self._started_at
+
+
+def completed_result(db: Session, task_uuid) -> Optional[dict]:
+    """一個完成的任務完成時送給畫面的結果，從任務紀錄與片段重新產生（輸出格式模組），和完成時
+    廣播的相同；沒有紀錄、或紀錄不是完成時是 None。批次取回結果時用它，不另外存一份。"""
+    record = TranscriptionLogRepository().get(db, task_uuid)
+    if record is None or record.status != TaskStatus.COMPLETED:
+        return None
+    transcripts = {fmt.value: output_format.for_task(db, record, fmt) or ""
+                   for fmt in output_format.OutputFormat}
+    return _completed_response(
+        record.task_uuid, transcripts, tokens=record.total_tokens or 0, cost=record.cost or 0.0,
+        model=record.model_used or "", source_language=record.source_language or "",
+        duration=record.audio_duration_seconds or 0.0)
+
+
+def _completed_response(task_uuid, transcripts: dict, *, tokens: int, cost: float, model: str,
+                        source_language: str, duration: float) -> dict:
+    """完成時送給畫面的結果：四種輸出格式與計價。"""
+    response = TranscriptionResponse(
+        task_uuid=task_uuid,
+        transcripts=transcripts,
+        tokens_used=tokens,
+        cost=cost,
+        model=model,
+        source_language=source_language,
+        audio_duration_seconds=duration,
+    ).model_dump()
+    response["task_uuid"] = response["task_uuid"].hex
+    return response
 
 
 def _discount(service_tier: Optional[str]) -> Optional[float]:

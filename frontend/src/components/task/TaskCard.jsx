@@ -15,7 +15,7 @@ import { formatDateTime, formatElapsed } from "@/utils/formatters"
 
 const { Text } = Typography
 
-// 批次紀錄本身的狀態，屬於批次的狀態機（#116），和任務狀態清單是兩回事（COMPLETED 只是同名）；
+// 批次紀錄本身的狀態，屬於批次的狀態機（backend/app/core/batch_state.py），和任務狀態清單是兩回事（COMPLETED 只是同名）；
 // 取回後逐檔結果的 status 才是任務狀態，用 TASK_STATUS 比對
 const statusConfig = {
     POLLING: { icon: Loader2, color: "#d4a72d", label: "Gemini 處理中", spin: true },
