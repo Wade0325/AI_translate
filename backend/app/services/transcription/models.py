@@ -32,7 +32,8 @@ class TranscriptionTaskResult(BaseModel):
 
 class TranscriptionResponse(BaseModel):
     """
-    完整轉錄結果（WS 推送與 BatchJob.results_json 儲存的 payload）。
+    完整轉錄結果（任務完成時 WS 推送的 payload；批次取回結果時從任務紀錄與片段重新產生，
+    見 app.tasks.lifecycle.completed_result）。
     僅保留前端實際消費的欄位；細部費用/耗時另存於 transcription_logs。
     """
     task_uuid: uuid.UUID = Field(..., description="此次轉錄任務的唯一標識符")
