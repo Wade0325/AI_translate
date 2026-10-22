@@ -274,11 +274,8 @@ def test_cancelling_a_running_task_stops_it_before_the_generation(
 
 
 def test_single_file_is_retried_after_a_transient_error(
-        api, in_process_run_mode, genai, monkeypatch):
+        api, in_process_run_mode, genai, quick_transient_retries):
     # 503 是暫時錯誤：分段轉錄不把它當成這一段失敗，等一段時間（這裡調成 0.01 秒）再轉那一段
-    from app.core.config import get_settings
-
-    monkeypatch.setattr(get_settings(), "transient_error_initial_wait_seconds", 0.01)
     genai.replies = [unavailable(), Reply(text="[00:01.00]おはよう。")]
 
     messages = transcribe(api, in_process_run_mode, "gemini-single-transient.wav")

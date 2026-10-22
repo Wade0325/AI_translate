@@ -109,10 +109,14 @@ def _is_retryable(err: Exception) -> bool:
 def _classify(err: Exception) -> Exception:
     """把 google-genai 的例外分成暫時與永久；呼叫端 ``raise _classify(e) from e``。
 
-    暫時錯誤帶著回應建議的等待秒數（見 :func:`_suggested_wait`），分段轉錄照它等。
+    暫時錯誤帶著回應建議的等待秒數（見 :func:`_suggested_wait`），分段轉錄照它等；還帶著給使用者看的
+    簡短原因（HTTP 狀態碼與 Gemini 的狀態，例如「503 UNAVAILABLE」）：例外訊息附著整份錯誤內容。
     """
     if _is_retryable(err):
-        return GeminiTransientError(str(err), retry_after=_suggested_wait(err))
+        code, status = getattr(err, "code", None), getattr(err, "status", None)
+        return GeminiTransientError(
+            str(err), retry_after=_suggested_wait(err),
+            reason=f"{code} {status}" if code and status else None)
     return GeminiPermanentError(str(err))
 
 
@@ -293,8 +297,7 @@ class _SpeakerIds:
     """Gemini 寫的說話者代號（「Speaker 1:」「Speaker A:」）→ 說話者編號，一個任務一份。
 
     依代號在這個任務第一次送進來的順序編成 S0、S1……，同一個代號一律同一個編號，分段轉錄的
-    各段也一樣；切段重試時，被放棄的那次轉錄裡出現過的代號也算進順序。各段是 Gemini 分開標的，
-    同一個代號不保證是同一個人：跨段一致的說話者編號是 #93。
+    各段也一樣。各段是 Gemini 分開標的，同一個代號不保證是同一個人：跨段一致的說話者編號是 #93。
     """
 
     def __init__(self) -> None:

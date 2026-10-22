@@ -26,8 +26,8 @@ logger = setup_logger(__name__)
 
 class InProcessRunMode:
     def __init__(self, concurrency: int = 4, retry_backoff_max: int = 60):
-        """``retry_backoff_max``：批次遇到暫時錯誤、重試整個批次前最多等幾秒，對齊 Celery 批次任務
-        的 ``retry_backoff_max``；測試傳 0，不必真的等。"""
+        """``retry_backoff_max``：批次遇到暫時錯誤、重試整個批次前最多等幾秒，對齊批次的 Celery 任務
+        （``batch_transcribe_task``）的 ``retry_backoff_max``；測試傳 0，不必真的等。"""
         self._executor = LocalExecutor(concurrency)
         self._retry_backoff_max = retry_backoff_max
         self._lock = threading.Lock()

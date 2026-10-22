@@ -281,7 +281,7 @@ class TaskLifecycle:
         return _cancelled()
 
     def _cancel_before_start(self, db: Session) -> _Outcome:
-        """開始前就取消：建立已取消的任務紀錄（重試時改寫第一次執行的紀錄），不呼叫供應商。
+        """開始前就取消：建立已取消的任務紀錄（重派時改寫第一次執行的紀錄），不呼叫供應商。
 
         任務在佇列等待時被取消，revoke 卻沒送到 worker（例如 worker 當時離線），
         任務照樣會開始，靠取消旗標在這裡攔下。不會再執行的任務（:meth:`abandon`）也記成這樣。

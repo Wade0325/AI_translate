@@ -620,6 +620,11 @@ class TestVadTestEndpoint:
 
 # ─── 分段轉錄改讀模型能力 ───────────────────────────────────────────────────
 
+EDGE_GAP = [(0.0, 0.5), (5.0, 12.0)]
+"""有聲 0–0.5 秒、靜音 0.5–5 秒、有聲 5–12 秒。去靜音之後的語音視圖 8.1 秒，唯一的交界在 0.8 秒，
+離開頭不到 1 秒。"""
+
+
 class TestChunkedTranscriptionFollowsCapabilities:
     def test_longer_than_single_pass_is_split_at_silence(self, api, fake):
         # 語音視圖約 7 秒，單次只能處理 5 秒 → 在靜音邊界切成兩段。
@@ -692,6 +697,29 @@ class TestChunkedTranscriptionFollowsCapabilities:
 
         assert codes(messages)[-1] == end
         assert leftovers(data_dir) == []
+
+    def test_a_silence_too_close_to_an_edge_is_not_a_split_point(self, api, fake):
+        # 唯一的靜音交界離開頭不到 1 秒（見 EDGE_GAP）：切在那裡的話前一段幾乎是空的，不當切點。
+        # 測試環境也沒有 Silero，所以切在正中間
+        fake.model_capabilities = replace(fake.model_capabilities, single_pass_seconds=5.0)
+        fake.script = [[(0.2, 0.4, 0, "一つ目。")], [(0.5, 1.5, 1, "二つ目。")]]
+        messages = transcribe(api, "uid-edge-silence", voiced=EDGE_GAP)
+
+        assert codes(messages)[-1] == TaskStatus.COMPLETED
+        assert fake.durations == pytest.approx([4.05, 4.05], abs=0.01)
+
+    def test_word_timings_follow_their_chunk(self, api, fake):
+        # 逐字時間和片段一起平移、還原回原音檔：第二段是語音視圖的 4.9–7.2 秒，即第三個有聲段
+        # 9.7–12 秒（見 TestSplitRetryAfterFailure）
+        fake.model_capabilities = replace(fake.model_capabilities, single_pass_seconds=5.0)
+        fake.script = [[(0.2, 0.8, 0, "一つ目。")],
+                       [(0.2, 1.2, 1, "二つ目。", [("二つ", 0.2, 0.6), ("目。", 0.6, 1.2)])]]
+        messages = transcribe(api, "uid-chunk-words")
+
+        assert codes(messages)[-1] == TaskStatus.COMPLETED
+        second = stored_segments(api, messages[-1]["task_uuid"])[1]
+        assert flat_times([second]) == pytest.approx([9.9, 10.9])
+        assert flat_times(second["words"]) == pytest.approx([9.9, 10.3, 10.3, 10.9])
 
     def test_without_silence_removal_provider_times_are_kept(self, api, fake):
         fake.model_capabilities = replace(fake.model_capabilities, remove_silence=False)
@@ -1571,9 +1599,8 @@ class TestTransientError:
     """
 
     @pytest.fixture(autouse=True)
-    def _two_chunks(self, fake, settings, monkeypatch):
+    def _two_chunks(self, fake, quick_transient_retries):
         fake.model_capabilities = replace(fake.model_capabilities, single_pass_seconds=5.0)
-        monkeypatch.setattr(settings, "transient_error_initial_wait_seconds", 0.01)
 
     def test_only_the_chunk_that_hit_it_is_retried(self, api, fake):
         fake.script = [[(0.2, 0.8, 0, "一つ目。")], TransientError("503 服務暫時無法使用"),
@@ -1633,6 +1660,23 @@ class TestTransientError:
         record = api.get(f"/api/v1/history/{messages[-1]['task_uuid']}").json()
         assert record["status"] == TaskStatus.FAILED
         assert reason in record["error_message"]
+
+    def test_the_short_reason_is_shown_instead_of_the_whole_error(self, api, fake):
+        # 轉接器給了簡短的原因（Gemini 給狀態碼與狀態）：等待說明與失敗原因寫它，不寫附著整份錯誤
+        # 內容的例外訊息，畫面放得下
+        error = TransientError(
+            "429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'details': ['QuotaFailure', 'RetryInfo']}}",
+            reason="429 RESOURCE_EXHAUSTED")
+        fake.script = [[(0.2, 0.8, 0, "一つ目。")]] + [error] * 4
+        messages = transcribe(api, "uid-transient-reason")
+
+        notices = [m["status_text"] for m in messages
+                   if m["status_code"] == TaskStatus.PROCESSING and "暫時錯誤" in m["status_text"]]
+        assert notices[0] == ("分段轉錄的第 2 段（00:09–00:12）遇到暫時錯誤（429 RESOURCE_EXHAUSTED），"
+                              "0.01 秒後第 1 次重試（最多 3 次）...")
+        assert codes(messages)[-1] == TaskStatus.FAILED
+        assert messages[-1]["status_text"].endswith(
+            "分段轉錄的第 2 段（00:09–00:12）：暫時錯誤重試 3 次仍失敗（429 RESOURCE_EXHAUSTED）]]")
 
     def test_cancel_while_waiting_stops_at_once(self, api, fake, settings, monkeypatch):
         # 等待重試的期間按下取消：不必等退避結束就停下，任務記成已取消，不再送出。等待調得比

@@ -449,6 +449,18 @@ class TestErrors:
             gemini.transcribe(audio, request(), PROGRESS)
         assert raised.value.retry_after is None
 
+    @pytest.mark.parametrize("error, reason", [
+        (unavailable(), "503 UNAVAILABLE"),
+        (rate_limited(retry_delay="37s"), "429 RESOURCE_EXHAUSTED"),
+    ], ids=["503", "429"])
+    def test_transient_error_carries_a_short_reason(self, gemini, genai, audio, error, reason):
+        # 畫面上的等待說明只寫這個簡短的原因：例外訊息附著整份錯誤內容（配額說明、RetryInfo…），
+        # 放在畫面上太長，照樣留在例外訊息裡給 log 用
+        genai.replies = [error]
+        with pytest.raises(GeminiTransientError) as raised:
+            gemini.transcribe(audio, request(), PROGRESS)
+        assert raised.value.reason == reason
+
     def test_other_errors_are_permanent(self, gemini, genai, audio):
         genai.replies = [invalid_argument("API key not valid.")]
         with pytest.raises(GeminiPermanentError, match="API key not valid"):

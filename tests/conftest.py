@@ -200,6 +200,14 @@ def task_db(test_engine):
 
 
 @pytest.fixture
+def quick_transient_retries(monkeypatch):
+    """分段轉錄遇到暫時錯誤時，第一次只等 0.01 秒（之後照樣加倍）：測試不必真的等。"""
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "transient_error_initial_wait_seconds", 0.01)
+
+
+@pytest.fixture
 def fake():
     """換上假供應商「fake」，測試結束後換回原本的。"""
     from app.provider import registry

@@ -117,13 +117,6 @@ def retry_notices(messages: list[dict]) -> int:
                for m in messages)
 
 
-@pytest.fixture
-def quick_retries(monkeypatch):
-    """暫時錯誤重試前的等待從 0.01 秒起跳，測試不必真的等。"""
-    from app.core.config import get_settings
-
-    monkeypatch.setattr(get_settings(), "transient_error_initial_wait_seconds", 0.01)
-
 
 def worker_discards_revoked(task, params: dict, task_id: str, *, terminated: bool = False) -> None:
     """worker 丟掉被撤銷的任務時送出的訊號：還沒執行的（在佇列中）照樣送，執行中被強制終止的帶
@@ -143,7 +136,8 @@ def results(messages: list[dict]) -> list[str]:
 
 @pytest.mark.parametrize("transient_errors", [1, 2, 3])
 def test_transient_errors_retry_only_that_chunk_and_the_task_completes(
-        transcribe_media_task, uploads, fake, broadcasts, client, quick_retries, transient_errors):
+        transcribe_media_task, uploads, fake, broadcasts, client, quick_transient_retries,
+        transient_errors):
     # 單次只能處理 5 秒：去靜音之後 7.2 秒的語音視圖切成 4.9 秒與 2.3 秒兩段。第二段遇到暫時錯誤時，
     # 在任務裡等一段時間再轉那一段：第一段不重送，和免安裝模式一樣
     fake.model_capabilities = replace(fake.model_capabilities, single_pass_seconds=5.0)
@@ -164,7 +158,7 @@ def test_transient_errors_retry_only_that_chunk_and_the_task_completes(
 
 
 def test_task_fails_when_the_retries_run_out_and_celery_does_not_rerun_it(
-        transcribe_media_task, uploads, fake, broadcasts, client, quick_retries):
+        transcribe_media_task, uploads, fake, broadcasts, client, quick_transient_retries):
     fake.script = [TransientError("503 服務暫時無法使用")] * 4
     task_id = str(uuid.uuid4())
 

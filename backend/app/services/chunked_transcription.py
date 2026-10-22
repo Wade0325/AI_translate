@@ -107,25 +107,27 @@ class _Chunk:
             seconds = seconds + offset
         return seconds
 
-    def part(self, name: str, audio: Path, offset: float, duration: float,
-             silences: Optional[Tuple[float, ...]]) -> _Chunk:
-        """從這一段切出的一段：``offset`` 是它在這一段裡的起點。"""
+    def split_at(self, point: float, names: Tuple[str, str], audios: Tuple[Path, Path], *,
+                 keep_silences: bool) -> Tuple[_Chunk, _Chunk]:
+        """在 ``point`` 秒切成的兩段：音檔是 ``audios``，片段 key 的前綴是 ``names``。
+
+        ``keep_silences`` 時已知的靜音跟著分到兩段；Silero 切的不帶：交界不在已知的靜音上，兩段往下
+        改用 Silero 找。
+        """
+        left = right = None
+        if keep_silences and self.silences is not None:
+            left = tuple(b for b in self.silences if 0 < b < point)
+            right = tuple(b - point for b in self.silences if point < b < self.duration)
+        return (self._part(names[0], audios[0], 0.0, point, left),
+                self._part(names[1], audios[1], point, self.duration - point, right))
+
+    def _part(self, name: str, audio: Path, offset: float, duration: float,
+              silences: Optional[Tuple[float, ...]]) -> _Chunk:
         return _Chunk(
             audio=audio, duration=duration, silences=silences,
             key_prefix=f"{self.key_prefix}.{name}" if self.key_prefix else name,
             offsets=self.offsets + (offset,),
         )
-
-
-@dataclass(frozen=True)
-class _Halves:
-    """一段切成的兩段。"""
-
-    first: _Chunk
-    second: _Chunk
-    at_silence: bool
-    """切在靜音處（已知的靜音邊界或 Silero 給的切點）；False 是找不到靜音，切在正中間。Silero 在有語音
-    卻沒有夠長的靜音時，自己也會給正中間。"""
 
 
 @dataclass(frozen=True)
@@ -197,44 +199,29 @@ class _ChunkedTranscription:
             self._transcribe_chunk(chunk)
             return
         self._progress.raise_if_cancelled()
-        halves = self._split(chunk, "a", "b")
+        halves = self._split(chunk, ("a", "b"))
         if halves is None:
-            raise _Failed("[[音檔較長，卻切不開，無法分段轉錄]]")
-        where = "於靜音處" if halves.at_silence else "找不到靜音，於正中間"
-        self._progress.report(f"音檔較長（{chunk.duration / 60:.1f} 分鐘），{where}分段轉錄...")
-        self._transcribe_in_order(halves.first)
-        self._transcribe_in_order(halves.second)
+            raise _Failed(self._failure(chunk, "音檔較長，卻切不開，無法分段轉錄"))
+        self._progress.report(f"音檔較長（{chunk.duration / 60:.1f} 分鐘），分段轉錄...")
+        for half in halves:
+            self._transcribe_in_order(half)
 
     def _transcribe_chunk(self, chunk: _Chunk) -> None:
-        """轉一段：送進轉接器（暫時錯誤在 :meth:`_attempt` 裡重試）；失敗時模型能力允許、這一段又夠長，
+        """轉一段：送進轉接器（暫時錯誤在 :meth:`_send` 裡重試）；失敗時模型能力允許、這一段又夠長，
         只把這一段切成兩段重試。"""
-        result = self._attempt(chunk)
+        result = self._send(chunk)
         if result.success:
             self._transcribed.append(_TranscribedChunk(chunk, result))
             return
         if not self._may_split_retry(chunk):
             raise _Failed(self._failure(chunk, result.text))
         self._progress.raise_if_cancelled()
-        halves = self._split(chunk, "s0", "s1")
+        halves = self._split(chunk, ("s0", "s1"))
         if halves is None:
             raise _Failed(self._failure(chunk, result.text))
         logger.info(f"轉錄失敗，把 {chunk.duration:.1f} 秒的段切成兩段重試")
-        self._transcribe_chunk(halves.first)
-        self._transcribe_chunk(halves.second)
-
-    def _failure(self, chunk: _Chunk, reason: str) -> str:
-        """給使用者看的失敗原因：分段轉錄時寫明是第幾段、在原音檔的哪裡。"""
-        reason = reason.strip().removeprefix("[[").removesuffix("]]")
-        if not chunk.key_prefix:
-            return f"[[{reason}]]"
-        return f"[[{self._which(chunk)}：{reason}]]"
-
-    def _which(self, chunk: _Chunk) -> str:
-        """「分段轉錄的第幾段（在原音檔的起訖）」：依時間先後，前面的段都已經轉完。"""
-        timeline = self._view.timeline
-        start = timeline.to_original(chunk.start)
-        end = timeline.to_original(chunk.start + chunk.duration, end=True)
-        return f"分段轉錄的第 {len(self._transcribed) + 1} 段（{_clock(start)}–{_clock(end)}）"
+        for half in halves:
+            self._transcribe_chunk(half)
 
     def _may_split_retry(self, chunk: _Chunk) -> bool:
         if not self._split_retry:
@@ -246,7 +233,23 @@ class _ChunkedTranscription:
             return False
         return True
 
-    def _attempt(self, chunk: _Chunk) -> TranscriptionTaskResult:
+    def _failure(self, chunk: _Chunk, reason: str) -> str:
+        """給使用者看的失敗原因：分段轉錄時寫明是第幾段、在原音檔的哪裡。"""
+        reason = reason.strip().removeprefix("[[").removesuffix("]]")
+        which = self._which(chunk)
+        return f"[[{which}：{reason}]]" if which else f"[[{reason}]]"
+
+    def _which(self, chunk: _Chunk) -> str:
+        """「分段轉錄的第幾段（在原音檔的起訖）」；沒有分段時是空的。依時間先後，前面的段都已經轉完。"""
+        if not chunk.key_prefix:
+            return ""
+        timeline = self._view.timeline
+        start = timeline.to_original(chunk.start)
+        end = timeline.to_original(chunk.start + chunk.duration, end=True)
+        return f"分段轉錄的第 {len(self._transcribed) + 1} 段（{_clock(start)}–{_clock(end)}）"
+
+    # ── 送進轉接器 ───────────────────────────────────────────────
+    def _send(self, chunk: _Chunk) -> TranscriptionTaskResult:
         """把這一段送進轉接器：暫時錯誤等一段時間再送一次，已經轉完的段不重送。
 
         暫時錯誤不切段重試：把段切小，對配額用完與超載都沒有幫助。重試用完，整個分段轉錄以失敗結束。
@@ -254,11 +257,12 @@ class _ChunkedTranscription:
         retries = 0
         while True:
             try:
-                return self._call(chunk)
+                return self._send_once(chunk)
             except TransientError as error:
                 if retries >= get_settings().transient_error_retries:
+                    logger.warning(f"暫時錯誤重試 {retries} 次仍失敗: {error}")
                     raise _Failed(self._failure(
-                        chunk, f"暫時錯誤重試 {retries} 次仍失敗（{error}）")) from error
+                        chunk, f"暫時錯誤重試 {retries} 次仍失敗（{_why(error)}）")) from error
                 retries += 1
                 self._wait_before_retrying(chunk, error, retries)
 
@@ -274,14 +278,13 @@ class _ChunkedTranscription:
         seconds = max(0.0, min(suggested, settings.transient_error_max_wait_seconds))
         # 使用者已經取消（例如 503 剛好在取消之後回來）：不再宣告要重試
         self._progress.raise_if_cancelled()
-        which = self._which(chunk) if chunk.key_prefix else ""
-        notice = (f"{which}遇到暫時錯誤（{error}），{seconds:g} 秒後第 {retry} 次重試"
-                  f"（最多 {settings.transient_error_retries} 次）...")
-        logger.warning(notice)
+        notice = (f"{self._which(chunk)}遇到暫時錯誤（{_why(error)}），{seconds:g} 秒後第 {retry} 次"
+                  f"重試（最多 {settings.transient_error_retries} 次）...")
+        logger.warning(f"{notice} {error}")
         self._progress.report(notice)
         self._progress.wait(seconds)
 
-    def _call(self, chunk: _Chunk) -> TranscriptionTaskResult:
+    def _send_once(self, chunk: _Chunk) -> TranscriptionTaskResult:
         """把這一段送進轉接器一次；一般例外轉成失敗結果，交給上層決定要不要切段重試。
 
         每次呼叫供應商之前都查一次取消：供應商不理會取消、照樣轉完手上這一段時，下一段也不會再送出去。
@@ -290,7 +293,7 @@ class _ChunkedTranscription:
         try:
             result = self._provider.transcribe(chunk.audio, self._request, self._progress)
         except (TranscriptionCancelledError, TransientError):
-            # 取消與暫時錯誤都不是這一段失敗：往上拋給任務生命週期
+            # 取消與暫時錯誤都不是這一段失敗
             raise
         except Exception as e:
             logger.error(f"轉錄過程發生錯誤: {e}")
@@ -299,42 +302,37 @@ class _ChunkedTranscription:
         return result
 
     # ── 切點 ─────────────────────────────────────────────────────
-    def _split(self, chunk: _Chunk, first: str, second: str) -> Optional[_Halves]:
-        """把這一段切成兩段，前綴是 ``first``、``second``。
+    def _split(self, chunk: _Chunk, names: Tuple[str, str]) -> Optional[Tuple[_Chunk, _Chunk]]:
+        """把這一段切成兩段，片段 key 的前綴是 ``names``。
 
         切點依序來自已知的靜音、Silero、正中間；某個切點切不出音檔時改用下一個，連正中間都切不開時
         回 None。
         """
         point = _nearest_to_middle(chunk.silences or (), chunk.duration)
         if point is not None:
-            halves = self._slice(chunk, first, second, point, at_silence=True)
+            halves = self._slice(chunk, names, point)
             if halves is not None:
                 return halves
-        halves = self._split_with_silero(chunk, first, second)
+        halves = self._split_with_silero(chunk, names)
         if halves is not None:
             return halves
         logger.warning(f"{chunk.audio.name} 找不到靜音當切點，切在正中間")
-        return self._slice(chunk, first, second, chunk.duration / 2, at_silence=False)
+        return self._slice(chunk, names, chunk.duration / 2)
 
-    def _slice(self, chunk: _Chunk, first: str, second: str, point: float, *,
-               at_silence: bool) -> Optional[_Halves]:
-        """用 ffmpeg 在 ``point`` 秒把這一段切成兩個 wav；已知的靜音跟著分到兩段。"""
+    def _slice(self, chunk: _Chunk, names: Tuple[str, str],
+               point: float) -> Optional[Tuple[_Chunk, _Chunk]]:
+        """用 ffmpeg 在 ``point`` 秒把這一段切成兩個 wav；切不出來時回 None。"""
         audios = (self._temp_dir / f"{chunk.audio.stem}.half1.wav",
                   self._temp_dir / f"{chunk.audio.stem}.half2.wav")
         self._temp_files.extend(audios)
         if not (slice_audio(chunk.audio, audios[0], end=point)
                 and slice_audio(chunk.audio, audios[1], start=point)):
             return None
-        left = right = None
-        if chunk.silences is not None:
-            left = tuple(b for b in chunk.silences if 0 < b < point)
-            right = tuple(b - point for b in chunk.silences if point < b < chunk.duration)
         logger.info(f"分段轉錄: {chunk.audio.name} ({chunk.duration:.0f}s) 於 {point:.2f}s 切開")
-        return _Halves(chunk.part(first, audios[0], 0.0, point, left),
-                       chunk.part(second, audios[1], point, chunk.duration - point, right),
-                       at_silence)
+        return chunk.split_at(point, names, audios, keep_silences=True)
 
-    def _split_with_silero(self, chunk: _Chunk, first: str, second: str) -> Optional[_Halves]:
+    def _split_with_silero(self, chunk: _Chunk,
+                           names: Tuple[str, str]) -> Optional[Tuple[_Chunk, _Chunk]]:
         """用 Silero 在這一段的音檔上找切點；Silero 無法使用（沒安裝、載入失敗、出錯、找不到語音）時
         回 None。開了保留去靜音產物時，切出的兩段存進去靜音產物。"""
         # Silero（soundfile/libsndfile）讀不了 m4a 之類的壓縮格式，先轉成 wav
@@ -357,16 +355,18 @@ class _ChunkedTranscription:
         persist_split(task_id=self._task_id, original_filename=self._original_filename,
                       part1_path=audios[0], part2_path=audios[1], split_point=point)
         logger.info(f"分段轉錄: {chunk.audio.name} ({chunk.duration:.0f}s) 由 Silero 於 {point:.2f}s 切開")
-        return _Halves(chunk.part(first, audios[0], 0.0, point, None),
-                       chunk.part(second, audios[1], point, chunk.duration - point, None),
-                       at_silence=True)
+        return chunk.split_at(point, names, audios, keep_silences=False)
 
     # ── 合併與結果 ───────────────────────────────────────────────
     def _merged(self) -> TranscriptionTaskResult:
-        """合併轉完的段、時間還原回原音檔，回傳成功的轉錄結果。"""
+        """合併轉完的段、時間還原回原音檔，回傳成功的轉錄結果。
+
+        時間還原之後才排序：還原後開始時間相同的片段照合併的先後，和以前（任務生命週期在還原之後
+        才排序）一樣。
+        """
         segments = _merge(self._transcribed)
         if self._view.removed_silence:
-            self._progress.report("校正時間軸...")
+            self._progress.report("時間還原回原音檔...")
             segments = self._view.restore(segments)
             logger.info("時間已還原回原音檔的時間軸")
         return self._result(success=True, text=_why_no_segments(segments, self._transcribed),
@@ -385,6 +385,11 @@ class _ChunkedTranscription:
             service_tier_used=usage.service_tier_used,
             segments=list(segments),
         )
+
+
+def _why(error: TransientError) -> str:
+    """暫時錯誤給使用者看的原因：轉接器給了簡短的原因就用它（例如「503 UNAVAILABLE」），不然用例外訊息。"""
+    return error.reason or str(error)
 
 
 def _clock(seconds: float) -> str:

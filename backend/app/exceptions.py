@@ -22,10 +22,14 @@ class TransientError(AppError):
     批次交給執行模式重試整個批次。
     """
 
-    def __init__(self, message: str = "", retry_after: Optional[float] = None):
+    def __init__(self, message: str = "", retry_after: Optional[float] = None,
+                 reason: Optional[str] = None):
         super().__init__(message)
         self.retry_after = retry_after
         """供應商建議等幾秒再試（例如回應的 Retry-After）；沒有建議時是 None。"""
+        self.reason = reason
+        """給使用者看的簡短原因，例如「503 UNAVAILABLE」；沒有時用例外訊息。例外訊息照錄供應商的錯誤，
+        可能長得不適合放在畫面上。"""
 
 
 class GeminiTransientError(TransientError):
