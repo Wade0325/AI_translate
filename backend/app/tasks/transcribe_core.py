@@ -3,7 +3,8 @@
 Docker 模式由 `app.celery.task.transcribe_media_task` 包裝執行，免安裝模式由
 `app.runtime.in_process.InProcessRunMode.submit_transcription` 丟進行程內執行緒池；
 兩邊共用這裡的同一份流程。任務的狀態轉換與副作用在 :mod:`app.tasks.lifecycle`，
-這裡只負責「怎麼轉錄」：查出供應商轉接器，經分段轉錄轉錄輸入音檔。
+這裡只負責「怎麼轉錄」：查出供應商轉接器、去靜音拿到語音視圖，經分段轉錄轉錄它。
+語音視圖與轉接器由這裡建立，也由這裡清理與釋放。
 """
 
 from pathlib import Path
@@ -11,13 +12,15 @@ from pathlib import Path
 from app.celery.models import TranscriptionTaskParams
 from app.core.config import get_settings
 from app.core.default_prompt import build_prompt
-from app.exceptions import TranscriptionCancelledError
-from app.provider.base import ProgressAndCancel, TranscribeRequest
+from app.provider.base import ProgressAndCancel, Provider, TranscribeRequest
 from app.provider.registry import open_provider
-from app.services.transcription.flows import TranscriptionTask
+from app.services import chunked_transcription
+from app.services.silence_removal import speech_view
 from app.services.transcription.models import TranscriptionTaskResult
 from app.tasks.lifecycle import TaskLifecycle
+from app.utils.audio import get_audio_duration
 from app.utils.logger import setup_logger
+from app.utils.paths import delete_temp_files
 
 logger = setup_logger(__name__)
 
@@ -49,32 +52,58 @@ def _transcribe(
     # 查出供應商轉接器：模型不屬於這個供應商、或供應商還不能轉錄
     # （缺權重、金鑰無效）都在這裡以明確訊息失敗，不必等去靜音跑完
     adapter = open_provider(params.provider, params.model, params.api_keys)
-    progress.report("正在初始化模型...")
+    try:
+        progress.report("正在初始化模型...")
+        logger.info(f"Starting transcription. Task ID : {task_uuid}")
+        return _transcribe_speech_view(adapter, params, task_uuid, audio, progress)
+    finally:
+        # 供應商這次用到的遠端與暫存資源；輸入音檔由任務生命週期保留或清理
+        try:
+            adapter.release()
+        except Exception as e:
+            logger.warning(f"釋放供應商資源失敗: {e}")
 
-    chunked = TranscriptionTask(
-        provider=adapter,
-        request=TranscribeRequest(
-            model=params.model,
-            prompt=_prompt(params),
-            source_lang=params.source_lang,
-            service_tier=params.service_tier,
-        ),
-        progress=progress,
-        # 不用 audio.parent：重試時輸入音檔在保留區，暫存檔寫到那裡就清不掉
-        temp_dir=get_settings().temp_uploads_path,
-        artifact_task_id=str(task_uuid),
-        original_filename=params.original_filename,
+
+def _transcribe_speech_view(
+    adapter: Provider, params: TranscriptionTaskParams, task_uuid: str, audio: Path,
+    progress: ProgressAndCancel,
+) -> TranscriptionTaskResult:
+    """去靜音拿到語音視圖，經分段轉錄轉錄它；語音視圖的暫存檔用完就清掉。"""
+    duration = get_audio_duration(audio)
+    if duration is None:
+        logger.error(f"無法取得音訊時長 {audio.name}")
+        return TranscriptionTaskResult(success=False, text=f"[[無法讀取檔案 {audio.name}]]")
+
+    # 不用 audio.parent：重試時輸入音檔在保留區，暫存檔寫到那裡就清不掉
+    temp_dir = get_settings().temp_uploads_path
+    original_filename = params.original_filename or audio.name
+    progress.report("分析語音活動...")
+    view = speech_view(
+        audio,
+        duration,
+        remove_silence=adapter.capabilities()[params.model].remove_silence,
+        temp_dir=temp_dir,
+        task_id=str(task_uuid),
+        original_filename=original_filename,
     )
     try:
-        logger.info(f"Starting transcription. Task ID : {task_uuid}")
-        return chunked.transcribe_audio(audio)
-    except TranscriptionCancelledError as e:
-        # 取消前已經轉完的段落，供應商照樣收費：用量交給任務生命週期記在已取消的紀錄上
-        e.billed_usage = chunked.billed_usage
-        raise
+        return chunked_transcription.transcribe(
+            view,
+            adapter,
+            TranscribeRequest(
+                model=params.model,
+                prompt=_prompt(params),
+                source_lang=params.source_lang,
+                service_tier=params.service_tier,
+            ),
+            progress,
+            temp_dir=temp_dir,
+            task_id=str(task_uuid),
+            original_filename=original_filename,
+        )
     finally:
-        # 供應商的遠端資源與分段轉錄的暫存檔；輸入音檔由任務生命週期保留或清理
-        chunked.cleanup()
+        # 轉成的 wav、只剩語音的音檔
+        delete_temp_files(view.temp_files)
 
 
 def _prompt(params: TranscriptionTaskParams) -> str:

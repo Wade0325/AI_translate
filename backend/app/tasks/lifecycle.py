@@ -52,7 +52,6 @@ from app.runtime.run_mode import publish_status
 from app.services import audio_store, output_format
 from app.services.calculator.models import CalculationItem
 from app.services.calculator.service import CalculatorService
-from app.services.transcription.flows import order_segments
 from app.services.transcription.models import TranscriptionResponse, TranscriptionTaskResult
 from app.utils.audio import get_audio_duration
 from app.utils.logger import setup_logger
@@ -471,11 +470,13 @@ class TaskLifecycle:
 
     def _save_segments(self, db: Session, result: TranscriptionTaskResult) -> None:
         """片段是校正介面的資料來源；同一個任務再完成一次時，使用者動過的片段不刪、不覆寫
-        （ADR-0007），其他片段換成這次的結果。只寫進目前的交易，由 :meth:`_complete` 提交。"""
+        （ADR-0007），其他片段換成這次的結果。只寫進目前的交易，由 :meth:`_complete` 提交。
+
+        片段由分段轉錄依開始時間排好、序號連續。
+        """
         if not result.segments:
             return
-        segments = order_segments(result.segments)
-        count = TranscriptSegmentRepository.replace_untouched(db, self._task_uuid, segments)
+        count = TranscriptSegmentRepository.replace_untouched(db, self._task_uuid, result.segments)
         logger.info(f"已寫入 {count} 個轉錄片段 (task={self._task_uuid})")
 
     def _elapsed(self) -> float:

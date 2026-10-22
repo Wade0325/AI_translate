@@ -638,6 +638,19 @@ class TestChunkedTranscriptionFollowsCapabilities:
         assert starts == sorted(starts)
         assert all(in_voiced_region(t) for t in starts)
 
+    def test_without_any_silence_the_audio_is_split_in_the_middle(self, api, fake):
+        # 幾乎全是語音的音檔（見 MOSTLY_VOICED）不去靜音，語音視圖沒有靜音邊界，測試環境也沒有
+        # Silero。單次只能處理 15 秒：21.5 秒的原音檔切在正中間，不整段送出
+        fake.model_capabilities = replace(fake.model_capabilities, single_pass_seconds=15.0)
+        fake.script = [[(0.5, 2.0, 0, "前半。")], [(1.25, 2.75, 1, "後半。")]]
+        messages = transcribe(api, "uid-middle", voiced=MOSTLY_VOICED)
+
+        assert codes(messages)[-1] == TaskStatus.COMPLETED
+        assert fake.durations == pytest.approx([10.75, 10.75], abs=0.01)
+        segments = stored_segments(api, messages[-1]["task_uuid"])
+        assert flat_times(segments) == pytest.approx([0.5, 2.0, 12.0, 13.5])
+        assert [s["seg_key"] for s in segments] == ["a.0000", "b.0000"]
+
     def test_without_silence_removal_provider_times_are_kept(self, api, fake):
         fake.model_capabilities = replace(fake.model_capabilities, remove_silence=False)
         fake.script = list(SCRIPT)
@@ -646,23 +659,30 @@ class TestChunkedTranscriptionFollowsCapabilities:
         segments = stored_segments(api, messages[-1]["task_uuid"])
         assert [s["start"] for s in segments] == pytest.approx([line[0] for line in SCRIPT[0]])
 
-    @pytest.mark.parametrize("allowed, reported", [
-        (False, "模型壞掉了"),
-        # 測試環境沒有 Silero，找不到切點；之後分段轉錄會改成切在正中間
-        (True, "無法分割音訊檔案"),
-    ])
-    def test_split_retry_after_failure_follows_capabilities(
-            self, api, fake, settings, monkeypatch, allowed, reported):
-        # 失敗後切段重試只給夠長的音檔；把門檻降到合成音檔以下
-        monkeypatch.setattr(settings, "transcription_max_duration_seconds", 5)
-        fake.model_capabilities = replace(
-            fake.model_capabilities, split_retry_on_failure=allowed)
-        fake.script = [Fail("模型壞掉了")]
-        messages = transcribe(api, f"uid-retry-{allowed}")
 
-        assert codes(messages)[-1] == TaskStatus.FAILED
-        assert reported in messages[-1]["status_text"]
-        assert len(fake.calls) == 1
+class TestSplitRetryAfterFailure:
+    """失敗後切段重試（#112）。去靜音之後 7.2 秒的語音視圖（見 VOICED）由三個有聲段接成，交界在 2.3 與
+    4.9 秒；單次只能處理 5 秒，在 4.9 秒切成 4.9 秒與 2.3 秒兩段。失敗的段不短於 2 秒才切段重試。"""
+
+    @pytest.fixture(autouse=True)
+    def _two_chunks(self, fake, settings, monkeypatch):
+        fake.model_capabilities = replace(
+            fake.model_capabilities, single_pass_seconds=5.0, split_retry_on_failure=True)
+        monkeypatch.setattr(settings, "transcription_max_duration_seconds", 2)
+
+    def test_only_the_failed_chunk_is_split_and_retried(self, api, fake):
+        # 第一段失敗：只把它切成兩段重試，切點照樣先找靜音，切在它之內的交界 2.3 秒；第二段沒有重送
+        fake.script = [Fail("回應被阻擋"), [(0.2, 0.8, 0, "一つ目。")], [(0.2, 0.9, 1, "二つ目。")],
+                       [(0.5, 1.5, 0, "三つ目。")]]
+        messages = transcribe(api, "uid-split-retry")
+
+        assert codes(messages)[-1] == TaskStatus.COMPLETED
+        assert fake.durations == pytest.approx([4.9, 2.3, 2.6, 2.3], abs=0.01)
+        segments = stored_segments(api, messages[-1]["task_uuid"])
+        assert [s["seg_key"] for s in segments] == ["a.s0.0000", "a.s1.0000", "b.0000"]
+        # 第二句在 a.s1 的 0.2 秒，是語音視圖的 2.5 秒，還原回原音檔是第二個有聲段的 4.9 秒；
+        # 第三句在 b 的 0.5 秒，是語音視圖的 5.4 秒，是第三個有聲段的 10.2 秒
+        assert flat_times(segments) == pytest.approx([0.2, 0.8, 4.9, 5.6, 10.2, 11.2])
 
 
 # ─── 輸出格式從片段產生 ─────────────────────────────────────────────────────
