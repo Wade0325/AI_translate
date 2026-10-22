@@ -6,13 +6,14 @@
 * 沒有片段的任務（片段上線前的任務、#110 之前的 Gemini 任務、#115 之前批次裡的任務）退回解析
   存下來的 LRC：LRC、TXT 和以前相同，SRT／VTT 的結束時間照下面同一套規則。
 * 存下來的 LRC 是凍結的原始轉錄副本（ADR-0007）：任務完成時從轉錄結果產生（:func:`for_result`），
-  和下載的 LRC 相同；有片段時下載不讀它。
+  和下載的 LRC 相同；有片段時下載不讀它。#154 之前存的副本差在一點：秒數取到 0.01 是 60 的行
+  寫成 [00:60.00] 這種時間戳，下載寫成下一分鐘的 [01:00.00]（見 :func:`_lrc_timestamp`）。
 
 #110 之前的副本是供應商自己寫的 LRC。Gemini 任務的副本就是 Gemini 寫的 LRC（「Speaker 1:」、
 三位小數的時間戳、沒有時間戳的行都在）。本機任務的副本和這裡斷行相同（見 :func:`_segment_lines`），
-唯一刻意不同的是片段文字裡的換行收成空白（見 :func:`_one_line`）；沒去靜音也沒切段的任務，副本
-和下載逐字相同。去靜音或切段過的任務，副本另外經過分段轉錄對 LRC 文字做的時間處理，和下載還有
-這些差異：
+刻意不同的只有片段文字裡的換行收成空白（見 :func:`_one_line`），以及和上面一樣的 [00:60.00]；
+沒去靜音也沒切段的任務，除了這兩點，副本和下載逐字相同。去靜音或切段過的任務，副本另外經過
+分段轉錄對 LRC 文字做的時間處理，和下載還有這些差異：
 
 * 時間戳差 0.01 秒：去靜音的時間還原把秒數捨去到 0.01，切段的後段平移時又四捨五入一次。
   去靜音的任務約一半的行。
@@ -361,7 +362,8 @@ def _lrc_timestamp(seconds: float) -> str:
     """
     hundredths = int(Decimal(seconds).quantize(Decimal("0.01"), ROUND_HALF_EVEN) * 100)
     minutes, rest = divmod(hundredths, 6_000)
-    return f"[{minutes:02d}:{rest // 100:02d}.{rest % 100:02d}]"
+    whole_seconds, fraction = divmod(rest, 100)
+    return f"[{minutes:02d}:{whole_seconds:02d}.{fraction:02d}]"
 
 
 def _lrc_seconds(seconds: float) -> float:
