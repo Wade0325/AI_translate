@@ -19,6 +19,8 @@ from app.core.config import get_settings
 from app.runtime import run_mode
 from app.database.session import init_db, SessionLocal
 from app.repositories.transcription_log_repository import TranscriptionLogRepository
+from app.tasks import older_batches
+from app.tasks.lifecycle import without_db_details
 from app.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -43,6 +45,15 @@ async def lifespan(app: FastAPI):
             logger.info(f"啟動清掃：{swept} 筆逾時 PROCESSING 紀錄已標記為 FAILED")
     except Exception as e:
         logger.warning(f"啟動清掃逾時 PROCESSING 紀錄失敗: {e}")
+
+    # 舊版送出的批次補上每個檔案的列：之後和這一版的批次一樣復原、取回結果、在任務頁列出檔名
+    try:
+        with SessionLocal() as db:
+            added = older_batches.add_file_rows(db)
+        if added:
+            logger.info(f"舊版送出的 {added} 個批次補上了每個檔案的列")
+    except Exception as e:
+        logger.warning(f"替舊版送出的批次補列失敗: {without_db_details(e)}")
 
     # 清掉超過保留天數的保留音檔（它不是永久保存）
     from app.services import audio_store
