@@ -16,13 +16,13 @@ export default function PromptModal({ open, providerLabel, value, onChange, onOk
             destroyOnHidden
         >
             <div style={{ marginBottom: '24px' }}>
-                <div style={{ marginBottom: '8px', fontWeight: 500 }}>提示詞 (Prompt)</div>
-                <div style={{ color: 'rgba(0,0,0,0.45)', fontSize: '12px', marginBottom: '12px' }}>
-                    請輸入您希望模型在處理請求時遵循的系統級指令或提示。
+                <div style={{ marginBottom: '8px', fontWeight: 500 }}>提示詞範本</div>
+                <div style={{ color: '#8888a8', fontSize: '12px', marginBottom: '12px' }}>
+                    每個檔案都會整份送出的提示詞，要保留要求 LRC 格式與時間戳的指示，否則轉錄會失敗。清空後保存就用系統內建的範本。只想補一句（例如說話者是誰、人名照寫）時，填轉錄頁的提示詞。
                 </div>
                 <Input.TextArea
                     rows={6}
-                    placeholder="例如：請將音訊轉錄成逐字稿，並翻譯成中文。"
+                    placeholder="空白時用系統內建的範本。這裡存下的內容會整份取代內建的範本，要寫出輸出 LRC 格式與時間戳的指示…"
                     value={value}
                     onChange={(e) => onChange(e.target.value)}
                 />
