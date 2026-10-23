@@ -36,6 +36,7 @@ import time
 import traceback
 import uuid
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, List, Optional, Sequence, Tuple, TypeVar, Union
 
@@ -74,6 +75,10 @@ T = TypeVar("T")
 FIRST_POLL_SECONDS = 10.0
 """送出之後等幾秒才第一次查；之後每次多等一半，最多 :data:`MAX_POLL_SECONDS`。"""
 MAX_POLL_SECONDS = 60.0
+WATCH_TIMEOUT_SECONDS = 600.0
+"""看著批次的任務超過這麼久沒有消息，任務頁就當成它已經不在（:func:`watched`）。輪詢時每次查詢、每次
+等著重試之前都會記下心跳，間隔最多是 :data:`MAX_POLL_SECONDS` 或暫時錯誤的等待上限
+（``TRANSIENT_ERROR_MAX_WAIT_SECONDS``）再加上查詢本身的時間，遠小於它。"""
 
 Publish = Callable[..., None]
 """批次層級的狀態廣播：``publish(text, status_code=TaskStatus.PROCESSING)``。"""
@@ -109,15 +114,36 @@ def recovery_refusal(db: Session, job: BatchJob) -> Optional[str]:
     return _refusal(job, _file_rows(db, job))
 
 
+def watched(job: BatchJob) -> Optional[bool]:
+    """看著這個批次的任務（執行，或接手的復原）還在不在，任務頁的 ``is_alive``；不知道時是 None，
+    不是還在進行的批次也是 None。
+
+    先問執行模式（:meth:`~app.runtime.run_mode.RunMode.is_alive`）：免安裝模式查得準，重啟之後馬上
+    是 False。Docker 模式的 worker 被砍掉之後，Celery 仍把它的任務當成執行中，所以再看心跳：輪詢中、
+    復原中的批次，看著它的任務每次查詢都會記下（:meth:`BatchJobRepository.touch`，存在
+    ``updated_at``；改狀態與派出復原也會更新它），超過 :data:`WATCH_TIMEOUT_SECONDS` 沒有消息就當成
+    不在。上傳中不記心跳（一個大檔可能傳很久），只在執行模式查不出來（Docker 模式的 PENDING）時才看
+    ``updated_at``。
+    """
+    if job.status not in IN_PROGRESS:
+        return None
+    alive = run_mode.get().is_alive(job.celery_task_id)
+    if alive is False:
+        return False
+    quiet = (job.updated_at is not None
+             and (datetime.now() - job.updated_at).total_seconds() > WATCH_TIMEOUT_SECONDS)
+    if quiet and (alive is None or job.status != BatchState.UPLOADING):
+        return False
+    return alive
+
+
 def recoverable(job: BatchJob, files: Sequence[BatchFile], *, alive: Optional[bool]) -> bool:
     """任務頁要不要給這個批次「恢復」：沒有任務看著它，而且可以從復原入口接手
     （:func:`recovery_refusal`）。沒有任務看著的是失敗了（例如輪詢中斷），或還在進行的狀態、看著它的
-    任務卻不在了（例如應用程式重啟了）。
+    任務卻不在了（例如應用程式重啟了、Docker 模式的 worker 被砍掉了）。
 
-    ``files`` 是這個批次每個檔案的列；``alive`` 是看著它的任務還在不在，不知道時是 None（不給）。
-    批次清單傳的是任務頁的 ``is_alive``：Docker 模式查不出來（PENDING）、派出之後又超過 5 分鐘的當成
-    不在，所以在佇列裡排了這麼久的復原也會給（重複接手是安全的，見 :func:`start_recovery`）；worker
-    被砍掉之後 Celery 仍把它的任務當成執行中，這時不給。
+    ``files`` 是這個批次每個檔案的列；``alive`` 是看著它的任務還在不在（:func:`watched`），不知道時
+    是 None（不給）。誤判成不在時給了「恢復」也無妨：重複接手是安全的（見 :func:`start_recovery`）。
     """
     unwatched = job.status == BatchState.FAILED or (job.status in IN_PROGRESS and alive is False)
     return unwatched and _refusal(job, files) is None
@@ -475,6 +501,9 @@ class _Watch:
 
     ``lifecycle_of`` 給每個送出的檔案它的任務生命週期：執行時用這次執行自己的，復原時從任務紀錄
     接回（:func:`_resumed`）；給不出來的（例如使用者把紀錄刪掉了）沒有結果，結果狀態記成失敗。
+
+    看著批次的時候一直記下心跳（:meth:`_beat`）：每次查詢、每次等著重試之前、每結束一個檔案。任務頁
+    靠它看出看著批次的任務已經不在（:func:`watched`）。
     """
 
     def __init__(self, batch_id: str, publish: Publish,
@@ -506,13 +535,27 @@ class _Watch:
         """輪詢到批次結束；查詢遇到暫時錯誤時等一段時間再查（見 :func:`_retrying`）。"""
         interval = FIRST_POLL_SECONDS
         while True:
-            status = _retrying(self._publish, "查詢批次狀態", adapter.poll_batch, name)
+            status = _retrying(self._report, "查詢批次狀態", adapter.poll_batch, name)
             if status.done:
                 return status
             waited = int(time.time() - self._started_at)
-            self._publish(f"{label} 批次處理中... (已等待 {waited} 秒, 狀態: {status.state})")
+            self._report(f"{label} 批次處理中... (已等待 {waited} 秒, 狀態: {status.state})")
             time.sleep(interval)
             interval = min(interval * 1.5, MAX_POLL_SECONDS)
+
+    def _report(self, text: str) -> None:
+        """宣告輪詢的進度，同時記下心跳。"""
+        self._beat()
+        self._publish(text)
+
+    def _beat(self) -> None:
+        """心跳：記下這個批次還有任務看著（:meth:`BatchJobRepository.touch`）。記不下來只記 log，
+        輪詢照樣往下走。"""
+        try:
+            with SessionLocal() as db:
+                self._jobs.touch(db, self._batch_id)
+        except Exception as e:
+            logger.error(f"批次 {self._batch_id} 無法記下心跳: {without_db_details(e)}")
 
     def _end_files(self, outcome_of: Callable[[_Submitted], FileOutcome], *,
                    failure: Optional[str]) -> None:
@@ -527,6 +570,7 @@ class _Watch:
         self._publish(failure or "批次結束，正在處理結果...")
         completed = 0
         for file in submitted:
+            self._beat()
             try:
                 lifecycle = self._lifecycle_of(file)
             except Exception as e:

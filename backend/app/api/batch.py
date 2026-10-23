@@ -11,7 +11,6 @@ from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session
 from app.celery.models import BatchTranscriptionTaskParams, BatchFileItemParams
 from app.runtime import run_mode
-from app.core.batch_state import IN_PROGRESS
 from app.core.config import get_settings
 from app.core.task_status import TaskStatus
 from app.database.session import SessionLocal, get_db
@@ -70,15 +69,8 @@ def get_batch_tasks(db: Session = Depends(get_db)):
             # 需用 now() 對齊（utcnow 會差 8 小時）
             elapsed = (datetime.now() - job.created_at).total_seconds()
 
-        is_alive = None
-        if job.status in IN_PROGRESS:
-            alive = run_mode.get().is_alive(job.celery_task_id)
-            if alive is not None:
-                is_alive = alive
-            elif job.updated_at and (datetime.now() - job.updated_at).total_seconds() > 300:
-                # 查不出來（PENDING）、派出看著它的任務（或改狀態）之後又超過 5 分鐘：極大概率已死。
-                # 從派出的時候算，剛派出去、還排在佇列裡的復原不算停住。任務頁照它標「已中斷」、給「恢復」
-                is_alive = False
+        # 任務頁照它標「已中斷」、給「恢復」
+        is_alive = batch_core.watched(job)
 
         results.append(BatchTaskResponse(
             batch_id=job.batch_id,

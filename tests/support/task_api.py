@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, wait
+from datetime import datetime, timedelta
 
 from fastapi.testclient import TestClient
 
 from app.core.task_status import TaskStatus
+from app.database.models import BatchJob
 from tests.support.synthetic_audio import VOICED, synthetic_audio
 from tests.support.waiting import TIMEOUT
 
@@ -83,3 +85,10 @@ def shown(api: TestClient, batch_id: str) -> tuple:
     """任務頁上的這個批次：狀態、看著它的任務還在不在，以及給不給「恢復」。"""
     batch = listed(api, batch_id)
     return batch["status"], batch["is_alive"], batch["recoverable"]
+
+
+def last_heard(db_session, batch_id: str, *, minutes_ago: float) -> None:
+    """看著這個批次的任務最後一次有消息，改成 minutes_ago 分鐘前（心跳記在批次紀錄的 updated_at）。"""
+    db_session.query(BatchJob).filter_by(batch_id=batch_id).update(
+        {BatchJob.updated_at: datetime.now() - timedelta(minutes=minutes_ago)})
+    db_session.commit()

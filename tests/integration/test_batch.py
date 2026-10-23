@@ -32,6 +32,7 @@ from tests.support.task_api import (
     download,
     file_results,
     flat_times,
+    last_heard,
     leftovers,
     listed,
     listed_batch_ids,
@@ -920,6 +921,50 @@ def test_a_batch_still_being_watched_is_not_offered_for_recovery(
         receive_until(ws, TaskStatus.BATCH_COMPLETED)
 
     assert watched == ("POLLING", True, False)
+
+
+def test_a_watcher_that_goes_quiet_is_taken_for_stopped_until_it_is_heard_again(
+        api, in_process_run_mode, batch_fake, db_session, quick_polls, quick_transient_retries):
+    # 心跳：看著批次的任務每次查詢、每次重試之前都記下它還在。超過 10 分鐘沒有消息，任務頁就當成停住、
+    # 給「恢復」（Docker 模式的 worker 被砍掉時只看得出這個）；一有消息又是還在處理
+    batch_fake.script = [list(LINES)]
+    batch_fake.batch_polls = ["RUNNING", transient()]
+    holds = [threading.Event() for _ in range(3)]
+    batch_fake.poll_holds = list(holds)
+    with api.websocket_connect("/api/v1/batch/ws/batch-heartbeat") as ws:
+        ws.send_json(batch_request(api, ["heartbeat.wav"]))
+        wait_until(lambda: batch_fake.polls == 1)  # 第一次查詢停在這裡
+        last_heard(db_session, "batch-heartbeat", minutes_ago=11)
+        assert shown(api, "batch-heartbeat") == ("POLLING", False, True)
+
+        holds[0].set()  # 查到還在跑：記下心跳，等一下再查
+        wait_until(lambda: batch_fake.polls == 2)
+        assert shown(api, "batch-heartbeat") == ("POLLING", True, False)
+
+        last_heard(db_session, "batch-heartbeat", minutes_ago=11)
+        holds[1].set()  # 暫時錯誤：等著重試之前也記下心跳
+        wait_until(lambda: batch_fake.polls == 3)
+        assert shown(api, "batch-heartbeat") == ("POLLING", True, False)
+
+        holds[2].set()
+        messages = receive_until(ws, TaskStatus.BATCH_COMPLETED)
+
+    assert of_file(messages, "heartbeat.wav")[-1]["status_code"] == TaskStatus.COMPLETED
+
+
+def test_a_long_upload_is_not_taken_for_stopped(api, in_process_run_mode, batch_fake, db_session):
+    # 上傳中不記心跳（一個大檔可能傳很久）：執行模式說看著它的任務還在，就算很久沒有消息也是上傳中
+    batch_fake.hold = threading.Event()
+    batch_fake.script = [list(LINES)]
+    with api.websocket_connect("/api/v1/batch/ws/batch-long-upload") as ws:
+        ws.send_json(batch_request(api, ["long-upload.wav"]))
+        assert batch_fake.started.wait(TIMEOUT)
+        last_heard(db_session, "batch-long-upload", minutes_ago=11)
+        uploading = shown(api, "batch-long-upload")
+        batch_fake.hold.set()
+        receive_until(ws, TaskStatus.BATCH_COMPLETED)
+
+    assert uploading == ("UPLOADING", True, False)
 
 
 def test_a_batch_whose_polling_broke_off_is_listed_as_failed_and_offered_for_recovery(

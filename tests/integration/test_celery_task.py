@@ -26,7 +26,7 @@ from tests.support.older_batches import (
     unreadable_older_batch,
 )
 from tests.support.synthetic_audio import synthetic_audio
-from tests.support.task_api import file_results, shown
+from tests.support.task_api import file_results, last_heard, shown
 from tests.support.waiting import cancel_when_dispatched
 
 LINES = [(0.2, 1.5, 0, "おはよう。"), (2.3, 3.6, 1, "こんにちは。")]
@@ -331,9 +331,10 @@ def test_batch_files_end_like_tasks_in_docker_mode(batch_tasks, uploads, fake, b
 
 
 def test_batch_restarted_while_polling_recovers_in_docker_mode(
-        batch_tasks, uploads, fake, broadcasts, client, monkeypatch):
-    # worker 在查詢批次時重啟：檔案停在處理中，Celery 還把那次執行當成在跑。復原端點照樣接手，派送的
-    # Celery 任務（這裡 eager 執行）把同一個任務結束成完成
+        batch_tasks, uploads, fake, broadcasts, client, db_session, monkeypatch):
+    # worker 在查詢批次時重啟：檔案停在處理中，Celery 還把那次執行當成在跑。看著它的任務 10 分鐘沒有
+    # 消息之後，任務頁當成停住、給「恢復」；復原端點接手，派送的 Celery 任務（這裡 eager 執行）把同一個
+    # 任務結束成完成
     from app.celery.celery import celery_app
 
     run, _ = batch_tasks
@@ -347,8 +348,10 @@ def test_batch_restarted_while_polling_recovers_in_docker_mode(
     assert {m["status_code"] for m in started} == {TaskStatus.PROCESSING}
     # 被砍掉的 worker 來不及回報：結果後端還記著那次執行在跑（task_track_started）
     celery_app.backend.store_result(run_id, None, "STARTED")
-    # 所以任務頁看不出批次停住了，不給「恢復」（已知的限制）：要直接呼叫復原端點
+    # 所以只看得出心跳：剛停的時候照樣當成有任務看著，10 分鐘沒有消息才當成停住
     assert shown(client, "batch-docker-restart") == ("POLLING", True, False)
+    last_heard(db_session, "batch-docker-restart", minutes_ago=11)
+    assert shown(client, "batch-docker-restart") == ("POLLING", False, True)
     monkeypatch.setitem(celery_app.conf, "task_always_eager", True)
 
     response = client.post("/api/v1/batch/batch-docker-restart/recover",
@@ -392,7 +395,7 @@ def test_a_batch_whose_polling_broke_off_is_recovered_from_the_task_page_in_dock
 def test_a_recovery_still_in_the_queue_keeps_the_batch_recovering_in_docker_mode(
         batch_tasks, uploads, fake, client, db_session, redis_run_mode, monkeypatch):
     # 一小時前建立的批次輪詢中斷了。按「恢復」派出去的 Celery 任務還排在佇列裡，Celery 查不出它
-    # （PENDING）；從派出的時候算還沒超過 5 分鐘，任務頁照樣當成有任務看著：恢復中，不再給「恢復」
+    # （PENDING）；從派出的時候算還沒超過 10 分鐘，任務頁照樣當成有任務看著：恢復中，不再給「恢復」
     from datetime import datetime, timedelta
 
     from app.database.models import BatchJob

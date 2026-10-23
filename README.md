@@ -109,7 +109,7 @@ copy .env.example .env
 .\dc.bat help                       # 看全部用法
 ```
 
-程式碼以 volume 掛載：改後端（FastAPI `--reload`）與前端（Vite HMR）會自動熱更新；改 celery 需 `.\dc.bat restart celery-worker`。重啟 celery-worker 時還在等 Gemini 結果的批次，任務頁看不出它停住了（一直顯示處理中，沒有「恢復」），要直接呼叫復原端點接手：`curl.exe -X POST -H "Content-Type: application/json" -d "{}" http://localhost:8000/api/v1/batch/<batch_id>/recover`（完整的 `batch_id` 在 <http://localhost:8000/api/v1/batch/tasks> 查得到）。
+程式碼以 volume 掛載：改後端（FastAPI `--reload`）與前端（Vite HMR）會自動熱更新；改 celery 需 `.\dc.bat restart celery-worker`。重啟 celery-worker 時還在等 Gemini 結果的批次，任務頁要等約 10 分鐘才會標成「已中斷」並給「恢復」：Celery 看不出 worker 被砍掉了，任務頁看的是看著批次的任務每次查詢時記下的時間。
 
 若想直接用原生 docker compose 指令：
 
