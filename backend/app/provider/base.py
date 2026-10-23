@@ -46,6 +46,8 @@ class ModelCapabilities:
     accepts_prompt: bool
     accepts_user_text: bool
     supports_batch: bool
+    supports_flex: bool
+    """處理模式能不能選 Flex（請求帶 ``service_tier="flex"``）。"""
     pricing: Literal["per_token", "free"]
     remove_silence: bool
     """轉錄前要不要剪掉靜音；不剪的照樣找出靜音當分段轉錄的切點（見
@@ -73,7 +75,7 @@ class TranscribeRequest:
     prompt: str = ""
     source_lang: Optional[str] = None
     service_tier: Optional[str] = None
-    """Gemini 的處理模式：None／"standard" 或 "flex"；其他供應商忽略。"""
+    """處理模式：None／"standard" 或 "flex"；只有模型能力標明 ``supports_flex`` 的模型會收到 "flex"。"""
 
 
 class ProgressAndCancel:

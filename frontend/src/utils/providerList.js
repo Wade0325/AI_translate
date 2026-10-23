@@ -92,7 +92,7 @@ export function findModelCapabilities(providerList, provider, model) {
 }
 
 /**
- * 所選模型支援哪些輸入與處理方式：{ prompt, userText, batch }。
+ * 所選模型支援哪些輸入與處理方式：{ prompt, userText, batch, flex }。
  * 不支援的輸入送出時不帶上；還不知道模型能力時一律當成支援。
  */
 export function modelSupports(capabilities) {
@@ -100,16 +100,32 @@ export function modelSupports(capabilities) {
     prompt: capabilities?.accepts_prompt ?? true,
     userText: capabilities?.accepts_user_text ?? true,
     batch: capabilities?.supports_batch ?? true,
+    flex: capabilities?.supports_flex ?? true,
   };
 }
 
-/** 停用欄位時顯示的原因，鍵和 modelSupports 相同；支援的那一項是 null。 */
+/** 停用輸入欄位時顯示的原因（{ prompt, userText }）；支援的那一項是 null。處理模式見 processingModeNote。 */
 export function disabledReasonsFor(supports) {
   return {
     prompt: supports.prompt ? null : '所選的模型不支援提示詞，送出時不會帶上',
     userText: supports.userText ? null : '所選的模型不支援使用者文稿，送出時不會帶上',
-    batch: supports.batch ? null : '所選的模型不支援批次，請改用標準',
   };
+}
+
+/**
+ * 實際用的處理模式（'standard'、'flex' 或 'batch'）：所選的模型不支援使用者選的處理模式時
+ * 退回標準，標準每個模型都支援。
+ */
+export function allowedProcessingMode(mode, supports) {
+  return mode === 'standard' || supports[mode] ? mode : 'standard';
+}
+
+/** 處理模式選單下方的說明：所選的模型不支援哪些處理模式；都支援時是 null。 */
+export function processingModeNote(supports) {
+  if (!supports.flex && !supports.batch) return '所選的模型不支援 Flex 與批次，只能用標準';
+  if (!supports.flex) return '所選的模型不支援 Flex';
+  if (!supports.batch) return '所選的模型不支援批次';
+  return null;
 }
 
 /**

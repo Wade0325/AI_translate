@@ -9,7 +9,7 @@ import VadTestModal from "@/components/transcribe/VadTestModal"
 import { useTranscription } from "@/context/TranscriptionContext"
 import { useModelManager } from "@/components/ModelManager"
 import { PROVIDER_LIST_FAILED } from "@/hooks/useProviderList"
-import { modelOptions, providerOptions, providerPromptDisabledReason, requiresApiKey } from "@/utils/providerList"
+import { modelOptions, processingModeNote, providerOptions, providerPromptDisabledReason, requiresApiKey } from "@/utils/providerList"
 import { filePrompt, followsGlobalPrompt, globalSettingsPatch, promptToSend } from "@/utils/transcribeRequest"
 import { api } from "@/services/api"
 import { DownloadOutlined } from "@ant-design/icons"
@@ -66,6 +66,7 @@ export default function TranscribePage() {
     } = useTranscription()
 
     const { handleEditProvider, handleEditProviderParams, handleTestProvider } = useModelManager()
+    const modeNote = processingModeNote(supports)
 
     const [currentPage, setCurrentPage] = useState(1)
     const [isTextModalVisible, setIsTextModalVisible] = useState(false)
@@ -283,13 +284,15 @@ export default function TranscribePage() {
                             }}
                         >
                             <option value="standard">標準（即時）</option>
-                            <option value="flex">Flex（50% 費用．分鐘級延遲）</option>
-                            <option value="batch" disabled={Boolean(disabledReasons.batch)}>
+                            <option value="flex" disabled={!supports.flex}>
+                                Flex（50% 費用．分鐘級延遲）
+                            </option>
+                            <option value="batch" disabled={!supports.batch}>
                                 批次（50% 費用．非同步）
                             </option>
                         </select>
-                        {processingMode === "batch" && disabledReasons.batch ? (
-                            <ReasonText reason={disabledReasons.batch} />
+                        {modeNote ? (
+                            <ReasonText reason={modeNote} />
                         ) : (
                             <Text style={{ fontSize: 10, color: "#8888a8" }}>
                                 {processingMode === "flex"

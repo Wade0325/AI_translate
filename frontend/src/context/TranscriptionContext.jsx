@@ -6,6 +6,7 @@ import { useUploadQueue } from '../hooks/useUploadQueue';
 import { useDownloadBundle } from '../hooks/useDownloadBundle';
 import { PROVIDER_LIST_FAILED, useProviderList } from '../hooks/useProviderList';
 import {
+  allowedProcessingMode,
   disabledReasonsFor,
   findModelCapabilities,
   missingApiKey,
@@ -33,14 +34,12 @@ export const TranscriptionProvider = ({ children }) => {
   const [fileList, setFileList] = useState([]);
   const [targetLang, setTargetLang] = useState('zh-TW');
   const [isProcessing, setIsProcessing] = useState(false);
-  // 'standard' | 'flex' | 'batch'
-  const [processingMode, setProcessingMode] = useState('batch');
+  // 使用者選的處理模式：'standard' | 'flex' | 'batch'。實際用的是下面的 processingMode
+  const [chosenProcessingMode, setChosenProcessingMode] = useState('batch');
   const [multiSpeaker, setMultiSpeaker] = useState(false);
   // 轉錄頁的全域提示詞：補充說明，送給沒有每檔設定提示詞的檔案（不必先按 Apply to All），
   // 後端接在提示詞範本後面
   const [globalPrompt, setGlobalPrompt] = useState('');
-
-  const useBatchMode = processingMode === 'batch';
 
   const { getProviderConfig } = useModelManager();
 
@@ -65,6 +64,11 @@ export const TranscriptionProvider = ({ children }) => {
   const capabilities = findModelCapabilities(providerList, provider, model);
   const supports = useMemo(() => modelSupports(capabilities), [capabilities]);
   const reasons = useMemo(() => disabledReasonsFor(supports), [supports]);
+
+  // 換到不支援所選處理模式的模型時退回標準，之後換回來也維持標準（#162）
+  const processingMode = allowedProcessingMode(chosenProcessingMode, supports);
+  if (processingMode !== chosenProcessingMode) setChosenProcessingMode(processingMode);
+  const useBatchMode = processingMode === 'batch';
 
   const [isPreviewModalVisible, setIsPreviewModalVisible] = useState(false);
   const [previewContent, setPreviewContent] = useState('');
@@ -214,10 +218,6 @@ export const TranscriptionProvider = ({ children }) => {
       message.error(`請先在設定頁為 ${providerLabel(providerList, provider)} 設定 API 金鑰。`);
       return;
     }
-    if (useBatchMode && reasons.batch) {
-      message.error(reasons.batch);
-      return;
-    }
 
     const defaults = requestDefaults({ language: targetLang, multiSpeaker, processingMode, globalPrompt });
 
@@ -243,7 +243,6 @@ export const TranscriptionProvider = ({ children }) => {
     processingMode,
     useBatchMode,
     supports,
-    reasons,
     startBatch,
     startRegular,
   ]);
@@ -264,7 +263,7 @@ export const TranscriptionProvider = ({ children }) => {
     disabledReasons: reasons,
     isProcessing,
     processingMode,
-    setProcessingMode,
+    setProcessingMode: setChosenProcessingMode,
     multiSpeaker,
     setMultiSpeaker,
     globalPrompt,

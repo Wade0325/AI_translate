@@ -153,23 +153,27 @@ class CheckedRequest(NamedTuple):
 
 
 def check_request(provider: str, model: str, *, prompt: Optional[str] = None,
-                  user_text: Optional[str] = None, batch: bool = False) -> CheckedRequest:
+                  user_text: Optional[str] = None, batch: bool = False,
+                  service_tier: Optional[str] = None) -> CheckedRequest:
     """驗證這個請求用得了這個供應商的這個模型，回傳供應商清單上的名稱與模型能力給呼叫端
     派送任務。
 
-    依序檢查：模型屬於這個供應商；批次請求（``batch``）的模型支援批次；模型吃得下
-    請求裡填了的輸入。整批跑不了的原因先報，免得使用者清掉輸入後又被拒一次。
+    依序檢查：模型屬於這個供應商；批次請求（``batch``）的模型支援批次、Flex 請求
+    （``service_tier="flex"``）的模型支援 Flex；模型吃得下請求裡填了的輸入。處理模式跑不了
+    的原因先報，免得使用者清掉輸入後又被拒一次。
 
     模型不吃的輸入要明確拒絕，不能送進任務後被默默丟掉。None、空字串與只有空白
     都算沒填，照常送出。
 
     Raises:
-        UnsupportedModelError: 供應商不存在、模型不屬於它，或批次請求的模型不支援批次。
+        UnsupportedModelError: 供應商不存在、模型不屬於它，或模型不支援請求的處理模式。
         UnsupportedInputError: 填了這個模型不吃的提示詞或使用者文稿。
     """
     capabilities = model_capabilities(provider, model)
     if batch and not capabilities.supports_batch:
         raise UnsupportedModelError(f"模型 {model} 不支援批次")
+    if service_tier == "flex" and not capabilities.supports_flex:
+        raise UnsupportedModelError(f"模型 {model} 不支援 Flex，請改用標準")
     unsupported = [name for name, value, accepted in (
         ("提示詞", prompt, capabilities.accepts_prompt),
         ("使用者文稿", user_text, capabilities.accepts_user_text),

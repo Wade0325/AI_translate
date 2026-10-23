@@ -39,7 +39,8 @@ def start_transcription_task_sync(payload_str: str, file_uid: str) -> None:
     Raises:
         UnsafeUploadFilenameError: filename 不是 temp_uploads 內的單純檔名。
         MissingUploadError: 上傳檔已經不在，例如被清掃掉，或另一個分頁已經送出同一個檔。
-        UnsupportedModelError: 模型不屬於所選的供應商，或填了模型不吃的提示詞或使用者文稿
+        UnsupportedModelError: 模型不屬於所選的供應商、模型不支援請求的處理模式（Flex），
+            或填了模型不吃的提示詞或使用者文稿
             （:class:`~app.provider.registry.UnsupportedInputError`）。
     """
     request_data = WebSocketTranscriptionRequest.model_validate_json(
@@ -49,7 +50,8 @@ def start_transcription_task_sync(payload_str: str, file_uid: str) -> None:
     try:
         provider, capabilities = check_request(
             request_data.provider, request_data.model,
-            prompt=request_data.prompt, user_text=request_data.original_text)
+            prompt=request_data.prompt, user_text=request_data.original_text,
+            service_tier=request_data.service_tier)
     except UnsupportedModelError:
         # 被拒絕的請求不會變成任務：上傳檔不留在電腦上（前端重新送出時會重新上傳）
         audio_store.discard_upload(request_data.filename, TEMP_UPLOADS_DIR)
