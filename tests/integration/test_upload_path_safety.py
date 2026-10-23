@@ -8,7 +8,7 @@
 漏洞重現：filename 帶絕對路徑或 ``..`` 時，``TEMP_UPLOADS_DIR / filename``
 會指向上傳目錄外的檔案，任務就拿那個檔案去轉錄（之後還會被搬進 audio_store）。
 
-被拒的檔名要用 repr 記進 log：排查只能靠使用者附上的 log（ADR-0005）。
+被拒的檔名與找不到的上傳檔名都要用 repr 記進 log：排查只能靠使用者附上的 log（ADR-0005）。
 """
 import json
 from pathlib import Path
@@ -17,6 +17,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.api import batch, transcription, vad
+from tests.support.task_api import receive
 
 
 @pytest.fixture
@@ -101,6 +102,9 @@ def _logged_as_repr(app_log, filename: str) -> bool:
 # 「被拒的檔名記進 log」測的幾種可疑檔名
 LOGGED_KINDS = ["absolute", "dotdot", "forged_log_line"]
 
+# 帶換行、但不含路徑的檔名：通過檔名檢查，上傳目錄裡卻沒有這個檔（#153）
+MISSING_WITH_FORGED_LOG_LINE = "a.wav\n2026-10-20 12:00:00 - INFO - 偽造的一行"
+
 
 # ─── 單檔 WS ─────────────────────────────────────────────────────────────────
 
@@ -129,6 +133,13 @@ class TestSingleTranscription:
             ws.receive_json()
 
         assert _logged_as_repr(app_log, filename)
+
+    def test_missing_upload_is_logged(self, client: TestClient, uploads, app_log):
+        with client.websocket_connect("/api/v1/ws/uid-missing") as ws:
+            ws.send_json(_single_payload(MISSING_WITH_FORGED_LOG_LINE))
+            receive(ws)
+
+        assert _logged_as_repr(app_log, MISSING_WITH_FORGED_LOG_LINE)
 
     def test_plain_filename_is_dispatched(self, uploads, dispatched):
         root, _ = uploads
@@ -203,6 +214,18 @@ class TestBatchTranscription:
             ws.receive_json()
 
         assert _logged_as_repr(app_log, filename)
+
+    def test_missing_upload_is_logged(self, client: TestClient, uploads, app_log):
+        payload = _batch_payload([
+            {"filename": MISSING_WITH_FORGED_LOG_LINE, "original_filename": "a.wav",
+             "file_uid": "uid-missing"},
+        ])
+
+        with client.websocket_connect("/api/v1/batch/ws/batch-missing") as ws:
+            ws.send_json(payload)
+            receive(ws)
+
+        assert _logged_as_repr(app_log, MISSING_WITH_FORGED_LOG_LINE)
 
     def test_valid_files_still_dispatched_when_one_is_rejected(
             self, client: TestClient, uploads, dispatched):

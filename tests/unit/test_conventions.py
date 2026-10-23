@@ -162,6 +162,9 @@ USER_FACING_ERRORS = {
     "UnsafeUploadFilenameError": (
         "backend/app/utils/paths.py",
         "訊息固定是 UNSAFE_UPLOAD_FILENAME_MESSAGE，不帶檔名"),
+    "MissingUploadError": (
+        "backend/app/utils/paths.py",
+        "訊息固定是 MISSING_UPLOAD_MESSAGE，不帶檔名"),
     "UnsupportedModelError": (
         "backend/app/provider/registry.py",
         "訊息是固定句子，只帶請求自己送來的供應商與模型名稱"),

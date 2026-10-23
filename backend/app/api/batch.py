@@ -21,7 +21,7 @@ from app.services import audio_store
 from app.services.api_keys import resolve_api_key
 from app.tasks import batch_core
 from app.utils.logger import setup_logger
-from app.utils.paths import UnsafeUploadFilenameError, resolve_upload_path
+from app.utils.paths import MissingUploadError, UnsafeUploadFilenameError, existing_upload_path
 from app.websocket.manager import manager
 from app.schemas.schemas import (
     WebSocketBatchRequest,
@@ -163,8 +163,8 @@ def start_batch_task_sync(payload_str: str, batch_id: str) -> list[dict]:
     同步函式：解析批次請求並派發批次轉錄任務。
     在獨立執行緒中執行以避免阻塞事件迴圈。
 
-    檔名不合法（不是 temp_uploads 內的單純檔名）的檔案不派發，其餘照常；
-    模型不屬於所選供應商、不支援批次或不吃提示詞時整批不派發。
+    檔名不合法（不是 temp_uploads 內的單純檔名）或上傳檔已經不在的檔案不派發，其餘照常，
+    一個都不剩時整批不派發；模型不屬於所選供應商、不支援批次或不吃提示詞時也整批不派發。
     回傳被拒檔案的 FAILED 訊息，由 WS 端點送回前端。
     """
     request_data = WebSocketBatchRequest.model_validate_json(payload_str)
@@ -191,18 +191,19 @@ def start_batch_task_sync(payload_str: str, batch_id: str) -> list[dict]:
     rejected = []
     for f in request_data.files:
         try:
-            temp_file_path = resolve_upload_path(f.filename, TEMP_UPLOADS_DIR)
-        except UnsafeUploadFilenameError as e:
-            logger.warning(f"批次拒絕不合法的上傳檔名 (file_uid: {f.file_uid}): {f.filename!r}")
+            temp_file_path = existing_upload_path(f.filename, TEMP_UPLOADS_DIR)
+        except (UnsafeUploadFilenameError, MissingUploadError) as e:
+            if isinstance(e, UnsafeUploadFilenameError):
+                logger.warning(f"批次拒絕不合法的上傳檔名 (file_uid: {f.file_uid}): {f.filename!r}")
+            else:
+                logger.error(f"批次的檔案不存在 (file_uid: {f.file_uid}): {f.filename!r}")
+            # 沒送出的檔案也回失敗狀態，使用者才知道它沒有送出
             rejected.append({
                 "client_id": batch_id,
                 "file_uid": f.file_uid,
                 "status_code": TaskStatus.FAILED,
                 "status_text": str(e),
             })
-            continue
-        if not temp_file_path.is_file():
-            logger.error(f"批次的檔案不存在: {f.filename!r}")
             continue
 
         file_items.append(BatchFileItemParams(

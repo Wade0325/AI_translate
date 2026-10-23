@@ -13,6 +13,7 @@ logger = setup_logger(__name__)
 _DRIVE_PREFIX = re.compile(r"^[A-Za-z]:")
 
 UNSAFE_UPLOAD_FILENAME_MESSAGE = "檔案名稱不合法（不可包含路徑），請重新上傳檔案後再試。"
+MISSING_UPLOAD_MESSAGE = "找不到上傳的檔案，請重新上傳檔案後再試。"
 
 
 class UnsafeUploadFilenameError(ValueError):
@@ -21,6 +22,15 @@ class UnsafeUploadFilenameError(ValueError):
     def __init__(self, filename):
         self.filename = filename
         super().__init__(UNSAFE_UPLOAD_FILENAME_MESSAGE)
+
+
+class MissingUploadError(ValueError):
+    """前端送來的上傳檔已經不在，例如被清掃掉，或另一個分頁已經送出同一個檔；
+    訊息可直接顯示給使用者。"""
+
+    def __init__(self, filename):
+        self.filename = filename
+        super().__init__(MISSING_UPLOAD_MESSAGE)
 
 
 def is_within(path, root) -> bool:
@@ -68,7 +78,7 @@ def resolve_upload_path(filename, base_dir=None) -> Path:
 
     回傳 ``base_dir / filename``，保留 base_dir 原本的相對形式：Docker 模式的
     API 與主機端 GPU worker 靠 cwd 相對路徑共享上傳檔，不能換成容器內的絕對路徑。
-    檔案是否存在由呼叫端判斷。
+    檔案是否存在由呼叫端判斷；要上傳檔還在的用 :func:`existing_upload_path`。
 
     Raises:
         UnsafeUploadFilenameError: 檔名不合法。
@@ -90,3 +100,16 @@ def resolve_upload_path(filename, base_dir=None) -> Path:
     if resolved.parent != root:
         raise UnsafeUploadFilenameError(filename)
     return base / filename
+
+
+def existing_upload_path(filename, base_dir=None) -> Path:
+    """同 :func:`resolve_upload_path`，並確認上傳檔還在。
+
+    Raises:
+        UnsafeUploadFilenameError: 檔名不合法。
+        MissingUploadError: 上傳檔已經不在。
+    """
+    path = resolve_upload_path(filename, base_dir)
+    if not path.is_file():
+        raise MissingUploadError(filename)
+    return path
