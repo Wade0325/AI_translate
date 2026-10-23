@@ -4,6 +4,7 @@ import { api, WS_URLS } from '../services/api';
 import { registerTranscribeSession } from '../utils/transcribeSessions';
 import { randomId } from '../utils/id';
 import { buildBatchPayload, buildSinglePayload } from '../utils/transcribeRequest';
+import { applyFileResult } from '../utils/fileResult';
 import { TASK_STATUS } from '../constants/taskStatus';
 
 /**
@@ -26,34 +27,6 @@ import { TASK_STATUS } from '../constants/taskStatus';
 const isRestartable = (f) =>
   (f.status === 'waiting' || f.status === 'error' || f.status === 'cancelled') &&
   !!f.originFileObj;
-
-// 依 COMPLETED/FAILED/CANCELLED 的 WS 訊息，算出單一 file 的下一個 state。
-function applyFileResult(file, data) {
-  const next = {
-    ...file,
-    statusText: data.status_text,
-    task_uuid: data.task_uuid,
-  };
-  if (data.status_code === TASK_STATUS.COMPLETED) {
-    next.status = 'completed';
-    next.percent = 100;
-    next.result = data.result?.transcripts;
-    next.tokens_used = data.result?.tokens_used;
-    next.cost = data.result?.cost;
-    // Result 頁顯示用：時長、模型與實際使用的來源語言
-    next.audioDurationSec = data.result?.audio_duration_seconds;
-    next.model = data.result?.model ?? file.model;
-    next.sourceLanguage = data.result?.source_language;
-  } else if (data.status_code === TASK_STATUS.FAILED) {
-    next.status = 'error';
-    next.percent = 100;
-    next.error = data.status_text;
-  } else if (data.status_code === TASK_STATUS.CANCELLED) {
-    next.status = 'cancelled';
-    next.percent = 100;
-  }
-  return next;
-}
 
 export function useUploadQueue({ fileList, setFileList, socketManager, onBatchSubmitted }) {
   const updateFile = useCallback((uid, patch) => {
