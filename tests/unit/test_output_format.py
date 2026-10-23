@@ -1,8 +1,9 @@
 """輸出格式模組：從轉錄結果（片段）產生四種輸出格式。
 
 期望值是本機原本會產生的輸出：LRC 照本機的斷行規則（#110 之前由本機轉接器自己寫 LRC，搭配
-真的 Qwen3-ForcedAligner 斷詞）手算，SRT／VTT／TXT 是舊的 LRC 轉換器從那份 LRC 轉出的結果，
-只有 SRT／VTT 的結束時間改用片段的真實結束時間（#96，見「SRT／VTT 的結束時間」那一節）。
+真的 Qwen3-ForcedAligner 斷詞）手算，SRT／VTT／TXT 是舊的 LRC 轉換器從那份 LRC 轉出的結果。
+和原本不同的只有兩處：SRT／VTT 的結束時間改用片段的真實結束時間（#96，見「SRT／VTT 的結束時間」
+那一節）；秒數取到 0.01 是 60 的 LRC 時間戳進到下一分鐘（#154，見「LRC 時間戳的進位」那一節）。
 逐字時間的 text 是對齊器的詞：標點被丟掉，漢字一字一詞，連續的假名、英數字是一詞。
 「本機的逐字時間都用得上」那一節用真的對齊器斷詞，確認本機存下來的逐字時間都對得上文字；
 「和 #110 之前本機寫的 LRC 逐字相同」那一節比對隨機片段和存下來的舊輸出。
@@ -234,7 +235,8 @@ class TestLocalWordTimingsAreUsed:
 
 # #110 之前，本機轉接器自己寫 LRC（asr._entry_to_lines）。期望值是那份程式對下面產生器的 300 組
 # 隨機片段算出來、存成 fixture 的 LRC。產生器（字元、時間、亂數種子）一改，期望值就得用 git 歷史
-# 裡 #110 之前的 asr.py 整份重算
+# 裡 #110 之前的 asr.py 整份重算。那份程式也會把秒數取到 0.01 是 60 的行寫成 [00:60.00]（#154）：
+# 現在的期望值沒有這種行，重算後有的話，要改成下一分鐘的 [01:00.00]
 LOCAL_LRC_BEFORE_110 = (Path(__file__).resolve().parents[1] / "fixtures" / "output_format"
                         / "local_lrc_before_110.json")
 
@@ -516,6 +518,45 @@ class TestSubtitleEndTimes:
         assert formats({"start": 1.0, "end": None, "speaker": None, "text": "はい"},
                        {"start": 1.3, "end": None, "speaker": None, "text": "そうですね"},
                        {"start": 4.0, "end": None, "speaker": None, "text": "じゃあ"}).srt == expected
+
+
+# ─── LRC 時間戳的進位（#154） ────────────────────────────────────────────────
+
+class TestLrcTimestampCarry:
+    """LRC 時間戳先把秒數取到 0.01，再拆成分鐘與秒。以前先拆才取，59.996 秒會寫成 [00:60.00]；
+    取到 0.01 的方式不變，只有這種行和以前不同。"""
+
+    @pytest.mark.parametrize("start, stamp", [
+        (59.996, "[01:00.00]"),
+        (59.999, "[01:00.00]"),
+        (119.999, "[02:00.00]"),
+        (3599.999, "[60:00.00]"),
+        # 照浮點數實際的值取：119.995 其實是 119.9950000000000045…，進位；59.995 其實是 59.99499…，
+        # 取到 59.99，和以前一樣
+        (119.995, "[02:00.00]"),
+        (59.995, "[00:59.99]"),
+        # 剛好一半時取偶數，和以前一樣（Gemini 的時間戳有三位小數，可能剛好一半）
+        (61.125, "[01:01.12]"),
+        (61.375, "[01:01.38]"),
+    ])
+    def test_seconds_are_rounded_before_the_minutes_are_split_off(self, start, stamp):
+        segment = {"start": start, "end": start + 1, "speaker": "S0", "text": "はい。"}
+        assert formats(segment).lrc == f"{stamp}[S0] はい。"
+
+    @pytest.mark.parametrize("start, stamp_before, times", [
+        (59.996, "[00:60.00]", "00:01:00,000 --> 00:01:05,000"),
+        (119.999, "[01:60.00]", "00:02:00,000 --> 00:02:05,000"),
+        (3599.999, "[59:60.00]", "01:00:00,000 --> 01:00:05,000"),
+    ])
+    def test_subtitles_start_at_the_same_time_as_before(self, start, stamp_before, times):
+        # SRT／VTT 的開始時間取 LRC 時間戳讀回來的值：現在的 [01:00.00] 和以前的 [00:60.00]
+        # 讀回來都是 60 秒。#154 之前存下來的凍結副本還寫著 [00:60.00]，從它轉換的字幕和從片段
+        # 產生的相同（片段沒有結束時間，兩邊都是最後一行加 5 秒）
+        segment = {"start": start, "end": None, "speaker": "S0", "text": "はい。"}
+        stored_before = output_format.convert_from_lrc(f"{stamp_before}[S0] はい。")
+        assert srt_times(segment) == [times]
+        assert formats(segment).srt == stored_before.srt
+        assert formats(segment).vtt == stored_before.vtt
 
 
 # ─── 沒有片段的轉錄結果 ──────────────────────────────────────────────────────
