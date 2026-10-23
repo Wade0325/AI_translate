@@ -184,12 +184,13 @@ def transcribe(api, file_uid: str, name: str = "voice.wav", voiced=VOICED,
         return receive_until_terminal(ws)
 
 
-def task_rejection(api, file_uid: str, **submit_args) -> str:
-    """送出一個該被拒絕的單檔任務，回傳拒絕的訊息。
+def task_rejection(api, file_uid: str, filename: str | None = None, **submit_args) -> str:
+    """送出一個該被拒絕的單檔任務，回傳拒絕的訊息；沒給上傳檔名時先上傳一個音檔。
 
     被拒絕時只回一則 FAILED 就關閉連線（1008），而且沒有派送任何任務。
     """
-    filename = upload(api)
+    if filename is None:
+        filename = upload(api)
     with api.websocket_connect(f"/api/v1/ws/{file_uid}") as ws:
         submit(ws, filename, **submit_args)
         message = receive(ws)
@@ -896,6 +897,23 @@ class TestModelMustBelongToProvider:
 
         assert {m["status_code"] for m in messages} == {TaskStatus.FAILED}
         assert leftovers(data_dir) == []
+
+
+# ─── 送出時上傳檔已經不在（#153） ────────────────────────────────────────────
+
+class TestUploadGoneBeforeSubmit:
+    def test_single_file_fails_instead_of_staying_in_progress(self, api, fake):
+        # 同一個上傳檔已經送出過（例如在另一個分頁）：那個任務收尾時，上傳檔已經搬進保留區或刪掉
+        fake.script = list(SCRIPT)
+        filename = upload(api)
+        with api.websocket_connect("/api/v1/ws/uid-sent-elsewhere") as ws:
+            submit(ws, filename)
+            assert receive_until_terminal(ws)[-1]["status_code"] == TaskStatus.COMPLETED
+
+        reason = task_rejection(api, "uid-upload-gone", filename=filename)
+
+        assert "找不到上傳的檔案" in reason
+        assert fake.opened == 1
 
 
 class TestStoredProviderName:

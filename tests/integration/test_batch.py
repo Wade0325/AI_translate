@@ -35,6 +35,7 @@ from tests.support.task_api import (
     leftovers,
     listed,
     listed_batch_ids,
+    receive,
     receive_until,
     shown,
     stored_segments,
@@ -311,6 +312,39 @@ def test_a_file_that_cannot_be_uploaded_fails_alone(api, in_process_run_mode, ba
     # 送出的只有上傳成功的兩個檔案，結果照它們送出的順序對回去
     assert len(batch_fake.prompts) == 2
     assert [s["text"] for s in stored_segments(api, third["task_uuid"])] == ["三つ目。"]
+
+
+def test_a_file_whose_upload_is_gone_fails_alone(api, in_process_run_mode, batch_fake):
+    # 第二個檔案送出的檔名在上傳資料夾裡找不到，和上傳檔已經被清掃掉一樣（#153）
+    batch_fake.script = [[(0.2, 1.5, 0, "一つ目。")], [(0.2, 1.5, 0, "三つ目。")]]
+
+    messages = run_batch(api, in_process_run_mode, "batch-upload-gone", NAMES,
+                         fields_per_file={NAMES[1]: {"filename": "swept-away.wav"}})
+
+    # 只有那個檔案失敗並說明原因，使用者才知道它沒有送出；其他檔案照常送出
+    first, gone, third = ends(messages, NAMES)
+    assert codes([first, gone, third]) == [
+        TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.COMPLETED]
+    assert "找不到上傳的檔案" in gone["status_text"]
+    assert len(batch_fake.prompts) == 2
+    assert [s["text"] for s in stored_segments(api, third["task_uuid"])] == ["三つ目。"]
+
+
+def test_a_batch_whose_uploads_are_all_gone_is_not_sent(api, batch_fake):
+    names = NAMES[:2]
+    with api.websocket_connect("/api/v1/batch/ws/batch-all-gone") as ws:
+        ws.send_json({
+            "files": [{"filename": f"swept-{name}", "original_filename": name, "file_uid": name}
+                      for name in names],
+            "provider": "fake", "model": FAKE_MODEL, "source_lang": "ja"})
+        messages = [receive(ws) for _ in names]
+
+    # 每個檔案都失敗並說明原因；沒有檔案可以送出，整批不派送
+    assert [(m["file_uid"], m["status_code"]) for m in messages] == [
+        (name, TaskStatus.FAILED) for name in names]
+    assert all("找不到上傳的檔案" in m["status_text"] for m in messages)
+    assert "batch-all-gone" not in listed_batch_ids(api)
+    assert batch_fake.opened == 0
 
 
 def test_every_file_fails_when_the_batch_cannot_be_submitted(api, in_process_run_mode, batch_fake):

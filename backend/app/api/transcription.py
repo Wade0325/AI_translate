@@ -18,7 +18,7 @@ from app.repositories.transcription_log_repository import TranscriptionLogReposi
 from app.services import audio_store
 from app.services.api_keys import resolve_api_key
 from app.utils.logger import setup_logger
-from app.utils.paths import UnsafeUploadFilenameError, resolve_upload_path
+from app.utils.paths import MissingUploadError, UnsafeUploadFilenameError, existing_upload_path
 from app.websocket.manager import manager
 from app.schemas.schemas import WebSocketTranscriptionRequest
 
@@ -37,6 +37,7 @@ def start_transcription_task_sync(payload_str: str, file_uid: str) -> None:
 
     Raises:
         UnsafeUploadFilenameError: filename 不是 temp_uploads 內的單純檔名。
+        MissingUploadError: 上傳檔已經不在，例如被清掃掉，或另一個分頁已經送出同一個檔。
         UnsupportedModelError: 模型不屬於所選的供應商，或填了模型不吃的提示詞或使用者文稿
             （:class:`~app.provider.registry.UnsupportedInputError`）。
     """
@@ -53,13 +54,7 @@ def start_transcription_task_sync(payload_str: str, file_uid: str) -> None:
         audio_store.discard_upload(request_data.filename, TEMP_UPLOADS_DIR)
         raise
 
-    temp_file_path = resolve_upload_path(request_data.filename, TEMP_UPLOADS_DIR)
-
-    if temp_file_path.is_file():
-        server_file_path = str(temp_file_path)
-    else:
-        logger.error(f"檔案不存在: {request_data.filename}")
-        return
+    server_file_path = str(existing_upload_path(request_data.filename, TEMP_UPLOADS_DIR))
 
     # 前端不再送明文金鑰：缺少或只帶遮罩值時改用資料庫裡的金鑰
     with SessionLocal() as db:
@@ -162,11 +157,13 @@ async def websocket_endpoint(
 
         try:
             await run_in_threadpool(start_transcription_task_sync, payload_str=payload_str, file_uid=file_uid)
-        except (UnsafeUploadFilenameError, UnsupportedModelError) as e:
+        except (UnsafeUploadFilenameError, MissingUploadError, UnsupportedModelError) as e:
+            # 檔名的錯誤訊息是固定的：檔名要另外記，排查只能靠使用者附上的 log（ADR-0005）。
+            # 用 repr，換行等控制字元才不會在 log 裡偽造出別的行
             if isinstance(e, UnsafeUploadFilenameError):
-                # 錯誤訊息是固定的：可疑的檔名要另外記，排查只能靠使用者附上的 log（ADR-0005）。
-                # 用 repr，換行等控制字元才不會在 log 裡偽造出別的行
                 logger.warning(f"拒絕不合法的上傳檔名 (file_uid: {file_uid}): {e.filename!r}")
+            elif isinstance(e, MissingUploadError):
+                logger.error(f"檔案不存在 (file_uid: {file_uid}): {e.filename!r}")
             else:
                 logger.warning(f"拒絕轉錄請求 (file_uid: {file_uid}): {e}")
             await websocket.send_json({
