@@ -19,7 +19,7 @@ from app.core.config import get_settings
 from app.runtime import run_mode
 from app.database.session import init_db, SessionLocal
 from app.repositories.transcription_log_repository import TranscriptionLogRepository
-from app.tasks import older_batches
+from app.tasks import batch_core, older_batches
 from app.tasks.lifecycle import without_db_details
 from app.utils.logger import setup_logger
 
@@ -70,6 +70,16 @@ async def lifespan(app: FastAPI):
     # 依執行模式選一次轉接器，再啟動 WebSocket 狀態監聽器
     run_mode.get()
     websocket_manager.start()
+
+    # 免安裝模式的批次跑在本行程內：重啟之後，上傳中的批次必定已經停了，記成失敗。Docker 模式由
+    # worker 啟動時收（app.celery.celery），API 單獨重啟時 worker 可能還在上傳
+    if settings.is_standalone:
+        try:
+            ended = batch_core.end_stopped_uploads()
+            if ended:
+                logger.info(f"啟動清掃：{ended} 個上傳時停住的批次記成失敗")
+        except Exception as e:
+            logger.warning(f"啟動清掃上傳中的批次失敗: {without_db_details(e)}")
 
     # 預熱 VAD，避免首個任務才載模型
     try:
