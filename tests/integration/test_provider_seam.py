@@ -2093,6 +2093,20 @@ class TestUsageOfTasksThatDidNotComplete:
         assert record["total_tokens"] == 240_000 * len(script)
         assert record["cost"] == pytest.approx(0.30 * len(script))
 
+    def test_chunks_finished_before_an_unexpected_error_are_billed_too(self, api, fake):
+        # 分段轉錄裡冒出非預期的例外（程式錯誤）時也一樣（#198）：切成 4.9 秒與 2.3 秒兩段，兩段都
+        # 轉完，第二段的轉接器卻回傳不是數字的開始時間，合併時出錯。兩次呼叫照樣收費
+        fake.model_capabilities = replace(fake.model_capabilities, single_pass_seconds=5.0)
+        fake.script = [[(0.2, 0.8, 0, "一つ目。")], [("0.1", 0.8, 0, "二つ目。")]]
+        end = transcribe(api, "uid-unexpected-error-billed")[-1]
+
+        assert end["status_code"] == TaskStatus.FAILED
+        assert len(fake.calls) == 2
+        record = api.get(f"/api/v1/history/{end['task_uuid']}").json()
+        assert record["status"] == TaskStatus.FAILED
+        assert record["total_tokens"] == 2 * 240_000
+        assert record["cost"] == pytest.approx(2 * 0.30)
+
     def test_task_whose_segments_cannot_be_stored_is_billed(self, api, fake, test_engine):
         # 供應商轉完了，片段卻寫不進資料庫（例如磁碟剛好滿了）：任務照失敗處理，這次呼叫照樣收費
         fake.script = list(SCRIPT)
