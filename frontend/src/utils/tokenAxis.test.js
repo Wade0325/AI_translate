@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { formatTokensTick } from './formatters';
-import { tokenAxisTicks } from './tokenAxisTicks';
+import { tokenAxisProps, tokenAxisTicks } from './tokenAxis';
 
 // 把 formatTokensTick 的標籤換回數字：「400」→ 400、「3.5k」→ 3,500、「15k」→ 15,000、「1.5M」→ 1,500,000
 function labelToTokens(label) {
@@ -38,11 +38,7 @@ describe('tokenAxisTicks：用量圖 Y 軸的 token 刻度', () => {
     expect(tokenAxisTicks(max)).toEqual(expected);
   });
 
-  it.each([
-    ['沒有資料：空陣列的 Math.max', Math.max()],
-    ['不是有限的數', NaN],
-    ['不是有限的數', Infinity],
-  ])('%s（%s）時和最大值 0 一樣，圖表照樣有刻度', (_, max) => {
+  it.each([NaN, Infinity, -Infinity])('不是有限的數（%s）時和最大值 0 一樣，圖表照樣有刻度', (max) => {
     expect(tokenAxisTicks(max)).toEqual([0, 1, 2, 3]);
   });
 
@@ -65,14 +61,33 @@ describe('tokenAxisTicks：用量圖 Y 軸的 token 刻度', () => {
     for (const max of SWEEP_MAXIMA) {
       const ticks = tokenAxisTicks(max);
       const step = ticks[1];
-      const where = `最大值 ${max} 的刻度 ${JSON.stringify(ticks)}`;
-      expect(String(step), where).toMatch(/^[125]0*$/);
-      expect(ticks, where).toEqual(ticks.map((_, i) => i * step));
-      expect(ticks.length, where).toBeGreaterThanOrEqual(4);
-      expect(ticks.length, where).toBeLessThanOrEqual(6);
-      expect(ticks.at(-1), where).toBeGreaterThanOrEqual(max);
+      const caseLabel = `最大值 ${max} 的刻度 ${JSON.stringify(ticks)}`;
+      expect(String(step), caseLabel).toMatch(/^[125]0*$/);
+      expect(ticks, caseLabel).toEqual(ticks.map((_, i) => i * step));
+      expect(ticks.length, caseLabel).toBeGreaterThanOrEqual(4);
+      expect(ticks.length, caseLabel).toBeLessThanOrEqual(6);
+      expect(ticks.at(-1), caseLabel).toBeGreaterThanOrEqual(max);
       // 不多留一格空白；只有最大值小到湊不滿 4 個刻度時（0 到 2）例外
-      if (max > 2) expect(ticks.at(-2), where).toBeLessThan(max);
+      if (max > 2) expect(ticks.at(-2), caseLabel).toBeLessThan(max);
     }
+  });
+});
+
+describe('tokenAxisProps：用量圖 token Y 軸給 Recharts YAxis 的 props', () => {
+  it('刻度依資料列裡最大的 tokens 產生，範圍到最後一個刻度，標籤用 formatTokensTick', () => {
+    const rows = [{ day: '1', tokens: 4_200 }, { day: '2', tokens: 13_500 }, { day: '3', tokens: 0 }];
+    expect(tokenAxisProps(rows)).toEqual({
+      ticks: [0, 5_000, 10_000, 15_000],
+      domain: [0, 15_000],
+      tickFormatter: formatTokensTick,
+    });
+  });
+
+  it('沒有資料列時刻度是 0 到 3', () => {
+    expect(tokenAxisProps([])).toEqual({
+      ticks: [0, 1, 2, 3],
+      domain: [0, 3],
+      tickFormatter: formatTokensTick,
+    });
   });
 });

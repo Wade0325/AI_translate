@@ -22,8 +22,8 @@ import {
 import { UsageTooltip } from "@/components/charts/RechartsTooltipBox"
 import { StatCard } from "@/components/StatCard"
 import { api } from "@/services/api"
-import { localDateKey, formatTokensTick } from "@/utils/formatters"
-import { tokenAxisTicks } from "@/utils/tokenAxisTicks"
+import { localDateKey } from "@/utils/formatters"
+import { tokenAxisProps } from "@/utils/tokenAxis"
 
 const { Text } = Typography
 
@@ -104,8 +104,6 @@ export default function BillingPage() {
 
     const dailyData = buildDailyChartData(usage.daily, monthKey, now)
     const monthlyData = buildMonthlyChartData(usage.daily, now)
-    const dailyTicks = tokenAxisTicks(Math.max(...dailyData.map((d) => d.tokens)))
-    const monthlyTicks = tokenAxisTicks(Math.max(...monthlyData.map((m) => m.tokens)))
 
     const totalModelTokens = usage.by_model.reduce((sum, m) => sum + m.tokens, 0)
 
@@ -126,7 +124,7 @@ export default function BillingPage() {
                                 </defs>
                                 <CartesianGrid strokeDasharray="3 3" stroke="#2a2a48" vertical={false} />
                                 <XAxis dataKey="day" stroke="#8888a8" fontSize={12} tickLine={false} axisLine={false} />
-                                <YAxis stroke="#8888a8" fontSize={12} tickLine={false} axisLine={false} tickFormatter={formatTokensTick} ticks={dailyTicks} domain={[0, dailyTicks.at(-1)]} />
+                                <YAxis stroke="#8888a8" fontSize={12} tickLine={false} axisLine={false} {...tokenAxisProps(dailyData)} />
                                 <Tooltip content={<UsageTooltip />} />
                                 <Area type="monotone" dataKey="tokens" stroke="#2dd4a8" fill="url(#tokenGradient)" strokeWidth={2} />
                             </AreaChart>
@@ -145,7 +143,7 @@ export default function BillingPage() {
                             <BarChart data={monthlyData} barSize={40}>
                                 <CartesianGrid strokeDasharray="3 3" stroke="#2a2a48" vertical={false} />
                                 <XAxis dataKey="month" stroke="#8888a8" fontSize={12} tickLine={false} axisLine={false} />
-                                <YAxis stroke="#8888a8" fontSize={12} tickLine={false} axisLine={false} tickFormatter={formatTokensTick} ticks={monthlyTicks} domain={[0, monthlyTicks.at(-1)]} />
+                                <YAxis stroke="#8888a8" fontSize={12} tickLine={false} axisLine={false} {...tokenAxisProps(monthlyData)} />
                                 <Tooltip content={<UsageTooltip />} />
                                 <Bar dataKey="tokens" fill="#2dd4a8" radius={[4, 4, 0, 0]} />
                             </BarChart>

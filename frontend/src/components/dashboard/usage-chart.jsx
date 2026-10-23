@@ -9,8 +9,8 @@ import {
     ResponsiveContainer,
 } from "recharts"
 import { UsageTooltip } from "@/components/charts/RechartsTooltipBox"
-import { localDateKey, formatTokensTick } from "@/utils/formatters"
-import { tokenAxisTicks } from "@/utils/tokenAxisTicks"
+import { localDateKey } from "@/utils/formatters"
+import { tokenAxisProps } from "@/utils/tokenAxis"
 
 // 後端 daily 的 date 是伺服器本地日期字串，以本地日期產生 key 對齊（見 localDateKey 說明）
 function lastSevenDays(daily) {
@@ -33,7 +33,6 @@ function lastSevenDays(daily) {
 
 export function UsageChart({ daily = [] }) {
     const data = lastSevenDays(daily)
-    const ticks = tokenAxisTicks(Math.max(...data.map((d) => d.tokens)))
 
     return (
         <Card
@@ -60,9 +59,7 @@ export function UsageChart({ daily = [] }) {
                             fontSize={12}
                             tickLine={false}
                             axisLine={false}
-                            tickFormatter={formatTokensTick}
-                            ticks={ticks}
-                            domain={[0, ticks.at(-1)]}
+                            {...tokenAxisProps(data)}
                         />
                         <Tooltip content={<UsageTooltip />} cursor={{ fill: "rgba(42, 42, 72, 0.5)" }} />
                         <Bar
