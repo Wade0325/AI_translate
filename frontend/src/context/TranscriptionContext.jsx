@@ -184,13 +184,11 @@ export const TranscriptionProvider = ({ children }) => {
       current.map((f) => (f.uid === uid ? { ...f, statusText: '正在取消...' } : f))
     );
     try {
-      const { notice, patch } = await cancelFile(target, api);
+      const { notice, apply } = await cancelFile(target, api);
       message.open(notice);
-      if (patch) {
+      if (apply) {
         setFileList((current) =>
-          current.map((f) =>
-            f.uid === uid && f.status === 'processing' ? { ...f, ...patch } : f
-          )
+          current.map((f) => (f.uid === uid && f.status === 'processing' ? apply(f) : f))
         );
       }
     } catch (err) {

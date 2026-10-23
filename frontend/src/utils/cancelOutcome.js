@@ -1,6 +1,6 @@
 /**
  * 按取消之後：取消端點（POST /transcription/{file_uid}/cancel）的回應對應到要顯示的提示（antd
- * message.open 的設定 { type, content }），以及檔案卡要改的欄位。不碰 React；後端 API 由呼叫端傳入
+ * message.open 的設定 { type, content }），以及檔案卡要怎麼改。不碰 React；後端 API 由呼叫端傳入
  * （services/api.js 的 api），測試換成假的。
  *
  *   { file_uid, cancelled: true }
@@ -18,27 +18,35 @@
  * 任務已經完成、失敗或取消，就把檔案卡改成那個結果；查不到或還在處理中，才照原因說。
  */
 
-import { downloadFormats } from '../constants/downloadFormats.js';
-import { TASK_STATUS } from '../constants/taskStatus.js';
+import { downloadFormats } from '../constants/downloadFormats';
+import { TASK_STATUS } from '../constants/taskStatus';
+import { applyFileResult } from './fileResult';
 
 /**
- * 取消一個處理中的檔案，回傳 { notice, patch }：notice 是要顯示的提示；patch 是檔案卡還在處理中時
- * 要改的欄位，取消了時是 null（檔案卡等後端宣告已取消）。取消請求本身失敗時丟出例外。
+ * 取消一個處理中的檔案，回傳 { notice, apply }：notice 是要顯示的提示；apply 把還在處理中的檔案卡
+ * 改成下一個 state，取消了時是 null（檔案卡等後端宣告已取消）。取消請求本身失敗時丟出例外。
  */
 export async function cancelFile(file, api) {
   const response = await api.transcription.cancel(file.uid);
   if (response?.cancelled === true) {
-    return { notice: { type: 'info', content: `已取消任務：${file.name}` }, patch: null };
+    return { notice: { type: 'info', content: `已取消任務：${file.name}` }, apply: null };
   }
   // 不論原因，任務紀錄說任務已經結束，就照紀錄說：使用者才不會照提示一直再按（#186）
-  return (await endedTask(file, api))
-    ?? { notice: notCancelledNotice(response?.reason), patch: { statusText: '處理中...' } };
+  const ended = await endedTask(file, api);
+  if (ended) {
+    return { notice: ended.notice, apply: (f) => applyFileResult(f, ended.message) };
+  }
+  return {
+    notice: notCancelledNotice(response?.reason),
+    apply: (f) => ({ ...f, statusText: '處理中...' }),
+  };
 }
 
 /**
- * 這次送出的任務如果已經結束，照它的任務紀錄回傳 { notice, patch }；還沒結束或查不到時是 null。
+ * 這次送出的任務如果已經結束，回傳 { notice, message }：message 是照任務紀錄補上的狀態訊息，和結束時
+ * WebSocket 廣播的一樣。還沒結束或查不到時是 null。
  *
- * 檔案的 task_uuid 來自狀態訊息（useUploadQueue 的 applyFileResult），沒收到過就沒有。紀錄的
+ * 檔案的 task_uuid 來自狀態訊息（fileResult.js 的 applyFileResult），沒收到過就沒有。紀錄的
  * session_id 要是這次送出的：重新轉錄時檔案上可能還留著上一個任務的 task_uuid，不能拿上一個任務
  * 的結果回答（新的音檔可能還在上傳）。
  */
@@ -52,37 +60,40 @@ async function endedTask(file, api) {
     return null;
   }
   if (record.session_id !== file.sessionId) return null;
+  // 狀態文字和結束時的廣播（backend/app/tasks/lifecycle.py）同一個寫法
+  const message = { task_uuid: file.task_uuid, status_code: record.status };
   switch (record.status) {
     case TASK_STATUS.COMPLETED: {
-      const result = await transcripts(file.task_uuid, api);
+      const transcripts = await downloadTranscripts(file.task_uuid, api);
       return {
         notice: { type: 'info', content: `任務已經完成，無法取消：${file.name}` },
-        patch: {
-          status: 'completed',
-          percent: 100,
-          // 取不回結果時檔案卡沒有東西可以預覽、下載，請使用者到 History 頁面（和批次完成時一樣）
-          statusText: result ? '任務完成' : '任務完成，結果請到 History 頁面下載',
-          result,
-          tokens_used: record.total_tokens,
-          cost: record.cost,
-          audioDurationSec: record.audio_duration_seconds,
-          model: record.model_used ?? file.model,
-          sourceLanguage: record.source_language,
+        message: {
+          ...message,
+          // 取不回轉錄結果時檔案卡沒有東西可以預覽、下載；批次完成時也是請使用者到 History 頁面下載
+          status_text: transcripts ? '任務完成' : '任務完成，結果請到 History 頁面下載',
+          result: {
+            transcripts,
+            tokens_used: record.total_tokens,
+            cost: record.cost,
+            audio_duration_seconds: record.audio_duration_seconds,
+            model: record.model_used,
+            source_language: record.source_language,
+          },
         },
       };
     }
-    case TASK_STATUS.FAILED: {
-      // 和失敗時的廣播同一個寫法
-      const statusText = record.error_message ? `任務失敗: ${record.error_message}` : '任務失敗';
+    case TASK_STATUS.FAILED:
       return {
         notice: { type: 'info', content: `任務已經失敗，無法取消：${file.name}` },
-        patch: { status: 'error', percent: 100, statusText, error: statusText },
+        message: {
+          ...message,
+          status_text: record.error_message ? `任務失敗: ${record.error_message}` : '任務失敗',
+        },
       };
-    }
     case TASK_STATUS.CANCELLED:
       return {
         notice: { type: 'info', content: `任務已經取消：${file.name}` },
-        patch: { status: 'cancelled', percent: 100, statusText: '任務已取消' },
+        message: { ...message, status_text: '任務已取消' },
       };
     default:
       return null;
@@ -90,10 +101,10 @@ async function endedTask(file, api) {
 }
 
 /**
- * 完成的任務的四種輸出格式，和完成時廣播給畫面的 result.transcripts 一樣：任務紀錄不帶轉錄結果，
- * 一種一種下載。產生不出內容的格式後端回 404，和廣播一樣當成空字串；一種都取不回來時是 null。
+ * 完成的任務的轉錄結果，四種輸出格式各下載一次：任務紀錄不帶轉錄結果。回傳的形狀和完成時廣播的
+ * result.transcripts 一樣；產生不出內容的格式後端回 404，和廣播一樣當成空字串。一種都取不回來時是 null。
  */
-async function transcripts(taskUuid, api) {
+async function downloadTranscripts(taskUuid, api) {
   const downloads = await Promise.allSettled(
     downloadFormats.map(({ key }) => api.history.downloadTranscript(taskUuid, key)),
   );
