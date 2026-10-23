@@ -179,7 +179,7 @@ class HistoryStatsResponse(BaseModel):
 
 
 class DailyUsage(BaseModel):
-    """單日用量彙總（僅 COMPLETED 任務）"""
+    """單日用量彙總：token 與費用含失敗與取消的任務記下的用量，檔案數只算完成的"""
     date: str
     tokens: int
     cost: float
@@ -187,7 +187,7 @@ class DailyUsage(BaseModel):
 
 
 class ModelUsage(BaseModel):
-    """單一模型的用量彙總（僅 COMPLETED 任務）"""
+    """單一模型的用量彙總：token 與費用含失敗與取消的任務記下的用量，檔案數只算完成的"""
     model: str
     tokens: int
     cost: float
