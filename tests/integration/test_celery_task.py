@@ -19,8 +19,14 @@ from app.exceptions import TransientError
 from app.runtime import run_mode
 from app.runtime.celery_redis import CHANNEL, CeleryRedisRunMode
 from tests.support.fake_provider import FAKE_MODEL, Fail, Restart
+from tests.support.older_batches import (
+    SPANS,
+    OlderFile,
+    sent_by_previous_release,
+    unreadable_older_batch,
+)
 from tests.support.synthetic_audio import synthetic_audio
-from tests.support.task_api import file_results
+from tests.support.task_api import file_results, shown
 from tests.support.waiting import cancel_when_dispatched
 
 LINES = [(0.2, 1.5, 0, "おはよう。"), (2.3, 3.6, 1, "こんにちは。")]
@@ -341,6 +347,8 @@ def test_batch_restarted_while_polling_recovers_in_docker_mode(
     assert {m["status_code"] for m in started} == {TaskStatus.PROCESSING}
     # 被砍掉的 worker 來不及回報：結果後端還記著那次執行在跑（task_track_started）
     celery_app.backend.store_result(run_id, None, "STARTED")
+    # 所以任務頁看不出批次停住了，不給「恢復」（已知的限制）：要直接呼叫復原端點
+    assert shown(client, "batch-docker-restart") == ("POLLING", True, False)
     monkeypatch.setitem(celery_app.conf, "task_always_eager", True)
 
     response = client.post("/api/v1/batch/batch-docker-restart/recover",
@@ -356,25 +364,95 @@ def test_batch_restarted_while_polling_recovers_in_docker_mode(
     assert list(uploads.iterdir()) == []
 
 
-def test_recovering_a_batch_sent_by_an_older_version_leaves_it_alone(
-        batch_tasks, fake, broadcasts, db_session):
-    # 舊版送出的批次只有舊的 JSON 欄位（#117 之後才讀得懂）：復原的 Celery 任務不接手、不開供應商，
-    # 批次的狀態不動
+def test_a_batch_whose_polling_broke_off_is_recovered_from_the_task_page_in_docker_mode(
+        batch_tasks, uploads, fake, broadcasts, client, monkeypatch):
+    # 和免安裝模式一樣：輪詢中斷的批次記成失敗，任務頁給「恢復」；按下去（復原端點）派送的 Celery
+    # 任務（這裡 eager 執行）把同一個任務結束成完成
+    from app.celery.celery import celery_app
+
+    run, _ = batch_tasks
+    fake.script = [list(LINES)]
+    fake.batch_polls = [RuntimeError("連線中斷")]
+    run.apply(args=[batch_params(uploads, "batch-docker-broke-off", ["docker-broke-off"])],
+              task_id=str(uuid.uuid4()))
+    first = file_results(broadcasts())["docker-broke-off"]
+    assert first["status_code"] == TaskStatus.FAILED
+    assert shown(client, "batch-docker-broke-off") == ("FAILED", None, True)
+    monkeypatch.setitem(celery_app.conf, "task_always_eager", True)
+
+    response = client.post("/api/v1/batch/batch-docker-broke-off/recover",
+                           json={"api_keys": "test-key"})
+
+    assert response.status_code == 200, response.text
+    recovered = file_results(broadcasts())["docker-broke-off"]
+    assert (recovered["status_code"], recovered["task_uuid"]) == (
+        TaskStatus.COMPLETED, first["task_uuid"])
+
+
+def test_a_recovery_still_in_the_queue_keeps_the_batch_recovering_in_docker_mode(
+        batch_tasks, uploads, fake, client, db_session, redis_run_mode, monkeypatch):
+    # 一小時前建立的批次輪詢中斷了。按「恢復」派出去的 Celery 任務還排在佇列裡，Celery 查不出它
+    # （PENDING）；從派出的時候算還沒超過 5 分鐘，任務頁照樣當成有任務看著：恢復中，不再給「恢復」
+    from datetime import datetime, timedelta
+
     from app.database.models import BatchJob
 
-    _, recover = batch_tasks
-    db_session.add(BatchJob(
-        batch_id="batch-docker-older", status="FAILED", gemini_job_name="batches/older",
-        file_mapping_json=json.dumps({"0": {"file_uid": "older", "original_filename": "older.wav"}})))
+    run, _ = batch_tasks
+    fake.script = [list(LINES)]
+    fake.batch_polls = [RuntimeError("連線中斷")]
+    run.apply(args=[batch_params(uploads, "batch-docker-queued", ["docker-queued"])],
+              task_id=str(uuid.uuid4()))
+    db_session.query(BatchJob).filter_by(batch_id="batch-docker-queued").update(
+        {BatchJob.created_at: datetime.now() - timedelta(hours=1)})
     db_session.commit()
+    # 沒有 worker 接派出去的任務
+    monkeypatch.setattr(redis_run_mode, "submit_recover", lambda batch_id, api_key: str(uuid.uuid4()))
+
+    response = client.post("/api/v1/batch/batch-docker-queued/recover",
+                           json={"api_keys": "test-key"})
+
+    assert response.status_code == 200, response.text
+    assert shown(client, "batch-docker-queued") == ("RECOVERING", None, False)
+
+
+def test_a_batch_sent_by_the_previous_release_recovers_in_docker_mode(
+        batch_tasks, fake, broadcasts, client, db_session):
+    # 上一個發布版本送出的批次只有舊的 JSON 欄位。升級時舊版的 worker 在 API 啟動之後才送出，啟動時沒
+    # 補到列：復原的 Celery 任務當場補上，把舊版開始的任務結束成完成，片段落在原音檔的時間軸上
+    _, recover = batch_tasks
+    fake.script = [list(LINES)]
+    name = fake.submit_batch([(None, "")], "older")  # 舊版送出的請求
+    task_uuids = sent_by_previous_release(db_session, "batch-docker-older", name,
+                                          [OlderFile("docker-older", SPANS)])
 
     result = recover.apply(args=["batch-docker-older", "test-key"])
 
+    recovered = file_results(broadcasts())["docker-older"]
     assert result.state == "SUCCESS"
-    assert "舊版送出的" in broadcasts()[-1]["status_text"]
+    assert (recovered["status_code"], recovered["task_uuid"]) == (
+        TaskStatus.COMPLETED, task_uuids["docker-older"])
+    segments = client.get(f"/api/v1/transcripts/{task_uuids['docker-older']}").json()["segments"]
+    # 去靜音之後 2.3 秒是第二個有聲段的開頭
+    assert [(s["start"], s["text"]) for s in segments] == [
+        (pytest.approx(0.2), "おはよう。"), (pytest.approx(4.7), "こんにちは。")]
+
+
+def test_an_older_batch_whose_file_list_cannot_be_read_is_left_alone_in_docker_mode(
+        batch_tasks, fake, broadcasts, db_session):
+    # 舊版的檔案清單讀不懂（這裡沒有記下任務紀錄 id），補不了列：復原的 Celery 任務不接手、不開
+    # 供應商，批次的狀態不動
+    from app.database.models import BatchJob
+
+    _, recover = batch_tasks
+    unreadable_older_batch(db_session, "batch-docker-unreadable", "FAILED")
+
+    result = recover.apply(args=["batch-docker-unreadable", "test-key"])
+
+    assert result.state == "SUCCESS"
+    assert "讀不出它的檔案清單" in broadcasts()[-1]["status_text"]
     assert fake.opened == 0
     db_session.expire_all()
-    assert db_session.get(BatchJob, "batch-docker-older").status == "FAILED"
+    assert db_session.get(BatchJob, "batch-docker-unreadable").status == "FAILED"
 
 
 def test_batch_recovers_in_docker_mode(batch_tasks, uploads, fake, broadcasts, client):

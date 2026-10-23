@@ -14,14 +14,13 @@ import { TASK_STATUS } from '../constants/taskStatus';
  *   - socketManager：來自 useTranscriptionSocket()
  *
  * 回傳兩個高階函式：
- *   - startRegular({ provider, model, promptTemplate, defaults, supports }):
+ *   - startRegular({ provider, model, defaults, supports }):
  *       每個檔案各自一條 WS；單檔轉錄／Flex／Standard 模式
- *   - startBatch({ provider, model, promptTemplate, defaults, supports }):
+ *   - startBatch({ provider, model, defaults, supports }):
  *       所有檔案共用一條 batch WS（Gemini Batch API，50% 折扣）
  *
- * 請求不帶 API 金鑰：後端從資料庫取用，明文金鑰不經過瀏覽器。
- * 請求的內容（defaults、promptTemplate、supports 怎麼用，每個檔案帶哪個提示詞）見
- * utils/transcribeRequest.js。
+ * 請求不帶 API 金鑰與提示詞範本：後端從資料庫取用，明文金鑰不經過瀏覽器。
+ * 請求的內容（defaults、supports 怎麼用，每個檔案帶哪個補充說明）見 utils/transcribeRequest.js。
  */
 
 const isRestartable = (f) =>
@@ -110,7 +109,7 @@ export function useUploadQueue({ fileList, setFileList, socketManager, onBatchSu
   }, []);
 
   // 一般模式：每個 file uid 一條 WebSocket
-  const startRegular = useCallback(async ({ provider, model, promptTemplate, defaults, supports }) => {
+  const startRegular = useCallback(async ({ provider, model, defaults, supports }) => {
     const candidates = fileList.filter(isRestartable);
     if (candidates.length === 0) {
       return { skipped: true };
@@ -126,12 +125,11 @@ export function useUploadQueue({ fileList, setFileList, socketManager, onBatchSu
             file,
             provider,
             model,
-            promptTemplate,
             defaults,
             supports,
             sessionId,
           });
-          // sentPrompt：送出的提示詞，已送出的檔案卡照這個顯示
+          // sentPrompt：送出的補充說明，已送出的檔案卡照這個顯示
           updateFile(file.uid, {
             statusText: '連線成功，正在提交任務...',
             serverFilename,
@@ -171,7 +169,7 @@ export function useUploadQueue({ fileList, setFileList, socketManager, onBatchSu
   }, [fileList, updateFile, socketManager, handleSingleMessage, beginSession, uploadFile]);
 
   // 批次模式：所有檔案共用一條 batch WebSocket
-  const startBatch = useCallback(async ({ provider, model, promptTemplate, defaults, supports }) => {
+  const startBatch = useCallback(async ({ provider, model, defaults, supports }) => {
     const candidates = fileList.filter(isRestartable);
     if (candidates.length === 0) {
       return { skipped: true, reason: 'no-files' };
@@ -212,12 +210,11 @@ export function useUploadQueue({ fileList, setFileList, socketManager, onBatchSu
           files: uploaded,
           provider,
           model,
-          promptTemplate,
           defaults,
           supports,
           sessionId,
         });
-        // sentPrompt：每個檔案送出的提示詞，已送出的檔案卡照這個顯示
+        // sentPrompt：每個檔案送出的補充說明，已送出的檔案卡照這個顯示
         const sentPrompts = new Map(payload.files.map((f) => [f.file_uid, f.prompt]));
         setFileList((current) =>
           current.map((f) =>

@@ -11,7 +11,8 @@ Docker 模式由 :mod:`app.celery.batch_task` 的 Celery shim 包裝執行，免
   → 輪詢到批次結束 → 結束送出的檔案
 
 送出之後只有一份流程（:class:`_Watch`）：輪詢到批次結束，再結束送出的每個檔案。每個檔案在
-batch_files 資料表各一列，建立批次時就有；送出時記下它是第幾個請求與語音視圖的序列化形式。結束時
+batch_files 資料表各一列，建立批次時就有（#116 之前送出的批次在應用程式啟動時或復原入口補上，見
+:mod:`app.tasks.older_batches`）；送出時記下它是第幾個請求與語音視圖的序列化形式。結束時
 讀回這些列，供應商的結果用存下的語音視圖放回原音檔的時間軸，交給任務生命週期記下完成或失敗、收尾、
 宣告，再把結果狀態記回它的列；已經完成的檔案不再結束一次（兩邊同時看著同一個批次時，先看到批次
 結束的那邊結束它）。執行時用自己的任務生命週期，復原時從任務紀錄接回。取回結果
@@ -41,7 +42,7 @@ from typing import Any, Callable, List, Optional, Sequence, Tuple, TypeVar, Unio
 from sqlalchemy.orm import Session
 
 from app.celery.models import BatchFileItemParams, BatchTranscriptionTaskParams
-from app.core.batch_state import BatchState
+from app.core.batch_state import IN_PROGRESS, BatchState
 from app.core.config import get_settings
 from app.core.default_prompt import build_prompt
 from app.core.task_status import TaskStatus
@@ -55,6 +56,7 @@ from app.runtime import run_mode
 from app.runtime.run_mode import publish_status
 from app.services.silence_removal import SpeechTimeline, SpeechView, speech_view
 from app.services.transcription.models import TranscriptionTaskResult
+from app.tasks import older_batches
 from app.tasks.lifecycle import (
     Task,
     TaskLifecycle,
@@ -101,13 +103,32 @@ def run_batch(task_params_dict: dict, task_uuid: str) -> None:
 def recovery_refusal(db: Session, job: BatchJob) -> Optional[str]:
     """這個批次不能從復原入口接手的原因（給使用者看）；可以接手時是 None。
 
-    還沒送出的不能接手；沒有記下送出的檔案的，是 #116 之前送出的批次，檔案清單只在舊的 JSON 欄位裡，
-    由 #117 接手。已經完成的由 :func:`start_recovery` 擋下。
+    還沒送出的不能接手。送出了卻沒有記下送出的檔案的，是 #116 之前送出、補不了列的批次：舊的 JSON
+    欄位讀不懂（:func:`_file_rows`）。已經完成的由 :func:`start_recovery` 擋下。
     """
+    return _refusal(job, _file_rows(db, job))
+
+
+def recoverable(job: BatchJob, files: Sequence[BatchFile], *, alive: Optional[bool]) -> bool:
+    """任務頁要不要給這個批次「恢復」：沒有任務看著它，而且可以從復原入口接手
+    （:func:`recovery_refusal`）。沒有任務看著的是失敗了（例如輪詢中斷），或還在進行的狀態、看著它的
+    任務卻不在了（例如應用程式重啟了）。
+
+    ``files`` 是這個批次每個檔案的列；``alive`` 是看著它的任務還在不在，不知道時是 None（不給）。
+    批次清單傳的是任務頁的 ``is_alive``：Docker 模式查不出來（PENDING）、派出之後又超過 5 分鐘的當成
+    不在，所以在佇列裡排了這麼久的復原也會給（重複接手是安全的，見 :func:`start_recovery`）；worker
+    被砍掉之後 Celery 仍把它的任務當成執行中，這時不給。
+    """
+    unwatched = job.status == BatchState.FAILED or (job.status in IN_PROGRESS and alive is False)
+    return unwatched and _refusal(job, files) is None
+
+
+def _refusal(job: BatchJob, files: Sequence[BatchFile]) -> Optional[str]:
+    """:func:`recovery_refusal`，用已經讀出來的檔案的列。"""
     if not job.gemini_job_name:
         return "此任務尚未建立 Gemini batch job，無法恢復"
-    if not _submitted(BatchJobRepository().files(db, job.batch_id)):
-        return "這個批次是舊版送出的，這一版還不能取回它的結果"
+    if not _submitted(files):
+        return "這個批次是舊版送出的，讀不出它的檔案清單，無法恢復"
     return None
 
 
@@ -215,14 +236,14 @@ def completed_results(db: Session, job: BatchJob) -> Optional[List[Tuple[BatchFi
     """取回結果：批次已經結束時，完成的檔案各自連同完成時送給畫面的結果，依在批次裡的順序。
 
     批次還沒結束時是 None，要從復原入口接手：不是完成或已取回、在跑的時候被歸檔了還有送出的檔案在
-    處理中，或沒有記下檔案（#116 之前送出的批次）。完成沒有照列上的結果狀態，看的是任務紀錄：結果
-    狀態記不下來時（只記 log），任務紀錄已經記下了完成。結果從任務紀錄與片段讀出
-    （:func:`~app.tasks.lifecycle.completed_result`），和完成時廣播的相同；任務紀錄不在了（例如
-    使用者刪掉了）的檔案略過。
+    處理中，或沒有記下檔案（#116 之前送出、補不了列的批次，見 :func:`recovery_refusal`）。
+    完成沒有照列上的結果狀態，看的是任務紀錄：結果狀態記不下來時（只記 log），任務紀錄已經記下了
+    完成。結果從任務紀錄與片段讀出（:func:`~app.tasks.lifecycle.completed_result`），和完成時廣播的
+    相同；任務紀錄不在了（例如使用者刪掉了）的檔案略過。
     """
     if job.status not in (BatchState.COMPLETED, BatchState.RETRIEVED):
         return None
-    rows = BatchJobRepository().files(db, job.batch_id)
+    rows = _file_rows(db, job)
     if not rows:
         return None
     if job.status == BatchState.RETRIEVED and any(
@@ -234,6 +255,17 @@ def completed_results(db: Session, job: BatchJob) -> Optional[List[Tuple[BatchFi
         if result is not None:
             completed.append((row, result))
     return completed
+
+
+def _file_rows(db: Session, job: BatchJob) -> List[BatchFile]:
+    """復原入口讀這個批次每個檔案的列。#116 之前送出、還沒補列的批次（應用程式啟動時補每一個，但舊版的
+    worker 可能在這一版啟動之後才送出）先從舊欄位補上（:mod:`app.tasks.older_batches`）；補不了時沒有列。
+    """
+    jobs = BatchJobRepository()
+    rows = jobs.files(db, job.batch_id)
+    if not rows and older_batches.add_file_rows(db, job.batch_id):
+        rows = jobs.files(db, job.batch_id)
+    return rows
 
 
 # ── 執行 ─────────────────────────────────────────────────────────
@@ -399,7 +431,8 @@ class _Run:
             source_lang=item.source_lang or params.source_lang,
             target_lang=item.target_lang or params.target_lang,
             multi_speaker=params.multi_speaker if item.multi_speaker is None else item.multi_speaker,
-            template=(item.prompt or params.prompt) or None,
+            template=params.prompt_template,
+            supplement=item.prompt or params.prompt,
         )
 
     def _fail_batch(self, text: str) -> None:
@@ -641,7 +674,8 @@ def _create_record(db: Session, params: BatchTranscriptionTaskParams, files: Seq
                 source_lang=params.source_lang,
                 target_lang=params.target_lang,
                 multi_speaker=params.multi_speaker,
-                template=params.prompt or None,
+                template=params.prompt_template,
+                supplement=params.prompt,
             ),
         }),
         celery_task_id=run_id,

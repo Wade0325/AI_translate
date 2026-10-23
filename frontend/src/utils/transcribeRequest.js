@@ -1,10 +1,11 @@
 /**
  * 轉錄頁送出的請求內容（單檔任務與批次）。純函式，不碰 React 與網路。
  *
- * 每個檔案送出的提示詞，依序取第一個有字的：
- *   1. 這個檔案自己的提示詞（每檔設定）；沒有自己的（沒填過，或清空、只剩空白）就跟著全域的；
- *   2. 供應商的提示詞範本（設定頁）。
- * 都沒有時不帶，由後端用系統預設範本；只有空白算沒填。所選的模型不吃提示詞時一律不帶（#108）。
+ * 轉錄頁填的提示詞是補充說明：後端把它空一行接在提示詞範本後面送出（#144）。範本是設定頁為供應商
+ * 存的（沒存過就是系統內建的），後端派送時自己從設定讀，請求裡不帶範本。
+ *
+ * 每個檔案送出的補充說明：這個檔案自己的提示詞（每檔設定）；沒有自己的（沒填過，或清空、只剩空白）
+ * 就跟著全域的。都沒有時不帶，後端只送範本；只有空白算沒填。所選的模型不吃提示詞時一律不帶（#108）。
  */
 
 const blankToNull = (text) => (typeof text === 'string' && text.trim() ? text : null);
@@ -12,7 +13,7 @@ const blankToNull = (text) => (typeof text === 'string' && text.trim() ? text : 
 /** 跟著全域提示詞：這個檔案沒有自己的提示詞（沒填過，或清空、只剩空白）。 */
 export const followsGlobalPrompt = (file) => blankToNull(file.prompt) === null;
 
-/** 這個檔案用的提示詞（還沒輪到提示詞範本）：跟著全域時是全域的，否則是自己的。 */
+/** 這個檔案用的提示詞：跟著全域時是全域的，否則是自己的。 */
 export const filePrompt = (file, globalPrompt) =>
   (followsGlobalPrompt(file) ? globalPrompt : file.prompt);
 
@@ -58,21 +59,24 @@ export const globalSettingsPatch = (globalConfig) => ({
   hasOverride: false,
 });
 
-/** 這個檔案送出時帶的提示詞（規則見檔頭），檔案卡也照這個顯示；不帶時是 null。 */
-export function promptToSend(file, globalPrompt, promptTemplate, supports) {
+/**
+ * 這個檔案送出時帶的補充說明（規則見檔頭），檔案卡也照這個顯示；不帶時是 null。提示詞範本每次都送，
+ * 不是這個檔案的設定，不算在裡面。
+ */
+export function promptToSend(file, globalPrompt, supports) {
   if (!supports.prompt) return null;
-  return blankToNull(filePrompt(file, globalPrompt)) ?? blankToNull(promptTemplate);
+  return blankToNull(filePrompt(file, globalPrompt));
 }
 
 /** defaults：全域預設 { sourceLang, multiSpeaker, serviceTier, prompt }，prompt 是全域提示詞。 */
-export function buildSinglePayload({ serverFilename, file, provider, model, promptTemplate, defaults, supports, sessionId }) {
+export function buildSinglePayload({ serverFilename, file, provider, model, defaults, supports, sessionId }) {
   return {
     filename: serverFilename,
     original_filename: file.name,
     provider,
     model,
     source_lang: file.language || defaults.sourceLang,
-    prompt: promptToSend(file, defaults.prompt, promptTemplate, supports),
+    prompt: promptToSend(file, defaults.prompt, supports),
     original_text: supports.userText ? (file.original_text || null) : null,
     multi_speaker: file.isMultiSpeaker ?? defaults.multiSpeaker,
     service_tier: defaults.serviceTier,
@@ -80,22 +84,23 @@ export function buildSinglePayload({ serverFilename, file, provider, model, prom
   };
 }
 
-/** files：已經上傳的檔案，各帶 serverFilename；每檔的設定優先於批次層級的備用值。 */
-export function buildBatchPayload({ files, provider, model, promptTemplate, defaults, supports, sessionId }) {
+/**
+ * files：已經上傳的檔案，各帶 serverFilename；每檔的設定優先於批次層級的備用值。批次層級不帶提示詞：
+ * 每個檔案已經帶了自己要送的補充說明（後端拿批次層級的補沒帶的檔案，沒有就只送範本）。
+ */
+export function buildBatchPayload({ files, provider, model, defaults, supports, sessionId }) {
   return {
     files: files.map((f) => ({
       filename: f.serverFilename,
       original_filename: f.name,
       file_uid: f.uid,
       source_lang: f.language || defaults.sourceLang,
-      prompt: promptToSend(f, defaults.prompt, promptTemplate, supports),
+      prompt: promptToSend(f, defaults.prompt, supports),
       multi_speaker: f.isMultiSpeaker ?? defaults.multiSpeaker,
     })),
     provider,
     model,
     source_lang: defaults.sourceLang,
-    // 後端拿這個值補沒帶提示詞的檔案；只放範本，清成空白的檔案才不會被全域的補回去
-    prompt: supports.prompt ? blankToNull(promptTemplate) : null,
     multi_speaker: defaults.multiSpeaker,
     session_id: sessionId,
   };

@@ -37,7 +37,8 @@ export const TranscriptionProvider = ({ children }) => {
   // 使用者選的處理模式：'standard' | 'flex' | 'batch'。實際用的是下面的 processingMode
   const [chosenProcessingMode, setChosenProcessingMode] = useState('batch');
   const [multiSpeaker, setMultiSpeaker] = useState(false);
-  // 轉錄頁的全域提示詞：送給沒有每檔設定提示詞的檔案（不必先按 Apply to All）
+  // 轉錄頁的全域提示詞：補充說明，送給沒有每檔設定提示詞的檔案（不必先按 Apply to All），
+  // 後端接在提示詞範本後面
   const [globalPrompt, setGlobalPrompt] = useState('');
 
   const { getProviderConfig } = useModelManager();
@@ -58,20 +59,6 @@ export const TranscriptionProvider = ({ children }) => {
   const setModel = useCallback((nextModel) => {
     setSelection((current) => withModel(current, nextModel));
   }, []);
-
-  // 所選供應商的提示詞範本（設定頁）：檔案卡照送出時的規則顯示提示詞，要用到它。
-  // getProviderConfig 有快取，改了範本快取會換新，這裡跟著重讀
-  const [promptTemplate, setPromptTemplate] = useState(null);
-  useEffect(() => {
-    if (!provider) return undefined;
-    let active = true;
-    getProviderConfig(provider).then((config) => {
-      if (active) setPromptTemplate(config?.prompt ?? null);
-    });
-    return () => {
-      active = false;
-    };
-  }, [provider, getProviderConfig]);
 
   // 所選模型支援哪些輸入與處理方式；模型能力還沒載入時不限制，由後端把關
   const capabilities = findModelCapabilities(providerList, provider, model);
@@ -236,8 +223,9 @@ export const TranscriptionProvider = ({ children }) => {
 
     setIsProcessing(true);
 
+    // 提示詞範本不經前端：後端派送時從設定讀，接上每個檔案的補充說明（utils/transcribeRequest.js）
     const runner = useBatchMode ? startBatch : startRegular;
-    const result = await runner({ provider, model, promptTemplate: config?.prompt, defaults, supports });
+    const result = await runner({ provider, model, defaults, supports });
 
     if (result?.skipped) {
       setIsProcessing(false);
@@ -272,7 +260,6 @@ export const TranscriptionProvider = ({ children }) => {
     model,
     setModel,
     supports,
-    promptTemplate,
     disabledReasons: reasons,
     isProcessing,
     processingMode,
