@@ -4,9 +4,9 @@
 
     # demo_A  01:00.00-02:30.50
     # A=主持人 B=來賓
-    [01:02.10] A: 今天先介紹設定檔。
+    [01:02.10] A: 我們下週二去爬山。
     ~B: 嗯
-    [01:15.40] B: 那個 [聽不清] 要放在哪裡？
+    [01:15.40] B: 要帶 [聽不清] 嗎？
 
   * 第一個符合「# 名稱 起-訖」的註解行是表頭，計分只看這段時間內的轉錄結果
   * 行首的時間戳可有可無，只是給人定位用，計分不使用
@@ -14,7 +14,7 @@
   * ``[聽不清]`` 是聽不出來的地方，那個位置怎麼轉錄都不計分
   * ``A?:`` 與 ``(?)`` 是草稿標記，正式的標準答案不該有；沒有允許草稿時拒絕讀取
 
-轉錄結果讀的是 LRC（見 :mod:`.lrc`），依片段時間範圍裁切。
+轉錄結果讀的是 LRC（見 :mod:`.lrc`），依標準答案的時間範圍裁切。
 """
 
 from __future__ import annotations
@@ -60,17 +60,13 @@ class Excerpt:
     start: float
     end: float
     utterances: list[Utterance] = field(default_factory=list)
-    path: Path | None = None
     draft_marks: int = 0
 
 
 def _ts_to_sec(s: str) -> float:
-    parts = s.split(":")
-    if len(parts) == 2:
-        return int(parts[0]) * 60 + float(parts[1])
-    if len(parts) == 3:
-        return int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
-    raise ValueError(f"無法解析時間：{s}")
+    """表頭的 mm:ss.xx 換成秒。"""
+    minutes, seconds = s.split(":")
+    return int(minutes) * 60 + float(seconds)
 
 
 def read_reference(path: str | Path, allow_draft: bool = False) -> Excerpt:
@@ -112,11 +108,10 @@ def read_reference(path: str | Path, allow_draft: bool = False) -> Excerpt:
             f"{p.name} 還有 {marks} 處草稿標記（(?) 或 代號?:）未確認。\n"
             f"確認完請刪掉標記；若只是想先試跑工具，加 --allow-draft。")
 
-    return Excerpt(name=name, start=start, end=end, utterances=utts, path=p,
-                   draft_marks=marks)
+    return Excerpt(name=name, start=start, end=end, utterances=utts, draft_marks=marks)
 
 
-def clip_hyp(lrc_path: str | Path, start: float, end: float) -> list[Utterance]:
+def clip_transcript(lrc_path: str | Path, start: float, end: float) -> list[Utterance]:
     """讀轉錄結果的 LRC，取出落在 [start, end) 的行。"""
     return [
         Utterance(speaker=line.speaker or UNLABELED_SPEAKER, text=line.text)
@@ -125,7 +120,7 @@ def clip_hyp(lrc_path: str | Path, start: float, end: float) -> list[Utterance]:
     ]
 
 
-def hyp_warnings(lrc_path: str | Path) -> list[str]:
+def transcript_warnings(lrc_path: str | Path) -> list[str]:
     """轉錄結果裡會影響計分、但不至於讀不進來的地方，給人看的說明。"""
     text = lrc.read(lrc_path)
     out = []

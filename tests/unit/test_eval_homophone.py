@@ -1,8 +1,8 @@
 """評測工具（tools/eval）的口音同音判斷：錯誤分類「口音同音」靠它。
 
 台灣國語口音常把捲舌與平舌、後鼻音與前鼻音、n 與 l 混在一起；音位合併後完全相等才算
-同音，比用編輯距離設門檻更能擋掉過度判定。案例和 ``python -m tools.eval selftest`` 共用
-（``tools/eval/selftest.py``），全是自造的例句，不取自任何真實錄音。
+同音，比用編輯距離設門檻更能擋掉過度判定。案例和 ``python -m tools.eval selftest`` 共用，
+見 ``tools/eval/selftest.py``。
 """
 import pytest
 

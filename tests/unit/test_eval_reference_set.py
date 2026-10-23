@@ -1,7 +1,7 @@
 """評測工具（tools/eval）讀標準答案與轉錄結果。
 
 標準答案是人工聽打的一段連續音訊：表頭寫名稱與時間範圍，每行一句「代號: 文字」。轉錄結果
-讀的是 LRC，依標準答案的時間範圍裁切。沒有說話者標記的行（例如 Gemini 的輸出）以前會被
+讀的是 LRC，依標準答案的時間範圍裁切。沒有說話者標記的行（例如 Gemini 的轉錄結果）以前會被
 默默丟掉，讓錯字率看起來像整段漏字；現在讀進來，算同一位說話者。
 """
 import textwrap
@@ -12,9 +12,9 @@ from tools.eval.reference_set import (
     UNLABELED_SPEAKER,
     ReferenceSetError,
     Utterance,
-    clip_hyp,
-    hyp_warnings,
+    clip_transcript,
     read_reference,
+    transcript_warnings,
 )
 
 
@@ -27,18 +27,18 @@ def test_reads_header_and_utterances(tmp_path):
     path = _write(tmp_path / "demo_A.txt", """
         # demo_A  01:00.00-02:30.50
         # A=主持人 B=來賓
-        [01:02.10] A: 今天先介紹設定檔。
+        [01:02.10] A: 我們下週二去爬山。
         ~B: 嗯
-        B: 那個 [聽不清] 要放在哪裡？
+        B: 要帶 [聽不清] 嗎？
     """)
 
     excerpt = read_reference(path)
 
     assert (excerpt.name, excerpt.start, excerpt.end) == ("demo_A", 60.0, 150.5)
     assert excerpt.utterances == [
-        Utterance("A", "今天先介紹設定檔。"),
+        Utterance("A", "我們下週二去爬山。"),
         Utterance("B", "嗯", overlap=True),
-        Utterance("B", "那個 [聽不清] 要放在哪裡？"),
+        Utterance("B", "要帶 [聽不清] 嗎？"),
     ]
     assert excerpt.draft_marks == 0
 
@@ -73,28 +73,28 @@ def test_refuses_line_without_speaker(tmp_path):
 
 
 def test_clips_lrc_to_the_excerpt_window(tmp_path):
-    lrc = _write(tmp_path / "hyp.lrc", """
+    lrc = _write(tmp_path / "transcript.lrc", """
         [00:59.99][S0] 前一段
         [01:00.00][S0] 開始了
         [01:10.50][S1] 換人講
         [02:30.50][S0] 已經在範圍外
     """)
 
-    assert clip_hyp(lrc, 60.0, 150.5) == [
+    assert clip_transcript(lrc, 60.0, 150.5) == [
         Utterance("S0", "開始了"),
         Utterance("S1", "換人講"),
     ]
 
 
 def test_reads_lines_without_speaker_label_as_one_speaker(tmp_path):
-    lrc = _write(tmp_path / "hyp.lrc", """
+    lrc = _write(tmp_path / "transcript.lrc", """
         [ti:範例]
         [00:01.00] 沒有標記的第一行
         [00:02.00][S1] 有標記
         [00:03.00] 沒有標記的第二行
     """)
 
-    assert clip_hyp(lrc, 0.0, 10.0) == [
+    assert clip_transcript(lrc, 0.0, 10.0) == [
         Utterance(UNLABELED_SPEAKER, "沒有標記的第一行"),
         Utterance("S1", "有標記"),
         Utterance(UNLABELED_SPEAKER, "沒有標記的第二行"),
@@ -102,31 +102,31 @@ def test_reads_lines_without_speaker_label_as_one_speaker(tmp_path):
 
 
 def test_reads_gemini_speaker_prefix_as_label(tmp_path):
-    lrc = _write(tmp_path / "hyp.lrc", """
+    lrc = _write(tmp_path / "transcript.lrc", """
         [00:01.00]Speaker A: 第一位
         [00:02.00]Speaker B：第二位
     """)
 
-    assert clip_hyp(lrc, 0.0, 10.0) == [
+    assert clip_transcript(lrc, 0.0, 10.0) == [
         Utterance("SpeakerA", "第一位"),
         Utterance("SpeakerB", "第二位"),
     ]
 
 
 def test_warns_about_unlabeled_lines_and_lines_without_timestamp(tmp_path):
-    lrc = _write(tmp_path / "hyp.lrc", """
+    lrc = _write(tmp_path / "transcript.lrc", """
         [00:01.00] 沒有標記
         [00:02.00][S0] 有標記
         換行後沒有時間戳的文字
     """)
 
-    assert hyp_warnings(lrc) == [
+    assert transcript_warnings(lrc) == [
         "1 行沒有說話者標記，全部算同一位說話者（S?）",
         "1 行沒有時間戳，不計分（第一行：換行後沒有時間戳的文字）",
     ]
 
 
 def test_no_warnings_for_fully_labeled_lrc(tmp_path):
-    lrc = _write(tmp_path / "hyp.lrc", "[ar:範例]\n[00:01.00][S0] 有標記\n")
+    lrc = _write(tmp_path / "transcript.lrc", "[ar:範例]\n[00:01.00][S0] 有標記\n")
 
-    assert hyp_warnings(lrc) == []
+    assert transcript_warnings(lrc) == []

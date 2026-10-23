@@ -37,10 +37,10 @@ def _reference(lab, name, body):
 
 
 @pytest.fixture
-def hyp(tmp_path):
-    # 標準答案 8 個 token（今天先介紹設定檔），轉錄結果漏了「檔」：錯字率 1/8
-    return _write(tmp_path / "hyp.lrc", """
-        [00:01.00][S0] 今天先介紹設定
+def transcript(tmp_path):
+    # 標準答案 8 個 token（我們下週二去爬山），轉錄結果漏了「山」：錯字率 1/8
+    return _write(tmp_path / "transcript.lrc", """
+        [00:01.00][S0] 我們下週二去爬
         [00:40.00][S0] 範圍外的行不計分
     """)
 
@@ -57,13 +57,13 @@ def test_runs_as_module_from_repo_root():
     assert done.returncode == 0, done.stdout + done.stderr
 
 
-def test_eval_finds_draft_reference_by_name_in_lab(lab, hyp, capsys):
+def test_eval_finds_draft_reference_by_name_in_lab(lab, transcript, capsys):
     _reference(lab, "demo_A.draft", """
         # demo_A  00:00.00-00:30.00
-        A: 今天先介紹設定檔
+        A: 我們下週二去爬山
     """)
 
-    code = cli.main(["eval", "--reference", "demo_A.draft", "--hyp", str(hyp)])
+    code = cli.main(["eval", "--reference", "demo_A.draft", "--transcript", str(transcript)])
 
     out = capsys.readouterr().out
     assert code == 0
@@ -72,10 +72,10 @@ def test_eval_finds_draft_reference_by_name_in_lab(lab, hyp, capsys):
     assert "對應 S0→A" in out
 
 
-def test_missing_reference_lists_what_is_there(lab, hyp, capsys):
+def test_missing_reference_lists_what_is_there(lab, transcript, capsys):
     _reference(lab, "demo_A.draft", "# demo_A  00:00.00-00:30.00\nA: 有\n")
 
-    code = cli.main(["eval", "--reference", "demo_A", "--hyp", str(hyp)])
+    code = cli.main(["eval", "--reference", "demo_A", "--transcript", str(transcript)])
 
     err = capsys.readouterr().err
     assert code == 2
@@ -83,24 +83,24 @@ def test_missing_reference_lists_what_is_there(lab, hyp, capsys):
     assert "demo_A.draft" in err
 
 
-def test_reference_dir_option_overrides_lab(tmp_path, lab, hyp, capsys):
+def test_reference_dir_option_overrides_lab(tmp_path, lab, transcript, capsys):
     other = tmp_path / "elsewhere"
     other.mkdir()
-    _write(other / "demo_B.txt", "# demo_B  00:00.00-00:30.00\nA: 今天先介紹設定\n")
+    _write(other / "demo_B.txt", "# demo_B  00:00.00-00:30.00\nA: 我們下週二去爬\n")
 
     code = cli.main(["eval", "--reference-dir", str(other), "--reference", "demo_B",
-                     "--hyp", str(hyp)])
+                     "--transcript", str(transcript)])
 
     assert code == 0
     assert "MER              0.00%" in capsys.readouterr().out
 
 
-def test_draft_reference_is_refused_unless_allowed(lab, hyp, capsys):
+def test_draft_reference_is_refused_unless_allowed(lab, transcript, capsys):
     _reference(lab, "demo_A.draft", """
         # demo_A  00:00.00-00:30.00
-        A?: 今天先介紹設定檔
+        A?: 我們下週二去爬山
     """)
-    argv = ["eval", "--reference", "demo_A.draft", "--hyp", str(hyp)]
+    argv = ["eval", "--reference", "demo_A.draft", "--transcript", str(transcript)]
 
     assert cli.main(argv) == 2
     assert "草稿標記" in capsys.readouterr().err
@@ -111,13 +111,13 @@ def test_draft_reference_is_refused_unless_allowed(lab, hyp, capsys):
 def test_vocabulary_by_name_reports_term_recall(tmp_path, lab, capsys):
     _reference(lab, "demo_A", """
         # demo_A  00:00.00-00:30.00
-        A: 先打開 Docker 再設定
+        A: 先安裝 Docker 再重開
     """)
-    _write(lab / "glossaries" / "tools.json", '{"terms": ["Docker"], "zh_terms": ["設定"]}')
-    lrc = _write(tmp_path / "hyp.lrc", "[00:01.00][S0] 先打開 doctor 再設定\n")
+    _write(lab / "glossaries" / "tools.json", '{"terms": ["Docker"], "zh_terms": ["安裝"]}')
+    lrc = _write(tmp_path / "transcript.lrc", "[00:01.00][S0] 先安裝 doctor 再重開\n")
     out_json = tmp_path / "out" / "result.json"
 
-    code = cli.main(["eval", "--reference", "demo_A", "--hyp", str(lrc),
+    code = cli.main(["eval", "--reference", "demo_A", "--transcript", str(lrc),
                      "--vocabulary", "tools", "--json", str(out_json)])
 
     assert code == 0
@@ -129,24 +129,24 @@ def test_vocabulary_by_name_reports_term_recall(tmp_path, lab, capsys):
     assert result["vocabulary"] == ["tools.json"]
 
 
-def test_vs_compares_two_transcripts(tmp_path, lab, hyp, capsys):
-    _reference(lab, "demo_A", "# demo_A  00:00.00-00:30.00\nA: 今天先介紹設定檔\n")
-    better = _write(tmp_path / "better.lrc", "[00:01.00][S1] 今天先介紹設定檔\n")
+def test_vs_compares_two_transcripts(tmp_path, lab, transcript, capsys):
+    _reference(lab, "demo_A", "# demo_A  00:00.00-00:30.00\nA: 我們下週二去爬山\n")
+    better = _write(tmp_path / "better.lrc", "[00:01.00][S1] 我們下週二去爬山\n")
 
-    code = cli.main(["eval", "--reference", "demo_A", "--hyp", str(hyp), "--vs", str(better)])
+    code = cli.main(["eval", "--reference", "demo_A", "--transcript", str(transcript), "--vs", str(better)])
 
     out = capsys.readouterr().out
     assert code == 0
-    assert "成對比較（better.lrc − hyp.lrc）" in out
+    assert "成對比較（better.lrc − transcript.lrc）" in out
     assert "ΔMER -12.50 pp" in out
 
 
-def test_never_writes_into_the_reference_dir(lab, hyp, capsys):
-    reference = _reference(lab, "demo_A", "# demo_A  00:00.00-00:30.00\nA: 今天先介紹設定檔\n")
+def test_never_writes_into_the_reference_dir(lab, transcript, capsys):
+    reference = _reference(lab, "demo_A", "# demo_A  00:00.00-00:30.00\nA: 我們下週二去爬山\n")
     before = reference.read_bytes()
 
     for target in (reference, lab / "data" / "eval" / "result.json"):
-        code = cli.main(["eval", "--reference", "demo_A", "--hyp", str(hyp),
+        code = cli.main(["eval", "--reference", "demo_A", "--transcript", str(transcript),
                          "--json", str(target)])
         assert code == 2
         assert "標準答案" in capsys.readouterr().err
@@ -155,11 +155,28 @@ def test_never_writes_into_the_reference_dir(lab, hyp, capsys):
     assert sorted(p.name for p in (lab / "data" / "eval").iterdir()) == ["demo_A.txt"]
 
 
-def test_warns_when_transcript_has_no_speaker_labels(tmp_path, lab, capsys):
-    _reference(lab, "demo_A", "# demo_A  00:00.00-00:30.00\nA: 今天先介紹設定檔\n")
-    lrc = _write(tmp_path / "gemini.lrc", "[00:01.00] 今天先介紹設定檔\n")
 
-    assert cli.main(["eval", "--reference", "demo_A", "--hyp", str(lrc)]) == 0
+def test_never_writes_into_the_lab_references_even_when_reading_elsewhere(
+        tmp_path, lab, transcript, capsys):
+    reference = _reference(lab, "demo_A", "# demo_A  00:00.00-00:30.00\nA: 我們下週二去爬山\n")
+    before = reference.read_bytes()
+    other = tmp_path / "elsewhere"
+    other.mkdir()
+    _write(other / "demo_B.txt", "# demo_B  00:00.00-00:30.00\nA: 我們下週二去爬\n")
+
+    code = cli.main(["eval", "--reference-dir", str(other), "--reference", "demo_B",
+                     "--transcript", str(transcript), "--json", str(reference)])
+
+    assert code == 2
+    assert "標準答案" in capsys.readouterr().err
+    assert reference.read_bytes() == before
+
+
+def test_warns_when_transcript_has_no_speaker_labels(tmp_path, lab, capsys):
+    _reference(lab, "demo_A", "# demo_A  00:00.00-00:30.00\nA: 我們下週二去爬山\n")
+    lrc = _write(tmp_path / "gemini.lrc", "[00:01.00] 我們下週二去爬山\n")
+
+    assert cli.main(["eval", "--reference", "demo_A", "--transcript", str(lrc)]) == 0
     out = capsys.readouterr().out
     assert "1 行沒有說話者標記" in out
     assert "MER              0.00%" in out

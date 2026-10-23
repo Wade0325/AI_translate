@@ -15,14 +15,13 @@ MERGE_RULES = [
     ("uen", "un"), ("iou", "iu"), ("uei", "ui"),
 ]
 
-MERGE_INITIAL_N_L = True  # n- / l- 不分
 
 
 def norm_syllable(s: str) -> str:
     s = s.lower()
     for a, b in MERGE_RULES:
         s = s.replace(a, b)
-    if MERGE_INITIAL_N_L and s.startswith("n"):
+    if s.startswith("n"):  # n- / l- 不分
         s = "l" + s[1:]
     return s
 

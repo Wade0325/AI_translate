@@ -13,7 +13,7 @@
 | 研究區 | 主 checkout 旁邊的 `<主 checkout 名稱>-lab/` | 環境變數 `AIT_LAB_DIR` |
 | 標準答案 | 研究區的 `data/eval/` | `--reference-dir`，或直接給 `--reference` 一個路徑 |
 | 術語表 | 研究區的 `glossaries/` | `--vocabulary-dir`，或直接給 `--vocabulary` 一個路徑 |
-| 音檔 | 研究區的 `data/audio/` | 這個工具不讀音檔；轉錄結果另外產生，用 `--hyp` 指定 |
+| 音檔 | 研究區的 `data/audio/` | 這個工具不讀音檔；轉錄結果另外產生，用 `--transcript` 指定 |
 
 工具只讀取標準答案，不寫入；`--json` 指到標準答案的資料夾時會拒絕。
 
@@ -25,7 +25,7 @@
 backend\.venv\Scripts\python.exe -m pip install -r backend/requirements-dev.txt
 ```
 
-`import opencc` 來自 `opencc-python-reimplemented`（純 Python），不是 PyPI 上叫 `opencc` 的官方原生綁定。兩者的字典不同，繁簡正規化的結果可能不一樣；要換成官方的 `opencc`，得另外驗證錯字率不變。
+不要換成 PyPI 上叫 `opencc` 的官方原生綁定，理由見 `requirements-dev.txt` 的註解。
 
 ## 執行
 
@@ -37,11 +37,11 @@ backend\.venv\Scripts\python.exe -m tools.eval selftest
 
 # 對標準答案計分；--reference 給檔名去掉 .txt 的部分，可以一次給好幾段
 backend\.venv\Scripts\python.exe -m tools.eval eval --reference rec17_A.draft --allow-draft `
-    --hyp <轉錄結果>.lrc --vocabulary <術語表名稱>
+    --transcript <轉錄結果>.lrc --vocabulary <術語表名稱>
 
 # 兩份轉錄結果做成對比較（同一組重抽樣），另外把數字寫成 JSON
 backend\.venv\Scripts\python.exe -m tools.eval eval --reference rec17_A.draft --allow-draft `
-    --hyp <基準>.lrc --vs <實驗>.lrc --vocabulary <術語表名稱> `
+    --transcript <基準>.lrc --vs <實驗>.lrc --vocabulary <術語表名稱> `
     --json <研究區>\runs\<名稱>.json
 ```
 
@@ -53,14 +53,14 @@ backend\.venv\Scripts\python.exe -m tools.eval eval --reference rec17_A.draft --
 
 一個檔案是評測集裡的一段連續音訊，格式見 `reference_set.py` 開頭的說明：表頭寫名稱與時間範圍，每行一句「代號: 文字」，`~` 開頭是附和，`[聽不清]` 的位置不計分，`A?:` 與 `(?)` 是草稿標記。
 
-轉錄結果讀 LRC 的「`[mm:ss.xx][S0] 文字`」，只算落在標準答案時間範圍內的行。沒有說話者標記的行（例如 Gemini 的輸出）也讀，全部算同一位說話者 `S?`，報告開頭會提醒；沒有時間戳的行不計分，同樣會提醒。
+轉錄結果讀 LRC 的「`[mm:ss.xx][S0] 文字`」，只算落在標準答案時間範圍內的行。沒有說話者標記的行（例如 Gemini 的轉錄結果）也讀，全部算同一位說話者 `S?`，報告開頭會提醒；沒有時間戳的行不計分，同樣會提醒。
 
 ## 報告裡的數字
 
 - **MER**：中文字 1 個 token、英文詞 1 個 token。不用 CER，因為主要錯誤是英文術語，以字元算會低估。
 - **95% CI**：對行重抽樣（bootstrap）。改善要大於區間才算真的；`--vs` 用同一組重抽樣索引做成對比較。
 - **排除附和後**：扣掉 `~` 開頭的行再算一次。
-- **cpMER 局部／全域對應**：局部是每段各自取最佳的說話者對應；全域是所有片段共用一組對應。兩者的差距就是說話者標籤在片段之間不一致的代價。
+- **cpMER 局部／全域對應**：局部是每段音檔各自取最佳的說話者對應；全域是評測集的所有音檔共用一組對應。兩者的差距就是說話者標記在音檔之間不一致的代價。
 - **術語召回與誤插入**：用 `--vocabulary` 的術語表算。上下文偏置一定會讓兩者同時上升，要並排看。
 - **錯誤預算**：每段差異分成跨語言術語、術語拼寫、中文術語、口音同音、漏字、插入、其他。
 
@@ -75,7 +75,7 @@ backend\.venv\Scripts\python.exe -m tools.eval eval --reference rec17_A.draft --
 | `goldset.py` | `reference_set.py`（`read_gold` → `read_reference`） |
 | `mer.py`、`phon.py`、`lrc.py` | 同名；`lrc.py` 只留讀取 |
 | `refine.py` 的 `load_glossary` | `custom_vocabulary.py` 的 `load_custom_vocabulary`；`Refiner` 不搬 |
-| `run.py` 的 `eval`、`selftest` | `cli.py`；`--gold` → `--reference`、`--glossary` → `--vocabulary` |
+| `run.py` 的 `eval`、`selftest` | `cli.py`；`--gold` → `--reference`、`--hyp` → `--transcript`、`--glossary` → `--vocabulary` |
 
 沒有搬的：`run.py` 的其他子指令（vad-sweep、prompt、refine、make-eval、detect、score）與它們用到的模組；`moss.py`，包括 `moss.py pipeline`，它已經不走正式的轉錄路徑。
 

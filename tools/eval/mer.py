@@ -1,6 +1,6 @@
 """錯字率（MER，混合錯誤率）、說話者歸屬與錯誤預算：所有品質比較的計分核心。
 
-**為什麼不用 CER**：主要錯誤是英文術語（Docker→doctor、DEBUG→低霸），以字元計算會低估
+**為什麼不用 CER**：主要錯誤是英文術語（Docker→doctor、Zoom→祖母），以字元計算會低估
 嚴重度（doctor 對 Docker 只差兩個字元）。改成「中文字 1 個 token、英文詞 1 個 token」的
 混合錯誤率，一個術語錯就是一個錯。
 
@@ -15,7 +15,7 @@
 錯字率不變。
 
 **[聽不清] 的處理有近似**：該位置的替換／刪除不計分，緊鄰的插入也不計分，但若
-不清楚的區間對應到多個輸出 token，較遠的那幾個仍會被算成插入。報告會印出 unk
+不清楚的區間對應到轉錄結果的多個 token，較遠的那幾個仍會被算成插入。報告會印出 unk
 數量，數字很小才能安心使用。
 """
 
@@ -32,6 +32,7 @@ import opencc
 from rapidfuzz.distance import Levenshtein
 
 from . import phon
+from .custom_vocabulary import CustomVocabulary
 from .reference_set import DOUBT_RE, UNCLEAR, Excerpt, Utterance
 
 _T2S = opencc.OpenCC("t2s")
@@ -85,7 +86,7 @@ def _collapse_spelled_letters(tokens: Sequence[str]) -> list[str]:
 
 
 def _vocabulary_tokens(terms: Iterable[str]) -> set[str]:
-    """術語表的中文術語斷成 token；錯誤分類「中文術語」用它判斷。"""
+    """術語斷成 token 後的中文 token；錯誤分類「中文術語」用它判斷。"""
     return {t for term in terms for t in tokenize(term, drop_fillers=False)
             if not t.isascii()}
 
@@ -93,7 +94,7 @@ def _vocabulary_tokens(terms: Iterable[str]) -> set[str]:
 # ------------------------------------------------------------------- 對齊
 @dataclass
 class Block:
-    """一段連續的差異。ref/hyp 其中一邊可能是空的（漏字／插入）。"""
+    """一段連續的差異。ref（標準答案）／hyp（轉錄結果）其中一邊可能是空的（漏字／插入）。"""
 
     ref: list[str]
     hyp: list[str]
@@ -190,12 +191,12 @@ class SentenceScore:
     buckets: list[str]
 
 
-def score_text(reference: str, hyp: str, zh_terms: Iterable[str] = ()) -> SentenceScore:
+def score_text(reference: str, transcript: str, zh_terms: Iterable[str] = ()) -> SentenceScore:
     """單句比對：錯誤數與每段差異的分類；與 :func:`evaluate` 走同一套規則。
 
-    zh_terms 是術語表的中文術語（原文，不必先斷詞）。
+    zh_terms 是術語表的術語（原文，不必先斷詞）。
     """
-    ref, hyp_tokens = tokenize(reference), tokenize(hyp)
+    ref, hyp_tokens = tokenize(reference), tokenize(transcript)
     kept = _scored_spans(_op_spans(Levenshtein.editops(ref, hyp_tokens)), ref)
     blocks = group_blocks(ref, hyp_tokens, kept)
     terms = _vocabulary_tokens(zh_terms)
@@ -215,7 +216,7 @@ def _by_speaker(utts: Sequence[Utterance]) -> dict[str, list[str]]:
 
 def speaker_distances(ref_spk: dict[str, list[str]],
                       hyp_spk: dict[str, list[str]]) -> dict[tuple[str, str], int]:
-    """所有 (標準答案的說話者, 轉錄結果的標籤) 組合的編輯距離，含「對應到空」的成本。"""
+    """所有 (標準答案的說話者, 轉錄結果的說話者標記) 組合的編輯距離，含「對應到空」的成本。"""
     d: dict[tuple[str, str], int] = {}
     for rk, rv in ref_spk.items():
         d[(rk, "")] = len(rv)
@@ -269,7 +270,7 @@ class Result:
     window: tuple[float, float]
     n_utts: int
     ref_len: int
-    hyp_len: int
+    transcript_len: int
     subs: int = 0
     dels: int = 0
     ins: int = 0
@@ -288,7 +289,7 @@ class Result:
     line_errors: list[int] = field(default_factory=list)
     line_ref_len: list[int] = field(default_factory=list)
     ref_spk: dict[str, list[str]] = field(default_factory=dict)
-    hyp_spk: dict[str, list[str]] = field(default_factory=dict)
+    transcript_spk: dict[str, list[str]] = field(default_factory=dict)
 
     @property
     def errors(self) -> int:
@@ -298,14 +299,30 @@ class Result:
     def term_recall(self) -> float:
         return self.term_hit / self.term_total if self.term_total else 0.0
 
+    def to_dict(self) -> dict:
+        """寫進 --json 的數字（比率取到小數第四位）。"""
+        return {
+            "name": self.name, "window": self.window, "utts": self.n_utts,
+            "ref_len": self.ref_len, "transcript_len": self.transcript_len, "unk": self.unk,
+            "subs": self.subs, "dels": self.dels, "ins": self.ins,
+            "mer": round(self.mer, 4), "ci": [round(c, 4) for c in self.ci],
+            "mer_no_overlap": round(self.mer_no_overlap, 4),
+            "cp_mer_local": round(self.cp_mer_local, 4),
+            "cp_mer_global": round(self.cp_mer_global, 4),
+            "mapping_local": self.mapping_local,
+            "term_recall": round(self.term_recall, 4),
+            "term_hit": self.term_hit, "term_total": self.term_total,
+            "term_false_ins": self.term_false_ins,
+            "budget": self.budget, "examples": self.examples,
+        }
 
-def _term_token_lists(vocabulary: dict) -> list[list[str]]:
+
+def _term_token_lists(vocabulary: CustomVocabulary) -> list[list[str]]:
     out = []
-    for key in ("terms", "zh_terms"):
-        for term in vocabulary.get(key, []):
-            toks = tokenize(term, drop_fillers=False)
-            if toks:
-                out.append(toks)
+    for term in vocabulary.all_terms:
+        toks = tokenize(term, drop_fillers=False)
+        if toks:
+            out.append(toks)
     return out
 
 
@@ -314,7 +331,7 @@ def _find(seq: Sequence[str], pat: Sequence[str]) -> list[int]:
     return [i for i in range(n - m + 1) if list(seq[i:i + m]) == list(pat)]
 
 
-def evaluate(excerpt: Excerpt, hyp: Sequence[Utterance], vocabulary: dict,
+def evaluate(excerpt: Excerpt, transcript: Sequence[Utterance], vocabulary: CustomVocabulary,
              bootstrap: int = 1000, seed: int = 20260920) -> Result:
     ref_lines = [tokenize(u.text) for u in excerpt.utterances]
     ref: list[str] = []
@@ -323,7 +340,7 @@ def evaluate(excerpt: Excerpt, hyp: Sequence[Utterance], vocabulary: dict,
         ref.extend(toks)
         line_of.extend([i] * len(toks))
     hyp_tokens: list[str] = []
-    for u in hyp:
+    for u in transcript:
         hyp_tokens.extend(tokenize(u.text))
 
     unk = sum(1 for t in ref if t == UNK)
@@ -332,7 +349,7 @@ def evaluate(excerpt: Excerpt, hyp: Sequence[Utterance], vocabulary: dict,
 
     res = Result(name=excerpt.name, window=(excerpt.start, excerpt.end),
                  n_utts=len(excerpt.utterances), ref_len=len(ref) - unk,
-                 hyp_len=len(hyp_tokens), unk=unk)
+                 transcript_len=len(hyp_tokens), unk=unk)
 
     n_lines = len(ref_lines)
     res.line_errors = [0] * n_lines
@@ -360,8 +377,7 @@ def evaluate(excerpt: Excerpt, hyp: Sequence[Utterance], vocabulary: dict,
         res.mer_no_overlap = res.mer
 
     # 錯誤預算
-    zh_terms = {t for toks in _term_token_lists(vocabulary) for t in toks
-                if not t.isascii()}
+    zh_terms = _vocabulary_tokens(vocabulary.all_terms)
     blocks = group_blocks(ref, hyp_tokens, kept)
     res.budget = {b: 0 for b in BUCKETS}
     res.examples = {b: [] for b in BUCKETS}
@@ -388,8 +404,8 @@ def evaluate(excerpt: Excerpt, hyp: Sequence[Utterance], vocabulary: dict,
 
     # 說話者歸屬
     res.ref_spk = _by_speaker(excerpt.utterances)
-    res.hyp_spk = _by_speaker(hyp)
-    cost, mapping = best_mapping(res.ref_spk, res.hyp_spk)
+    res.transcript_spk = _by_speaker(transcript)
+    cost, mapping = best_mapping(res.ref_spk, res.transcript_spk)
     denom = sum(len(v) for v in res.ref_spk.values()) or 1
     res.cp_mer_local = cost / denom
     res.mapping_local = mapping
@@ -432,47 +448,47 @@ def paired_delta_ci(a: Sequence[int], b: Sequence[int], lens: Sequence[int],
 
 # ----------------------------------------------------------------- 全域對應
 def global_mapping(results: Sequence[Result]) -> tuple[dict[str, str], float]:
-    """所有片段共用同一組說話者對應時的最佳解與 cpMER。
+    """評測集的所有音檔共用同一組說話者對應時的最佳解與 cpMER。
 
-    與各片段各自最佳（cp_mer_local）的差距，就是跨切段標籤不一致的代價。
+    與每段音檔各自最佳（cp_mer_local）的差距，就是說話者標記在音檔之間不一致的代價。
     """
-    labels_hyp = sorted({k for r in results for k in r.hyp_spk})
+    labels_hyp = sorted({k for r in results for k in r.transcript_spk})
     labels_ref = sorted({k for r in results for k in r.ref_spk})
     n = max(len(labels_hyp), len(labels_ref))
     hyp_p = labels_hyp + [""] * (n - len(labels_hyp))
     ref_p = labels_ref + [""] * (n - len(labels_ref))
-    dists = [speaker_distances(r.ref_spk, r.hyp_spk) for r in results]
+    dists = [speaker_distances(r.ref_spk, r.transcript_spk) for r in results]
     denom = sum(sum(len(v) for v in r.ref_spk.values()) for r in results) or 1
 
     best: tuple[int, dict[str, str]] = (0, {})
     for i, perm in enumerate(itertools.permutations(ref_p)):
         mapping = {h: r for h, r in zip(hyp_p, perm, strict=True) if h}
-        total = sum(mapping_cost(r.ref_spk, r.hyp_spk, mapping, d)
+        total = sum(mapping_cost(r.ref_spk, r.transcript_spk, mapping, d)
                     for r, d in zip(results, dists, strict=True))
         if i == 0 or total < best[0]:
             best = (total, mapping)
     for r, d in zip(results, dists, strict=True):
-        r.cp_mer_global = mapping_cost(r.ref_spk, r.hyp_spk, best[1], d) / (
+        r.cp_mer_global = mapping_cost(r.ref_spk, r.transcript_spk, best[1], d) / (
             sum(len(v) for v in r.ref_spk.values()) or 1)
     return best[1], best[0] / denom
 
 
 # ------------------------------------------------------------------- 報告
-def format_report(results: Sequence[Result], hyp_label: str,
+def format_report(results: Sequence[Result], transcript_label: str,
                   global_map: dict[str, str], cp_global: float) -> str:
-    out: list[str] = [f"轉錄結果：{hyp_label}", ""]
+    out: list[str] = [f"轉錄結果：{transcript_label}", ""]
     tot_err = sum(r.errors for r in results)
     tot_ref = sum(r.ref_len for r in results)
     for r in results:
         out += [
-            f"── {r.name}  {_w(r.window)}  標準答案 {r.n_utts} 句 / {r.ref_len} token"
+            f"── {r.name}  {_window(r.window)}  標準答案 {r.n_utts} 句 / {r.ref_len} token"
             + (f"（unk {r.unk}）" if r.unk else ""),
             f"   MER            {r.mer*100:6.2f}%   "
             f"(替換 {r.subs} / 漏 {r.dels} / 插 {r.ins})"
             f"   95% CI [{r.ci[0]*100:.2f}, {r.ci[1]*100:.2f}]",
             f"   排除附和後      {r.mer_no_overlap*100:6.2f}%",
             f"   cpMER 局部對應  {r.cp_mer_local*100:6.2f}%   "
-            f"對應 {_map(r.mapping_local)}",
+            f"對應 {_mapping_text(r.mapping_local)}",
             f"   cpMER 全域對應  {r.cp_mer_global*100:6.2f}%",
             f"   術語召回        {r.term_recall*100:6.1f}%   "
             f"({r.term_hit}/{r.term_total})   誤插入 {r.term_false_ins}",
@@ -487,7 +503,7 @@ def format_report(results: Sequence[Result], hyp_label: str,
     out += [
         f"總計  MER {tot_err/max(1,tot_ref)*100:.2f}%  "
         f"({tot_err} 錯 / {tot_ref} token)",
-        f"      cpMER 全域對應 {cp_global*100:.2f}%   對應 {_map(global_map)}",
+        f"      cpMER 全域對應 {cp_global*100:.2f}%   對應 {_mapping_text(global_map)}",
     ]
     local = sum(r.cp_mer_local * max(1, sum(len(v) for v in r.ref_spk.values()))
                 for r in results) / max(1, sum(
@@ -496,13 +512,13 @@ def format_report(results: Sequence[Result], hyp_label: str,
     if len(results) > 1:
         out.append(f"      cpMER 局部對應 {local*100:.2f}%"
                    f"   差距 {gap*100:+.2f} pp"
-                   + ("   ← 說話者標籤在片段之間不一致" if gap > 0.01 else ""))
+                   + ("   ← 說話者標記在音檔之間不一致" if gap > 0.01 else ""))
     return "\n".join(out)
 
 
-def _w(win: tuple[float, float]) -> str:
+def _window(win: tuple[float, float]) -> str:
     return f"{int(win[0]//60):02d}:{win[0]%60:05.2f}-{int(win[1]//60):02d}:{win[1]%60:05.2f}"
 
 
-def _map(m: dict[str, str]) -> str:
+def _mapping_text(m: dict[str, str]) -> str:
     return ", ".join(f"{h}→{r}" for h, r in sorted(m.items())) or "（無）"
