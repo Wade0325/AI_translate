@@ -60,7 +60,7 @@ def start_transcription_task_sync(payload_str: str, file_uid: str) -> None:
     # 前端不再送明文金鑰：缺少或只帶遮罩值時改用資料庫裡的金鑰
     with SessionLocal() as db:
         api_key = resolve_api_key(db, provider, request_data.api_keys)
-        # 提示詞範本也從設定讀（#144）：送出的是按下開始那時的範本，接上請求帶的補充說明
+        # 提示詞範本也從設定讀（#144）：用派送這個檔案時設定頁存的範本，接上請求帶的補充說明
         prompt_template = stored_prompt_template(db, provider)
 
     task_params = TranscriptionTaskParams(

@@ -224,7 +224,7 @@ def start_batch_task_sync(payload_str: str, batch_id: str) -> list[dict]:
     # 前端不再送明文金鑰：缺少或只帶遮罩值時改用資料庫裡的金鑰
     with SessionLocal() as db:
         api_key = resolve_api_key(db, provider, request_data.api_keys)
-        # 提示詞範本也從設定讀（#144）：整個批次共用按下開始那時的範本，接上每個檔案的補充說明
+        # 提示詞範本也從設定讀（#144）：整個批次共用派送時設定頁存的範本，接上每個檔案的補充說明
         prompt_template = stored_prompt_template(db, provider)
 
     task_params = BatchTranscriptionTaskParams(

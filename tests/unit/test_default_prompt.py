@@ -1,5 +1,5 @@
 """
-單元測試：Prompt 模板組裝邏輯
+單元測試：送給模型的提示詞怎麼組（提示詞範本代入變數，接上補充說明）
 測試範圍：core/default_prompt.py
 """
 import pytest
@@ -127,7 +127,7 @@ class TestBuildPrompt:
 # ─── 提示詞範本裡的大括號（#143） ────────────────────────────────────────────
 
 # 以前能用的提示詞範本與送出的字串。期望值寫死，是 #143 修正前的 build_prompt 算出來的；
-# 預設模板的措辭改了，default-template 這一項要跟著改
+# 系統內建範本的措辭改了，default-template 這一項要跟著改
 PROMPTS_THAT_WORKED_BEFORE = [
     pytest.param(
         {"source_lang": "ja-JP", "target_lang": "zh-TW", "multi_speaker": True},
