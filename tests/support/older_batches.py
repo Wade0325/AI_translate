@@ -92,11 +92,12 @@ def finished_by_previous_release(db, batch_id: str, task_uuids: dict[str, str],
 def unreadable_older_batch(db, batch_id: str, status: str = "POLLING",
                            file_list: Optional[str] = None) -> None:
     """一個這一版讀不懂的舊版批次：送出了，檔案清單卻沒有記下任務紀錄 id；``file_list`` 給了時，檔案
-    清單改存這段文字（例如不是 JSON）。"""
+    清單改存這段文字（例如不是 JSON）。看著它的是舊版的執行，升級之後已經不在了。"""
     from app.database.models import BatchJob
 
     db.add(BatchJob(
         batch_id=batch_id, status=status, gemini_job_name=f"batches/{batch_id}", file_count=1,
+        celery_task_id="older-run",
         file_mapping_json=file_list or json.dumps(
             {"0": {"file_uid": "unreadable", "original_filename": "unreadable.wav"}}),
         results_json=json.dumps({}) if status == "COMPLETED" else None))

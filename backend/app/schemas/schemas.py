@@ -131,6 +131,7 @@ class BatchTaskResponse(BaseModel):
     elapsed_seconds: Optional[float] = None
     files: List[BatchTaskFile]
     session_id: Optional[str] = None
+    recoverable: bool = False  # 任務頁要不要給「恢復」（app.tasks.batch_core.recoverable）
 
 
 # ==================== History ====================

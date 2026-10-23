@@ -2,10 +2,11 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
-from sqlalchemy import and_, or_
+from sqlalchemy import and_, exists, or_
 from sqlalchemy.orm import Session
 
 from app.core.batch_state import ALLOWED_FROM, IN_PROGRESS, BatchState
+from app.core.task_status import TaskStatus
 from app.database.models import BatchFile, BatchJob
 from app.utils.identifiers import coerce_uuid
 
@@ -109,17 +110,23 @@ class BatchJobRepository:
         """
         取得活躍的批次（Task 頁面用）：
         - 所有進行中/待取回的批次（上傳中、輪詢中、復原中、完成）
-        - 24 小時內已取回的批次，供使用者確認和下載
+        - 24 小時內失敗的批次：送出過的可以從任務頁恢復
+        - 24 小時內已取回、有結果的批次，供使用者確認和下載。歸檔也記成已取回：沒有任何完成的檔案
+          的（例如失敗了才歸檔）不列，免得失敗的批次在任務頁變成「已取回」
         """
         cutoff = datetime.now() - timedelta(hours=24)  # created_at/updated_at 為 DB 本地時間
+        has_result = exists().where(BatchFile.batch_id == BatchJob.batch_id,
+                                    BatchFile.status == TaskStatus.COMPLETED)
         return (
             db.query(BatchJob)
             .filter(
                 or_(
                     BatchJob.status.in_(IN_PROGRESS | {BatchState.COMPLETED}),
+                    and_(BatchJob.status == BatchState.FAILED, BatchJob.updated_at >= cutoff),
                     and_(
                         BatchJob.status == BatchState.RETRIEVED,
                         BatchJob.updated_at >= cutoff,
+                        has_result,
                     ),
                 )
             )
