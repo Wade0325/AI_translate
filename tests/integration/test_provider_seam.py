@@ -27,6 +27,7 @@ from app.core.default_prompt import build_prompt
 from app.core.task_status import TaskStatus
 from app.exceptions import TransientError
 from app.runtime import run_mode
+from tests.support.db_faults import writes_fail
 from tests.support.fake_provider import FAKE_MODEL, Fail, ServedAs
 from tests.support.synthetic_audio import VOICED, synthetic_audio
 from tests.support.task_api import (
@@ -183,6 +184,21 @@ def transcribe(api, file_uid: str, name: str = "voice.wav", voiced=VOICED,
     with api.websocket_connect(f"/api/v1/ws/{file_uid}") as ws:
         submit(ws, filename, **fields)
         return receive_until_terminal(ws)
+
+
+def cancel_after_the_provider_finished(api, fake, file_uid: str) -> dict:
+    """上傳、送出，在供應商轉錄時取消；供應商不理會取消、照樣轉完手上這一段。回傳任務自己宣告的
+    結果（取消端點的廣播之後那一則）。"""
+    fake.ignores_cancel = True
+    fake.hold = threading.Event()
+    filename = upload(api)
+    with api.websocket_connect(f"/api/v1/ws/{file_uid}") as ws:
+        submit(ws, filename)
+        assert fake.started.wait(TIMEOUT)
+        cancel_when_dispatched(api, file_uid)
+        receive_until_terminal(ws)  # 取消端點的廣播
+        fake.hold.set()
+        return receive_until_terminal(ws)[-1]
 
 
 def task_rejection(api, file_uid: str, filename: str | None = None, **submit_args) -> str:
@@ -1314,19 +1330,10 @@ class TestCancel:
         fake.model_capabilities = replace(
             fake.model_capabilities, pricing="per_token", single_pass_seconds=single_pass_seconds)
         fake.usage = (200_000, 40_000)
-        fake.ignores_cancel = True
-        fake.hold = threading.Event()
         fake.script = [[(0.2, 1.5, 0, "一つ目。")], [(0.2, 0.9, 1, "二つ目。")]]
-        filename = upload(api)
-        with api.websocket_connect("/api/v1/ws/uid-billed-after-cancel") as ws:
-            submit(ws, filename)
-            assert fake.started.wait(TIMEOUT)
-            cancel_when_dispatched(api, "uid-billed-after-cancel")
-            receive_until_terminal(ws)  # 取消端點的廣播
-            fake.hold.set()
-            task_end = receive_until_terminal(ws)[-1]
+        task_end = cancel_after_the_provider_finished(api, fake, "uid-billed-after-cancel")
 
-        # 任務維持已取消，轉完的那一段的用量與費用照樣記在紀錄上，帳單頁才不會少算
+        # 任務維持已取消，轉完的那一段的用量與費用照樣記在紀錄上，計費頁才不會少算
         # （價目見上面的計價測試）
         assert task_end["status_code"] == TaskStatus.CANCELLED
         record = api.get(f"/api/v1/history/{task_end['task_uuid']}").json()
@@ -1893,3 +1900,175 @@ class TestCompletingTheSameTaskAgain:
         # 這次的片段寫不進去：任務記成失敗，使用者的校正和上一次的結果都原封不動
         assert api.get(f"/api/v1/history/{task_uuid}").json()["status"] == TaskStatus.FAILED
         assert stored_segments(api, task_uuid) == before
+
+
+# ─── 失敗的任務照樣記用量 ───────────────────────────────────────────────────
+
+def usage_totals(api) -> dict:
+    """儀表板與計費頁的用量（GET /history/usage）：每日用量加起來的總數，以及假模型那一列。
+
+    測試資料庫裡還有其他測試的任務，要比較的是前後的差。
+    """
+    usage = api.get("/api/v1/history/usage").json()
+    model = next((row for row in usage["by_model"] if row["model"] == FAKE_MODEL),
+                 {"tokens": 0, "cost": 0.0, "files": 0})
+    fields = ("tokens", "cost", "files")
+    return {"daily": {key: sum(day[key] for day in usage["daily"]) for key in fields},
+            "by_model": {key: model[key] for key in fields}}
+
+
+class CancelFlagUnreadable:
+    """任務查不到取消旗標（Docker 模式的 Redis 斷線時，寧可讓任務繼續），其餘照轉：取消端點照樣把
+    紀錄記成已取消。用 ``run_mode.use`` 換上。"""
+
+    def __init__(self, inner):
+        self._inner = inner
+
+    def is_cancel_requested(self, file_uid):
+        return False
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
+class CancelWhilePricing:
+    """任務記下完成之前、正在計價時，使用者剛好按下取消：取消端點先設的取消旗標已經在了，紀錄還沒
+    記成已取消。其餘照轉；用 ``run_mode.use`` 換上。"""
+
+    def __init__(self, inner):
+        self._inner = inner
+
+    def publish(self, message):
+        if message.get("status_text") == "正在計算費用...":
+            self._inner.request_cancel(message["file_uid"])
+        self._inner.publish(message)
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
+class TestUsageOfTasksThatDidNotComplete:
+    """供應商已經回應、任務才失敗（或失敗時剛好被取消）時，供應商照樣收費（例如 Gemini 的回應被阻擋）：
+    用量與費用照樣記在任務紀錄上，儀表板與計費頁才不會少算；沒有用量時留空（#155）。價目見
+    TestSingleFileTask 的計價測試：一次呼叫 240,000 個 token、0.30 美元。"""
+
+    @pytest.fixture(autouse=True)
+    def _priced_per_token(self, fake):
+        fake.model_capabilities = replace(fake.model_capabilities, pricing="per_token")
+        fake.usage = (200_000, 40_000)
+
+    def test_failed_result_is_recorded_and_priced(self, api, fake):
+        fake.script = [Fail("回應被阻擋")]
+        end = transcribe(api, "uid-failed-billed")[-1]
+
+        assert end["status_code"] == TaskStatus.FAILED
+        record = api.get(f"/api/v1/history/{end['task_uuid']}").json()
+        assert record["status"] == TaskStatus.FAILED
+        assert "回應被阻擋" in record["error_message"]
+        assert record["total_tokens"] == 240_000
+        assert record["cost"] == pytest.approx(0.30)
+        assert record["service_tier_used"] == "standard"
+        assert record["audio_duration_seconds"] == pytest.approx(12.0, abs=0.1)
+
+    def test_failure_without_any_usage_leaves_it_empty(self, api, fake):
+        # 供應商沒有回報用量（例如本機的模型不回報 token）：不記用量，歷史紀錄的 token 與費用留空，
+        # 不會變成 0 元
+        fake.usage = (0, 0)
+        fake.script = [Fail("模型壞掉了")]
+        end = transcribe(api, "uid-failed-unbilled")[-1]
+
+        assert end["status_code"] == TaskStatus.FAILED
+        record = api.get(f"/api/v1/history/{end['task_uuid']}").json()
+        assert (record["total_tokens"], record["cost"]) == (None, None)
+
+    def test_cancel_without_any_usage_leaves_it_empty(self, api, fake):
+        # 取消也一樣：供應商照樣轉完、卻沒有回報用量時，不記成 0 個 token、0 元
+        fake.usage = (0, 0)
+        fake.script = list(SCRIPT)
+        end = cancel_after_the_provider_finished(api, fake, "uid-cancelled-unbilled")
+
+        assert end["status_code"] == TaskStatus.CANCELLED
+        record = api.get(f"/api/v1/history/{end['task_uuid']}").json()
+        assert (record["total_tokens"], record["cost"]) == (None, None)
+
+    def test_failure_after_the_cancel_was_recorded_is_billed_as_a_cancel(self, api, fake):
+        # 任務查不到取消旗標，取消端點已經把紀錄記成已取消；供應商之後才回報失敗：失敗不蓋掉取消，
+        # 這次呼叫的用量照樣記在已取消的紀錄上
+        fake.script = [Fail("回應被阻擋")]
+        readable = run_mode.use(CancelFlagUnreadable(run_mode.get()))
+        try:
+            end = cancel_after_the_provider_finished(api, fake, "uid-failed-after-cancel")
+        finally:
+            run_mode.use(readable)
+
+        assert end["status_code"] == TaskStatus.CANCELLED
+        record = api.get(f"/api/v1/history/{end['task_uuid']}").json()
+        assert record["status"] == TaskStatus.CANCELLED
+        assert record["total_tokens"] == 240_000
+        assert record["cost"] == pytest.approx(0.30)
+
+    def test_cancel_while_the_result_is_being_saved_is_billed(self, api, fake, test_engine):
+        # 正在記下完成時使用者剛好按下取消，片段又寫不進去：記成已取消，供應商已經轉完的這次呼叫照樣
+        # 記下用量
+        fake.script = list(SCRIPT)
+        previous = run_mode.use(CancelWhilePricing(run_mode.get()))
+        try:
+            with writes_fail(test_engine, "transcript_segments", "INSERT"):
+                end = transcribe(api, "uid-cancel-while-saving")[-1]
+        finally:
+            run_mode.use(previous)
+
+        assert end["status_code"] == TaskStatus.CANCELLED
+        record = api.get(f"/api/v1/history/{end['task_uuid']}").json()
+        assert record["status"] == TaskStatus.CANCELLED
+        assert record["total_tokens"] == 240_000
+        assert record["cost"] == pytest.approx(0.30)
+
+    @pytest.mark.parametrize("split_retry, script", [
+        (False, [[(0.2, 0.8, 0, "一つ目。")], Fail("模型壞掉了")]),
+        (True, [[(0.2, 0.8, 0, "一つ目。")], Fail("模型壞掉了"), Fail("模型壞掉了")]),
+    ], ids=["without-split-retry", "after-split-retry"])
+    def test_chunks_finished_before_the_failure_are_billed_too(
+            self, api, fake, settings, monkeypatch, split_retry, script):
+        # 切成 4.9 秒與 2.3 秒兩段（見 TestSplitRetryAfterFailure）：第一段轉完，第二段失敗。切段重試
+        # 時第二段再切成兩個 1.15 秒，前一個又失敗、短於下限 2 秒，任務失敗。轉完的段與失敗的每一次
+        # 呼叫都照樣收費
+        fake.model_capabilities = replace(
+            fake.model_capabilities, single_pass_seconds=5.0, split_retry_on_failure=split_retry)
+        monkeypatch.setattr(settings, "transcription_max_duration_seconds", 2)
+        fake.script = list(script)
+        end = transcribe(api, "uid-chunk-failed-billed")[-1]
+
+        assert end["status_code"] == TaskStatus.FAILED
+        assert len(fake.calls) == len(script)
+        record = api.get(f"/api/v1/history/{end['task_uuid']}").json()
+        assert record["total_tokens"] == 240_000 * len(script)
+        assert record["cost"] == pytest.approx(0.30 * len(script))
+
+    def test_task_whose_segments_cannot_be_stored_is_billed(self, api, fake, test_engine):
+        # 供應商轉完了，片段卻寫不進資料庫（例如磁碟剛好滿了）：任務照失敗處理，這次呼叫照樣收費
+        fake.script = list(SCRIPT)
+        with writes_fail(test_engine, "transcript_segments", "INSERT"):
+            end = transcribe(api, "uid-unwritable-billed")[-1]
+
+        assert end["status_code"] == TaskStatus.FAILED
+        record = api.get(f"/api/v1/history/{end['task_uuid']}").json()
+        assert record["status"] == TaskStatus.FAILED
+        assert record["total_tokens"] == 240_000
+        assert record["cost"] == pytest.approx(0.30)
+
+    def test_usage_counts_failed_and_cancelled_tasks_but_only_completed_files(self, api, fake):
+        # 取消、失敗、完成的任務各一個，各呼叫供應商一次：三次的 token 與費用都算進每日與各模型的
+        # 用量，檔案數只算完成的那一個
+        before = usage_totals(api)
+        fake.script = [list(SCRIPT[0]), Fail("回應被阻擋"), list(SCRIPT[0])]
+        ends = [cancel_after_the_provider_finished(api, fake, "uid-usage-cancelled"),
+                transcribe(api, "uid-usage-failed")[-1],
+                transcribe(api, "uid-usage-completed")[-1]]
+        after = usage_totals(api)
+
+        assert codes(ends) == [TaskStatus.CANCELLED, TaskStatus.FAILED, TaskStatus.COMPLETED]
+        for view in ("daily", "by_model"):
+            assert after[view]["tokens"] - before[view]["tokens"] == 3 * 240_000
+            assert after[view]["cost"] - before[view]["cost"] == pytest.approx(3 * 0.30)
+            assert after[view]["files"] - before[view]["files"] == 1

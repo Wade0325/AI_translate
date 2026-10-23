@@ -8,6 +8,7 @@
 """
 import json
 import uuid
+from datetime import datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -41,6 +42,11 @@ def _create_log(db: Session, **kwargs) -> TranscriptionLog:
     db.commit()
     db.refresh(log)
     return log
+
+
+def _noon_days_ago(days: int) -> datetime:
+    """幾天前的中午，本地時間（和 request_timestamp 一樣）。"""
+    return datetime.now().replace(hour=12, minute=0, second=0, microsecond=0) - timedelta(days=days)
 
 
 # ─── 統計 API ─────────────────────────────────────────────────────────────────
@@ -379,19 +385,44 @@ class TestHistoryUsage:
         assert isinstance(data["by_model"], list)
         assert isinstance(data["pricing"], list)
 
-    def test_usage_aggregates_completed_by_model(self, client: TestClient, db_session: Session):
+    def test_usage_counts_what_failed_and_cancelled_tasks_were_billed(
+            self, client: TestClient, db_session: Session):
+        # 失敗與取消的任務，供應商照樣收費：token 與費用算進每日與各模型的用量，檔案數只算完成的
+        # （#155）。日期與模型都是其他測試沒用到的，那一天與那個模型只有這幾筆
         model = "usage-test-model-alpha"
-        _create_log(db_session, model_used=model, total_tokens=1000, cost=0.1)
-        _create_log(db_session, model_used=model, total_tokens=2000, cost=0.2)
-        # FAILED 不應計入
-        _create_log(db_session, model_used=model, status="FAILED",
-                    total_tokens=9999, cost=9.9)
+        noon = _noon_days_ago(100)
+        for status, tokens, cost in [
+            ("COMPLETED", 1000, 0.1),
+            ("COMPLETED", 2000, 0.2),
+            ("FAILED", 400, 0.04),
+            ("CANCELLED", 500, 0.05),
+            # 沒有用量的（開始前就取消、還在處理中）什麼都不加
+            ("CANCELLED", None, None),
+            ("PROCESSING", None, None),
+        ]:
+            _create_log(db_session, model_used=model, status=status, total_tokens=tokens,
+                        cost=cost, request_timestamp=noon)
 
         data = client.get("/api/v1/history/usage").json()
-        entry = next(m for m in data["by_model"] if m["model"] == model)
-        assert entry["tokens"] == 3000
-        assert entry["files"] == 2
-        assert abs(entry["cost"] - 0.3) < 1e-6
+        [day] = [d for d in data["daily"] if d["date"] == noon.date().isoformat()]
+        [entry] = [m for m in data["by_model"] if m["model"] == model]
+        for row in (day, entry):
+            assert row["tokens"] == 3900
+            assert row["cost"] == pytest.approx(0.39)
+            assert row["files"] == 2
+
+    def test_tasks_without_usage_add_no_rows(self, client: TestClient, db_session: Session):
+        # 只有沒用量的失敗與取消：不多出全是 0 的一天或一個模型，計費頁沒有用量時照樣顯示空的說明
+        model = "usage-test-model-unbilled"
+        noon = _noon_days_ago(101)
+        _create_log(db_session, model_used=model, status="FAILED", total_tokens=0, cost=0.0,
+                    request_timestamp=noon)
+        _create_log(db_session, model_used=model, status="CANCELLED", total_tokens=None,
+                    cost=None, request_timestamp=noon)
+
+        data = client.get("/api/v1/history/usage").json()
+        assert noon.date().isoformat() not in [d["date"] for d in data["daily"]]
+        assert model not in [m["model"] for m in data["by_model"]]
 
     def test_usage_daily_has_expected_fields(self, client: TestClient, db_session: Session):
         _create_log(db_session, model_used="usage-test-model-daily",

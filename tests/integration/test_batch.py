@@ -227,6 +227,23 @@ def test_a_failed_file_does_not_stop_the_others(api, in_process_run_mode, batch_
     assert [s["text"] for s in stored_segments(api, third["task_uuid"])] == ["三つ目。"]
 
 
+def test_a_failed_file_is_still_billed_at_the_batch_discount(api, in_process_run_mode, batch_fake):
+    # 供應商回報這個請求失敗（例如 Gemini 的回應被阻擋），照樣收費：用量記在失敗的任務紀錄上，和
+    # 完成的檔案一樣打批次的折扣（#155；價目見 test_provider_seam.py 的計價測試，一次 0.30 美元）
+    batch_fake.model_capabilities = replace(batch_fake.model_capabilities, pricing="per_token")
+    batch_fake.usage = (200_000, 40_000)
+    batch_fake.script = [Fail("回應被阻擋")]
+
+    [failed] = ends(run_batch(api, in_process_run_mode, "batch-failed-billed", ["billed.wav"]),
+                    ["billed.wav"])
+
+    assert failed["status_code"] == TaskStatus.FAILED
+    saved = record(api, failed["task_uuid"])
+    assert saved["status"] == TaskStatus.FAILED
+    assert (saved["total_tokens"], saved["cost"]) == (240_000, pytest.approx(0.15))
+    assert saved["service_tier_used"] == "batch"
+
+
 def test_records_store_the_listed_provider_name(api, in_process_run_mode, batch_fake, db_session):
     # 舊前端、直接呼叫 API 的人可能送大寫；任務紀錄存的是供應商清單上的名稱（#97）
     from app.repositories.transcription_log_repository import TranscriptionLogRepository
