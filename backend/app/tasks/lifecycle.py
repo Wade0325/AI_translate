@@ -9,15 +9,16 @@
 輸入音檔都在這裡，每條規則只寫一次：
 
 - 取消不是失敗：任務紀錄寫 CANCELLED。開始前就取消的任務也有紀錄，不呼叫供應商；
-  使用者取消之後，供應商才跑完或才出錯，都不蓋掉取消，供應商已經轉完的部分照樣記下
-  用量與費用（供應商照樣收費）。其他狀態照實改寫：啟動清掃把還在跑的任務記成失敗，
-  任務之後跑完就記成完成。
+  使用者取消之後，供應商才跑完或才出錯，都不蓋掉取消。其他狀態照實改寫：啟動清掃把
+  還在跑的任務記成失敗，任務之後跑完就記成完成。
 - 暫時錯誤在出錯的那一步等一段時間再做一次：分段轉錄重試出錯的那一段
   （:mod:`app.services.chunked_transcription`），批次重做上傳、送出或查詢（:mod:`app.tasks.batch_core`）；
   執行模式不重試整個任務。萬一有暫時錯誤漏到這裡，一律照失敗處理，任務不會停在處理中。
 - 完成和片段一起寫：任務紀錄記成完成（連同凍結的原始轉錄副本）和片段在同一個交易，片段
   寫不進去就照失敗處理。同一個任務再完成一次時，使用者動過的片段不刪、不覆寫（ADR-0007）。
-- 計價照模型能力的計價方式；實際以 Flex 或批次完成的照設定打折。
+- 計價照模型能力的計價方式；實際以 Flex 或批次完成的照設定打折。供應商已經回應的用量，
+  不論任務完成、失敗或取消都記下用量與費用（供應商照樣收費）：例如取消之前已經轉完的段、
+  回應解析不出任何一行、分段轉錄的某一段失敗、片段寫不進去。
 - 先保留音檔，再清理：不論結果（連被強制終止也一樣），輸入音檔先搬進保留區。關掉保留
   音檔時刪掉上傳檔；開著卻保留不成時，上傳檔是唯一的一份，留在暫存區。最後清掉任務
   登記與取消旗標。收尾的每一步各自保護，失敗只記 log。
@@ -291,7 +292,10 @@ class TaskLifecycle:
         return self._conclude(db, result)
 
     def _conclude(self, db: Session, result: TranscriptionTaskResult) -> _Outcome:
-        """供應商轉錄完了：記下完成；使用者已經取消、或沒有轉錄結果時，改記取消或失敗。"""
+        """供應商轉錄完了：記下完成；使用者已經取消、或沒有轉錄結果時，改記取消或失敗。
+
+        不論記成哪一種，``result`` 的用量都照記：供應商已經回應，照樣收費。
+        """
         try:
             if self._progress.cancel_requested():
                 # 供應商沒理會取消、照樣跑完：使用者已經取消，不採用這次的結果（用量照記）
@@ -305,10 +309,15 @@ class TaskLifecycle:
                 raise ValueError(f"轉錄失敗: {result.text or '沒有轉錄出任何內容'}")
             return self._complete(db, result)
         except Exception as e:
-            return self._failed_attempt(db, e)
+            return self._failed_attempt(db, e, usage=result)
 
-    def _failed_attempt(self, db: Session, error: Exception) -> _Outcome:
-        """這一次沒有完成：使用者取消的記成取消，其他記成失敗。"""
+    def _failed_attempt(self, db: Session, error: Exception,
+                        usage: Optional[TranscriptionTaskResult] = None) -> _Outcome:
+        """這一次沒有完成：使用者取消的記成取消，其他記成失敗。
+
+        ``usage`` 是轉錄結果回來之後才失敗時，供應商已經回應的用量，記成哪一種都照記；使用者取消
+        時，到目前為止的用量附在 :class:`~app.exceptions.TranscriptionCancelledError` 上。
+        """
         # 失敗的寫入可能讓 session 停在 pending rollback，先復原才寫得進紀錄
         db.rollback()
         if isinstance(error, TranscriptionCancelledError):
@@ -316,8 +325,8 @@ class TaskLifecycle:
             return self._cancel(db, error.billed_usage)
         if self._progress.cancel_requested():
             # 使用者取消之後才冒出的錯誤（例如 503 剛好回來）也算取消：不算失敗
-            return self._cancel(db)
-        return self._fail(db, without_db_details(error))
+            return self._cancel(db, usage)
+        return self._fail(db, without_db_details(error), usage)
 
     def _start(self, db: Session) -> None:
         """開始：建立任務紀錄，廣播處理中。"""
@@ -416,20 +425,28 @@ class TaskLifecycle:
             "completed_at": datetime.now(),
         })
 
-    def _fail(self, db: Session, error: Exception) -> _Outcome:
-        """失敗：任務紀錄寫 FAILED 與錯誤訊息。"""
+    def _fail(self, db: Session, error: Exception,
+              usage: Optional[TranscriptionTaskResult] = None) -> _Outcome:
+        """失敗：任務紀錄寫 FAILED 與錯誤訊息。
+
+        供應商回報了用量（``usage``）時，連同用量與費用一起記下：供應商照樣收費，儀表板與計費頁
+        不能少算。沒有用量的（本機的模型、呼叫本身就出錯）和以前一樣不記。
+        """
         logger.error(
             f"Transcription task failed for log ID: {self._task_uuid}\n"
             f"{''.join(traceback.format_exception(error))}")
         reason = shown_to_user(error)
-        failed = self._records.update_log_unless_cancelled(db, self._task_uuid, {
+        fields = {
             "status": TaskStatus.FAILED,
             "error_message": reason,
             "processing_time_seconds": self._elapsed(),
-        })
+        }
+        if usage is not None and usage.total_tokens > 0:
+            fields.update(self._usage(usage))
+        failed = self._records.update_log_unless_cancelled(db, self._task_uuid, fields)
         if not failed and self._is_record_cancelled(db):
             # 取消端點剛好先把紀錄記成已取消：失敗不蓋掉取消
-            return self._cancel(db)
+            return self._cancel(db, usage)
         return _Outcome(TaskStatus.FAILED, f"任務失敗: {reason}", error=error)
 
     def _finish(self, db: Session) -> None:

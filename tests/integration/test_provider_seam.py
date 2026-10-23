@@ -26,6 +26,7 @@ from starlette.websockets import WebSocketDisconnect
 from app.core.task_status import TaskStatus
 from app.exceptions import TransientError
 from app.runtime import run_mode
+from tests.support.db_faults import writes_fail
 from tests.support.fake_provider import FAKE_MODEL, Fail, ServedAs
 from tests.support.synthetic_audio import VOICED, synthetic_audio
 from tests.support.task_api import (
@@ -1855,3 +1856,112 @@ class TestCompletingTheSameTaskAgain:
         # 這次的片段寫不進去：任務記成失敗，使用者的校正和上一次的結果都原封不動
         assert api.get(f"/api/v1/history/{task_uuid}").json()["status"] == TaskStatus.FAILED
         assert stored_segments(api, task_uuid) == before
+
+
+# ─── 失敗的任務照樣記用量 ───────────────────────────────────────────────────
+
+def usage_totals(api) -> dict:
+    """儀表板與計費頁的用量（GET /history/usage）：每日用量加起來的總數，以及假模型那一列。
+
+    測試資料庫裡還有其他測試的任務，要比較的是前後的差。
+    """
+    usage = api.get("/api/v1/history/usage").json()
+    model = next((row for row in usage["by_model"] if row["model"] == FAKE_MODEL),
+                 {"tokens": 0, "cost": 0.0, "files": 0})
+    fields = ("tokens", "cost", "files")
+    return {"daily": {key: sum(day[key] for day in usage["daily"]) for key in fields},
+            "by_model": {key: model[key] for key in fields}}
+
+
+class TestFailedTaskIsStillBilled:
+    """供應商已經回應、任務才失敗時，供應商照樣收費（例如 Gemini 的回應被阻擋）：用量與費用照樣記在
+    任務紀錄上，儀表板與計費頁才不會少算（#155）。價目見 TestSingleFileTask 的計價測試：一次呼叫
+    240,000 個 token、0.30 美元。"""
+
+    @pytest.fixture(autouse=True)
+    def _priced_per_token(self, fake):
+        fake.model_capabilities = replace(fake.model_capabilities, pricing="per_token")
+        fake.usage = (200_000, 40_000)
+
+    def test_failed_result_is_recorded_and_priced(self, api, fake):
+        fake.script = [Fail("回應被阻擋")]
+        end = transcribe(api, "uid-failed-billed")[-1]
+
+        assert end["status_code"] == TaskStatus.FAILED
+        record = api.get(f"/api/v1/history/{end['task_uuid']}").json()
+        assert record["status"] == TaskStatus.FAILED
+        assert "回應被阻擋" in record["error_message"]
+        assert record["total_tokens"] == 240_000
+        assert record["cost"] == pytest.approx(0.30)
+        assert record["service_tier_used"] == "standard"
+        assert record["audio_duration_seconds"] == pytest.approx(12.0, abs=0.1)
+
+    def test_failure_without_any_usage_records_none(self, api, fake):
+        # 供應商沒有回報用量（例如本機的模型一律回報 0 個 token）：和以前一樣不記，歷史紀錄的 token
+        # 與費用照舊空著，不會變成 0 元
+        fake.usage = (0, 0)
+        fake.script = [Fail("模型壞掉了")]
+        end = transcribe(api, "uid-failed-unbilled")[-1]
+
+        assert end["status_code"] == TaskStatus.FAILED
+        record = api.get(f"/api/v1/history/{end['task_uuid']}").json()
+        assert (record["total_tokens"], record["cost"]) == (None, None)
+
+    @pytest.mark.parametrize("split_retry, script", [
+        (False, [[(0.2, 0.8, 0, "一つ目。")], Fail("模型壞掉了")]),
+        (True, [[(0.2, 0.8, 0, "一つ目。")], Fail("模型壞掉了"), Fail("模型壞掉了")]),
+    ], ids=["without-split-retry", "after-split-retry"])
+    def test_chunks_finished_before_the_failure_are_billed_too(
+            self, api, fake, settings, monkeypatch, split_retry, script):
+        # 切成 4.9 秒與 2.3 秒兩段（見 TestSplitRetryAfterFailure）：第一段轉完，第二段失敗。切段重試
+        # 時第二段再切成兩個 1.15 秒，前一個又失敗、短於下限 2 秒，任務失敗。轉完的段與失敗的每一次
+        # 呼叫都照樣收費
+        fake.model_capabilities = replace(
+            fake.model_capabilities, single_pass_seconds=5.0, split_retry_on_failure=split_retry)
+        monkeypatch.setattr(settings, "transcription_max_duration_seconds", 2)
+        fake.script = list(script)
+        end = transcribe(api, "uid-chunk-failed-billed")[-1]
+
+        assert end["status_code"] == TaskStatus.FAILED
+        assert len(fake.calls) == len(script)
+        record = api.get(f"/api/v1/history/{end['task_uuid']}").json()
+        assert record["total_tokens"] == 240_000 * len(script)
+        assert record["cost"] == pytest.approx(0.30 * len(script))
+
+    def test_task_whose_segments_cannot_be_stored_is_billed(self, api, fake, test_engine):
+        # 供應商轉完了，片段卻寫不進資料庫（例如磁碟剛好滿了）：任務照失敗處理，這次呼叫照樣收費
+        fake.script = list(SCRIPT)
+        with writes_fail(test_engine, "transcript_segments", "INSERT"):
+            end = transcribe(api, "uid-unwritable-billed")[-1]
+
+        assert end["status_code"] == TaskStatus.FAILED
+        record = api.get(f"/api/v1/history/{end['task_uuid']}").json()
+        assert record["status"] == TaskStatus.FAILED
+        assert record["total_tokens"] == 240_000
+        assert record["cost"] == pytest.approx(0.30)
+
+    def test_usage_counts_failed_and_cancelled_tasks_but_only_completed_files(self, api, fake):
+        # 取消、失敗、完成的任務各一個，各呼叫供應商一次：三次的 token 與費用都算進每日與各模型的
+        # 用量，檔案數只算完成的那一個
+        before = usage_totals(api)
+        fake.script = [list(SCRIPT[0]), Fail("回應被阻擋"), list(SCRIPT[0])]
+        # 取消的那個：供應商不理會取消、照樣轉完，用量記在已取消的紀錄上（見
+        # test_what_the_provider_finished_after_the_cancel_is_still_billed）
+        fake.ignores_cancel = True
+        fake.hold = threading.Event()
+        filename = upload(api)
+        with api.websocket_connect("/api/v1/ws/uid-usage-cancelled") as ws:
+            submit(ws, filename)
+            assert fake.started.wait(TIMEOUT)
+            cancel_when_dispatched(api, "uid-usage-cancelled")
+            receive_until_terminal(ws)  # 取消端點的廣播
+            fake.hold.set()
+            assert receive_until_terminal(ws)[-1]["status_code"] == TaskStatus.CANCELLED
+        assert transcribe(api, "uid-usage-failed")[-1]["status_code"] == TaskStatus.FAILED
+        assert transcribe(api, "uid-usage-completed")[-1]["status_code"] == TaskStatus.COMPLETED
+        after = usage_totals(api)
+
+        for view in ("daily", "by_model"):
+            assert after[view]["tokens"] - before[view]["tokens"] == 3 * 240_000
+            assert after[view]["cost"] - before[view]["cost"] == pytest.approx(3 * 0.30)
+            assert after[view]["files"] - before[view]["files"] == 1

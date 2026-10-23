@@ -141,6 +141,21 @@ def test_single_file_failure_still_deletes_its_remote_file(api, in_process_run_m
     assert genai.stored == {}
 
 
+def test_reply_without_any_line_fails_but_its_usage_is_recorded(api, in_process_run_mode, genai):
+    # Gemini 回應了，只是沒有任何帶時間戳的行：沒有轉錄結果，任務失敗，這次生成照樣收費（#155）。
+    # 假用戶端的回應是 1,000 個輸入 token、200 個輸出 token；gemini-2.5-flash 的音訊輸入每百萬
+    # token 1.00 美元、輸出 2.50 美元 → 0.001 + 0.0005
+    genai.replies = [Reply(text="")]
+
+    end = transcribe(api, in_process_run_mode, "gemini-single-no-line.wav")[-1]
+
+    assert end["status_code"] == TaskStatus.FAILED
+    record = history(api, "gemini-single-no-line.wav")
+    assert record["status"] == TaskStatus.FAILED
+    assert record["total_tokens"] == 1200
+    assert record["cost"] == pytest.approx(0.0015)
+
+
 def test_cancelling_a_running_task_stops_it_before_the_generation(
         api, in_process_run_mode, genai, gemini):
     name = "gemini-cancel.wav"
