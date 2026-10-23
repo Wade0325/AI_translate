@@ -15,7 +15,10 @@ class TranscriptionTaskParams(BaseModel):
     original_filename: str
     client_id: str
     file_uid: str
+    # 補充說明（轉錄頁填的提示詞），接在提示詞範本後面送出（app.core.default_prompt.build_prompt）
     prompt: Optional[str] = None
+    # 設定頁為這個供應商存的提示詞範本，派送時從資料庫讀出；None 時用系統內建的範本
+    prompt_template: Optional[str] = None
     original_text: Optional[str] = None
     target_lang: Optional[str] = None
     multi_speaker: bool = False
@@ -30,7 +33,7 @@ class BatchFileItemParams(BaseModel):
     file_uid: str
     source_lang: Optional[str] = None
     target_lang: Optional[str] = None
-    prompt: Optional[str] = None
+    prompt: Optional[str] = None  # 這個檔案的補充說明；None 時用批次層級的
     multi_speaker: Optional[bool] = None
 
 
@@ -46,7 +49,10 @@ class BatchTranscriptionTaskParams(BaseModel):
     source_lang: str
     target_lang: Optional[str] = None
     multi_speaker: bool = False
+    # 批次層級的補充說明：補給沒帶自己補充說明的檔案
     prompt: Optional[str] = None
+    # 設定頁為這個供應商存的提示詞範本，派送時從資料庫讀出；每個檔案共用，None 時用系統內建的範本
+    prompt_template: Optional[str] = None
     client_id: str
     batch_id: str
     session_id: Optional[str] = None

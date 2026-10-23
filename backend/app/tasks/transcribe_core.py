@@ -132,9 +132,11 @@ def _prompt(params: TranscriptionTaskParams) -> str:
 
 請仔細聆聽音檔，為這份逐字稿加上精確的時間戳，並以LRC格式輸出。
 """
+    # 設定頁存的提示詞範本，空一行接上轉錄頁填的補充說明（#144）
     return build_prompt(
         source_lang=params.source_lang,
         target_lang=params.target_lang,
         multi_speaker=params.multi_speaker,
-        template=params.prompt or None,
+        template=params.prompt_template,
+        supplement=params.prompt,
     )

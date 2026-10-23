@@ -38,10 +38,11 @@ def _is_inside(path: str, root) -> bool:
 
 
 @pytest.fixture
-def dispatched(uploads, monkeypatch, in_process_run_mode):
+def dispatched(uploads, monkeypatch, in_process_run_mode, task_db):
     """記錄派發的任務參數；參數指向上傳目錄外就直接拋錯。
 
-    拋錯讓端點走例外分支關閉連線，漏洞存在時測試會失敗而不是卡在 receive。
+    拋錯讓端點走例外分支關閉連線，漏洞存在時測試會失敗而不是卡在 receive。派發時會從資料庫讀
+    提示詞範本（#144），資料庫指到測試的 sqlite（task_db）。
     """
     root, _ = uploads
     calls = []

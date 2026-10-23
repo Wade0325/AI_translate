@@ -12,6 +12,7 @@ from dataclasses import replace
 import pytest
 from fastapi.testclient import TestClient
 
+from app.core.default_prompt import build_prompt
 from app.core.task_status import TaskStatus
 from app.exceptions import TransientError
 from app.runtime import run_mode
@@ -255,18 +256,34 @@ def test_records_store_the_listed_provider_name(api, in_process_run_mode, batch_
     assert TranscriptionLogRepository().get(db_session, end["task_uuid"]).provider == "fake"
 
 
-def test_prompts_reach_the_provider_as_written(api, in_process_run_mode, batch_fake):
-    # 第一個檔案沿用批次的提示詞（變數照樣代入，JSON 的大括號原樣留著，#143），第二個檔案有自己的
-    batch_fake.script = [list(LINES), list(LINES)]
+def test_each_file_sends_the_saved_template_and_its_supplement(
+        api, in_process_run_mode, batch_fake, saved_prompt_template):
+    # 和單檔任務同一個規則（#144）：設定頁存的範本（變數照樣代入，JSON 的大括號原樣留著，#143），
+    # 空一行接上這個檔案的補充說明：自己的，沒有就用批次層級的；補充說明照寫的送出
+    saved_prompt_template("fake", '請轉錄{source_lang}音檔，每一行寫成 {"speaker": "S0", "text": "…"}')
+    batch_fake.script = [list(LINES), list(LINES), list(LINES)]
     own_prompt = "這一檔有兩位說話者，分別標成 {A} 與 {B}"
 
     run_batch(api, in_process_run_mode, "batch-prompts", ["prompt-a.wav", "prompt-b.wav"],
               fields_per_file={"prompt-b.wav": {"prompt": own_prompt}},
-              prompt='請轉錄{source_lang}音檔，每一行寫成 {"speaker": "S0", "text": "…"}',
+              prompt="人名照寫：佐藤", source_lang="ja-JP")
+    run_batch(api, in_process_run_mode, "batch-template-alone", ["prompt-c.wav"],
               source_lang="ja-JP")
 
+    template = '請轉錄日文音檔，每一行寫成 {"speaker": "S0", "text": "…"}'
     assert batch_fake.prompts == [
-        '請轉錄日文音檔，每一行寫成 {"speaker": "S0", "text": "…"}', own_prompt]
+        template + "\n\n人名照寫：佐藤", template + "\n\n" + own_prompt, template]
+
+
+def test_supplement_is_sent_after_the_built_in_template(api, in_process_run_mode, batch_fake):
+    # 設定頁沒存過範本：系統內建範本裡要求 LRC 與時間戳的指示照樣送出，補充說明接在最後
+    batch_fake.script = [list(LINES)]
+
+    run_batch(api, in_process_run_mode, "batch-built-in-template", ["prompt-d.wav"],
+              fields_per_file={"prompt-d.wav": {"prompt": "說話者是兩位主持人"}},
+              source_lang="ja-JP")
+
+    assert batch_fake.prompts == [build_prompt(source_lang="ja-JP") + "\n\n說話者是兩位主持人"]
 
 
 # ─── 語音視圖 ────────────────────────────────────────────────────────────────
