@@ -45,3 +45,31 @@ def api(test_engine, data_dir, task_db, in_process_run_mode):
     in_process_run_mode.close(wait=True)
     app.router.lifespan_context = original
     app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def saved_prompt_template(db_session):
+    """設定頁存的提示詞範本：``saved_prompt_template(供應商, 範本)`` 直接寫進資料庫，像使用者先前在
+    設定頁存好的；測試結束後還原（原本沒有這個供應商的設定列就刪掉）。"""
+    from app.database.models import ModelConfiguration
+
+    saved = []
+
+    def save(provider: str, template: str) -> None:
+        row = db_session.get(ModelConfiguration, provider)
+        if row is None:
+            row = ModelConfiguration(provider=provider)
+            db_session.add(row)
+            saved.append((row, None, True))
+        else:
+            saved.append((row, row.prompt, False))
+        row.prompt = template
+        db_session.commit()
+
+    yield save
+    for row, prompt, created in reversed(saved):
+        if created:
+            db_session.delete(row)
+        else:
+            row.prompt = prompt
+    db_session.commit()

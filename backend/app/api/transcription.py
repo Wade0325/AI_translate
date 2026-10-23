@@ -14,6 +14,7 @@ from app.core.config import get_settings
 from app.core.task_status import TaskStatus
 from app.database.session import SessionLocal
 from app.provider.registry import UnsupportedModelError, check_request
+from app.repositories.model_manager_repository import stored_prompt_template
 from app.repositories.transcription_log_repository import TranscriptionLogRepository
 from app.services import audio_store
 from app.services.api_keys import resolve_api_key
@@ -59,6 +60,8 @@ def start_transcription_task_sync(payload_str: str, file_uid: str) -> None:
     # 前端不再送明文金鑰：缺少或只帶遮罩值時改用資料庫裡的金鑰
     with SessionLocal() as db:
         api_key = resolve_api_key(db, provider, request_data.api_keys)
+        # 提示詞範本也從設定讀（#144）：送出的是按下開始那時的範本，接上請求帶的補充說明
+        prompt_template = stored_prompt_template(db, provider)
 
     task_params = TranscriptionTaskParams(
         file_path=server_file_path,
@@ -71,6 +74,7 @@ def start_transcription_task_sync(payload_str: str, file_uid: str) -> None:
         client_id=file_uid,
         file_uid=file_uid,
         prompt=request_data.prompt,
+        prompt_template=prompt_template,
         multi_speaker=request_data.multi_speaker,
         service_tier=request_data.service_tier,
         session_id=request_data.session_id,

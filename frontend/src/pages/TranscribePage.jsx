@@ -44,7 +44,6 @@ export default function TranscribePage() {
         model,
         setModel,
         supports,
-        promptTemplate,
         disabledReasons,
         isProcessing,
         processingMode,
@@ -387,11 +386,11 @@ export default function TranscribePage() {
                             // 這個檔案自己的提示詞（每檔設定裡編輯的就是它）；清空就回到跟著全域
                             prompt: file.prompt ?? "",
                             followsGlobalPrompt: followsGlobalPrompt(file),
-                            // 這個檔案用的提示詞：自己的，沒有就是全域的（還沒輪到提示詞範本）
+                            // 這個檔案用的提示詞：自己的，沒有就是全域的
                             filePrompt: filePrompt(file, globalConfig.prompt),
-                            // 檔案卡顯示的提示詞：還沒送出的照送出時的規則算（包括提示詞範本），
-                            // 已送出的顯示當初送出的（utils/transcribeRequest.js）
-                            promptToSend: promptToSend(file, globalConfig.prompt, promptTemplate, supports),
+                            // 檔案卡顯示的補充說明：還沒送出的照送出時的規則算，已送出的顯示當初送出的；
+                            // 提示詞範本每次都送，不顯示在卡片上（utils/transcribeRequest.js）
+                            promptToSend: promptToSend(file, globalConfig.prompt, supports),
                             sentPrompt: file.sentPrompt ?? null,
                             includeTimestamps: file.includeTimestamps ?? globalConfig.includeTimestamps,
                             hasOverride: file.hasOverride || false,

@@ -19,6 +19,16 @@ def find_provider_settings(db: Session, provider: str) -> Optional[ModelConfigur
     return row
 
 
+def stored_prompt_template(db: Session, provider: str) -> Optional[str]:
+    """設定頁為這個供應商存的提示詞範本（名稱不分大小寫）；沒有設定列時是 None。
+
+    存的是空字串（清空範本再存）也照樣回傳：由 :func:`app.core.default_prompt.build_prompt`
+    當成沒存過，改用系統內建的範本。
+    """
+    row = find_provider_settings(db, provider)
+    return row.prompt if row else None
+
+
 class ModelSettingsRepository:
     def get_by_name(self, db: Session, provider: str) -> Optional[ModelConfigurationSchema]:
         """根據 provider 取得模型設定（名稱不分大小寫），無資料時回傳 None。"""

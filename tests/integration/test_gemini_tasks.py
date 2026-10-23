@@ -22,9 +22,9 @@ from tests.support.waiting import TIMEOUT, wait_until
 
 MODEL = "gemini-2.5-flash"
 
-# 使用者的提示詞照樣代入變數，裡面的 JSON 之類的大括號原樣送給 Gemini（#143）
-JSON_PROMPT = '請轉錄{source_lang}音檔，每一行寫成 {"speaker": "S0", "text": "…"}'
-JSON_PROMPT_SENT = '請轉錄日文音檔，每一行寫成 {"speaker": "S0", "text": "…"}'
+# 設定頁存的提示詞範本照樣代入變數，裡面的 JSON 之類的大括號原樣送給 Gemini（#143）
+JSON_TEMPLATE = '請轉錄{source_lang}音檔，每一行寫成 {"speaker": "S0", "text": "…"}'
+JSON_TEMPLATE_SENT = '請轉錄日文音檔，每一行寫成 {"speaker": "S0", "text": "…"}'
 
 
 # ─── fixtures ────────────────────────────────────────────────────────────────
@@ -184,14 +184,17 @@ def test_single_file_is_retried_after_a_transient_error(
     assert genai.stored == {}  # 兩次上傳的遠端檔都刪掉了
 
 
-def test_single_file_prompt_with_braces_reaches_gemini_as_written(api, in_process_run_mode, genai):
+def test_single_file_prompt_with_braces_reaches_gemini_as_written(
+        api, in_process_run_mode, genai, saved_prompt_template):
+    # 轉錄頁填的提示詞是補充說明：照寫的送出（不代入變數），空一行接在範本後面（#144）
+    saved_prompt_template("Google", JSON_TEMPLATE)
     genai.replies = [Reply(text="[00:01.00]おはよう。")]
 
     end = transcribe(api, in_process_run_mode, "gemini-single-braces.wav",
-                     prompt=JSON_PROMPT, source_lang="ja-JP")[-1]
+                     prompt="人名照寫：{佐藤}、{source_lang}", source_lang="ja-JP")[-1]
 
     assert end["status_code"] == TaskStatus.COMPLETED
-    assert genai.prompts == [JSON_PROMPT_SENT]
+    assert genai.prompts == [JSON_TEMPLATE_SENT + "\n\n人名照寫：{佐藤}、{source_lang}"]
 
 
 # ─── 分段轉錄 ────────────────────────────────────────────────────────────────

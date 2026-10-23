@@ -431,7 +431,8 @@ class _Run:
             source_lang=item.source_lang or params.source_lang,
             target_lang=item.target_lang or params.target_lang,
             multi_speaker=params.multi_speaker if item.multi_speaker is None else item.multi_speaker,
-            template=(item.prompt or params.prompt) or None,
+            template=params.prompt_template,
+            supplement=item.prompt or params.prompt,
         )
 
     def _fail_batch(self, text: str) -> None:
@@ -673,7 +674,8 @@ def _create_record(db: Session, params: BatchTranscriptionTaskParams, files: Seq
                 source_lang=params.source_lang,
                 target_lang=params.target_lang,
                 multi_speaker=params.multi_speaker,
-                template=params.prompt or None,
+                template=params.prompt_template,
+                supplement=params.prompt,
             ),
         }),
         celery_task_id=run_id,

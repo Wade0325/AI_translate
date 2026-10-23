@@ -23,6 +23,7 @@ import soundfile as sf
 from gevent import GreenletExit
 from starlette.websockets import WebSocketDisconnect
 
+from app.core.default_prompt import build_prompt
 from app.core.task_status import TaskStatus
 from app.exceptions import TransientError
 from app.runtime import run_mode
@@ -1115,6 +1116,43 @@ class TestInputsTheModelDoesNotTake:
 
         assert "不支援批次" in reason
         assert fake.opened == 0
+
+
+# ─── 提示詞：補充說明接在提示詞範本後面（#144） ──────────────────────────────
+
+class TestPromptIsTemplatePlusSupplement:
+    """請求帶的提示詞是補充說明，空一行接在提示詞範本後面送出；範本是設定頁為這個供應商存的，
+    沒存過就是系統內建的。批次照同一個規則，見 test_batch.py。"""
+
+    @pytest.fixture(autouse=True)
+    def _script(self, fake):
+        fake.script = list(SCRIPT)
+
+    def test_supplement_is_sent_after_the_built_in_template(self, api, fake):
+        transcribe(api, "uid-supplement-built-in", source_lang="ja-JP", prompt="說話者是兩位主持人")
+
+        # 系統內建範本裡要求 LRC 與時間戳的指示照樣送出，補充說明接在最後
+        assert fake.prompts == [build_prompt(source_lang="ja-JP") + "\n\n說話者是兩位主持人"]
+
+    def test_supplement_is_sent_after_the_template_saved_in_settings(
+            self, api, fake, saved_prompt_template):
+        saved_prompt_template("fake", "請把{source_lang}音檔轉成 LRC，時間戳寫成 [mm:ss.xxx]。")
+
+        transcribe(api, "uid-supplement-saved", source_lang="ja-JP",
+                   prompt='人名照寫：佐藤，每一行寫成 {"speaker": "S0"}')
+
+        # 範本代入變數；補充說明照寫的送出，大括號不動
+        assert fake.prompts == ["請把日文音檔轉成 LRC，時間戳寫成 [mm:ss.xxx]。\n\n"
+                                '人名照寫：佐藤，每一行寫成 {"speaker": "S0"}']
+
+    @pytest.mark.parametrize("prompt", [None, "", " \n"], ids=["null", "empty", "blank"])
+    def test_without_a_supplement_the_saved_template_is_sent_alone(
+            self, api, fake, saved_prompt_template, prompt):
+        saved_prompt_template("fake", "請把{source_lang}音檔轉成 LRC。")
+
+        transcribe(api, "uid-template-alone", source_lang="ja-JP", prompt=prompt)
+
+        assert fake.prompts == ["請把日文音檔轉成 LRC。"]
 
 
 # ─── 取消 ────────────────────────────────────────────────────────────────────

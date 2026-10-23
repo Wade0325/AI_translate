@@ -61,7 +61,7 @@ class WebSocketTranscriptionRequest(BaseModel):
     api_keys: str = ""  # 可省略：前端不送明文金鑰，後端改用資料庫裡的金鑰
     source_lang: str
     target_lang: Optional[str] = None
-    prompt: Optional[str] = None
+    prompt: Optional[str] = None  # 補充說明：接在設定頁存的提示詞範本後面送出（#144）
     original_text: Optional[str] = None
     multi_speaker: bool = False
     service_tier: Optional[str] = None  # 'flex' 啟用 Flex 推論
@@ -87,7 +87,7 @@ class WebSocketBatchRequest(BaseModel):
     api_keys: str = ""  # 可省略：前端不送明文金鑰，後端改用資料庫裡的金鑰
     source_lang: str
     target_lang: Optional[str] = None
-    prompt: Optional[str] = None
+    prompt: Optional[str] = None  # 補充說明：補給沒帶自己的檔案，一樣接在提示詞範本後面
     multi_speaker: bool = False
     session_id: Optional[str] = None
 
