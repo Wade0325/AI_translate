@@ -1133,3 +1133,58 @@ def test_a_batch_still_queued_when_the_app_closes_is_recorded_as_failed(
     assert api.get(f"/api/v1/transcripts/{listed['task_uuid']}/audio").content == synthetic_audio()
     assert leftovers(data_dir) == []
     assert len(batch_fake.calls) == 1
+
+
+# ─── 上傳中停住的批次 ────────────────────────────────────────────────────────
+
+def stop_while_uploading(api: TestClient, batch_id: str, names: list[str]) -> None:
+    """送出批次，在上傳最後一個檔案時應用程式重啟（:class:`Restart`）：等這次執行停下來。"""
+    with api.websocket_connect(f"/api/v1/batch/ws/{batch_id}") as ws:
+        ws.send_json(batch_request(api, names))
+        wait_until(lambda: listed_batch_ids(api).count(batch_id) == 1
+                   and listed(api, batch_id)["is_alive"] is False)
+
+
+def test_a_batch_stopped_while_uploading_is_recorded_as_failed_at_startup(
+        api, in_process_run_mode, batch_fake, data_dir):
+    # 第一個檔案上傳好了，第二個上傳失敗，第三個上傳到一半時應用程式重啟：批次停在上傳中，
+    # 還沒結束的檔案停在處理中
+    names = ["stopped-a.wav", "stopped-b.wav", "stopped-c.wav"]
+    batch_fake.upload_errors = [None, RuntimeError("讀不到檔案"), Restart()]
+    stop_while_uploading(api, "batch-stopped-uploading", names)
+    assert shown(api, "batch-stopped-uploading") == ("UPLOADING", False, False)
+    records = {item["original_filename"]: item for item in api.get(
+        "/api/v1/history", params={"keyword": "stopped-"}).json()["items"]}
+    assert [records[name]["status"] for name in names] == [
+        TaskStatus.PROCESSING, TaskStatus.FAILED, TaskStatus.PROCESSING]
+
+    # 啟動時：沒有任務還看著它，批次記成失敗；沒送出過，所以不給「恢復」
+    batch_core.end_stopped_uploads()
+
+    assert shown(api, "batch-stopped-uploading") == ("FAILED", None, False)
+    for name in names:
+        saved = record(api, records[name]["task_uuid"])
+        assert saved["status"] == TaskStatus.FAILED
+        assert saved["is_batch"] is True
+        # 和單檔任務一樣：上傳檔照保留設定處理
+        assert api.get(
+            f"/api/v1/transcripts/{saved['task_uuid']}/audio").content == synthetic_audio()
+    # 已經因為上傳失敗結束的檔案，原因不被蓋掉
+    assert "讀不到檔案" in record(api, records["stopped-b.wav"]["task_uuid"])["error_message"]
+    for name in ("stopped-a.wav", "stopped-c.wav"):
+        assert "上傳" in record(api, records[name]["task_uuid"])["error_message"]
+    assert leftovers(data_dir) == []
+
+
+def test_a_batch_already_sent_is_left_for_recovery_at_startup(
+        api, in_process_run_mode, batch_fake):
+    # 送出之後才重啟的批次停在輪詢中：啟動時不動它，照樣從任務頁恢復到完成
+    batch_fake.script = [list(LINES)]
+    batch_fake.batch_polls = [Restart()]
+    submit_batch(api, in_process_run_mode, "batch-sent-before-restart", ["sent.wav"])
+
+    batch_core.end_stopped_uploads()
+
+    assert shown(api, "batch-sent-before-restart") == ("POLLING", False, True)
+    end = of_file(recover(api, "batch-sent-before-restart"), "sent.wav")[-1]
+    assert end["status_code"] == TaskStatus.COMPLETED

@@ -3,6 +3,10 @@ from celery.signals import worker_init
 
 from app.core.config import get_settings
 from app.runtime import run_mode
+from app.tasks.lifecycle import without_db_details
+from app.utils.logger import setup_logger
+
+logger = setup_logger(__name__)
 
 settings = get_settings()
 
@@ -31,9 +35,26 @@ celery_app.conf.update(
 
 
 @worker_init.connect
-def _select_run_mode(**_) -> None:
-    """worker 啟動時就依執行模式選定轉接器，不等第一個任務；選不了（例如設定錯）當場失敗。"""
+def on_worker_start(sender, **_) -> None:
+    """worker 啟動時，在開始收任務之前：
+
+    - 依執行模式選定轉接器，不等第一個任務；選不了（例如設定錯）當場失敗。
+    - 消費預設佇列（批次跑在這裡）的 worker，把上傳中的批次記成失敗：之前在上傳的那個 worker
+      已經停了（:func:`~app.tasks.batch_core.end_stopped_uploads`）。主機的 GPU worker 只消費
+      ``local_asr``（``local_worker.bat``），不收。
+    """
     run_mode.get()
+    if sender.app.conf.task_default_queue not in sender.app.amqp.queues.consume_from:
+        return
+    from app.tasks import batch_core
+    try:
+        ended = batch_core.end_stopped_uploads()
+    except Exception as e:
+        # 收不了也照樣啟動，任務頁的批次照舊停在上傳中
+        logger.error(f"worker 啟動時無法收掉上傳中的批次: {without_db_details(e)}")
+        return
+    if ended:
+        logger.info(f"worker 啟動：{ended} 個上傳時停住的批次記成失敗")
 
 
 if __name__ == "__main__":
