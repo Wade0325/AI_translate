@@ -175,7 +175,8 @@ class HistoryRepository:
 
         token 與費用加總每個記了用量的任務，不只完成的：失敗與取消的任務，供應商已經回應的部分
         照樣收費（見 :mod:`app.tasks.lifecycle`）。檔案數只算完成的。沒有完成、也沒記到用量的任務
-        （例如開始前就取消、還在處理中）不算，不會多出全是 0 的一天或一個模型。
+        （例如開始前就取消、還在處理中）不算，不會多出全是 0 的一天或一個模型；費用由 token 數算出，
+        沒有 token 就沒有費用。
         """
         from sqlalchemy import func
 
@@ -184,7 +185,7 @@ class HistoryRepository:
         since = datetime.now() - timedelta(days=days)
         day = func.date(TranscriptionLog.request_timestamp)
         completed = TranscriptionLog.status == TaskStatus.COMPLETED
-        counted = or_(completed, TranscriptionLog.total_tokens > 0, TranscriptionLog.cost > 0)
+        completed_or_with_usage = or_(completed, TranscriptionLog.total_tokens > 0)
         files = func.sum(case((completed, 1), else_=0))
 
         daily_rows = (
@@ -194,7 +195,7 @@ class HistoryRepository:
                 func.sum(TranscriptionLog.cost),
                 files,
             )
-            .filter(counted)
+            .filter(completed_or_with_usage)
             .filter(TranscriptionLog.request_timestamp >= since)
             .group_by(day)
             .order_by(day)
@@ -208,7 +209,7 @@ class HistoryRepository:
                 func.sum(TranscriptionLog.cost),
                 files,
             )
-            .filter(counted)
+            .filter(completed_or_with_usage)
             .filter(TranscriptionLog.request_timestamp >= since)
             .group_by(TranscriptionLog.model_used)
             .order_by(desc(func.sum(TranscriptionLog.total_tokens)))

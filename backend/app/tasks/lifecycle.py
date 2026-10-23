@@ -18,7 +18,8 @@
   寫不進去就照失敗處理。同一個任務再完成一次時，使用者動過的片段不刪、不覆寫（ADR-0007）。
 - 計價照模型能力的計價方式；實際以 Flex 或批次完成的照設定打折。供應商已經回應的用量，
   不論任務完成、失敗或取消都記下用量與費用（供應商照樣收費）：例如取消之前已經轉完的段、
-  回應解析不出任何一行、分段轉錄的某一段失敗、片段寫不進去。
+  回應解析不出任何一行、分段轉錄的某一段失敗、片段寫不進去。失敗與取消時 token 數是 0
+  （例如本機的模型不回報 token）就不記，紀錄的用量留空。
 - 先保留音檔，再清理：不論結果（連被強制終止也一樣），輸入音檔先搬進保留區。關掉保留
   音檔時刪掉上傳檔；開著卻保留不成時，上傳檔是唯一的一份，留在暫存區。最後清掉任務
   登記與取消旗標。收尾的每一步各自保護，失敗只記 log。
@@ -391,17 +392,16 @@ class TaskLifecycle:
         return _Outcome(TaskStatus.COMPLETED, "任務完成", broadcast_result=response,
                         return_value={"raw_lrc_text": transcripts["lrc"]})
 
-    def _cancel(self, db: Session, result: Optional[TranscriptionTaskResult] = None) -> _Outcome:
+    def _cancel(self, db: Session, usage: Optional[TranscriptionTaskResult] = None) -> _Outcome:
         """取消：不是失敗，任務紀錄寫 CANCELLED。
 
-        使用者取消之後供應商才跑完、或分段轉錄已經轉完幾段（``result`` 是它們的用量）時，
-        照樣記下用量與費用：供應商照樣收費（例如 Gemini 已經送出的生成），帳單頁不能少算。
+        使用者取消之後供應商才跑完、或分段轉錄已經轉完幾段（``usage`` 是它們的用量）時，
+        照樣記下用量與費用（見 :meth:`_usage`）：供應商照樣收費（例如 Gemini 已經送出的生成），
+        計費頁不能少算。
         """
         logger.info(f"Transcription task {self._task_uuid} cancelled by user.")
-        fields = self._cancelled_fields()
-        if result is not None:
-            fields.update(self._usage(result))
-        self._records.update_log(db, self._task_uuid, fields)
+        self._records.update_log(
+            db, self._task_uuid, {**self._cancelled_fields(), **self._usage(usage)})
         return _cancelled()
 
     def _cancel_before_start(self, db: Session) -> _Outcome:
@@ -429,21 +429,19 @@ class TaskLifecycle:
               usage: Optional[TranscriptionTaskResult] = None) -> _Outcome:
         """失敗：任務紀錄寫 FAILED 與錯誤訊息。
 
-        供應商回報了用量（``usage``）時，連同用量與費用一起記下：供應商照樣收費，儀表板與計費頁
-        不能少算。沒有用量的（本機的模型、呼叫本身就出錯）和以前一樣不記。
+        供應商已經回應過（``usage`` 是它的用量）時，連同用量與費用一起記下（見 :meth:`_usage`）：
+        供應商照樣收費，儀表板與計費頁不能少算。
         """
         logger.error(
             f"Transcription task failed for log ID: {self._task_uuid}\n"
             f"{''.join(traceback.format_exception(error))}")
         reason = shown_to_user(error)
-        fields = {
+        failed = self._records.update_log_unless_cancelled(db, self._task_uuid, {
             "status": TaskStatus.FAILED,
             "error_message": reason,
             "processing_time_seconds": self._elapsed(),
-        }
-        if usage is not None and usage.total_tokens > 0:
-            fields.update(self._usage(usage))
-        failed = self._records.update_log_unless_cancelled(db, self._task_uuid, fields)
+            **self._usage(usage),
+        })
         if not failed and self._is_record_cancelled(db):
             # 取消端點剛好先把紀錄記成已取消：失敗不蓋掉取消
             return self._cancel(db, usage)
@@ -537,8 +535,14 @@ class TaskLifecycle:
     def _is_record_cancelled(self, db: Session) -> bool:
         return self._records.current_status(db, self._task_uuid) == TaskStatus.CANCELLED
 
-    def _usage(self, result: TranscriptionTaskResult) -> dict:
-        """供應商回報的用量與據此算出的費用，記進任務紀錄的欄位。"""
+    def _usage(self, result: Optional[TranscriptionTaskResult]) -> dict:
+        """取消或失敗時，供應商回報的用量與據此算出的費用，記進任務紀錄的欄位。
+
+        沒有用量時是空的，紀錄的用量欄位留空：沒有結果（例如呼叫本身就出錯），或 token 數是 0
+        （例如本機的模型不回報 token）。和 :meth:`_price` 一樣，token 數是 0 就沒有東西可以計價。
+        """
+        if result is None or result.total_tokens <= 0:
+            return {}
         tokens, cost = self._price(result, self._elapsed())
         return {
             "audio_duration_seconds": self._duration,
