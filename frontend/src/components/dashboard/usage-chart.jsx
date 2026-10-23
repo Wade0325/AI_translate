@@ -9,7 +9,8 @@ import {
     ResponsiveContainer,
 } from "recharts"
 import { UsageTooltip } from "@/components/charts/RechartsTooltipBox"
-import { localDateKey, formatTokensTick } from "@/utils/formatters"
+import { localDateKey } from "@/utils/formatters"
+import { tokenAxisProps } from "@/utils/tokenAxis"
 
 // 後端 daily 的 date 是伺服器本地日期字串，以本地日期產生 key 對齊（見 localDateKey 說明）
 function lastSevenDays(daily) {
@@ -58,7 +59,7 @@ export function UsageChart({ daily = [] }) {
                             fontSize={12}
                             tickLine={false}
                             axisLine={false}
-                            tickFormatter={formatTokensTick}
+                            {...tokenAxisProps(data)}
                         />
                         <Tooltip content={<UsageTooltip />} cursor={{ fill: "rgba(42, 42, 72, 0.5)" }} />
                         <Bar
