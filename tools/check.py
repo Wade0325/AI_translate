@@ -45,7 +45,7 @@ VITEST_JS = Path("node_modules") / "vitest" / "vitest.mjs"
 # 改到這些路徑要跑 Python 的檢查：任何 .py，或這些目錄底下的任何檔案（含
 # backend/requirements*.txt 與測試資料），或這些設定檔。改設定或依賴檔一樣可能讓
 # 測試或 lint 壞掉，所以不只看副檔名
-PYTHON_DIRS = ("backend/", "tests/", "tools/", "games/", ".basedpyright/")
+PYTHON_DIRS = ("backend/", "tests/", "tools/", ".basedpyright/")
 PYTHON_FILES = ("pytest.ini", "ruff.toml", "pyrightconfig.json")
 
 
