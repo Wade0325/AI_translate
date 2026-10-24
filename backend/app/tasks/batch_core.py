@@ -51,7 +51,7 @@ from app.core.default_prompt import build_prompt
 from app.core.task_status import TaskStatus
 from app.database.models import BatchFile, BatchJob
 from app.database.session import SessionLocal, without_db_details
-from app.exceptions import TransientError
+from app.exceptions import TaskDatabaseError, TransientError
 from app.provider.base import BatchProvider, BatchStatus
 from app.provider.registry import open_batch_provider, provider_info, reopen_batch_provider
 from app.repositories.batch_job_repository import BatchJobRepository
@@ -60,12 +60,7 @@ from app.runtime.run_mode import publish_status
 from app.services.silence_removal import SpeechTimeline, SpeechView, speech_view
 from app.services.transcription.models import TranscriptionTaskResult
 from app.tasks import older_batches
-from app.tasks.lifecycle import (
-    Task,
-    TaskLifecycle,
-    completed_result,
-    shown_to_user,
-)
+from app.tasks.lifecycle import Task, TaskLifecycle, completed_result
 from app.utils.logger import setup_logger
 from app.utils.paths import delete_temp_files
 
@@ -94,6 +89,21 @@ class _Interrupted(_BatchError):
 
 STOPPED_WHILE_UPLOADING = "上傳時服務停止了，批次沒有送出"
 """上傳時停住的批次，還沒結束的檔案失敗的原因（:func:`end_stopped_uploads`）。"""
+
+_DB_ERROR_IN_RUN = "資料庫出錯了，批次沒有正常結束；每個檔案有沒有完成，以檔案自己的狀態為準"
+"""執行批次時資料庫出錯，批次層級給使用者看的原因：出錯時可能有檔案已經完成了。"""
+_DB_ERROR_IN_RECOVERY = "資料庫出錯了，請稍後再按「恢復」"
+"""恢復時資料庫出錯，批次層級給使用者看的原因：批次退回輪詢中，之後可以再恢復。"""
+
+
+def _batch_reason(error: Exception, on_db_error: str) -> str:
+    """整批失敗時給使用者看的原因：資料庫出錯換成 ``on_db_error``，原因只記在 log；其他例外
+    （例如供應商回報的錯誤）照例外訊息。
+
+    不用檔案層級的固定訊息（:func:`~app.tasks.lifecycle.shown_to_user`）：它說的是一個檔案沒有
+    轉錄結果，放在批次上會讓人以為整批都沒有。
+    """
+    return on_db_error if isinstance(error, TaskDatabaseError) else str(error)
 
 
 def run_batch(task_params_dict: dict, task_uuid: str) -> None:
@@ -216,7 +226,7 @@ def run_recover(batch_id: str, api_key: str) -> None:
     except Exception as e:
         error = without_db_details(e)
         logger.error(f"復原批次 {batch_id} 失敗:\n{''.join(traceback.format_exception(error))}")
-        back_to_polling(f"恢復批次失敗: {shown_to_user(error)}")
+        back_to_polling(f"恢復批次失敗: {_batch_reason(error, _DB_ERROR_IN_RECOVERY)}")
 
 
 def end_stopped_uploads() -> int:
@@ -389,10 +399,13 @@ class _Run:
                 self._end(file, e)
         except Exception as e:
             failure = without_db_details(e)
+            # 免安裝模式的執行模式不記往上拋的例外：排查只能靠這一筆 log（ADR-0005）
+            logger.error(
+                f"批次 {self._batch_id} 失敗:\n{''.join(traceback.format_exception(failure))}")
             # 還沒結束的檔案都照失敗結束：畫面靠每個檔案自己的結果離開處理中
             for file in self._files:
                 self._end(file, failure)
-            self._fail_batch(f"批次失敗: {shown_to_user(failure)}")
+            self._fail_batch(f"批次失敗: {_batch_reason(failure, _DB_ERROR_IN_RUN)}")
         finally:
             if adapter is not None:
                 # 刪掉上傳到供應商的遠端檔

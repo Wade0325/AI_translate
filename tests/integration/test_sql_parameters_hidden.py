@@ -41,7 +41,13 @@ from app.database import session
 from app.database.models import BatchJob, ModelConfiguration, TranscriptionLog
 from app.exceptions import TaskDatabaseError
 from app.tasks.transcribe_core import abandon_transcription, run_transcription
-from tests.support.db_faults import DISK_FULL, NOT_NULL, rejected_row, writes_fail
+from tests.support.db_faults import (
+    DISK_FULL,
+    NOT_NULL,
+    assert_logged_without,
+    rejected_row,
+    writes_fail,
+)
 from tests.support.fake_provider import FAKE_MODEL, FakeProvider
 from tests.support.task_api import upload
 
@@ -313,16 +319,6 @@ def test_run_mode_gets_the_reason_but_not_the_row_or_the_sql(
 
 
 # ─── 下載時回寫 lrc_content ──────────────────────────────────────────────────
-
-def assert_logged_without(log: list[str], *private: str) -> None:
-    """log 有例外類型與資料庫回報的原因（排查只能靠 log，ADR-0005），沒有 SQL 原文與 private。"""
-    text = "\n".join(log)
-    assert "IntegrityError" in text
-    assert NOT_NULL in text
-    assert "[SQL:" not in text
-    for value in private:
-        assert value not in text
-
 
 class TestBackfillingTheStoredLrcFails:
     def test_download_still_works_and_the_log_keeps_the_reason_but_not_the_row(

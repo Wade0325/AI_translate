@@ -1,5 +1,3 @@
-import traceback
-
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -21,7 +19,8 @@ from app.websocket.origin import WebSocketOriginMiddleware
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import get_settings
 from app.runtime import run_mode
-from app.database.session import init_db, SessionLocal, without_db_details
+from app.database.session import (
+    init_db, SessionLocal, traceback_without_db_details, without_db_details)
 from app.repositories.transcription_log_repository import TranscriptionLogRepository
 from app.tasks import batch_core, older_batches
 from app.utils.logger import setup_logger
@@ -118,12 +117,12 @@ async def database_error(request: Request, error: SQLAlchemyError) -> JSONRespon
     """端點沒有自己接住的資料庫例外：log 只記例外類型與原因，回固定訊息的 500。
 
     例外的文字有 SQL 原文，Postgres 附上的 DETAIL 還可能是寫不進去的整列（任務紀錄與批次的那一列有
-    原始檔名與轉錄結果）。traceback 留著出錯的位置，但不帶訊息與成因（見 without_db_details）。
+    原始檔名與轉錄結果）。traceback 留著出錯的位置，但不帶訊息與成因。
     對 SQLAlchemyError 這種特定類別註冊，Starlette 處理完就不再往上拋，uvicorn 不會連同 traceback
     記進 log；對 Exception 註冊的 handler 處理完照樣往上拋。WebSocket 端點自己接住所有例外。
     """
     logger.error(f"{request.method} {request.url.path} 資料庫出錯:\n"
-                 f"{''.join(traceback.format_exception(without_db_details(error)))}")
+                 f"{traceback_without_db_details(error)}")
     return JSONResponse(status_code=500,
                         content={"detail": "資料庫出錯了，這次的操作沒有完成，請再試一次；"
                                            "一直失敗的話請回報問題。"})

@@ -18,6 +18,18 @@ def rejected_row(table: str, row: str) -> str:
             f'DETAIL:  Failing row contains ({row}).')
 
 
+
+def assert_logged_without(log: list[str], *private: str) -> None:
+    """:func:`rejected_row` 擋下寫入之後的 log：有例外類型與資料庫回報的原因（排查只能靠 log，
+    ADR-0005），沒有 SQL 原文、DETAIL 附上的資料列與 private。"""
+    text = "\n".join(log)
+    assert "IntegrityError" in text
+    assert NOT_NULL in text
+    assert "[SQL:" not in text
+    assert "Failing row contains" not in text
+    for value in private:
+        assert value not in text
+
 @contextmanager
 def writes_fail(engine, table: str, statement: str, message: str = DISK_FULL,
                 when: Optional[str] = None):

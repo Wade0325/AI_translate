@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.core.task_status import TaskStatus
 from app.database.models import TranscriptionLog, BatchJob
-from app.database.session import describe_db_error
+from app.database.session import without_db_details
 from app.utils.identifiers import coerce_uuid
 from app.utils.logger import setup_logger
 
@@ -168,7 +168,7 @@ class HistoryRepository:
             except Exception as e:
                 db.rollback()
                 # 回寫的是整列 UPDATE：Postgres 附上的那一列有原始檔名與轉錄結果
-                logger.warning(f"回寫 lrc_content 失敗 ({task_uuid_str}): {describe_db_error(e)}")
+                logger.warning(f"回寫 lrc_content 失敗 ({task_uuid_str}): {without_db_details(e)}")
 
         return lrc
 

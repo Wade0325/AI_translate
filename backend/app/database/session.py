@@ -1,3 +1,4 @@
+import traceback
 from pathlib import Path
 
 from sqlalchemy import create_engine, event, select, text, inspect as sa_inspect
@@ -84,6 +85,12 @@ def without_db_details(error: Exception) -> Exception:
     if not isinstance(error, SQLAlchemyError):
         return error
     return TaskDatabaseError(describe_db_error(error)).with_traceback(error.__traceback__)
+
+
+def traceback_without_db_details(error: Exception) -> str:
+    """記進 log 的 traceback：出錯的位置照留，資料庫例外先換成只有類型與原因的
+    （:func:`without_db_details`），不帶 SQL 原文與資料庫附上的資料列。"""
+    return "".join(traceback.format_exception(without_db_details(error)))
 
 
 def _migrate_add_missing_columns():

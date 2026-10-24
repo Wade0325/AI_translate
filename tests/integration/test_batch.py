@@ -18,7 +18,7 @@ from app.core.task_status import TaskStatus
 from app.exceptions import TransientError
 from app.runtime import run_mode
 from app.tasks import batch_core
-from tests.support.db_faults import NOT_NULL, rejected_row, writes_fail
+from tests.support.db_faults import NOT_NULL, assert_logged_without, rejected_row, writes_fail
 from tests.support.fake_provider import FAKE_MODEL, Fail, Restart
 from tests.support.older_batches import (
     SPANS,
@@ -418,7 +418,7 @@ def test_database_errors_are_not_passed_on(api, in_process_run_mode, batch_fake,
     end = of_file(messages, "twice-b.wav")[-1]
     assert end["status_code"] == TaskStatus.FAILED
     assert "轉錄結果沒有存進資料庫" in end["status_text"]
-    assert "轉錄結果沒有存進資料庫" in messages[-1]["status_text"]
+    assert "資料庫出錯了" in messages[-1]["status_text"]
     assert not any("INSERT" in m["status_text"] for m in messages)
     assert not any("INSERT INTO" in entry for entry in app_log)
 
@@ -452,12 +452,39 @@ def test_a_file_whose_result_cannot_be_stored_fails_alone_without_passing_on_the
     for text in shown:
         for leaked in (secret, NOT_NULL, "INSERT"):
             assert leaked not in text
-    log = "\n".join(app_log)
-    assert secret not in log
-    assert "[SQL:" not in log
-    # 排查只能靠 log（ADR-0005）：記下例外類型與資料庫回報的原因
-    assert "IntegrityError" in log
-    assert NOT_NULL in log
+    assert_logged_without(app_log, secret)
+
+
+@pytest.mark.parametrize("entry", ["run", "recovery"])
+def test_a_batch_that_cannot_be_recorded_as_completed_keeps_its_files_without_passing_on_the_row(
+        api, in_process_run_mode, batch_fake, test_engine, app_log, entry):
+    # 檔案都完成了，批次卻記不成完成，Postgres 附上的那一列有原始檔名與轉錄結果（#175、#178）：
+    # 完成的檔案照樣完成。批次的訊息說資料庫出錯，不說成沒有轉錄結果，也不轉述資料庫的例外。執行
+    # 時批次記成失敗；復原時退回輪詢中，之後可以再按「恢復」
+    filename, secret = "社長との面談_極秘.wav", "来期の人事はまだ内密に。"
+    batch_id = f"batch-end-unrecorded-{entry}"
+    batch_fake.script = [list(LINES), list(LINES)]
+    if entry == "recovery":
+        batch_fake.batch_polls = [Restart()]
+        submit_batch(api, in_process_run_mode, batch_id, NAMES[:2])
+    row = rejected_row("batch_jobs", f'{batch_id}, null, batches/1, COMPLETED, '
+                                     f'{{"original_filename": "{filename}"}}, {{"text": "{secret}"}}')
+    with writes_fail(test_engine, "batch_jobs", "UPDATE", row, when="NEW.status = 'COMPLETED'"):
+        if entry == "run":
+            messages = run_batch(api, in_process_run_mode, batch_id, NAMES[:2])
+        else:
+            messages = recover(api, batch_id)
+            in_process_run_mode.close(wait=True)  # 等復原整個跑完再拿掉 trigger
+
+    assert codes(ends(messages, NAMES[:2])) == [TaskStatus.COMPLETED, TaskStatus.COMPLETED]
+    assert messages[-1]["status_code"] == TaskStatus.BATCH_COMPLETED
+    assert "資料庫出錯了" in messages[-1]["status_text"]
+    assert "轉錄結果沒有存進資料庫" not in messages[-1]["status_text"]
+    assert listed(api, batch_id)["status"] == ("FAILED" if entry == "run" else "POLLING")
+    for text in [m["status_text"] for m in messages]:
+        for leaked in (filename, secret, NOT_NULL, "UPDATE", "batch_jobs"):
+            assert leaked not in text
+    assert_logged_without(app_log, filename, secret)
 
 
 def test_every_file_fails_when_the_whole_batch_fails(api, in_process_run_mode, batch_fake):

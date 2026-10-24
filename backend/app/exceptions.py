@@ -54,11 +54,12 @@ class GeminiPermanentError(AppError):
 
 
 class TaskDatabaseError(AppError):
-    """任務讀寫資料庫時出錯，訊息只有資料庫例外的類型與資料庫回報的原因
+    """讀寫資料庫時出錯，訊息只有資料庫例外的類型與資料庫回報的原因
     （:func:`~app.database.session.describe_db_error`）。
 
-    任務生命週期把資料庫例外換成它，再記進 log、往上拋給執行模式：原本的例外帶著 SQL 原文與
-    資料庫附上的資料列。
+    資料庫例外記進 log、往上拋給執行模式之前，先由 :func:`~app.database.session.without_db_details`
+    換成它：原本的例外帶著 SQL 原文與資料庫附上的資料列。最早只用在任務生命週期，現在批次、啟動
+    清掃、HTTP 與 WebSocket 端點記 log 時也用它。
     """
 
 
