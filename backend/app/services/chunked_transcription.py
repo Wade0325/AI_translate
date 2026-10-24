@@ -26,7 +26,8 @@
 
 用量是這個任務每一次呼叫供應商的總和，包括失敗後被切段重試取代的那次：供應商照樣收費。拋出例外的
 那次沒有回應，不算用量。處理模式每一次都相同才照記，不然算標準。失敗時回傳失敗的轉錄結果，取消時
-把到目前為止的用量附在取消上。
+把到目前為止的用量附在取消上。非預期的例外（程式錯誤，例如合併時出錯）也當成失敗：例外連同 traceback
+記進 log，回傳帶著用量的失敗結果。
 
 自己產生的暫存檔（切出的段、為了 Silero 轉成的 wav）不論完成、失敗或取消都清掉，段的音檔等合併做完
 才刪；語音視圖的暫存檔與轉接器由呼叫端清理與釋放。
@@ -66,7 +67,7 @@ def transcribe(
     original_filename: str,
 ) -> TranscriptionTaskResult:
     """轉錄語音視圖：回傳在原音檔時間軸上的轉錄結果，片段依開始時間排好、序號連續，用量是每一次
-    呼叫供應商的總和。失敗時回傳失敗的轉錄結果，``text`` 是給使用者看的原因。
+    呼叫供應商的總和。失敗時（包括非預期的例外）回傳失敗的轉錄結果，``text`` 是給使用者看的原因。
 
     切出的段放在 ``temp_dir``；``task_id`` 與 ``original_filename`` 只用來替 vad_artifacts/ 底下的
     資料夾命名（見 :func:`persist_split`）。
@@ -189,6 +190,11 @@ class _ChunkedTranscription:
             # 取消前已經轉完的段，供應商照樣收費：用量交給任務生命週期記在已取消的紀錄上
             cancelled.billed_usage = self._usage
             raise
+        except Exception as e:
+            # 非預期的例外（程式錯誤，例如合併時出錯）：前面每一次呼叫供應商照樣收費，和其他失敗一樣
+            # 回傳帶著用量的失敗結果，由任務生命週期記成失敗
+            logger.error(f"分段轉錄發生非預期的錯誤: {e}", exc_info=True)
+            return self._result(success=False, text=f"[[轉錄錯誤: {e}]]")
         finally:
             # 段的音檔在合併之後才刪
             delete_temp_files(self._temp_files)
