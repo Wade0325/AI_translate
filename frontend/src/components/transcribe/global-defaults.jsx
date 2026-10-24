@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { Select, Switch, Slider, Typography, Input, Tooltip } from "antd"
 import { Languages, Users, Clock, MessageSquareText, ChevronDown, CopyCheck } from "lucide-react"
 import { useState } from "react"

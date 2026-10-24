@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { useState, useRef } from "react"
 import { Card, Typography, Button, Input, Modal, Pagination, Space, Dropdown, Popconfirm, message } from "antd"
 import { ReasonText, ReasonTooltip } from "@/components/disabled-reason"

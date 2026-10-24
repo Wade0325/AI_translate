@@ -1,7 +1,8 @@
-# 開發與驗證工具（測試、lint）；不進 Docker image，也不進免安裝版。
+# 開發與驗證工具（測試、lint、型別檢查）；不進 Docker image，也不進免安裝版。
 # 安裝：backend\.venv\Scripts\python.exe -m pip install -r backend/requirements-dev.txt
 pytest==9.0.3
 ruff==0.17.0
+basedpyright==1.40.2
 # tests/unit/test_local_moss.py 替換 huggingface_hub.snapshot_download；CI 不裝免安裝版的依賴，
 # 所以列在這裡（版本同 requirements-standalone.txt）
 huggingface_hub==1.23.0
