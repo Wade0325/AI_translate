@@ -243,8 +243,16 @@ AI_translate/
 ### 執行測試
 
 ```powershell
-backend\.venv\Scripts\python.exe tools/check.py           # 依序跑 ruff → basedpyright → pytest → ESLint → tsc → vitest → ratchet
+backend\.venv\Scripts\python.exe tools/check.py           # 依序跑 ruff → basedpyright → pytest → ESLint → tsc → vitest → Playwright → ratchet
 backend\.venv\Scripts\python.exe tools/check.py pytest    # 只跑指定的項目
+```
+
+瀏覽器測試（`frontend/e2e/`）用 Playwright 的 Chromium 開轉錄頁、設定頁與歷史頁，後端與 WebSocket 都在測試裡 mock，不連資料庫、不呼叫任何供應商，也不需要網路。第一次跑之前在 `frontend/` 裝一次 Chromium：
+
+```powershell
+cd frontend
+npx playwright install chromium   # 只要一次；Playwright 升版後再裝一次
+npm run test:browser              # 或從 repo 根目錄 backend\.venv\Scripts\python.exe tools/check.py playwright
 ```
 
 clone 之後執行一次下面這行，讓 git 在每次 commit 前跑快的檢查（lint、型別檢查與棘輪；測試交給 CI）。只影響開發用的 git checkout，免安裝版與 Docker 的使用者不需要：
@@ -253,7 +261,7 @@ clone 之後執行一次下面這行，讓 git 在每次 commit 前跑快的檢�
 git config core.hooksPath .githooks
 ```
 
-> `tools/check.py` 是唯一的檢查清單，CI 與 pre-commit 跑的也是它。Python 的檢查要先安裝 `backend/requirements-dev.txt`，ESLint、tsc 與 vitest 要先在 `frontend/` 執行 `npm ci`。型別檢查只擋新增的錯誤：既有的 Python 錯誤記在錯誤清單 `.basedpyright/baseline.json`，有錯的舊前端檔標了 `// @ts-nocheck`；ratchet 確認兩者都沒有比 `origin/main` 多。修掉清單裡的錯誤時，basedpyright 會自己改寫錯誤清單，記得把它一起 commit。`pytest.ini` 已設定 `pythonpath = backend`，測試可直接 `from app.api import ...` 匯入；測試自帶暫存的 SQLite 資料庫與 mock，不需 Postgres/Redis。
+> `tools/check.py` 是唯一的檢查清單，CI 與 pre-commit 跑的也是它。Python 的檢查要先安裝 `backend/requirements-dev.txt`，ESLint、tsc、vitest 與 Playwright 要先在 `frontend/` 執行 `npm ci`，Playwright 另外要上面的 Chromium。型別檢查只擋新增的錯誤：既有的 Python 錯誤記在錯誤清單 `.basedpyright/baseline.json`，有錯的舊前端檔標了 `// @ts-nocheck`；ratchet 確認兩者都沒有比 `origin/main` 多。修掉清單裡的錯誤時，basedpyright 會自己改寫錯誤清單，記得把它一起 commit。`pytest.ini` 已設定 `pythonpath = backend`，測試可直接 `from app.api import ...` 匯入；測試自帶暫存的 SQLite 資料庫與 mock，不需 Postgres/Redis。
 
 ### 評測轉錄品質
 

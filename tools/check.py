@@ -1,4 +1,4 @@
-"""唯一的檢查清單：ruff → basedpyright → pytest → ESLint → tsc → vitest → ratchet。
+"""唯一的檢查清單：ruff → basedpyright → pytest → ESLint → tsc → vitest → Playwright → ratchet。
 
 用法（在哪個目錄執行都可以，一律以 repo 根目錄為基準）：
 
@@ -7,7 +7,7 @@
     python tools/check.py --list        # 列出所有項目
     python tools/check.py --staged      # git 的 pre-commit（.githooks/pre-commit）用
 
-CI（.github/workflows/ci.yml）的 python 與 frontend job、git 的 pre-commit、README 與
+CI（.github/workflows/ci.yml）的 python、frontend 與 browser job、git 的 pre-commit、README 與
 .vscode/tasks.json 都呼叫這支腳本，不另寫檢查指令。要加檢查就加在 checks()；CI 的 job 是照
 名稱挑要跑的項目，新項目的名稱也要加進對應 job 的指令，CI 才會跑。快到可以每次 commit 都跑
 的，標上 pre_commit。它決定閘門跑哪些檢查，屬於單向門（docs/agents/merging.md）。
@@ -41,6 +41,7 @@ ROOT = Path(__file__).resolve().parent.parent
 ESLINT_JS = Path("node_modules") / "eslint" / "bin" / "eslint.js"
 TSC_JS = Path("node_modules") / "typescript" / "bin" / "tsc"
 VITEST_JS = Path("node_modules") / "vitest" / "vitest.mjs"
+PLAYWRIGHT_JS = Path("node_modules") / "@playwright" / "test" / "cli.js"
 
 # 改到這些路徑要跑 Python 的檢查：任何 .py，或這些目錄底下的任何檔案（含
 # backend/requirements*.txt 與測試資料），或這些設定檔。改設定或依賴檔一樣可能讓
@@ -119,6 +120,12 @@ def checks(root: Path = ROOT) -> tuple[Check, ...]:
         # 不加的話在終端機裡會進監看模式
         Check("vitest", ("node", str(VITEST_JS), "run"), frontend,
               _frontend_tool_missing(frontend, VITEST_JS), _frontend_related),
+        # 瀏覽器測試（#51）：Playwright 的 Chromium 跑主要頁面，/api 與 WebSocket 都在測試裡
+        # mock（frontend/playwright.config.js）。一樣交給 CI：要先裝 Chromium
+        # （npx playwright install chromium），也比較慢。還沒裝 Chromium 時 Playwright 自己會
+        # 印出這行安裝指令
+        Check("playwright", ("node", str(PLAYWRIGHT_JS), "test"), frontend,
+              _frontend_tool_missing(frontend, PLAYWRIGHT_JS), _frontend_related),
         Check("ratchet", (python, str(root / "tools" / "ratchet.py")), root,
               runs_for=_ratchet_related, pre_commit=True),
     )

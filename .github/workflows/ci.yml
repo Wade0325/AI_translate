@@ -2,9 +2,9 @@
 #
 # 最底下的 `check` 是 ruleset 唯一要求的檢查：不准改名，其他 job 也不准取這個名字。
 # 新增 job 時，要加進 `check` 的 needs；`check` 逐一確認每個 needs 的結果，全部 success
-# 才綠燈（只改文件時，四個重的 job 可以是 skipped）。
+# 才綠燈（只改文件時，五個重的 job 可以是 skipped）。
 #
-# 要跑哪些檢查定義在 tools/check.py：這裡的 job 只呼叫它，不另寫 ruff、pytest、ESLint、vitest 等的指令。
+# 要跑哪些檢查定義在 tools/check.py：這裡的 job 只呼叫它，不另寫 ruff、pytest、ESLint、vitest、Playwright 等的指令。
 # 不要加 on.paths：被路徑過濾掉的 PR 等不到 `check`，會一直卡在等待中；
 # 只改文件時的跳過，由 `changes` job 判斷。
 
@@ -29,7 +29,7 @@ concurrency:
 jobs:
   changes:
     # PR 改動的檔案（含改名前的舊路徑）全在 docs/ 底下或是根目錄的 *.md 時，輸出 docs_only=true，
-    # 四個重的 job 跳過。只有 PR 才判斷：push、排程與 release.yml 呼叫時一律跑全套
+    # 五個重的 job 跳過。只有 PR 才判斷：push、排程與 release.yml 呼叫時一律跑全套
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -177,6 +177,47 @@ jobs:
         working-directory: frontend
         run: npm run build
 
+  browser:
+    # 瀏覽器測試（#51）：Playwright 的 Chromium 跑主要頁面，/api 與 WebSocket 都在測試裡 mock，
+    # 不需要後端與網路。Chromium 依 Playwright 的版本快取；系統依賴（apt）快取不了，每次都裝
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: frontend/.nvmrc
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: 安裝依賴
+        working-directory: frontend
+        run: npm ci
+      - name: 取得 Playwright 的版本
+        id: playwright
+        working-directory: frontend
+        run: echo "version=$(node -p "require('@playwright/test/package.json').version")" >> "$GITHUB_OUTPUT"
+      - name: 快取 Chromium
+        id: browser-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-${{ runner.os }}-${{ steps.playwright.outputs.version }}
+      - name: 安裝 Chromium 與系統依賴
+        if: steps.browser-cache.outputs.cache-hit != 'true'
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+      - name: 安裝系統依賴（Chromium 已在快取裡）
+        if: steps.browser-cache.outputs.cache-hit == 'true'
+        working-directory: frontend
+        run: npx playwright install-deps chromium
+      - name: Playwright
+        # GitHub 的 runner 本來就設了 CI=true：playwright.config.js 照它禁止 test.only
+        run: python3 tools/check.py playwright
+
   docker:
     # Docker 模式只要求在 CI 裡保持可用（ADR 0004）：compose 設定、只裝 base 的後端映像，
     # 以及完整依賴（base 加 ml）能否解析。ml 層不在 CI 安裝，由使用者在本機重建確認
@@ -239,7 +280,7 @@ jobs:
 
   check:
     if: always()
-    needs: [changes, python, frontend, docker, workflows]
+    needs: [changes, python, frontend, browser, docker, workflows]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
