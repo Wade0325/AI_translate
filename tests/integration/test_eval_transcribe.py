@@ -111,8 +111,9 @@ def test_manifest_records_the_run_without_any_transcript_text(fake, uploads, aud
     assert run["success"] is True and run["error"] is None
     assert run["segments"] == 2
     assert run["peak_vram_gb"] is None
+    # rtf 取到小數 4 位、seconds 取到 3 位：假供應商只跑幾十毫秒，兩邊各自捨入的差距用相對誤差框不住
     assert run["rtf"] == pytest.approx(run["seconds"] / manifest["audio"]["duration_seconds"],
-                                       rel=0.01)
+                                       abs=1e-4)
     # 各階段照進度訊息切開，從建立轉接器到轉錄結束，加起來就是整段耗時
     stages = run["stages"]
     assert stages[0]["stage"] == "建立供應商轉接器"
