@@ -167,8 +167,8 @@ def test_staged_failure_blocks_the_commit(check, monkeypatch, tmp_path, stage):
     assert check.main(["--staged"]) == 1
 
 
-def test_only_pytest_is_left_to_ci(check):
-    assert [c.name for c in check.CHECKS if not c.pre_commit] == ["pytest"]
+def test_only_the_tests_are_left_to_ci(check):
+    assert [c.name for c in check.CHECKS if not c.pre_commit] == ["pytest", "vitest"]
 
 
 def test_python_change_triggers_ruff_and_frontend_change_triggers_eslint(check):
