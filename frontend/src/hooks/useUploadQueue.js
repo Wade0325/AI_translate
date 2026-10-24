@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { useCallback } from 'react';
 import { message } from 'antd';
 import { api, WS_URLS } from '../services/api';

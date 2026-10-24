@@ -1,0 +1,13 @@
+{
+  "include": ["backend/app", "backend/main.py"],
+  "extraPaths": ["backend"],
+  // ML 套件（torch、transformers…）一律用 backend/typings 的空 stub（任何屬性都是 Any），
+  // 不分析已安裝的版本：CI 不裝 ML 依賴，本機的 venv 有裝；兩邊的錯誤要一樣才能共用
+  // baseline，而且分析 torch 與 transformers 要多花一百秒。沒裝時 stub 找不到原始碼的警告也關掉
+  "stubPath": "backend/typings",
+  "reportMissingModuleSource": "none",
+  "pythonVersion": "3.11",
+  // CI 的 python job 在 Linux 與 Windows 都跑：平台判斷兩邊都看，結果才一致
+  "pythonPlatform": "All",
+  "typeCheckingMode": "standard"
+}

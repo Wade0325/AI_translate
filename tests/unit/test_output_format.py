@@ -337,7 +337,7 @@ class TestSameLrcAsTheLocalProviderBefore110:
 
 # ─── SRT／VTT／TXT ───────────────────────────────────────────────────────────
 
-class TestSubtitleFormats:
+class TestSrtVttAndTxt:
     def test_vtt_has_a_header_and_dot_milliseconds(self):
         # 「こんにちは。」只有 0.75 秒，顯示最短的 0.8 秒
         assert formats(*GREETINGS).vtt == (

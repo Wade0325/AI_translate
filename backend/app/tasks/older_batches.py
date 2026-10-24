@@ -29,9 +29,9 @@ from sqlalchemy.orm import Session
 
 from app.core.task_status import TaskStatus
 from app.database.models import BatchFile, BatchJob, TranscriptionLog
+from app.database.session import without_db_details
 from app.repositories.transcription_log_repository import TranscriptionLogRepository
 from app.services.silence_removal import SpeechTimeline
-from app.tasks.lifecycle import without_db_details
 from app.utils.logger import setup_logger
 
 logger = setup_logger(__name__)

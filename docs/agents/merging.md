@@ -3,12 +3,12 @@
 開始改動前讀一次，合併前再讀一次。push、開 PR 與合併都由代理自己做，不必先問。
 
 1. **開工**：從 `origin/main` 開新分支。在 worktree 裡不連使用者的資料庫。
-2. **commit 與 push 前**：git 的 pre-commit（`.githooks/pre-commit`）在每次 commit 前跑快的檢查（ruff、ESLint）；clone 之後執行一次 `git config core.hooksPath .githooks` 啟用，worktree 共用這個設定。push 前在本機跑完整的 `tools/check.py`，全綠才 push。不准跳過 hook 或檢查：不用 `git commit --no-verify`（`-n`）、不改 `core.hooksPath`、不用 `-c core.hooksPath=…` 之類的方式；檢查因為 main 上的問題失敗時，合併 main 或等修正的 PR，不繞過。
+2. **commit 與 push 前**：git 的 pre-commit（`.githooks/pre-commit`）在每次 commit 前跑快的檢查（lint、型別檢查與棘輪）；clone 之後執行一次 `git config core.hooksPath .githooks` 啟用，worktree 共用這個設定。push 前在本機跑完整的 `tools/check.py`，全綠才 push。不准跳過 hook 或檢查：不用 `git commit --no-verify`（`-n`）、不改 `core.hooksPath`、不用 `-c core.hooksPath=…` 之類的方式；檢查因為 main 上的問題失敗時，合併 main 或等修正的 PR，不繞過。
 3. **改到畫面時**：開 PR 前在瀏覽器實際操作一次。在 worktree 用免安裝模式起一個獨立的 app：`frontend/` 先 `npm run build`，再在 `backend/` 帶環境變數 `APP_MODE=standalone` 與 `AIT_DATA_DIR=<暫存資料夾>` 執行 `python -m uvicorn main:app --port <沒用到的埠>`，用瀏覽器開那個埠；資料只寫進暫存資料夾。不要在 worktree 啟動第二套 Docker stack：容器名稱與埠號是固定的，會和使用者正在跑的那套衝突。
 4. **PR 內文**：先寫下面三項，再接 `pr` skill 的 Summary、Evidence、Merge Danger 三段。
    - 寫「使用者看得到的變更」（沒有就寫「無」）；改到使用者看得到的行為時，檢查 `README.md` 要不要跟著改。
    - 改到畫面時，寫出在瀏覽器點了什麼、看到什麼，附截圖；沒有就寫「無畫面變更」。
-   - 動到下列路徑的 PR 是單向門，內文要標明：`CLAUDE.md`、`docs/agents/`、`.githooks/`、`.gitattributes`、`.github/`、`.gitignore`、進版控的 `.claude/` 檔案；閘門的設定 `tools/check.py`、`ruff.toml`、`pytest.ini`、`frontend/eslint.config.js`、`pyrightconfig.json`、`frontend/tsconfig.json`；依賴 `backend/requirements*.txt`、`frontend/package.json`、`frontend/package-lock.json`；`migrations/`、`build_release.ps1`。單向門一樣由代理自己驗證、自己合併：在 Evidence 寫明怎麼驗證，例如用全新的無頭 session 實測設定與 hook。
+   - 動到下列路徑的 PR 是單向門，內文要標明：`CLAUDE.md`、`docs/agents/`、`.githooks/`、`.gitattributes`、`.github/`、`.gitignore`、進版控的 `.claude/` 檔案；閘門的設定 `tools/check.py`、`tools/typecheck_py.py`、`tools/ratchet.py`、`ruff.toml`、`pytest.ini`、`frontend/eslint.config.js`、`pyrightconfig.json`、`.basedpyright/baseline.json`、`backend/typings/`、`frontend/tsconfig.json`；依賴 `backend/requirements*.txt`、`frontend/package.json`、`frontend/package-lock.json`；`migrations/`、`build_release.ps1`。單向門一樣由代理自己驗證、自己合併：在 Evidence 寫明怎麼驗證，例如用全新的無頭 session 實測設定與 hook。
 5. **合併**：ruleset 是唯一的關卡，對代理沒有例外。
    1. 等 `gh pr checks <PR> --watch` 全綠，綠燈之後才回報；紅燈就自己修，push 後回到 1。等很久時放到背景執行並設逾時；結束前停掉自己啟動的背景指令。
    2. 狀態是 `BEHIND` 時執行 `gh pr update-branch`，回到 1。

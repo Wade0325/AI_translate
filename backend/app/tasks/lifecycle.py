@@ -27,9 +27,9 @@
   排隊的任務，一樣留下紀錄、保留或清理上傳檔。
 - 收尾之後才宣告結果：畫面收到完成、失敗或取消時，紀錄、片段與保留音檔都已就緒。
 - 資料庫出錯不轉述例外：資料庫例外一接到就換成只有類型與原因的
-  :class:`~app.exceptions.TaskDatabaseError`（:func:`without_db_details`），記進 log 與往上拋給
-  執行模式的都是它；畫面與任務紀錄給看得懂的固定訊息（:func:`shown_to_user`）。批次在任務之外
-  出錯時也照這條規則。
+  :class:`~app.exceptions.TaskDatabaseError`（:func:`~app.database.session.without_db_details`），
+  記進 log 與往上拋給執行模式的都是它；畫面與任務紀錄給看得懂的固定訊息（:func:`shown_to_user`）。
+  批次在任務之外出錯時也照這條規則。
 
 狀態廣播與查詢取消只經由執行模式模組（:mod:`app.runtime.run_mode`）。
 """
@@ -49,7 +49,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.core.task_status import TaskStatus
-from app.database.session import SessionLocal, describe_db_error
+from app.database.session import SessionLocal, without_db_details
 from app.exceptions import TaskDatabaseError, TranscriptionCancelledError
 from app.provider.base import ProgressAndCancel
 from app.provider.registry import UnsupportedModelError, model_capabilities
@@ -113,20 +113,6 @@ def _cancelled() -> _Outcome:
 
 _DB_ERROR_MESSAGE = "轉錄結果沒有存進資料庫，請重新轉錄"
 """資料庫出錯時給使用者看的原因；開始時就建立不了任務紀錄時也一樣沒有轉錄結果。"""
-
-
-def without_db_details(error: Exception) -> Exception:
-    """資料庫例外換成 :class:`~app.exceptions.TaskDatabaseError`，其他例外原樣傳回；記進 log、
-    往上拋或給使用者看之前都先換。
-
-    資料庫例外的訊息與它的成因（DBAPI 的原始例外）都帶著 SQL 原文，Postgres 在第一行之後
-    附上的 DETAIL 還可能是寫不進去的整列（見 :func:`describe_db_error`）。換掉的例外沿用
-    原本的 traceback，log 照樣看得到在哪裡出錯；執行模式也會把往上拋的例外連同 traceback
-    記進 log（Docker 模式的 Celery worker），還存進 Celery 的結果後端。
-    """
-    if not isinstance(error, SQLAlchemyError):
-        return error
-    return TaskDatabaseError(describe_db_error(error)).with_traceback(error.__traceback__)
 
 
 def shown_to_user(error: Exception) -> str:

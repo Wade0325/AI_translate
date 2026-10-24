@@ -243,17 +243,17 @@ AI_translate/
 ### 執行測試
 
 ```powershell
-backend\.venv\Scripts\python.exe tools/check.py           # 依序跑 ruff → pytest → ESLint → vitest
+backend\.venv\Scripts\python.exe tools/check.py           # 依序跑 ruff → basedpyright → pytest → ESLint → tsc → vitest → ratchet
 backend\.venv\Scripts\python.exe tools/check.py pytest    # 只跑指定的項目
 ```
 
-clone 之後執行一次下面這行，讓 git 在每次 commit 前跑快的檢查（ruff、ESLint；測試交給 CI）。只影響開發用的 git checkout，免安裝版與 Docker 的使用者不需要：
+clone 之後執行一次下面這行，讓 git 在每次 commit 前跑快的檢查（lint、型別檢查與棘輪；測試交給 CI）。只影響開發用的 git checkout，免安裝版與 Docker 的使用者不需要：
 
 ```powershell
 git config core.hooksPath .githooks
 ```
 
-> `tools/check.py` 是唯一的檢查清單，CI 與 pre-commit 跑的也是它。Python 的檢查要先安裝 `backend/requirements-dev.txt`，ESLint 與 vitest 要先在 `frontend/` 執行 `npm ci`。`pytest.ini` 已設定 `pythonpath = backend`，測試可直接 `from app.api import ...` 匯入；測試自帶暫存的 SQLite 資料庫與 mock，不需 Postgres/Redis。
+> `tools/check.py` 是唯一的檢查清單，CI 與 pre-commit 跑的也是它。Python 的檢查要先安裝 `backend/requirements-dev.txt`，ESLint、tsc 與 vitest 要先在 `frontend/` 執行 `npm ci`。型別檢查只擋新增的錯誤：既有的 Python 錯誤記在錯誤清單 `.basedpyright/baseline.json`，有錯的舊前端檔標了 `// @ts-nocheck`；ratchet 確認兩者都沒有比 `origin/main` 多。修掉清單裡的錯誤時，basedpyright 會自己改寫錯誤清單，記得把它一起 commit。`pytest.ini` 已設定 `pythonpath = backend`，測試可直接 `from app.api import ...` 匯入；測試自帶暫存的 SQLite 資料庫與 mock，不需 Postgres/Redis。
 
 ### 評測轉錄品質
 

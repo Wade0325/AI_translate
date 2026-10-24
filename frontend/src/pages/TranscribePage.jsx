@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { useState, useRef } from "react"
 import { Card, Typography, Button, Input, Modal, Pagination, Space, Dropdown, Popconfirm, message } from "antd"
 import { ReasonText, ReasonTooltip } from "@/components/disabled-reason"
@@ -34,8 +35,8 @@ export default function TranscribePage() {
     const {
         fileList,
         setFileList,
-        targetLang,
-        setTargetLang,
+        sourceLang,
+        setSourceLang,
         providerList,
         providerListFailed,
         reloadProviderList,
@@ -81,7 +82,7 @@ export default function TranscribePage() {
     const promptTemplateDisabledReason = providerPromptDisabledReason(providerList, provider)
 
     const [globalConfig, setGlobalConfig] = useState({
-        language: targetLang || "zh-TW",
+        language: sourceLang || "zh-TW",
         isMultiSpeaker: multiSpeaker,
         speakerCount: 2,
         prompt: globalPrompt,
@@ -90,7 +91,7 @@ export default function TranscribePage() {
 
     const handleGlobalConfigChange = (newConfig) => {
         setGlobalConfig(newConfig)
-        if (newConfig.language !== targetLang) setTargetLang(newConfig.language)
+        if (newConfig.language !== sourceLang) setSourceLang(newConfig.language)
         if (newConfig.isMultiSpeaker !== multiSpeaker) setMultiSpeaker(newConfig.isMultiSpeaker)
         if (newConfig.prompt !== globalPrompt) setGlobalPrompt(newConfig.prompt)
     }

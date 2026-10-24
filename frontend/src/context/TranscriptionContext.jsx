@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { message } from 'antd';
 import { useModelManager } from '../components/ModelManager';
@@ -32,7 +33,7 @@ export const useTranscription = () => {
 
 export const TranscriptionProvider = ({ children }) => {
   const [fileList, setFileList] = useState([]);
-  const [targetLang, setTargetLang] = useState('zh-TW');
+  const [sourceLang, setSourceLang] = useState('zh-TW');
   const [isProcessing, setIsProcessing] = useState(false);
   // 使用者選的處理模式：'standard' | 'flex' | 'batch'。實際用的是下面的 processingMode
   const [chosenProcessingMode, setChosenProcessingMode] = useState('batch');
@@ -215,7 +216,7 @@ export const TranscriptionProvider = ({ children }) => {
       return;
     }
 
-    const defaults = requestDefaults({ language: targetLang, multiSpeaker, processingMode, globalPrompt });
+    const defaults = requestDefaults({ language: sourceLang, multiSpeaker, processingMode, globalPrompt });
 
     setIsProcessing(true);
 
@@ -233,7 +234,7 @@ export const TranscriptionProvider = ({ children }) => {
     providerList,
     providerListFailed,
     getProviderConfig,
-    targetLang,
+    sourceLang,
     multiSpeaker,
     globalPrompt,
     processingMode,
@@ -246,8 +247,8 @@ export const TranscriptionProvider = ({ children }) => {
   const value = {
     fileList,
     setFileList,
-    targetLang,
-    setTargetLang,
+    sourceLang,
+    setSourceLang,
     providerList,
     providerListFailed,
     reloadProviderList,
