@@ -6,9 +6,9 @@ import uuid
 from pathlib import Path
 from typing import Any, Optional
 
+from app.services.inspection_artifacts import persist_speech_extraction, persist_split
 from app.services.silence_removal import worth_removing
-from app.services.vad.artifacts import persist_speech_extraction, persist_split
-from app.services.vad.preprocess import run_vad_extraction
+from app.services.silence_removal.preprocess import remove_silence
 from app.services.vad.service import get_vad_service
 from app.utils.audio import convert_to_wav, get_audio_duration
 from app.utils.logger import setup_logger
@@ -49,7 +49,7 @@ def run_vad_test(
     artifact_dir: Optional[str] = None
 
     # --- 1. 去靜音 ---
-    extract_result = run_vad_extraction(file_path, temp_dir)
+    extract_result = remove_silence(file_path, temp_dir)
     to_cleanup.extend(extract_result.cleanup_files)
 
     if extract_result.success and extract_result.speech_only_path:

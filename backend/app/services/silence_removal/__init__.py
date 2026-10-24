@@ -10,7 +10,7 @@
 - 語音佔比：低於門檻（``VAD_SPEECH_RATIO_SKIP_THRESHOLD``，預設 90%）才剪。幾乎全是語音的音檔
   剪不到什麼，送原音檔，切點交給分段轉錄另外找（Silero），和以前一樣。
 
-找靜音只看音量（RMS，見 :func:`app.services.vad.preprocess.run_vad_extraction`），用不到 Silero：
+找靜音只看音量（RMS，見 :func:`app.services.silence_removal.preprocess.remove_silence`），用不到 Silero：
 沒有 Silero 也照樣去靜音。找不到有聲段（全段靜音、轉檔失敗）時送原音檔。開了
 ``VAD_KEEP_ARTIFACTS`` 時，只剩語音的音檔與有聲段存進 vad_artifacts/，給本機檢查切得對不對。
 
@@ -27,9 +27,10 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from app.core.config import get_settings
-from app.services.vad.artifacts import persist_speech_extraction
-from app.services.vad.preprocess import run_vad_extraction
+from app.services.inspection_artifacts import persist_speech_extraction
 from app.utils.logger import setup_logger
+
+from . import preprocess
 
 logger = setup_logger(__name__)
 
@@ -211,7 +212,8 @@ def speech_view(
 
     轉檔、讀檔或找有聲段失敗時，送原音檔。
     """
-    found = run_vad_extraction(audio, temp_dir, write_speech_only=remove_silence)
+    # 參數 remove_silence 是模型能力，蓋住了同名的函式，所以經模組呼叫
+    found = preprocess.remove_silence(audio, temp_dir, write_speech_only=remove_silence)
     unchanged = SpeechView(audio=audio, duration=duration, temp_files=tuple(found.cleanup_files))
     if not found.success:
         return unchanged

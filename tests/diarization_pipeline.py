@@ -40,7 +40,7 @@ sys.path.insert(0, str(REPO_ROOT / "backend"))
 sys.path.insert(0, str(REPO_ROOT / "tests"))
 
 from vad_pipeline import INPUT_DIR, OUTPUT_DIR, to_minutes, _collect_inputs  # noqa: E402
-from app.services.vad.preprocess import run_vad_extraction  # noqa: E402
+from app.services.silence_removal.preprocess import remove_silence  # noqa: E402
 from app.utils.audio import convert_to_wav, get_audio_duration  # noqa: E402
 
 MODEL_ID = "microsoft/VibeVoice-ASR-HF"
@@ -165,7 +165,7 @@ def process_file(input_path: Path, processor, model, args) -> dict:
     if wav_path != input_path:
         cleanup.append(wav_path)
 
-    extraction = run_vad_extraction(wav_path, work_dir)
+    extraction = remove_silence(wav_path, work_dir)
     cleanup.extend(extraction.cleanup_files)
 
     if extraction.success and extraction.speech_only_path:
@@ -176,8 +176,8 @@ def process_file(input_path: Path, processor, model, args) -> dict:
     else:
         model_source = wav_path
         vad_segments = []
-        report["audio_fed_to_model"] = "原始音檔（VAD 提取失敗，整檔不切片）"
-        print("  [警告] VAD 提取失敗，改用原始音檔")
+        report["audio_fed_to_model"] = "原始音檔（去靜音失敗，整檔不切片）"
+        print("  [警告] 去靜音失敗，改用原始音檔")
 
     # 讀出音訊資料供切片；speech_only 檔另存一份供試聽對照
     audio_data, sr = sf.read(str(model_source), dtype="float32")

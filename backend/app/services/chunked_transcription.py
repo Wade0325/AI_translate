@@ -44,7 +44,7 @@ from app.exceptions import TranscriptionCancelledError, TransientError
 from app.provider.base import ProgressAndCancel, Provider, TranscribeRequest
 from app.services.silence_removal import SpeechView
 from app.services.transcription.models import TranscriptionTaskResult
-from app.services.vad.artifacts import persist_split
+from app.services.inspection_artifacts import persist_split
 from app.services.vad.service import get_vad_service
 from app.utils.audio import convert_to_wav, slice_audio
 from app.utils.logger import setup_logger
