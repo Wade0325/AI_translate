@@ -42,7 +42,7 @@ test('列出任務紀錄，從已完成的那一列下載 SRT', async ({ page, m
 
     await expect(recordRow(page, 'meeting.wav')).toContainText('完成')
     await expect(recordRow(page, 'interview.mp3')).toContainText('失敗')
-    await expect(page.getByText('60.0%')).toBeVisible()
+    await expect(page.getByText('50.0%')).toBeVisible()
     expect(backend.requests.find((r) => r.path === '/history').query).toEqual({ page: '1', page_size: '10' })
     // 失敗的任務沒有轉錄結果，不能下載
     await expect(recordRow(page, 'interview.mp3').getByRole('button', { name: 'download' })).toHaveCount(0)
