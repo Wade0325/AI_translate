@@ -1,8 +1,9 @@
 """去靜音與切點的產物持久化 — 供本機檢查切割是否正確。
 
-啟用 ``VAD_KEEP_ARTIFACTS=true`` 後，每次 VAD 前處理或分割會把 wav 與
+啟用 ``VAD_KEEP_ARTIFACTS=true`` 後，每次去靜音或在切點分割會把 wav 與
 segments 資訊複製到 ``vad_artifacts/{檔名}_{task_id}/``，不受轉錄完成後
-temp_uploads 清理影響。
+temp_uploads 清理影響。去靜音（:mod:`app.services.silence_removal`）與找切點
+（:mod:`app.services.vad`）共用這裡。
 """
 
 from __future__ import annotations
@@ -112,10 +113,10 @@ def persist_speech_extraction(
             "used_for_transcription": used_for_transcription,
         })
         _save_manifest(run_dir, manifest)
-        logger.info(f"VAD 檢查用音訊已保存: {run_dir.resolve()}")
+        logger.info(f"去靜音的檢查用音訊已保存: {run_dir.resolve()}")
         return run_dir
     except Exception as e:
-        logger.warning(f"保存 VAD 產物失敗 ({original_filename}): {e}")
+        logger.warning(f"保存去靜音產物失敗 ({original_filename}): {e}")
         return None
 
 

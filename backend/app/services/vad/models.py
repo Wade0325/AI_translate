@@ -1,47 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import List, Optional
-
-
-class SpeechSegment(BaseModel):
-    """
-    語音片段資訊
-    """
-    start: float = Field(..., description="片段開始時間（秒）")
-    end: float = Field(..., description="片段結束時間（秒）")
-
-    @property
-    def duration(self) -> float:
-        """片段時長"""
-        return self.end - self.start
-
-
-class VADProcessRequest(BaseModel):
-    """
-    去靜音的處理請求
-    """
-    audio_path: str = Field(..., description="音訊檔案路徑")
-    output_dir: str = Field(..., description="輸出目錄路徑")
-    write_speech_only: bool = Field(
-        True, description="是否把有聲段接成只剩語音的音檔寫進輸出目錄；只要有聲段時給 False")
-
-
-class SpeechExtractionResult(BaseModel):
-    """
-    語音提取結果
-    """
-    success: bool = Field(..., description="是否成功")
-    speech_only_path: Optional[str] = Field(None, description="純語音檔案路徑")
-    segments: List[SpeechSegment] = Field(
-        default_factory=list, description="語音片段列表")
-    total_speech_duration: float = Field(0.0, description="總語音時長（秒）")
-    total_duration: float = Field(0.0, description="原始音訊總時長（秒）")
-
-    @property
-    def speech_ratio(self) -> float:
-        """語音佔比"""
-        if self.total_duration > 0:
-            return self.total_speech_duration / self.total_duration
-        return 0.0
+from typing import Optional
 
 
 class AudioSplitRequest(BaseModel):
@@ -50,7 +8,7 @@ class AudioSplitRequest(BaseModel):
     """
     audio_path: str = Field(..., description="音訊檔案路徑")
     output_dir: str = Field(..., description="輸出目錄路徑")
-    min_silence_duration: float = Field(1.0, description="最小靜音時長（秒）")
+    min_silence_duration: float = Field(default=1.0, description="最小靜音時長（秒）")
 
 
 class AudioSplitResult(BaseModel):
@@ -58,7 +16,7 @@ class AudioSplitResult(BaseModel):
     音訊分割結果
     """
     success: bool = Field(..., description="是否成功")
-    part1_path: Optional[str] = Field(None, description="第一部分檔案路徑")
-    part2_path: Optional[str] = Field(None, description="第二部分檔案路徑")
-    split_point: Optional[float] = Field(None, description="分割點時間（秒）")
-    error_message: Optional[str] = Field(None, description="錯誤訊息")
+    part1_path: Optional[str] = Field(default=None, description="第一部分檔案路徑")
+    part2_path: Optional[str] = Field(default=None, description="第二部分檔案路徑")
+    split_point: Optional[float] = Field(default=None, description="分割點時間（秒）")
+    error_message: Optional[str] = Field(default=None, description="錯誤訊息")

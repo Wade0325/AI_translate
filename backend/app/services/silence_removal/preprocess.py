@@ -1,11 +1,11 @@
-"""去靜音的前處理：先把音檔轉成 wav，再以 RMS 音量閾值找出有聲段（`flows.extract_speech_segments`，
+"""去靜音的前處理：先把音檔轉成 wav，再以 RMS 音量閾值找出有聲段（`intervals.extract_speech_intervals`，
 不使用 Silero），需要時接成只剩語音的音檔，回傳結構化結果。是否要採用只剩語音的音檔
 （例如語音佔比閾值判斷）由呼叫端依情境決定。
 
 單檔任務與批次的去靜音經 :func:`app.services.silence_removal.speech_view` 拿到語音視圖，它也用這裡找
 有聲段。還直接呼叫這裡的：VAD 測試端點與 tests/ 底下的工具腳本。
 
-Silero VAD 只在分段轉錄找切點時用（`flows.split_audio_on_silence`，見
+Silero VAD 只在分段轉錄找切點時用（:mod:`app.services.vad`，見
 :mod:`app.services.chunked_transcription`）：依單次長度分段與失敗後的切段重試用同一套切點。
 """
 
@@ -15,8 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
 
-from app.services.vad.flows import extract_speech_segments
-from app.services.vad.models import VADProcessRequest
+from app.services.silence_removal.intervals import SpeechIntervalRequest, extract_speech_intervals
 from app.utils.audio import convert_to_wav
 from app.utils.logger import setup_logger
 
@@ -24,7 +23,7 @@ logger = setup_logger(__name__)
 
 
 @dataclass
-class VadPreprocessResult:
+class SilenceRemovalResult:
     """去靜音前處理的結果。
 
     Attributes:
@@ -44,17 +43,17 @@ class VadPreprocessResult:
     cleanup_files: List[Path] = field(default_factory=list)
 
 
-def run_vad_extraction(
+def remove_silence(
     audio_path: Path,
     temp_dir: Path,
     *,
     write_speech_only: bool = True,
-) -> VadPreprocessResult:
+) -> SilenceRemovalResult:
     """執行去靜音的前處理；只看音量，不需要 Silero。
 
     流程：
       1. 將輸入轉成 wav（若已是 wav 則略過）
-      2. 以 RMS 音量閾值找出有聲段（`flows.extract_speech_segments`）；``write_speech_only``
+      2. 以 RMS 音量閾值找出有聲段（`intervals.extract_speech_intervals`）；``write_speech_only``
          時再接成只剩語音的音檔
       3. 回傳結構化結果與待清理檔案清單
 
@@ -65,41 +64,41 @@ def run_vad_extraction(
     try:
         wav_path = convert_to_wav(audio_path, temp_dir)
     except Exception as e:
-        logger.warning(f"VAD 前處理：轉 wav 失敗 ({audio_path.name}): {e}")
-        return VadPreprocessResult(success=False, cleanup_files=cleanup_files)
+        logger.warning(f"去靜音：轉 wav 失敗 ({audio_path.name}): {e}")
+        return SilenceRemovalResult(success=False, cleanup_files=cleanup_files)
 
     if wav_path is None:
-        logger.warning(f"VAD 前處理：無法轉換 {audio_path.name} 為 WAV")
-        return VadPreprocessResult(success=False, cleanup_files=cleanup_files)
+        logger.warning(f"去靜音：無法轉換 {audio_path.name} 為 WAV")
+        return SilenceRemovalResult(success=False, cleanup_files=cleanup_files)
 
     if wav_path != audio_path:
         cleanup_files.append(wav_path)
 
     try:
-        request = VADProcessRequest(
+        request = SpeechIntervalRequest(
             audio_path=str(wav_path),
             output_dir=str(temp_dir),
             write_speech_only=write_speech_only,
         )
-        extraction = extract_speech_segments(request)
+        extraction = extract_speech_intervals(request)
     except Exception as e:
-        logger.warning(f"VAD 前處理：提取語音段失敗 ({audio_path.name}): {e}")
-        return VadPreprocessResult(success=False, cleanup_files=cleanup_files)
+        logger.warning(f"去靜音：找有聲段失敗 ({audio_path.name}): {e}")
+        return SilenceRemovalResult(success=False, cleanup_files=cleanup_files)
 
     speech_path = Path(extraction.speech_only_path) if extraction.speech_only_path else None
     if speech_path is not None:
         cleanup_files.append(speech_path)
 
     if not extraction.success or (write_speech_only and speech_path is None):
-        logger.warning(f"VAD 提取失敗 ({audio_path.name})")
-        return VadPreprocessResult(success=False, cleanup_files=cleanup_files)
+        logger.warning(f"去靜音失敗 ({audio_path.name})")
+        return SilenceRemovalResult(success=False, cleanup_files=cleanup_files)
 
     segments = [
         {"start": seg.start, "end": seg.end}
         for seg in extraction.segments
     ]
 
-    return VadPreprocessResult(
+    return SilenceRemovalResult(
         success=True,
         speech_only_path=speech_path,
         segments=segments,
