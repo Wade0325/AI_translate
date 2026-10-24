@@ -660,8 +660,9 @@ class _Watch:
             try:
                 outcome = outcome_of(file)
             except Exception as e:
-                # 結果放不回原音檔的時間軸（例如片段的時間不是數字）：這個檔案照失敗結束
-                outcome = _BatchError(f"結果放不回原音檔的時間軸: {e}")
+                # 拿不到這個檔案的結果（不該發生；放不回原音檔的時間軸由 _result_of 自己處理）：
+                # 這個檔案照失敗結束
+                outcome = _BatchError(f"取不出這個檔案的結果: {e}")
             # 拿到任務生命週期之後一定結束：回報進度與結束都不往上拋例外
             lifecycle.progress.report(
                 f"處理結果 ({file.request_index + 1}/{len(submitted)}): {file.original_filename}")
@@ -711,7 +712,11 @@ def _submitted(rows: Sequence[BatchFile]) -> List[_Submitted]:
 
 def _result_of(status: BatchStatus, file: _Submitted) -> FileOutcome:
     """這個檔案的結果：供應商給的轉錄結果放回原音檔的時間軸；整個批次失敗、或沒有這個檔案的結果時，
-    是讓它失敗的原因。"""
+    是讓它失敗的原因。
+
+    結果放不回原音檔的時間軸時（例如片段的時間不是數字），回傳帶著用量的失敗結果：供應商已經回應，
+    照樣收費，任務生命週期和供應商回報失敗時一樣把用量記在失敗的任務紀錄上。
+    """
     if not status.succeeded:
         return _BatchError(_failed_state(status))
     if file.request_index >= len(status.results):
@@ -719,7 +724,12 @@ def _result_of(status: BatchStatus, file: _Submitted) -> FileOutcome:
     result = status.results[file.request_index]
     if not result.success:
         return result
-    return result.model_copy(update={"segments": file.timeline.in_original_order(result.segments)})
+    try:
+        segments = file.timeline.in_original_order(result.segments)
+    except Exception as e:
+        return result.model_copy(update={
+            "success": False, "segments": [], "text": f"結果放不回原音檔的時間軸: {e}"})
+    return result.model_copy(update={"segments": segments})
 
 
 def _failed_state(status: BatchStatus) -> str:
