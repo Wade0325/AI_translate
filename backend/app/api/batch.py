@@ -278,12 +278,11 @@ async def batch_websocket_endpoint(
 
     except WebSocketDisconnect:
         logger.info(f"批次 WebSocket 連線由客戶端關閉: {batch_id}")
-        manager.disconnect(batch_id)
+        manager.disconnect(batch_id, websocket)
     except Exception as e:
         logger.error(
             f"批次 WebSocket 端點發生錯誤 (batch_id: {batch_id}): {e}",
             exc_info=True,
         )
-        if batch_id in manager.active_connections:
-            await manager.active_connections[batch_id].close()
-            manager.disconnect(batch_id)
+        # 只關、只移除這條連線：同一個 batch_id 的新連線可能已經登記上來（#203）
+        await manager.close(batch_id, websocket)
