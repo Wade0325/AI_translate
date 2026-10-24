@@ -255,6 +255,10 @@ git config core.hooksPath .githooks
 
 > `tools/check.py` 是唯一的檢查清單，CI 與 pre-commit 跑的也是它。Python 的檢查要先安裝 `backend/requirements-dev.txt`，ESLint 與 vitest 要先在 `frontend/` 執行 `npm ci`。`pytest.ini` 已設定 `pythonpath = backend`，測試可直接 `from app.api import ...` 匯入；測試自帶暫存的 SQLite 資料庫與 mock，不需 Postgres/Redis。
 
+### 評測轉錄品質
+
+`backend\.venv\Scripts\python.exe -m tools.eval eval ...` 拿轉錄結果和評測集的標準答案比對，算錯字率與說話者歸屬；標準答案留在 repo 外的研究區。用法見 [`tools/eval/README.md`](tools/eval/README.md)。
+
 ### 建置 Windows 免安裝發布包
 
 ```powershell

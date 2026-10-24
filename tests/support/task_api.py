@@ -1,4 +1,4 @@
-"""透過 API 跑任務的整合測試共用的小工具：上傳、收狀態廣播、查片段與下載、看暫存資料夾與任務頁的批次。"""
+"""透過 API 跑任務的整合測試共用的小工具：上傳、收狀態廣播、送心跳、查片段與下載、看暫存資料夾與任務頁的批次。"""
 
 from __future__ import annotations
 
@@ -29,6 +29,11 @@ def receive_until(ws, *end: TaskStatus, timeout: float = TIMEOUT) -> list[dict]:
 def receive(ws) -> dict:
     """收下一則廣播；逾時直接失敗，不讓 CI 卡住。"""
     return _reader.submit(ws.receive_json).result(timeout=TIMEOUT)
+
+
+def ping(ws) -> None:
+    """頁面每 30 秒送一次的心跳（frontend/src/hooks/useTranscriptionSocket.js）。"""
+    ws.send_json({"type": "ping"})
 
 
 def upload(api: TestClient, name: str = "voice.wav", voiced=VOICED) -> str:

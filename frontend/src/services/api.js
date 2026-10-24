@@ -89,6 +89,10 @@ export const api = {
     usage({ days = 180 } = {}) {
       return request(`/history/usage?days=${days}`);
     },
+    /** 單一任務的任務紀錄（不帶轉錄結果）；查不到時丟 404 的 ApiError */
+    get(taskUuid) {
+      return request(`/history/${taskUuid}`);
+    },
     delete(taskUuid) {
       return request(`/history/${taskUuid}`, { method: 'DELETE' });
     },

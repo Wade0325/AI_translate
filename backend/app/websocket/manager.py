@@ -27,10 +27,24 @@ class ConnectionManager:
         self.active_connections[client_id] = websocket
         logger.info(f"新的 WebSocket 連線: {client_id}")
 
-    def disconnect(self, client_id: str):
-        if client_id in self.active_connections:
+    def disconnect(self, client_id: str, websocket: WebSocket):
+        """把這條連線從登記移除。
+
+        同一個 client_id 已經登記了之後連上的另一條連線時不動它：例如重新轉錄時，伺服器還沒發現
+        舊連線斷了，新連線就連上來，舊連線之後才收尾（#203）。
+        """
+        if self.active_connections.get(client_id) is websocket:
             del self.active_connections[client_id]
             logger.info(f"WebSocket 連線關閉: {client_id}")
+
+    async def close(self, client_id: str, websocket: WebSocket, code: int = 1000):
+        """關掉這條連線並從登記移除；和 :meth:`disconnect` 一樣不動之後登記的另一條連線。
+
+        這條連線可能已經被新連線換掉、在 :meth:`connect` 裡關掉了，所以關閉時的錯誤不往外丟。
+        """
+        self.disconnect(client_id, websocket)
+        with suppress(Exception):
+            await websocket.close(code=code)
 
     async def send_personal_message(self, message: dict, client_id: str):
         websocket = self.active_connections.get(client_id)
@@ -40,10 +54,9 @@ class ConnectionManager:
             await websocket.send_json(message)
         except Exception as e:
             logger.error(f"傳送訊息至客戶端 {client_id} 時發生錯誤: {e}")
-            # 送訊息失敗代表連線已斷或不健康，從表中移除並嘗試關閉
-            self.disconnect(client_id)
-            with suppress(Exception):
-                await websocket.close(code=1011)
+            # 送訊息失敗代表連線已斷或不健康，從表中移除並嘗試關閉。等送出的期間可能已經有新連線
+            # 登記上來，所以只移除、只關這條
+            await self.close(client_id, websocket, code=1011)
 
     async def _listen(self):
         """訂閱執行模式的狀態廣播，轉送至對應 WebSocket，直到被取消。"""
