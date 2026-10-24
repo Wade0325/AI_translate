@@ -32,7 +32,7 @@ def run_transcription(task_params_dict: dict, task_uuid: str) -> dict:
     """
     params = TranscriptionTaskParams.model_validate(task_params_dict)
     return TaskLifecycle(task_uuid, _task(params)).run(
-        lambda audio, progress: _transcribe(params, task_uuid, audio, progress))
+        lambda audio, progress: transcribe_audio(params, task_uuid, audio, progress))
 
 
 def abandon_transcription(task_params_dict: dict, task_uuid: str, *, cancelled: bool) -> None:
@@ -58,9 +58,14 @@ def _task(params: TranscriptionTaskParams) -> Task:
     )
 
 
-def _transcribe(
+def transcribe_audio(
     params: TranscriptionTaskParams, task_uuid: str, audio: Path, progress: ProgressAndCancel,
 ) -> TranscriptionTaskResult:
+    """轉錄一段音檔：建立供應商轉接器，去靜音拿到語音視圖，經分段轉錄轉錄它，最後釋放轉接器。
+
+    不碰任務紀錄與狀態廣播（那些在任務生命週期）；評測指令（``python -m tools.eval transcribe``）
+    也直接呼叫這裡，評的就是正式的轉錄路徑。
+    """
     # 查出供應商轉接器：模型不屬於這個供應商、或供應商還不能轉錄
     # （缺權重、金鑰無效）都在這裡以明確訊息失敗，不必等去靜音跑完
     adapter = open_provider(params.provider, params.model, params.api_keys)

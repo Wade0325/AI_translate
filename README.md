@@ -265,7 +265,7 @@ git config core.hooksPath .githooks
 
 ### 評測轉錄品質
 
-`backend\.venv\Scripts\python.exe -m tools.eval eval ...` 拿轉錄結果和評測集的標準答案比對，算錯字率與說話者歸屬；標準答案留在 repo 外的研究區。用法見 [`tools/eval/README.md`](tools/eval/README.md)。
+`backend\.venv\Scripts\python.exe -m tools.eval transcribe ...` 用正式的轉錄路徑轉錄一個音檔，輸出轉錄結果與記下環境和耗時的 manifest；`backend\.venv\Scripts\python.exe -m tools.eval eval ...` 拿轉錄結果和評測集的標準答案比對，算錯字率與說話者歸屬。標準答案留在 repo 外的研究區。用法見 [`tools/eval/README.md`](tools/eval/README.md)。
 
 ### 建置 Windows 免安裝發布包
 
