@@ -56,6 +56,22 @@ def test_old_connection_cleanup_keeps_the_new_connection():
     assert new.close_code is None
 
 
+def test_closing_the_old_connection_keeps_the_new_connection():
+    manager = ConnectionManager()
+    old, new = FakeWebSocket(), FakeWebSocket()
+
+    async def main():
+        await manager.connect(old, "uid")
+        await manager.connect(new, "uid")
+        await manager.close("uid", old, code=1011)  # 舊連線的處理流程這時才出錯、收尾
+        await manager.send_personal_message(STATUS, "uid")
+
+    asyncio.run(main())
+    assert new.sent == [STATUS]
+    assert new.close_code is None
+    assert old.close_code == 1011
+
+
 def test_failed_send_on_the_old_connection_keeps_the_new_connection():
     manager = ConnectionManager()
     new = FakeWebSocket()
@@ -72,7 +88,7 @@ def test_failed_send_on_the_old_connection_keeps_the_new_connection():
     assert new.close_code is None
 
 
-def test_closed_only_connection_leaves_nothing_registered():
+def test_disconnecting_the_only_connection_unregisters_it():
     manager = ConnectionManager()
     ws = FakeWebSocket()
 

@@ -34,6 +34,7 @@ from tests.support.task_api import (
     download,
     flat_times,
     leftovers,
+    ping,
     receive,
     stored_segments,
     upload,
@@ -948,11 +949,6 @@ class TestStoredProviderName:
 
 
 # ─── 重新轉錄時舊連線還沒收尾（#203） ───────────────────────────────────────
-
-def ping(ws) -> None:
-    """頁面每 30 秒送一次的心跳（frontend/src/hooks/useTranscriptionSocket.js）。"""
-    ws.send_json({"type": "ping"})
-
 
 class TestReTranscriptionBeforeTheOldConnectionEnds:
     """第一次轉錄的連線，伺服器還沒發現它已經斷了（例如電腦休眠、換網路），重新轉錄的新連線就連上來：

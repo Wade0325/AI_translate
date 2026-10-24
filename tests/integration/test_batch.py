@@ -37,6 +37,7 @@ from tests.support.task_api import (
     leftovers,
     listed,
     listed_batch_ids,
+    ping,
     receive,
     receive_until,
     shown,
@@ -941,7 +942,7 @@ def test_a_batch_archived_after_a_restart_can_still_be_recovered(
 # 同一個批次 id 先後有兩條連線（例如前端重送），伺服器還沒發現舊連線斷了，新連線就連上來：伺服器先關掉
 # 舊連線、登記新連線，舊連線的處理流程之後才收尾。收尾只能動舊連線自己，批次的狀態訊息才送得到新連線
 
-def left_open_after_rejection(ws) -> None:
+def send_rejected_batch(ws) -> None:
     """送出上傳檔已經不在的批次：整批不派送，端點回失敗之後連線照樣開著、等下一則訊息。"""
     ws.send_json({
         "files": [{"filename": "swept.wav", "original_filename": "swept.wav", "file_uid": "swept"}],
@@ -954,7 +955,7 @@ def test_the_old_connection_disconnecting_later_keeps_the_new_one(
     batch_fake.script = [list(LINES)]
     path = "/api/v1/batch/ws/batch-old-disconnects"
     with ExitStack() as old_connection:
-        left_open_after_rejection(old_connection.enter_context(api.websocket_connect(path)))
+        send_rejected_batch(old_connection.enter_context(api.websocket_connect(path)))
         with api.websocket_connect(path) as ws:
             old_connection.close()  # 舊連線的處理流程這時才收到斷線
             ws.send_json(batch_request(api, ["reconnect.wav"]))
@@ -968,11 +969,11 @@ def test_the_old_connection_failing_later_keeps_the_new_one(api, in_process_run_
     batch_fake.script = [list(LINES)]
     path = "/api/v1/batch/ws/batch-old-fails"
     with api.websocket_connect(path) as old:
-        left_open_after_rejection(old)
+        send_rejected_batch(old)
         with api.websocket_connect(path) as ws:
             # 舊連線已經被伺服器關掉，它的處理流程接著又收到頁面的心跳：在關掉的連線上收訊息會丟例外，
             # 走端點發生例外時的收尾
-            old.send_json({"type": "ping"})
+            ping(old)
             ws.send_json(batch_request(api, ["reconnect.wav"]))
             messages = receive_until(ws, TaskStatus.BATCH_COMPLETED)
     wait_until(lambda: not in_process_run_mode.is_alive(messages[-1]["task_uuid"]))

@@ -1,4 +1,3 @@
-from contextlib import suppress
 from datetime import datetime
 
 from fastapi import (
@@ -285,8 +284,5 @@ async def batch_websocket_endpoint(
             f"批次 WebSocket 端點發生錯誤 (batch_id: {batch_id}): {e}",
             exc_info=True,
         )
-        # 只關、只移除這條連線：同一個 batch_id 的新連線可能已經登記上來（#203），
-        # 這條也可能早就被它換掉、關掉了
-        manager.disconnect(batch_id, websocket)
-        with suppress(Exception):
-            await websocket.close()
+        # 只關、只移除這條連線：同一個 batch_id 的新連線可能已經登記上來（#203）
+        await manager.close(batch_id, websocket)
