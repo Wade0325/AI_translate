@@ -6,11 +6,16 @@
   GET    /api/v1/history/{task_uuid}
   DELETE /api/v1/history/{task_uuid}
 """
+import json
 import uuid
+from datetime import datetime, timedelta
+
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
-from app.database.models import TranscriptionLog
+from app.database.models import BatchJob, TranscriptionLog
+from app.repositories.transcript_segment_repository import TranscriptSegmentRepository
 
 
 # ─── 測試資料輔助函數 ─────────────────────────────────────────────────────────
@@ -37,6 +42,11 @@ def _create_log(db: Session, **kwargs) -> TranscriptionLog:
     db.commit()
     db.refresh(log)
     return log
+
+
+def _noon_days_ago(days: int) -> datetime:
+    """幾天前的中午，本地時間（和 request_timestamp 一樣）。"""
+    return datetime.now().replace(hour=12, minute=0, second=0, microsecond=0) - timedelta(days=days)
 
 
 # ─── 統計 API ─────────────────────────────────────────────────────────────────
@@ -248,27 +258,6 @@ class TestHistoryDelete:
 class TestHistoryDownload:
     _SAMPLE_LRC = "[00:01.00]Hello\n[00:03.00]World"
 
-    def test_download_lrc(self, client: TestClient, db_session: Session):
-        log = _create_log(
-            db_session,
-            status="COMPLETED",
-            original_filename="song.mp3",
-            lrc_content=self._SAMPLE_LRC,
-        )
-        response = client.get(f"/api/v1/history/{log.task_uuid}/download/lrc")
-        assert response.status_code == 200
-        assert "Hello" in response.text
-
-    def test_download_srt_converts_from_lrc(self, client: TestClient, db_session: Session):
-        log = _create_log(
-            db_session,
-            status="COMPLETED",
-            lrc_content=self._SAMPLE_LRC,
-        )
-        response = client.get(f"/api/v1/history/{log.task_uuid}/download/srt")
-        assert response.status_code == 200
-        assert "-->" in response.text
-
     def test_download_without_lrc_returns_404(self, client: TestClient, db_session: Session):
         log = _create_log(db_session, status="COMPLETED", lrc_content=None)
         response = client.get(f"/api/v1/history/{log.task_uuid}/download/lrc")
@@ -293,6 +282,98 @@ class TestHistoryDownload:
         assert response.status_code == 400
 
 
+# ─── 輸出格式的資料來源 ───────────────────────────────────────────────────────
+
+SEGMENTS = [
+    {"seg_key": "0000", "start": 1.5, "end": 2.8, "speaker": "S0", "text": "おはよう。"},
+    {"seg_key": "0001", "start": 3.25, "end": 4.0, "speaker": "S1", "text": "こんにちは。"},
+]
+# 片段沒有逐字時間：一段一行，SRT／VTT 在片段的結束時結束；只有 0.75 秒的「こんにちは。」
+# 顯示最短的 0.8 秒（#96、ADR-0008）
+FROM_SEGMENTS = {
+    "lrc": "[00:01.50][S0] おはよう。\n[00:03.25][S1] こんにちは。",
+    "srt": ("1\n00:00:01,500 --> 00:00:02,800\n[S0] おはよう。\n\n"
+            "2\n00:00:03,250 --> 00:00:04,050\n[S1] こんにちは。\n"),
+    "vtt": ("WEBVTT\n\n00:00:01.500 --> 00:00:02.800\n[S0] おはよう。\n\n"
+            "00:00:03.250 --> 00:00:04.050\n[S1] こんにちは。\n"),
+    "txt": "[S0] おはよう。\n[S1] こんにちは。",
+}
+
+
+class TestDownloadFromSegments:
+    @pytest.mark.parametrize("fmt", ["lrc", "srt", "vtt", "txt"])
+    def test_every_format_comes_from_segments_not_the_stored_lrc(
+            self, client: TestClient, db_session: Session, fmt):
+        # 存下來的 LRC 只是凍結的原始轉錄副本，有片段時下載不讀它
+        log = _create_log(db_session, lrc_content="[00:00.00]凍結的原始轉錄副本")
+        TranscriptSegmentRepository.replace_untouched(db_session, log.task_uuid, SEGMENTS)
+        db_session.commit()
+
+        response = client.get(f"/api/v1/history/{log.task_uuid}/download/{fmt}")
+        assert response.status_code == 200
+        assert response.text == FROM_SEGMENTS[fmt]
+
+
+# 沒有片段的任務（片段功能上線前的任務、#110 之前的 Gemini 任務、#115 之前批次裡的任務），輸出要和
+# 以前從存下來的 LRC 轉換時一模一樣
+STORED_LRC = ("[00:01.50]Speaker A: Hello\n[00:03.123]Speaker B: World\n"
+              "這行沒有時間戳\n[61:02.00]Final line")
+FROM_STORED_LRC = {
+    "lrc": STORED_LRC,
+    "srt": ("1\n00:00:01,500 --> 00:00:03,123\nHello\n\n"
+            "2\n00:00:03,123 --> 01:01:02,000\nWorld\n\n"
+            "3\n01:01:02,000 --> 01:01:07,000\nFinal line\n"),
+    "vtt": ("WEBVTT\n\n00:00:01.500 --> 00:00:03.123\nHello\n\n"
+            "00:00:03.123 --> 01:01:02.000\nWorld\n\n"
+            "01:01:02.000 --> 01:01:07.000\nFinal line\n"),
+    "txt": "Hello\nWorld\nFinal line",
+}
+BATCH_LRC = "[00:02.00]批次的結果"
+FROM_BATCH_LRC = {
+    "lrc": BATCH_LRC,
+    "srt": "1\n00:00:02,000 --> 00:00:07,000\n批次的結果\n",
+    "vtt": "WEBVTT\n\n00:00:02.000 --> 00:00:07.000\n批次的結果\n",
+    "txt": "批次的結果",
+}
+
+
+class TestDownloadWithoutSegments:
+    @pytest.mark.parametrize("fmt", ["lrc", "srt", "vtt", "txt"])
+    def test_task_without_segments_converts_the_stored_lrc_as_before(
+            self, client: TestClient, db_session: Session, fmt):
+        log = _create_log(db_session, lrc_content=STORED_LRC)
+
+        response = client.get(f"/api/v1/history/{log.task_uuid}/download/{fmt}")
+        assert response.status_code == 200
+        assert response.text == FROM_STORED_LRC[fmt]
+
+    @pytest.mark.parametrize("fmt", ["lrc", "srt", "vtt", "txt"])
+    def test_task_in_a_batch_without_stored_lrc_uses_the_batch_result(
+            self, client: TestClient, db_session: Session, fmt):
+        task_uuid = uuid.uuid4()
+        batch_id = f"batch-{task_uuid.hex[:8]}"
+        db_session.add(BatchJob(
+            batch_id=batch_id,
+            results_json=json.dumps({"f1": {"transcripts": {"lrc": BATCH_LRC}}}),
+            file_log_uuids_json=json.dumps({"f1": str(task_uuid)}),
+        ))
+        db_session.commit()
+        _create_log(db_session, task_uuid=task_uuid, is_batch=True, batch_id=batch_id)
+
+        response = client.get(f"/api/v1/history/{task_uuid}/download/{fmt}")
+        assert response.status_code == 200
+        assert response.text == FROM_BATCH_LRC[fmt]
+
+    def test_stored_lrc_without_timestamps_has_no_subtitles(
+            self, client: TestClient, db_session: Session):
+        log = _create_log(db_session, lrc_content="沒有任何時間戳")
+
+        assert client.get(f"/api/v1/history/{log.task_uuid}/download/lrc").text == "沒有任何時間戳"
+        response = client.get(f"/api/v1/history/{log.task_uuid}/download/srt")
+        assert response.status_code == 404
+        assert response.json()["detail"] == "無法產生此格式的字幕內容"
+
+
 # ─── 用量彙總 API ─────────────────────────────────────────────────────────────
 
 class TestHistoryUsage:
@@ -304,19 +385,44 @@ class TestHistoryUsage:
         assert isinstance(data["by_model"], list)
         assert isinstance(data["pricing"], list)
 
-    def test_usage_aggregates_completed_by_model(self, client: TestClient, db_session: Session):
+    def test_usage_counts_what_failed_and_cancelled_tasks_were_billed(
+            self, client: TestClient, db_session: Session):
+        # 失敗與取消的任務，供應商照樣收費：token 與費用算進每日與各模型的用量，檔案數只算完成的
+        # （#155）。日期與模型都是其他測試沒用到的，那一天與那個模型只有這幾筆
         model = "usage-test-model-alpha"
-        _create_log(db_session, model_used=model, total_tokens=1000, cost=0.1)
-        _create_log(db_session, model_used=model, total_tokens=2000, cost=0.2)
-        # FAILED 不應計入
-        _create_log(db_session, model_used=model, status="FAILED",
-                    total_tokens=9999, cost=9.9)
+        noon = _noon_days_ago(100)
+        for status, tokens, cost in [
+            ("COMPLETED", 1000, 0.1),
+            ("COMPLETED", 2000, 0.2),
+            ("FAILED", 400, 0.04),
+            ("CANCELLED", 500, 0.05),
+            # 沒有用量的（開始前就取消、還在處理中）什麼都不加
+            ("CANCELLED", None, None),
+            ("PROCESSING", None, None),
+        ]:
+            _create_log(db_session, model_used=model, status=status, total_tokens=tokens,
+                        cost=cost, request_timestamp=noon)
 
         data = client.get("/api/v1/history/usage").json()
-        entry = next(m for m in data["by_model"] if m["model"] == model)
-        assert entry["tokens"] == 3000
-        assert entry["files"] == 2
-        assert abs(entry["cost"] - 0.3) < 1e-6
+        [day] = [d for d in data["daily"] if d["date"] == noon.date().isoformat()]
+        [entry] = [m for m in data["by_model"] if m["model"] == model]
+        for row in (day, entry):
+            assert row["tokens"] == 3900
+            assert row["cost"] == pytest.approx(0.39)
+            assert row["files"] == 2
+
+    def test_tasks_without_usage_add_no_rows(self, client: TestClient, db_session: Session):
+        # 只有沒用量的失敗與取消：不多出全是 0 的一天或一個模型，計費頁沒有用量時照樣顯示空的說明
+        model = "usage-test-model-unbilled"
+        noon = _noon_days_ago(101)
+        _create_log(db_session, model_used=model, status="FAILED", total_tokens=0, cost=0.0,
+                    request_timestamp=noon)
+        _create_log(db_session, model_used=model, status="CANCELLED", total_tokens=None,
+                    cost=None, request_timestamp=noon)
+
+        data = client.get("/api/v1/history/usage").json()
+        assert noon.date().isoformat() not in [d["date"] for d in data["daily"]]
+        assert model not in [m["model"] for m in data["by_model"]]
 
     def test_usage_daily_has_expected_fields(self, client: TestClient, db_session: Session):
         _create_log(db_session, model_used="usage-test-model-daily",

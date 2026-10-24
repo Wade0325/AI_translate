@@ -39,20 +39,49 @@ class ModelConfiguration(Base):
 
 
 class BatchJob(Base):
-    """batch_jobs 資料表 — 持久化 Gemini 批次的資訊，供重啟後恢復"""
+    """batch_jobs 資料表 — 持久化 Gemini 批次的資訊，供重啟後恢復；每個檔案在 batch_files 各一列"""
     __tablename__ = 'batch_jobs'
 
     batch_id = Column(String, primary_key=True)         # 前端的 batch ID
     session_id = Column(String, nullable=True, index=True)  # 同一次 Start 的任務群組
-    gemini_job_name = Column(String, nullable=True)      # Gemini API 的 job name
-    status = Column(String, default="UPLOADING", index=True)  # UPLOADING / POLLING / BATCH_SUBMITTED / COMPLETED / FAILED / RETRIEVED / RECOVERING
+    gemini_job_name = Column(String, nullable=True)      # 供應商的批次名稱，送出之後才有
+    status = Column(String, default="UPLOADING", index=True)  # 批次的狀態機（app.core.batch_state）
     task_params_json = Column(Text, nullable=True)       # 序列化的任務參數（不含 api_keys）
+    # 舊的檔案清單（#116 之前）：新批次不再寫。啟動時與復原入口從這裡替舊版送出的批次補上
+    # batch_files 的列（app.tasks.older_batches），只讀不寫；保留一個版本，之後另開票刪掉
     file_mapping_json = Column(Text, nullable=True)      # {index: {file_uid, original_filename}}
     file_durations_json = Column(Text, nullable=True)    # {file_uid: duration}
     file_log_uuids_json = Column(Text, nullable=True)    # {file_uid: task_uuid}
     results_json = Column(Text, nullable=True)           # {file_uid: result_dict} — 完成後存入的結果
-    celery_task_id = Column(String, nullable=True, index=True)  # Celery task ID
+    celery_task_id = Column(String, nullable=True, index=True)  # 看著這個批次的任務：執行，或接手的復原
     file_count = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class BatchFile(Base):
+    """batch_files 資料表：批次裡的每個檔案一列（#116），從建立批次起就在；#116 之前送出的批次在
+    應用程式啟動時或復原入口補上（app.tasks.older_batches）。
+
+    每個檔案仍各是一個任務，以它的任務紀錄 id 為主鍵。不設外鍵到 transcription_logs：列在任務
+    開始之前就建立；使用者刪掉任務紀錄之後，批次照樣列得出這個檔案。復原時從這裡讀回開始時量到的
+    長度、上傳檔與語音視圖的序列化形式（app.tasks.batch_core）。
+    """
+    __tablename__ = 'batch_files'
+    __table_args__ = (
+        UniqueConstraint('batch_id', 'seq', name='uq_batch_files_seq'),
+    )
+
+    task_uuid = Column(UUID(as_uuid=True), primary_key=True)  # 這個檔案的任務紀錄 id
+    batch_id = Column(String, ForeignKey("batch_jobs.batch_id"), nullable=False, index=True)
+    seq = Column(Integer, nullable=False)          # 在批次裡的順序（0 起算）
+    file_uid = Column(String, nullable=False)      # 前端檔案 uid
+    original_filename = Column(String, nullable=False)
+    file_path = Column(String, nullable=True)      # 上傳檔，任務結束時保留或清理
+    audio_duration_seconds = Column(Float, nullable=True)  # 開始時量到的長度
+    speech_view_json = Column(Text, nullable=True)  # 語音視圖的序列化形式；送出之前是 NULL
+    request_index = Column(Integer, nullable=True)  # 送出的批次裡第幾個請求；沒送出的是 NULL
+    status = Column(String, nullable=False)        # 結果狀態：PROCESSING / COMPLETED / FAILED
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
@@ -84,7 +113,9 @@ class TranscriptionLog(Base):
     provider = Column(String, nullable=True)
     target_language = Column(String, nullable=True)
     completed_at = Column(DateTime, nullable=True)
-    # 僅儲存 LRC；SRT/VTT/TXT 於下載時由後端即時轉換
+    # 凍結的原始轉錄副本（ADR-0007），任務完成時由輸出格式模組從轉錄結果產生。有片段的
+    # 任務，輸出格式從片段產生、不讀這裡；沒有片段的任務（片段上線前的任務、#110 之前的 Gemini
+    # 任務、#115 之前批次裡的任務）才從這份 LRC 轉換（app.services.output_format）
     lrc_content = Column(Text, nullable=True)
     file_uid = Column(String, nullable=True, index=True)  # 前端檔案 uid
     session_id = Column(String, nullable=True, index=True)  # 同一次 Start 的任務群組
@@ -98,11 +129,14 @@ class TranscriptionLog(Base):
 class TranscriptSegment(Base):
     """轉錄片段 — 校正介面與逐段回傳的持久化單位。
 
-    LRC 仍是下載用的單一真相（``TranscriptionLog.lrc_content``）；這張表存的是
-    可逐段更新、可標記、可回溯的結構化版本：說話者分離給出的每一段各一列。
+    有片段的任務，四種輸出格式都從這裡產生（app.services.output_format），
+    ``TranscriptionLog.lrc_content`` 只是凍結的原始轉錄副本；批次裡的任務和單檔任務一樣存片段
+    （#115 之前的沒有）。說話者分離給出的每一段各一列，可逐段更新、可標記、可回溯；Gemini 的
+    片段是它 LRC 的一行，Gemini 寫明結束的才有結束時間。
 
-    ``seg_key`` 是確定性的（切段序號 + 片段序號），所以任務被重派或重新轉錄時是
-    覆寫同一列而不是產生重複資料。``text_alt`` 存另一個模型對同一段的轉錄
+    ``seg_key`` 是確定性的（切段序號 + 片段序號），所以任務被重派或重新轉錄時對得上同一段，
+    不會產生重複資料；使用者動過的片段不刪、不覆寫（見 ``TranscriptSegmentRepository``
+    的 ``replace_untouched``）。``text_alt`` 存另一個模型對同一段的轉錄
     （local provider 的 VibeVoice 文字），兩者不一致處即是需要人工複查的候選。
     """
 

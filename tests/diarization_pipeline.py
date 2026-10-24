@@ -41,7 +41,6 @@ sys.path.insert(0, str(REPO_ROOT / "tests"))
 
 from vad_pipeline import INPUT_DIR, OUTPUT_DIR, to_minutes, _collect_inputs  # noqa: E402
 from app.services.vad.preprocess import run_vad_extraction  # noqa: E402
-from app.services.vad.service import get_vad_service        # noqa: E402
 from app.utils.audio import convert_to_wav, get_audio_duration  # noqa: E402
 
 MODEL_ID = "microsoft/VibeVoice-ASR-HF"
@@ -147,7 +146,7 @@ def _safe_write_wav(path: Path, data: np.ndarray, sr: int) -> bool:
         return False
 
 
-def process_file(input_path: Path, processor, model, vad_service, args) -> dict:
+def process_file(input_path: Path, processor, model, args) -> dict:
     work_dir = OUTPUT_DIR / input_path.stem
     work_dir.mkdir(parents=True, exist_ok=True)
     cleanup: list[Path] = []
@@ -166,7 +165,7 @@ def process_file(input_path: Path, processor, model, vad_service, args) -> dict:
     if wav_path != input_path:
         cleanup.append(wav_path)
 
-    extraction = run_vad_extraction(wav_path, work_dir, vad_service)
+    extraction = run_vad_extraction(wav_path, work_dir)
     cleanup.extend(extraction.cleanup_files)
 
     if extraction.success and extraction.speech_only_path:
@@ -288,14 +287,13 @@ def main() -> int:
         print("tests/audio_input/ 內沒有可處理的音檔")
         return 1
 
-    vad_service = get_vad_service()
     processor, model = load_model(args.gpu_mem)
 
     print(f"\n共 {len(inputs)} 個檔案，輸出到 {OUTPUT_DIR}\n")
     failed = 0
     for input_path in inputs:
         print(f"=== {input_path.name} ===")
-        report = process_file(input_path, processor, model, vad_service, args)
+        report = process_file(input_path, processor, model, args)
 
         if report.get("success"):
             stats = report["params"]

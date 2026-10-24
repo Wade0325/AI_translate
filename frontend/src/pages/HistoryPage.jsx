@@ -13,7 +13,7 @@ import { api } from "../services/api"
 import { downloadFormats } from "../constants/downloadFormats"
 import { downloadBlob, renameExtension } from "../utils/download"
 import { StatCard } from "../components/StatCard"
-import { STATUS_META } from "../constants/taskStatus"
+import { STATUS_META, TASK_STATUS } from "../constants/taskStatus"
 
 const { Text } = Typography
 
@@ -196,7 +196,7 @@ export default function HistoryPage() {
             fixed: "right",
             render: (_, record) => (
                 <Space size={0}>
-                    {record.status === "COMPLETED" && (
+                    {record.status === TASK_STATUS.COMPLETED && (
                         <Dropdown
                             menu={{
                                 items: downloadFormats.map((f) => ({
@@ -298,12 +298,7 @@ export default function HistoryPage() {
                         onChange={setStatusFilter}
                         style={{ width: 120 }}
                         allowClear
-                        options={[
-                            { value: "COMPLETED", label: "完成" },
-                            { value: "FAILED", label: "失敗" },
-                            { value: "PROCESSING", label: "處理中" },
-                            { value: "CANCELLED", label: "已取消" },
-                        ]}
+                        options={Object.entries(STATUS_META).map(([value, { label }]) => ({ value, label }))}
                     />
                     <Select
                         placeholder="模式"

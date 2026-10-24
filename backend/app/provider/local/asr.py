@@ -1,20 +1,20 @@
 """本機供應商（local provider）：說話者分離 + 轉錄 + 強制對齊。
 
 Docker 模式下只在主機端 GPU worker（local_asr 佇列）上執行，免安裝模式則在行程內的
-local_asr 執行緒池執行——flows.py 於 provider == "local" 分支內才延遲 import 本模組，
+local_asr 執行緒池執行——本機轉接器（provider.py）第一次轉錄時才延遲 import 本模組，
 Docker 容器 worker 不需要 transformers/CUDA 相依。
 
-三種模型（frontend modelConfig 的 Local 選項，權重對照見 weights.MODEL_REPOS）：
+三種模型（畫面列出的本機模型，見 GET /providers；權重對照見 weights.MODEL_REPOS）：
   * moss-align（預設）：MOSS-Transcribe-Diarize 一次產生說話者、時間與文字，
     再由 Qwen3-ForcedAligner 斷行並補逐詞時間戳
   * moss-qwen3-asr：MOSS 分離後，文字改由 Qwen3-ASR 逐段轉錄（MOSS 文字留作 text_alt）
   * vibevoice-qwen3-asr（舊版）：VibeVoice-ASR 分離 + Qwen3-ASR 逐段轉錄
 
 共同的後段：
-  1. Qwen3-ForcedAligner 把每段文字對回音訊 → 逐詞時間戳 → 依句尾標點重新斷行，
-     時間軸以對齊結果為準，說話者標籤繼承所屬分離片段
-  2. 組成 LRC：每行「[mm:ss.xx][S{n}] 文字」，時間軸為輸入檔（上游 flows 負責
-     remap 回原始檔時間軸）；對齊失敗時退回「一個分離片段一行」
+  1. Qwen3-ForcedAligner 把每段文字對回音訊 → 逐詞時間戳；對齊失敗的段沒有逐字時間
+  2. 整理成片段：說話者編號、起訖時間、文字與逐字時間，時間軸為輸入檔（上游的分段轉錄
+     負責還原回原音檔的時間軸）。依句尾標點斷行、四種輸出格式都由輸出格式模組
+     （app.services.output_format）從片段產生
 
 VRAM 策略：各模型依序載入、用完即釋放，不可同時常駐。依音檔長度把部分權重
 放到 CPU（_gpu_weight_limit）只有舊版 VibeVoice 會用到。
@@ -30,7 +30,7 @@ import subprocess
 import time
 import warnings
 from pathlib import Path
-from typing import Callable, Dict, List, Optional
+from typing import Dict, List, Optional
 
 # HF_HOME 由 weights 模組（權重單一事實來源）於 import 時設定
 from app.provider.local.weights import (  # noqa: F401 — re-export 供既有引用
@@ -56,6 +56,7 @@ os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
 import soundfile as sf
 
 from app.exceptions import TranscriptionCancelledError
+from app.provider.base import ProgressAndCancel
 from app.utils.binaries import ffmpeg_bin
 from app.utils.logger import setup_logger
 
@@ -71,12 +72,9 @@ warnings.filterwarnings(
 DIARIZATION_SAMPLE_RATE = 24000   # VibeVoice 要求 24 kHz
 MOSS_SAMPLE_RATE = 16000          # MOSS（Whisper 前端）16 kHz；Qwen3-ASR／對齊器會自行重採樣
 
-# 字幕斷行：句尾標點切行；單行超過上限秒數時在讀點處再切
-MAX_LINE_SECONDS = 12.0
-_SENTENCE_END_RE = re.compile(r"(?<=[。．！？!?…])")
-_CLAUSE_END_RE = re.compile(r"(?<=[、，,])")
 # 內建斷詞把假名視為空白分隔文字、標點僅丟棄不切分，假名串會跨標點黏成一詞；
 # 在斷行標點後補空白強制切開，確保「整段斷詞」與「逐句斷詞」的詞序一致
+# （輸出格式模組斷行時照同樣的規則逐句斷詞，才對得上存下來的逐字時間）
 _ALIGN_BREAK_RE = re.compile(r"([。．！？!?…、，,])")
 
 
@@ -102,25 +100,13 @@ _LANGUAGE_MAP = {
 }
 
 
-def _notify(status_callback, text: str) -> None:
-    if status_callback:
-        status_callback(text)
-
-
-def _raise_if_cancelled(cancel_check: Optional[Callable[[], bool]]) -> None:
-    if cancel_check is not None and cancel_check():
-        raise TranscriptionCancelledError("使用者已取消任務")
-
-
-def _make_cancel_stopping_criteria(cancel_check: Optional[Callable[[], bool]]):
-    """把取消旗標包成 generate 的 StoppingCriteria。
+def _make_cancel_stopping_criteria(progress: ProgressAndCancel):
+    """用進度與取消物件產生 generate 的停止生成條件（StoppingCriteria）。
 
     長檔 diarization 的單次 generate 可達數分鐘，靠它在解碼途中停下
     （prefill 階段無法中斷，會等第一個 token 出來才開始檢查）；
-    每 2 秒最多查一次旗標，避免每個解碼步都打 Redis。
+    每 2 秒最多查一次取消，避免每個解碼步都打 Redis。
     """
-    if cancel_check is None:
-        return None
     from transformers import StoppingCriteria, StoppingCriteriaList
 
     class _CancelCriteria(StoppingCriteria):
@@ -132,7 +118,7 @@ def _make_cancel_stopping_criteria(cancel_check: Optional[Callable[[], bool]]):
             now = time.monotonic()
             if not self._cancelled and now - self._last_check >= 2.0:
                 self._last_check = now
-                self._cancelled = bool(cancel_check())
+                self._cancelled = progress.cancel_requested()
             return self._cancelled
 
     return StoppingCriteriaList([_CancelCriteria()])
@@ -144,11 +130,6 @@ def _free_model(*objects) -> None:
         del obj
     gc.collect()
     torch.cuda.empty_cache()
-
-
-def _lrc_timestamp(seconds: float) -> str:
-    minutes = int(seconds // 60)
-    return f"[{minutes:02d}:{seconds - minutes * 60:05.2f}]"
 
 
 def _to_mono(audio_path: Path, sample_rate: int) -> Path:
@@ -165,28 +146,16 @@ def _to_mono(audio_path: Path, sample_rate: int) -> Path:
     return output
 
 
-def single_pass_limit_seconds(model: Optional[str]) -> Optional[float]:
-    """此模型一次能處理的最長音檔（秒），供 flows 決定長檔要不要分段轉錄。
-
-    MOSS 單次可吃約 90 分鐘，整檔一次分離說話者編號才會一致，回傳依顯卡估算的上限；
-    None 表示沿用全域切段設定（VibeVoice 是依 900 秒切段設計的）。
-    """
-    if is_moss_model(model):
-        from app.provider.local import moss
-        return moss.max_single_pass_seconds()
-    return None
-
-
-def _run_moss(wav_path: Path, cancel_check=None, status_callback=None) -> List[dict]:
+def _run_moss(wav_path: Path, progress: ProgressAndCancel) -> List[dict]:
     """MOSS 一次產生說話者、時間與文字，回傳與 VibeVoice 相同結構的片段。"""
     from app.provider.local import moss
 
     segments, _ = moss.transcribe(
         wav_path,
-        stopping_criteria=_make_cancel_stopping_criteria(cancel_check),
-        status_callback=status_callback)
-    # generate 可能被取消旗標中途停下，輸出不完整，必須在使用前中止
-    _raise_if_cancelled(cancel_check)
+        stopping_criteria=_make_cancel_stopping_criteria(progress),
+        status_callback=progress.report)
+    # generate 可能因為取消而中途停下，輸出不完整，必須在使用前中止
+    progress.raise_if_cancelled()
     return segments
 
 
@@ -202,7 +171,7 @@ def _entries_from_segments(segments: List[dict]) -> List[dict]:
     ]
 
 
-def _run_diarization(wav_path: Path, cancel_check=None, status_callback=None) -> List[dict]:
+def _run_diarization(wav_path: Path, progress: ProgressAndCancel) -> List[dict]:
     """VibeVoice-ASR 整檔說話者分離，回傳 [{Start, End, Speaker, ...}]。"""
     import torch
     from transformers import AutoProcessor, VibeVoiceAsrForConditionalGeneration
@@ -211,7 +180,7 @@ def _run_diarization(wav_path: Path, cancel_check=None, status_callback=None) ->
     gpu_limit = _gpu_weight_limit(info.duration)
     logger.info(f"音檔 {info.duration:.0f}s，GPU 權重上限 {gpu_limit}")
 
-    notice_if_missing(DIARIZATION_MODEL_ID, "VibeVoice-ASR", status_callback)
+    notice_if_missing(DIARIZATION_MODEL_ID, "VibeVoice-ASR", progress.report)
     processor = load_pretrained(DIARIZATION_MODEL_ID, AutoProcessor.from_pretrained)
     model = load_pretrained(
         DIARIZATION_MODEL_ID,
@@ -229,10 +198,10 @@ def _run_diarization(wav_path: Path, cancel_check=None, status_callback=None) ->
         with torch.inference_mode():
             output_ids = model.generate(
                 **inputs, max_new_tokens=8192,
-                stopping_criteria=_make_cancel_stopping_criteria(cancel_check))
+                stopping_criteria=_make_cancel_stopping_criteria(progress))
         # 取消可能是 generate 中途被 StoppingCriteria 停下，輸出不完整，
         # 必須在 decode 前中止
-        _raise_if_cancelled(cancel_check)
+        progress.raise_if_cancelled()
         generated_ids = output_ids[:, inputs["input_ids"].shape[1]:]
         segments = processor.decode(generated_ids, return_format="parsed")[0]
     finally:
@@ -258,14 +227,13 @@ def _transcribe_segments(
     wav_path: Path,
     segments: List[dict],
     language: Optional[str],
-    status_callback=None,
-    cancel_check=None,
+    progress: ProgressAndCancel,
 ) -> List[dict]:
     """Qwen3-ASR 逐段轉錄，回傳 [{start, end, speaker, text}]（輸入檔時間軸）。"""
     import torch
     from transformers import AutoProcessor, Qwen3ASRForConditionalGeneration
 
-    notice_if_missing(ASR_MODEL_ID, "Qwen3-ASR", status_callback)
+    notice_if_missing(ASR_MODEL_ID, "Qwen3-ASR", progress.report)
     processor = load_pretrained(ASR_MODEL_ID, AutoProcessor.from_pretrained)
     model = load_pretrained(
         ASR_MODEL_ID,
@@ -280,7 +248,7 @@ def _transcribe_segments(
     try:
         total = len(segments)
         for i, seg in enumerate(segments, 1):
-            _raise_if_cancelled(cancel_check)
+            progress.raise_if_cancelled()
             start = float(seg.get("Start", 0.0))
             end = float(seg.get("End", 0.0))
             speaker = int(seg.get("Speaker", 0))
@@ -309,7 +277,7 @@ def _transcribe_segments(
                     "text_alt": (seg.get("Content") or "").strip() or None,
                 })
             if i % 10 == 0 or i == total:
-                _notify(status_callback, f"本地模型：Qwen3-ASR 轉錄中 {i}/{total}...")
+                progress.report(f"本地模型：Qwen3-ASR 轉錄中 {i}/{total}...")
     finally:
         _free_model(model, processor)
         segment_wav.unlink(missing_ok=True)
@@ -317,27 +285,20 @@ def _transcribe_segments(
     return entries
 
 
-def _split_keep_delimiters(text: str, pattern: re.Pattern) -> List[str]:
-    """依標點切開並保留標點於前段尾端，濾掉空白片段。"""
-    return [part for part in pattern.split(text) if part.strip()]
-
-
 def _align_segments(
     wav_path: Path,
     entries: List[dict],
-    status_callback=None,
-    cancel_check=None,
+    progress: ProgressAndCancel,
 ):
     """Qwen3-ForcedAligner 逐段強制對齊，將逐詞時間戳寫入 entry["words"]。
 
     詞的時間為「該段內」相對秒數；斷詞用內建逐字模式（language=None，
-    不依賴 nagisa），對字幕級精度足夠。回傳 aligner 的 processor 供斷行
-    時以相同斷詞方式計數。
+    不依賴 nagisa），對字幕級精度足夠。
     """
     import torch
     from transformers import AutoProcessor, Qwen3ASRForTokenClassification
 
-    notice_if_missing(ALIGNER_MODEL_ID, "Qwen3-ForcedAligner", status_callback)
+    notice_if_missing(ALIGNER_MODEL_ID, "Qwen3-ForcedAligner", progress.report)
     processor = load_pretrained(ALIGNER_MODEL_ID, AutoProcessor.from_pretrained)
     model = load_pretrained(
         ALIGNER_MODEL_ID,
@@ -352,7 +313,7 @@ def _align_segments(
         total = len(entries)
         for i, entry in enumerate(entries, 1):
             # 取消檢查必須在 per-segment try 之外，否則會被當成對齊失敗吞掉
-            _raise_if_cancelled(cancel_check)
+            progress.raise_if_cancelled()
             entry["words"] = None
             if not _write_segment_wav(
                     audio_data, sr, entry["start"], entry["end"], segment_wav):
@@ -372,135 +333,32 @@ def _align_segments(
             except Exception as e:
                 logger.warning(f"片段 {i}/{total} 強制對齊失敗，退回片段時間戳: {e}")
             if i % 10 == 0 or i == total:
-                _notify(status_callback, f"本地模型：時間軸對齊中 {i}/{total}...")
+                progress.report(f"本地模型：時間軸對齊中 {i}/{total}...")
     finally:
-        # processor 為 CPU 端物件不佔 VRAM，保留供斷行時以相同斷詞方式計數
-        _free_model(model)
+        _free_model(model, processor)
         segment_wav.unlink(missing_ok=True)
 
-    return processor
 
-
-def _entry_to_lines(entry: dict, count_words) -> List[str]:
-    """把一個轉錄片段依對齊結果斷成多行 LRC；無對齊資料時退回單行。
-
-    count_words: 文字 → 對齊詞數。必須與 _align_segments 餵給
-    prepare_forced_aligner_inputs 的斷詞方式一致（先 _insert_align_breaks
-    再 split_words_for_alignment），才能把文字單元對應回對齊詞序列的位置。
-    """
-    speaker_tag = f"[S{entry['speaker']}]"
-    fallback = [f"{_lrc_timestamp(entry['start'])}{speaker_tag} {entry['text']}"]
-
-    words = entry.get("words")
-    if not words:
-        return fallback
-
-    sentences = _split_keep_delimiters(entry["text"], _SENTENCE_END_RE)
-    if not sentences:
-        return fallback
-
-    # 每個句子再展開成 (文字, 詞數)；過長句子在讀點處細分
-    units: List[tuple] = []
-    for sentence in sentences:
-        units.append((sentence, count_words(sentence)))
-
-    if sum(n for _, n in units) != len(words):
-        logger.warning("斷行詞數與對齊詞數不一致，退回片段時間戳")
-        return fallback
-
-    lines: List[str] = []
-    offset = 0
-    pending_text = ""       # 純標點單元（詞數 0）併入下一行行首
-    for text, count in units:
-        if count == 0:
-            pending_text += text
-            continue
-        unit_start = words[offset]["start_time"]
-        unit_end = words[offset + count - 1]["end_time"]
-
-        pieces = [(pending_text + text, offset, count)]
-        pending_text = ""
-        if unit_end - unit_start > MAX_LINE_SECONDS:
-            pieces = _split_long_unit(pieces[0][0], offset, words, count_words)
-
-        for piece_text, piece_offset, _ in pieces:
-            start = entry["start"] + words[piece_offset]["start_time"]
-            lines.append(f"{_lrc_timestamp(start)}{speaker_tag} {piece_text.strip()}")
-        offset += count
-
-    # 結尾殘留的純標點單元（如末尾省略號）併入最後一行
-    if pending_text and lines:
-        lines[-1] += pending_text
-
-    return lines or fallback
-
-
-def _split_long_unit(text: str, offset: int, words: List[dict], count_words) -> List[tuple]:
-    """過長句子在讀點（、，,）處切成多行，每行不超過 MAX_LINE_SECONDS。
-
-    回傳 [(文字, 詞序起點, 詞數)]；無法細分時整句一行。
-    """
-    clauses = _split_keep_delimiters(text, _CLAUSE_END_RE)
-    if len(clauses) < 2:
-        return [(text, offset, count_words(text))]
-
-    pieces: List[tuple] = []
-    cur_text, cur_offset, cur_count, cur_start = "", None, 0, None
-    pos = offset
-    for clause in clauses:
-        n = count_words(clause)
-        if n == 0:
-            cur_text += clause
-            continue
-        clause_end = words[pos + n - 1]["end_time"]
-        if cur_offset is not None and clause_end - cur_start > MAX_LINE_SECONDS:
-            pieces.append((cur_text, cur_offset, cur_count))
-            cur_text, cur_offset, cur_count = "", None, 0
-        if cur_offset is None:
-            cur_offset = pos
-            cur_start = words[pos]["start_time"]
-        cur_text += clause
-        cur_count += n
-        pos += n
-    if cur_text:
-        pieces.append((cur_text, cur_offset if cur_offset is not None else offset, cur_count))
-    return pieces
-
-
-def _build_lrc_lines(
+def _align_with_fallback(
     wav_path: Path,
     entries: List[dict],
-    status_callback=None,
-    cancel_check=None,
-) -> List[str]:
-    """強制對齊 + 依句斷行；對齊流程整體失敗時退回「一個片段一行」。"""
+    progress: ProgressAndCancel,
+) -> None:
+    """強制對齊，把逐字時間寫進各段；對齊流程整體失敗時不拋例外，只通知使用者，沒對到的段
+    不帶逐字時間，輸出格式模組把它們整段當成一行。"""
     try:
-        _notify(status_callback, "本地模型：Qwen3-ForcedAligner 時間軸對齊中...")
-        aligner_processor = _align_segments(
-            wav_path, entries, status_callback, cancel_check)
+        progress.report("本地模型：Qwen3-ForcedAligner 時間軸對齊中...")
+        _align_segments(wav_path, entries, progress)
     except TranscriptionCancelledError:
         raise
     except Exception as e:
         logger.warning(f"強制對齊不可用，全部退回片段時間戳: {e}")
         # 結果仍可用但少了斷行與逐字時間（例如對齊器首次下載失敗），讓使用者看得到
-        _notify(status_callback, "本地模型：時間軸對齊不可用，改以片段為單位輸出（詳見日誌）")
-        return [
-            f"{_lrc_timestamp(entry['start'])}[S{entry['speaker']}] {entry['text']}"
-            for entry in entries
-        ]
-
-    def count_words(text: str) -> int:
-        return len(aligner_processor.split_words_for_alignment(
-            _insert_align_breaks(text), None))
-
-    lines: List[str] = []
-    for entry in entries:
-        lines.extend(_entry_to_lines(entry, count_words))
-    return lines
+        progress.report("本地模型：時間軸對齊不可用，改以片段為單位輸出（詳見日誌）")
 
 
 def _build_segment_records(entries: List[dict], source: str = "qwen") -> List[dict]:
-    """把片段整理成上層要持久化的結構（時間軸＝輸入檔，由 flows 負責 remap）。
+    """把片段整理成上層要持久化的結構（時間軸＝輸入檔，由分段轉錄平移、還原回原音檔）。
 
     ``seg_key`` 是序號而非時間，因為重新轉錄時片段順序穩定、時間可能微幅
     浮動；以序號為鍵才能覆寫而不是長出重複資料。``source`` 記錄主要文字的來源模型。
@@ -530,15 +388,14 @@ def _build_segment_records(entries: List[dict], source: str = "qwen") -> List[di
 
 def transcribe_with_local_models(
     audio_path: Path,
-    source_lang: Optional[str] = None,
-    status_callback=None,
-    cancel_check: Optional[Callable[[], bool]] = None,
+    source_lang: Optional[str],
+    progress: ProgressAndCancel,
     model: Optional[str] = None,
 ) -> Dict:
-    """對單一音訊檔執行分離＋轉錄，回傳與 Gemini provider 相同合約的 dict。
+    """對單一音訊檔執行分離＋轉錄，回傳轉錄結果（片段與用量）的 dict，不附著 LRC 文字。
 
     model 為前端 Local 選項（見模組說明）；未指定或不認得時用預設的 moss-align。
-    cancel_check 回傳 True 時在各檢查點拋出 TranscriptionCancelledError；
+    使用者取消時，各檢查點經 ``progress`` 拋出 TranscriptionCancelledError；
     各階段的 finally 會照常釋放模型與暫存檔。
     """
     model = normalize_model(model)
@@ -547,16 +404,16 @@ def transcribe_with_local_models(
     wav: Optional[Path] = None
 
     try:
-        _notify(status_callback, "本地模型：準備音訊...")
+        progress.report("本地模型：準備音訊...")
         wav = _to_mono(audio_path, MOSS_SAMPLE_RATE if use_moss else DIARIZATION_SAMPLE_RATE)
-        _raise_if_cancelled(cancel_check)
+        progress.raise_if_cancelled()
 
         if use_moss:
-            _notify(status_callback, "本地模型：MOSS 轉錄與說話者分離中...")
-            segments = _run_moss(wav, cancel_check, status_callback)
+            progress.report("本地模型：MOSS 轉錄與說話者分離中...")
+            segments = _run_moss(wav, progress)
         else:
-            _notify(status_callback, "本地模型：VibeVoice-ASR 說話者分離中（長檔需較久）...")
-            segments = _run_diarization(wav, cancel_check, status_callback)
+            progress.report("本地模型：VibeVoice-ASR 說話者分離中（長檔需較久）...")
+            segments = _run_diarization(wav, progress)
         speakers = {int(s.get("Speaker", 0)) for s in segments}
         logger.info(f"說話者分離完成: {len(segments)} 段, {len(speakers)} 位說話者 (model={model})")
 
@@ -564,21 +421,22 @@ def transcribe_with_local_models(
             entries = _entries_from_segments(segments)
             source = "moss"
         else:
-            _notify(status_callback,
-                    f"本地模型：分離完成（{len(speakers)} 位說話者），Qwen3-ASR 轉錄中...")
-            entries = _transcribe_segments(
-                wav, segments, language, status_callback, cancel_check)
+            progress.report(
+                f"本地模型：分離完成（{len(speakers)} 位說話者），Qwen3-ASR 轉錄中...")
+            entries = _transcribe_segments(wav, segments, language, progress)
             source = "qwen"
-        lines = _build_lrc_lines(wav, entries, status_callback, cancel_check)
+        _align_with_fallback(wav, entries, progress)
+        records = _build_segment_records(entries, source)
 
         return {
-            "success": bool(lines),
-            "text": "\n".join(lines),
+            # 本機沒有內容時照舊算失敗（分段轉錄時整個任務失敗），只是寫明原因
+            "success": bool(records),
+            "text": "" if records else "[[本機的模型沒有轉錄出任何內容]]",
             "input_tokens": 0,
             "output_tokens": 0,
             "total_tokens": 0,
             "service_tier_used": "local",
-            "segments": _build_segment_records(entries, source),
+            "segments": records,
         }
     finally:
         if wav:

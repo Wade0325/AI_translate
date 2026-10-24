@@ -1,7 +1,7 @@
-"""Local ASR 模型權重管理 API（standalone 模式的首次下載與狀態查詢）。
+"""本機的模型權重管理 API（免安裝模式的首次下載與狀態查詢）。
 
-權重不隨發布包提供；使用者首次要用 Local provider 時由此下載到 HF_HOME
-（standalone 模式指向 data/models/hf_cache）。預設模型 moss-align 只需 MOSS 與對齊器
+權重不隨發布包提供；使用者首次要用本機的模型時由此下載到 HF_HOME
+（免安裝模式指向 data/models/hf_cache）。預設模型 moss-align 只需 MOSS 與對齊器
 （大小見 weights.REPO_SIZE_GB）；「MOSS + Qwen3-ASR」「VibeVoice + Qwen3-ASR」用到的權重屬選用，
 另外以 ``?model=all`` 下載。下載在獨立執行緒進行，前端以輪詢 status 取得進度；
 HuggingFace 原生支援斷點續傳，中斷後再 POST 一次 download 即繼續。
@@ -66,9 +66,10 @@ def _download_worker(repos: list[str]):
             _state.update(state="completed", current_repo=None)
         logger.info("Local 模型權重下載完成")
     except Exception as e:
-        logger.error(f"Local 模型權重下載失敗: {e}")
+        # 例外的文字可能帶著使用者電腦上的路徑：原因只記在 log，畫面給固定訊息
+        logger.error(f"Local 模型權重下載失敗: {type(e).__name__}: {e}")
         with _lock:
-            _state.update(state="failed", error=str(e))
+            _state.update(state="failed", error="請確認網路連線與磁碟空間，一直失敗的話請回報問題")
 
 
 def _target_repos(model: Optional[str]) -> tuple[str, ...]:

@@ -1,13 +1,19 @@
 """
-系統預設 Prompt 模板 — 唯一真實來源 (Single Source of Truth)
+送給模型的提示詞：提示詞範本加上補充說明（#144）。
 
-模板變數：
-  {source_lang}           — 音訊語言名稱（如 "日文"）
-  {speaker_instruction}   — 多人模式指令（可為空）
-  {translate_instruction} — 翻譯指令（可為空）
+- 提示詞範本：設定頁為供應商存的範本；沒存過（或只有空白）時用 DEFAULT_PROMPT_TEMPLATE，裡面要求
+  輸出 LRC 與時間戳。範本代入下面三個變數，其他大括號（例如 JSON）照寫的送出，見 _fill：
+    {source_lang}           — 音訊語言名稱（如 "日文"）
+    {speaker_instruction}   — 多人模式指令（可為空）
+    {translate_instruction} — 翻譯指令（可為空）
+- 補充說明：轉錄頁填的提示詞（每個檔案自己的，沒有就是全域的），空一行接在範本後面，照寫的送出、
+  不代入變數：範本已經代入過，再代入一次，說話者與翻譯的指示會重複。
 
-修改此檔案即可同步影響前後端所有行為。
+DEFAULT_PROMPT_TEMPLATE 是系統內建範本的唯一真實來源：設定頁的「編輯參數」沒存過範本時從這裡帶出。
 """
+
+import re
+from typing import Optional
 
 # 語言代碼 → 顯示名稱對照表
 LANG_MAP = {
@@ -37,20 +43,22 @@ TRANSLATE_INSTRUCTION = "{n}. 請將所有轉錄內容翻譯為{target_lang}輸�
 
 def build_prompt(
     source_lang: str = "ja-JP",
-    target_lang: str = None,
+    target_lang: Optional[str] = None,
     multi_speaker: bool = False,
-    template: str = None,
+    template: Optional[str] = None,
+    supplement: Optional[str] = None,
 ) -> str:
     """
-    根據前端參數動態組裝最終 Prompt。
+    組出送給模型的提示詞：提示詞範本代入變數，再空一行接上補充說明（規則見檔頭）。
 
     Args:
         source_lang:   音訊語言代碼 (如 "ja-JP")
         target_lang:   翻譯目標語言代碼 (如 "zh-TW")，None 表示不翻譯
         multi_speaker: 是否為多人對話模式
-        template:      自訂 Prompt 模板（來自 DB），None 時使用 DEFAULT_PROMPT_TEMPLATE
+        template:      設定頁存的提示詞範本；None 或只有空白時用 DEFAULT_PROMPT_TEMPLATE
+        supplement:    補充說明（每個檔案的，沒有就是全域的提示詞）；None 或只有空白時只送範本
     """
-    base_template = template if template is not None else DEFAULT_PROMPT_TEMPLATE
+    base_template = template if template and template.strip() else DEFAULT_PROMPT_TEMPLATE
 
     source_name = LANG_MAP.get(source_lang, source_lang)
 
@@ -66,8 +74,30 @@ def build_prompt(
     else:
         translate_instruction = ""
 
-    return base_template.format(
-        source_lang=source_name,
-        speaker_instruction=speaker_instruction,
-        translate_instruction=translate_instruction,
-    ).rstrip("\n")
+    prompt = _fill(base_template, {
+        "source_lang": source_name,
+        "speaker_instruction": speaker_instruction,
+        "translate_instruction": translate_instruction,
+    }).rstrip("\n")
+    if supplement and supplement.strip():
+        prompt = f"{prompt}\n\n{supplement.strip()}"
+    return prompt
+
+
+def _fill(template: str, values: dict[str, str]) -> str:
+    """把範本裡的變數換成值。
+
+    str.format 代入得了的範本照舊由它代入（``{{``、``}}`` 收成單一大括號），以前能用的
+    範本送出的字串逐字不變。
+
+    代入不了的範本（使用者寫了 JSON、單獨的大括號或不認得的 ``{名稱}``，以前會讓任務
+    失敗）只把寫成 ``{名稱}`` 的已知變數換成值，其他字元照寫的送出（#143）。這時
+    ``{{``、``}}`` 不收成單一大括號，巢狀 JSON 結尾的 ``}}`` 才不會被改掉；但它們仍算
+    跳脫，``{{source_lang}}`` 不會被代入。
+    """
+    try:
+        return template.format(**values)
+    except (KeyError, IndexError, ValueError, AttributeError, TypeError):
+        # {{、}} 先比對到就照寫的保留，裡面的名稱不會被當成變數；不認得的 {名稱} 也照寫的保留
+        return re.sub(r"\{\{|\}\}|\{(\w+)\}",
+                      lambda m: values.get(m.group(1), m.group(0)), template)

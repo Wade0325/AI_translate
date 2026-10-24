@@ -1,10 +1,24 @@
-import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
+// @ts-nocheck
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { message } from 'antd';
-import { modelOptions, findProviderForModel } from '../constants/modelConfig';
 import { useModelManager } from '../components/ModelManager';
 import { useTranscriptionSocket } from '../hooks/useTranscriptionSocket';
 import { useUploadQueue } from '../hooks/useUploadQueue';
 import { useDownloadBundle } from '../hooks/useDownloadBundle';
+import { PROVIDER_LIST_FAILED, useProviderList } from '../hooks/useProviderList';
+import {
+  allowedProcessingMode,
+  disabledReasonsFor,
+  findModelCapabilities,
+  missingApiKey,
+  modelSupports,
+  providerLabel,
+  resolveSelection,
+  withModel,
+  withProvider,
+} from '../utils/providerList';
+import { forRetranscription, requestDefaults } from '../utils/transcribeRequest';
+import { cancelFile } from '../utils/cancelOutcome';
 import { api } from '../services/api';
 
 const TranscriptionContext = createContext(null);
@@ -19,20 +33,48 @@ export const useTranscription = () => {
 
 export const TranscriptionProvider = ({ children }) => {
   const [fileList, setFileList] = useState([]);
-  const [targetLang, setTargetLang] = useState('zh-TW');
-  const [model, setModel] = useState(modelOptions.Google[0].value);
+  const [sourceLang, setSourceLang] = useState('zh-TW');
   const [isProcessing, setIsProcessing] = useState(false);
-  // 'standard' | 'flex' | 'batch'
-  const [processingMode, setProcessingMode] = useState('batch');
+  // 使用者選的處理模式：'standard' | 'flex' | 'batch'。實際用的是下面的 processingMode
+  const [chosenProcessingMode, setChosenProcessingMode] = useState('batch');
   const [multiSpeaker, setMultiSpeaker] = useState(false);
+  // 轉錄頁的全域提示詞：補充說明，送給沒有每檔設定提示詞的檔案（不必先按 Apply to All），
+  // 後端接在提示詞範本後面
+  const [globalPrompt, setGlobalPrompt] = useState('');
 
+  const { getProviderConfig } = useModelManager();
+
+  // 先選供應商、再選它的模型；兩者都照供應商清單的值送出，後端會驗證模型屬於這個供應商。
+  // 選擇的規則（預設、換供應商）見 utils/providerList.js 的 resolveSelection
+  const {
+    providerList,
+    failed: providerListFailed,
+    reload: reloadProviderList,
+  } = useProviderList();
+  const [selection, setSelection] = useState({ provider: null, model: null });
+  const { provider, model } = resolveSelection(providerList, selection);
+
+  const selectProvider = useCallback((nextProvider) => {
+    setSelection((current) => withProvider(current, nextProvider));
+  }, []);
+  const setModel = useCallback((nextModel) => {
+    setSelection((current) => withModel(current, nextModel));
+  }, []);
+
+  // 所選模型支援哪些輸入與處理方式；模型能力還沒載入時不限制，由後端把關
+  const capabilities = findModelCapabilities(providerList, provider, model);
+  const supports = useMemo(() => modelSupports(capabilities), [capabilities]);
+  const reasons = useMemo(() => disabledReasonsFor(supports), [supports]);
+
+  // 換到不支援所選處理模式的模型時退回標準，之後換回來也維持標準（#162）
+  const processingMode = allowedProcessingMode(chosenProcessingMode, supports);
+  if (processingMode !== chosenProcessingMode) setChosenProcessingMode(processingMode);
   const useBatchMode = processingMode === 'batch';
 
   const [isPreviewModalVisible, setIsPreviewModalVisible] = useState(false);
   const [previewContent, setPreviewContent] = useState('');
   const [previewTitle, setPreviewTitle] = useState('');
 
-  const { getProviderConfig } = useModelManager();
   const socketManager = useTranscriptionSocket();
   const { downloadFile, downloadAllFiles } = useDownloadBundle(fileList);
   const { startRegular, startBatch } = useUploadQueue({
@@ -123,21 +165,7 @@ export const TranscriptionProvider = ({ children }) => {
       message.info(`任務 "${target.name}" 已重新加入佇列。`);
     }
     setFileList((current) =>
-      current.map((file) =>
-        file.uid === uidToReprocess
-          ? {
-              ...file,
-              status: 'waiting',
-              percent: 0,
-              tokens_used: 0,
-              cost: 0,
-              result: null,
-              statusText: '等待處理',
-              task_uuid: null,
-              error: null,
-            }
-          : file
-      )
+      current.map((file) => (file.uid === uidToReprocess ? forRetranscription(file) : file))
     );
   }, [fileList]);
 
@@ -147,7 +175,8 @@ export const TranscriptionProvider = ({ children }) => {
     message.success('已清除所有任務');
   }, [socketManager]);
 
-  // 取消單檔轉錄：後端設置取消旗標並 revoke，最終狀態由 WS 的 CANCELLED 訊息更新
+  // 取消單檔轉錄：後端設置取消旗標並 revoke，最終狀態由 WS 的 CANCELLED 訊息更新；
+  // 沒有取消時顯示的提示與檔案卡怎麼改見 utils/cancelOutcome.js
   const cancelTranscription = useCallback(async (uid) => {
     const target = fileList.find((f) => f.uid === uid);
     if (!target || target.status !== 'processing') return;
@@ -156,19 +185,13 @@ export const TranscriptionProvider = ({ children }) => {
       current.map((f) => (f.uid === uid ? { ...f, statusText: '正在取消...' } : f))
     );
     try {
-      const res = await api.transcription.cancel(uid, target.provider);
-      if (res?.cancelled === false) {
-        message.warning('任務尚未提交到佇列（可能還在上傳），請稍後再試。');
+      const { notice, apply } = await cancelFile(target, api);
+      message.open(notice);
+      if (apply) {
         setFileList((current) =>
-          current.map((f) =>
-            f.uid === uid && f.status === 'processing'
-              ? { ...f, statusText: '處理中...' }
-              : f
-          )
+          current.map((f) => (f.uid === uid && f.status === 'processing' ? apply(f) : f))
         );
-        return;
       }
-      message.info(`已取消任務：${target.name}`);
     } catch (err) {
       message.error(`取消失敗: ${err.message}`);
       setFileList((current) =>
@@ -182,48 +205,41 @@ export const TranscriptionProvider = ({ children }) => {
   }, [fileList]);
 
   const handleStartTranscription = useCallback(async () => {
-    const provider = findProviderForModel(model);
-    if (!provider) {
-      message.error(`找不到模型 ${model} 對應的服務商設定。`);
+    if (!provider || !model) {
+      message.error(providerListFailed ? PROVIDER_LIST_FAILED : '供應商清單還在載入，請稍後再試');
       return;
     }
 
     const config = await getProviderConfig(provider);
-    // 設定裡只有遮罩後的金鑰：這裡只確認已設定，實際金鑰由後端從資料庫取用、不隨任務送出
-    const hasApiKey = Boolean(config?.apiKeys?.[0]);
-    const prompt = config?.prompt;
-    const isLocalProvider = provider.toLowerCase() === 'local';
-    if (!hasApiKey && !isLocalProvider) {
-      message.error(`請先在模型管理中為 ${provider} 設定 API 金鑰。`);
-      return;
-    }
-    if (isLocalProvider && useBatchMode) {
-      message.error('本地模型不支援批次模式，請改用一般模式。');
+    if (missingApiKey(providerList, provider, config)) {
+      message.error(`請先在設定頁為 ${providerLabel(providerList, provider)} 設定 API 金鑰。`);
       return;
     }
 
-    const defaults = {
-      sourceLang: targetLang,
-      multiSpeaker,
-      serviceTier: processingMode === 'flex' ? 'flex' : null,
-    };
+    const defaults = requestDefaults({ language: sourceLang, multiSpeaker, processingMode, globalPrompt });
 
     setIsProcessing(true);
 
+    // 提示詞範本不經前端：後端派送時從設定讀，接上每個檔案的補充說明（utils/transcribeRequest.js）
     const runner = useBatchMode ? startBatch : startRegular;
-    const result = await runner({ provider, model, prompt, defaults });
+    const result = await runner({ provider, model, defaults, supports });
 
     if (result?.skipped) {
       setIsProcessing(false);
       message.warning('沒有等待處理的新檔案！');
     }
   }, [
+    provider,
     model,
+    providerList,
+    providerListFailed,
     getProviderConfig,
-    targetLang,
+    sourceLang,
     multiSpeaker,
+    globalPrompt,
     processingMode,
     useBatchMode,
+    supports,
     startBatch,
     startRegular,
   ]);
@@ -231,15 +247,24 @@ export const TranscriptionProvider = ({ children }) => {
   const value = {
     fileList,
     setFileList,
-    targetLang,
-    setTargetLang,
+    sourceLang,
+    setSourceLang,
+    providerList,
+    providerListFailed,
+    reloadProviderList,
+    provider,
+    selectProvider,
     model,
     setModel,
+    supports,
+    disabledReasons: reasons,
     isProcessing,
     processingMode,
-    setProcessingMode,
+    setProcessingMode: setChosenProcessingMode,
     multiSpeaker,
     setMultiSpeaker,
+    globalPrompt,
+    setGlobalPrompt,
     handleStartTranscription,
     downloadFile,
     downloadAllFiles,

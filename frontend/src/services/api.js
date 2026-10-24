@@ -63,10 +63,13 @@ export const api = {
     return request('/upload', { method: 'POST', body: formData });
   },
   transcription: {
-    cancel(fileUid, provider) {
-      const query = provider ? `?provider=${encodeURIComponent(provider)}` : '';
-      return request(`/transcription/${fileUid}/cancel${query}`, { method: 'POST' });
+    cancel(fileUid) {
+      return request(`/transcription/${fileUid}/cancel`, { method: 'POST' });
     },
+  },
+  /** 供應商、它們的模型與每個模型的模型能力 */
+  providers() {
+    return request('/providers');
   },
   history: {
     list({ page = 1, pageSize = 10, keyword, status, mode } = {}) {
@@ -87,10 +90,14 @@ export const api = {
     usage({ days = 180 } = {}) {
       return request(`/history/usage?days=${days}`);
     },
+    /** 單一任務的任務紀錄（不帶轉錄結果）；查不到時丟 404 的 ApiError */
+    get(taskUuid) {
+      return request(`/history/${taskUuid}`);
+    },
     delete(taskUuid) {
       return request(`/history/${taskUuid}`, { method: 'DELETE' });
     },
-    /** 下載字幕檔（fmt: lrc | srt | vtt | txt），回傳純文字內容 */
+    /** 以一種輸出格式下載轉錄結果（fmt: lrc | srt | vtt | txt），回傳純文字內容 */
     async downloadTranscript(taskUuid, fmt) {
       const res = await fetch(`${BASE_URL}/history/${taskUuid}/download/${fmt}`);
       if (!res.ok) {
@@ -133,7 +140,7 @@ export const api = {
     },
   },
   localModels: {
-    /** standalone 模式的本機模型權重狀態（GPU、各 repo 下載進度） */
+    /** 免安裝模式的本機模型權重狀態（GPU、各 repo 下載進度） */
     status() {
       return request('/setting/local-models/status');
     },

@@ -1,6 +1,7 @@
 // @ts-nocheck
 import { useState, useRef } from "react"
-import { Card, Typography, Button, Input, Modal, Pagination, Space, Tag, Dropdown, Popconfirm, message } from "antd"
+import { Card, Typography, Button, Input, Modal, Pagination, Space, Dropdown, Popconfirm, message } from "antd"
+import { ReasonText, ReasonTooltip } from "@/components/disabled-reason"
 import { UploadZone } from "@/components/transcribe/upload-zone"
 import { GlobalDefaults } from "@/components/transcribe/global-defaults"
 import { FileConfigCard } from "@/components/transcribe/file-config-card"
@@ -8,7 +9,9 @@ import { CostEstimator } from "@/components/transcribe/cost-estimator"
 import VadTestModal from "@/components/transcribe/VadTestModal"
 import { useTranscription } from "@/context/TranscriptionContext"
 import { useModelManager } from "@/components/ModelManager"
-import { modelOptions, findProviderForModel } from "@/constants/modelConfig"
+import { PROVIDER_LIST_FAILED } from "@/hooks/useProviderList"
+import { modelOptions, processingModeNote, providerOptions, providerPromptDisabledReason, requiresApiKey } from "@/utils/providerList"
+import { filePrompt, followsGlobalPrompt, globalSettingsPatch, promptToSend } from "@/utils/transcribeRequest"
 import { api } from "@/services/api"
 import { DownloadOutlined } from "@ant-design/icons"
 import { downloadFormatsLong } from "@/constants/downloadFormats"
@@ -19,19 +22,37 @@ const { TextArea } = Input
 
 const PAGE_SIZE = 5
 
+const selectStyle = {
+    background: "#2a2a48",
+    border: "1px solid #3a3a5c",
+    borderRadius: 6,
+    color: "#e8e8e8",
+    padding: "4px 8px",
+    fontSize: 12,
+}
+
 export default function TranscribePage() {
     const {
         fileList,
         setFileList,
-        targetLang,
-        setTargetLang,
+        sourceLang,
+        setSourceLang,
+        providerList,
+        providerListFailed,
+        reloadProviderList,
+        provider,
+        selectProvider,
         model,
         setModel,
+        supports,
+        disabledReasons,
         isProcessing,
         processingMode,
         setProcessingMode,
         multiSpeaker,
         setMultiSpeaker,
+        globalPrompt,
+        setGlobalPrompt,
         handleStartTranscription,
         downloadFile,
         downloadAllFiles,
@@ -46,6 +67,7 @@ export default function TranscribePage() {
     } = useTranscription()
 
     const { handleEditProvider, handleEditProviderParams, handleTestProvider } = useModelManager()
+    const modeNote = processingModeNote(supports)
 
     const [currentPage, setCurrentPage] = useState(1)
     const [isTextModalVisible, setIsTextModalVisible] = useState(false)
@@ -56,20 +78,22 @@ export default function TranscribePage() {
     const [vadResult, setVadResult] = useState(null)
     const fileInputRef = useRef(null)
 
-    const currentProvider = findProviderForModel(model)
+    // 「編輯參數」改的是供應商的提示詞範本，和設定頁同一條規則：供應商的模型都不吃提示詞才停用
+    const promptTemplateDisabledReason = providerPromptDisabledReason(providerList, provider)
 
     const [globalConfig, setGlobalConfig] = useState({
-        language: targetLang || "zh-TW",
+        language: sourceLang || "zh-TW",
         isMultiSpeaker: multiSpeaker,
         speakerCount: 2,
-        prompt: "",
+        prompt: globalPrompt,
         includeTimestamps: true,
     })
 
     const handleGlobalConfigChange = (newConfig) => {
         setGlobalConfig(newConfig)
-        if (newConfig.language !== targetLang) setTargetLang(newConfig.language)
+        if (newConfig.language !== sourceLang) setSourceLang(newConfig.language)
         if (newConfig.isMultiSpeaker !== multiSpeaker) setMultiSpeaker(newConfig.isMultiSpeaker)
+        if (newConfig.prompt !== globalPrompt) setGlobalPrompt(newConfig.prompt)
     }
 
     const handleFilesAdded = (files) => {
@@ -99,7 +123,7 @@ export default function TranscribePage() {
             )
         )
         setIsTextModalVisible(false)
-        message.success("文本已附加")
+        message.success("已附加使用者文稿")
     }
 
     const handleAttachTextFromFile = (fileUid) => {
@@ -135,17 +159,7 @@ export default function TranscribePage() {
     }
 
     const handleApplyAll = () => {
-        setFileList((prev) =>
-            prev.map((f) => ({
-                ...f,
-                language: globalConfig.language,
-                isMultiSpeaker: globalConfig.isMultiSpeaker,
-                speakerCount: globalConfig.speakerCount,
-                prompt: globalConfig.prompt,
-                includeTimestamps: globalConfig.includeTimestamps,
-                hasOverride: false,
-            }))
-        )
+        setFileList((prev) => prev.map((f) => ({ ...f, ...globalSettingsPatch(globalConfig) })))
     }
 
     const handleVadTest = async (fileUid) => {
@@ -213,68 +227,102 @@ export default function TranscribePage() {
                 styles={{ body: { padding: "12px 16px" } }}
             >
                 <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 16 }}>
+                    {/* 先選供應商，模型選單只列這個供應商的模型 */}
                     <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                        <Text style={{ fontSize: 11, color: "#8888a8" }}>服務商</Text>
-                        <Tag color="green">{currentProvider}</Tag>
-                    </div>
-                    <div style={{ height: 32, width: 1, background: "#3a3a5c" }} />
-                    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                        <Text style={{ fontSize: 11, color: "#8888a8" }}>模型</Text>
+                        <Text style={{ fontSize: 11, color: "#8888a8" }}>供應商</Text>
                         <select
-                            value={model}
-                            onChange={(e) => setModel(e.target.value)}
-                            style={{
-                                background: "#2a2a48",
-                                border: "1px solid #3a3a5c",
-                                borderRadius: 6,
-                                color: "#e8e8e8",
-                                padding: "4px 8px",
-                                fontSize: 12,
-                            }}
+                            aria-label="供應商"
+                            value={provider ?? ""}
+                            onChange={(e) => selectProvider(e.target.value)}
+                            disabled={!provider}
+                            style={selectStyle}
                         >
-                            {Object.values(modelOptions).flat().map((m) => (
-                                <option key={m.value} value={m.value}>
-                                    {m.label}
+                            {!provider && (
+                                <option value="">{providerListFailed ? "讀取失敗" : "載入中…"}</option>
+                            )}
+                            {providerOptions(providerList).map((option) => (
+                                <option key={option.value} value={option.value}>
+                                    {option.label}
                                 </option>
                             ))}
                         </select>
                     </div>
                     <div style={{ height: 32, width: 1, background: "#3a3a5c" }} />
                     <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                        <Text style={{ fontSize: 11, color: "#8888a8" }}>模型</Text>
+                        <select
+                            aria-label="模型"
+                            value={model ?? ""}
+                            onChange={(e) => setModel(e.target.value)}
+                            disabled={!provider}
+                            style={selectStyle}
+                        >
+                            {modelOptions(providerList, provider).map((option) => (
+                                <option key={option.value} value={option.value}>
+                                    {option.label}
+                                </option>
+                            ))}
+                        </select>
+                        {providerListFailed && (
+                            <Space size={6}>
+                                <ReasonText reason={PROVIDER_LIST_FAILED} />
+                                <Button size="small" type="link" onClick={reloadProviderList} style={{ padding: 0, fontSize: 11 }}>
+                                    重試
+                                </Button>
+                            </Space>
+                        )}
+                    </div>
+                    <div style={{ height: 32, width: 1, background: "#3a3a5c" }} />
+                    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
                         <Text style={{ fontSize: 11, color: "#8888a8" }}>處理模式</Text>
                         <select
+                            aria-label="處理模式"
                             value={processingMode}
                             onChange={(e) => setProcessingMode(e.target.value)}
                             style={{
-                                background: "#2a2a48",
-                                border: "1px solid #3a3a5c",
-                                borderRadius: 6,
+                                ...selectStyle,
                                 color: processingMode === "standard" ? "#e8e8e8" : "#2dd4a8",
-                                padding: "4px 8px",
-                                fontSize: 12,
                             }}
                         >
                             <option value="standard">標準（即時）</option>
-                            <option value="flex">Flex（50% 費用．分鐘級延遲）</option>
-                            <option value="batch">批次（50% 費用．非同步）</option>
+                            <option value="flex" disabled={!supports.flex}>
+                                Flex（50% 費用．分鐘級延遲）
+                            </option>
+                            <option value="batch" disabled={!supports.batch}>
+                                批次（50% 費用．非同步）
+                            </option>
                         </select>
-                        <Text style={{ fontSize: 10, color: "#8888a8" }}>
-                            {processingMode === "flex"
-                                ? "失敗時自動降級為標準層級"
-                                : processingMode === "batch"
-                                    ? "提交後可離線等待結果"
-                                    : "標準同步推論"}
-                        </Text>
+                        {modeNote ? (
+                            <ReasonText reason={modeNote} />
+                        ) : (
+                            <Text style={{ fontSize: 10, color: "#8888a8" }}>
+                                {processingMode === "flex"
+                                    ? "失敗時自動降級為標準層級"
+                                    : processingMode === "batch"
+                                        ? "提交後可離線等待結果"
+                                        : "標準同步推論"}
+                            </Text>
+                        )}
                     </div>
                     <div style={{ flex: 1 }} />
                     <Space size={6}>
-                        <Button size="small" onClick={() => handleEditProvider(currentProvider)}>
-                            編輯 API
-                        </Button>
-                        <Button size="small" onClick={() => handleEditProviderParams(currentProvider)}>
-                            編輯參數
-                        </Button>
-                        <Button size="small" onClick={() => handleTestProvider(currentProvider)}>
+                        {/* 和設定頁的金鑰欄位一樣，只有要金鑰的供應商才有（照供應商清單，本機不用） */}
+                        {requiresApiKey(providerList, provider) && (
+                            <Button size="small" onClick={() => handleEditProvider(provider)}>
+                                編輯 API
+                            </Button>
+                        )}
+                        <ReasonTooltip title={promptTemplateDisabledReason}>
+                            <Button
+                                size="small"
+                                disabled={!provider || Boolean(promptTemplateDisabledReason)}
+                                onClick={() => handleEditProviderParams(provider)}
+                            >
+                                編輯參數
+                            </Button>
+                        </ReasonTooltip>
+                        {/* 測模型選單上選的模型，不是設定頁存的預設模型：本機要查的是這個模型的權重 */}
+                        <Button size="small" disabled={!provider} onClick={() => handleTestProvider(provider, model)}>
                             測試 API
                         </Button>
                     </Space>
@@ -286,6 +334,7 @@ export default function TranscribePage() {
                 onChange={handleGlobalConfigChange}
                 onApplyAll={handleApplyAll}
                 fileCount={fileList.length}
+                promptDisabledReason={disabledReasons.prompt}
             />
 
             <UploadZone hasFiles={fileList.length > 0} onFilesAdded={handleFilesAdded} />
@@ -338,7 +387,15 @@ export default function TranscribePage() {
                             language: file.language || globalConfig.language,
                             isMultiSpeaker: file.isMultiSpeaker ?? globalConfig.isMultiSpeaker,
                             speakerCount: file.speakerCount ?? globalConfig.speakerCount,
-                            prompt: file.prompt ?? globalConfig.prompt,
+                            // 這個檔案自己的提示詞（每檔設定裡編輯的就是它）；清空就回到跟著全域
+                            prompt: file.prompt ?? "",
+                            followsGlobalPrompt: followsGlobalPrompt(file),
+                            // 這個檔案用的提示詞：自己的，沒有就是全域的
+                            filePrompt: filePrompt(file, globalConfig.prompt),
+                            // 檔案卡顯示的補充說明：還沒送出的照送出時的規則算，已送出的顯示當初送出的；
+                            // 提示詞範本每次都送，不顯示在卡片上（utils/transcribeRequest.js）
+                            promptToSend: promptToSend(file, globalConfig.prompt, supports),
+                            sentPrompt: file.sentPrompt ?? null,
                             includeTimestamps: file.includeTimestamps ?? globalConfig.includeTimestamps,
                             hasOverride: file.hasOverride || false,
                             status: file.status,
@@ -361,6 +418,7 @@ export default function TranscribePage() {
                         onVadTest={file.originFileObj ? handleVadTest : undefined}
                         onCancel={file.transcribeMode === 'single' ? cancelTranscription : undefined}
                         vadTesting={vadTestingUid === file.uid}
+                        disabledReasons={disabledReasons}
                     />
                 ))}
             </div>
@@ -414,7 +472,7 @@ export default function TranscribePage() {
             </Modal>
 
             <Modal
-                title="附加原始文本"
+                title="附加使用者文稿"
                 open={isTextModalVisible}
                 onOk={handleSaveText}
                 onCancel={() => setIsTextModalVisible(false)}
@@ -426,7 +484,7 @@ export default function TranscribePage() {
                     rows={8}
                     value={textModalContent}
                     onChange={(e) => setTextModalContent(e.target.value)}
-                    placeholder="貼上原始文本，讓 AI 對照修正轉錄結果..."
+                    placeholder="貼上完整的文字稿，模型只替它補上時間戳..."
                 />
             </Modal>
 

@@ -4,7 +4,7 @@
 # 新增 job 時，要加進 `check` 的 needs；`check` 逐一確認每個 needs 的結果，全部 success
 # 才綠燈（只改文件時，四個重的 job 可以是 skipped）。
 #
-# 要跑哪些檢查定義在 tools/check.py：這裡的 job 只呼叫它，不另寫 ruff、pytest、ESLint 等的指令。
+# 要跑哪些檢查定義在 tools/check.py：這裡的 job 只呼叫它，不另寫 ruff、pytest、ESLint、vitest 等的指令。
 # 不要加 on.paths：被路徑過濾掉的 PR 等不到 `check`，會一直卡在等待中；
 # 只改文件時的跳過，由 `changes` job 判斷。
 
@@ -111,6 +111,41 @@ jobs:
             backend/requirements-dev.txt
       - name: 安裝依賴（base 與 dev，不裝 torch 系列）
         run: python -m pip install -r backend/requirements-base.txt -r backend/requirements-dev.txt
+      - name: 安裝 ffmpeg 與 ffprobe（BtbN 的 LGPL build，釘版並驗 SHA-256）
+        # 測試用真的 ffmpeg 處理合成音檔（#103）。採用 #80 研究建議的來源：BtbN 的 LGPL
+        # build，用月底的日期 tag 釘版（BtbN 只承諾月底版保留兩年）。注意免安裝版（build_release.ps1）
+        # 目前仍打包沒釘版的 GPL build，和這裡不同；要不要改由 #17 決定，見 #129。SHA-256 抄自 release 的
+        # checksums.sha256，並和 GitHub 的 asset digest 核對過。升版時兩個平台的檔名與雜湊一起換。
+        # 放在 PATH 最前面，蓋過 runner 映像可能自帶的 ffmpeg
+        shell: bash
+        env:
+          FFMPEG_TAG: autobuild-2026-09-30-13-08
+          FFMPEG_BUILD: ffmpeg-n9.0.2-17-g2a571b6068
+          SHA256_LINUX: 2d41cbea0ca1a15029b638330740f78d6f5aeb062355bf425433fc938705350a
+          SHA256_WINDOWS: 6b264b9e6019103f601d98c292bd332fd87acf1c5e941ddff4fb71760fe63432
+        run: |
+          set -euo pipefail
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            asset="$FFMPEG_BUILD-win64-lgpl-9.0.zip"; sha256="$SHA256_WINDOWS"
+          else
+            asset="$FFMPEG_BUILD-linux64-lgpl-9.0.tar.xz"; sha256="$SHA256_LINUX"
+          fi
+          cd "$RUNNER_TEMP"
+          curl -fsSL --retry 3 -o "$asset" \
+            "https://github.com/BtbN/FFmpeg-Builds/releases/download/$FFMPEG_TAG/$asset"
+          # 雜湊不符時 sha256sum -c 結束碼非 0，set -e 讓 job 失敗
+          echo "$sha256  $asset" | sha256sum -c -
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            unzip -q "$asset"
+            bin="$RUNNER_TEMP/${asset%.zip}/bin"
+            cygpath -w "$bin" >> "$GITHUB_PATH"
+          else
+            tar -xJf "$asset"
+            bin="$RUNNER_TEMP/${asset%.tar.xz}/bin"
+            echo "$bin" >> "$GITHUB_PATH"
+          fi
+          "$bin/ffmpeg" -hide_banner -version | sed -n 1p
+          "$bin/ffprobe" -hide_banner -version | sed -n 1p
       - name: ruff、basedpyright 與 pytest
         run: python tools/check.py ruff basedpyright pytest
 
@@ -131,8 +166,8 @@ jobs:
       - name: 安裝依賴
         working-directory: frontend
         run: npm ci
-      - name: ESLint 與 tsc
-        run: python3 tools/check.py eslint tsc
+      - name: ESLint、tsc 與 vitest
+        run: python3 tools/check.py eslint tsc vitest
       - name: 取得 main（棘輪要和它比）
         # checkout 只抓這次的 commit；main 是公開的，不需要憑證
         run: git fetch --no-tags --depth=1 origin +refs/heads/main:refs/remotes/origin/main

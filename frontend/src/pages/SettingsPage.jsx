@@ -3,7 +3,9 @@ import { useState, useEffect, useCallback } from "react"
 import { Card, Button, Input, Select, Switch, Typography, Row, Col, Spin, Divider, Progress, Alert } from "antd"
 import { Key, Bell, Save, Trash2, Cpu, Download, CheckCircle2 } from "lucide-react"
 import { useModelManager } from "../components/ModelManager"
-import { modelOptions } from "../constants/modelConfig"
+import { ReasonText } from "../components/disabled-reason"
+import { PROVIDER_LIST_FAILED, useProviderList } from "../hooks/useProviderList"
+import { modelForProvider, modelOptions, providerOptions, providerPromptDisabledReason, requiresApiKey } from "../utils/providerList"
 import { api } from "../services/api"
 
 const { Text } = Typography
@@ -11,20 +13,23 @@ const { TextArea } = Input
 
 export default function SettingsPage() {
     const { getProviderConfig, saveProviderConfig, handleTestProvider } = useModelManager()
+    const { providerList, failed: providerListFailed, reload: reloadProviderList } = useProviderList()
 
     const [providerForms, setProviderForms] = useState({})
     const [loading, setLoading] = useState(true)
 
     useEffect(() => {
+        if (!providerList) return
         const loadConfigs = async () => {
             setLoading(true)
             const entries = await Promise.all(
-                Object.keys(modelOptions).map(async (provider) => {
+                providerOptions(providerList).map(async ({ value: provider }) => {
                     try {
                         const config = await getProviderConfig(provider)
                         return [provider, {
                             apiKeys: config?.apiKeys?.length > 0 ? config.apiKeys : [""],
-                            model: config?.model || modelOptions[provider][0].value,
+                            // 存的模型不屬於這個供應商（或已經不在清單上）時顯示預設模型
+                            model: modelForProvider(providerList, provider, config?.model),
                             prompt: config?.prompt || "",
                             isDirty: false
                         }]
@@ -32,7 +37,7 @@ export default function SettingsPage() {
                         console.error(`Failed to load config for ${provider}:`, err)
                         return [provider, {
                             apiKeys: [""],
-                            model: modelOptions[provider][0].value,
+                            model: modelForProvider(providerList, provider, null),
                             prompt: "",
                             isDirty: false
                         }]
@@ -43,7 +48,7 @@ export default function SettingsPage() {
             setLoading(false)
         }
         loadConfigs()
-    }, [getProviderConfig])
+    }, [providerList, getProviderConfig])
 
     const updateForm = (provider, field, value) => {
         setProviderForms(prev => ({
@@ -76,7 +81,7 @@ export default function SettingsPage() {
         }
     }
 
-    if (loading) {
+    if (loading && !providerListFailed) {
         return (
             <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%', minHeight: 400 }}>
                 <Spin size="large" />
@@ -86,15 +91,23 @@ export default function SettingsPage() {
 
     return (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 24, padding: 24 }}>
+            {providerListFailed && (
+                <Alert
+                    type="error"
+                    showIcon
+                    message={PROVIDER_LIST_FAILED}
+                    action={<Button size="small" onClick={reloadProviderList}>重試</Button>}
+                />
+            )}
             <Row gutter={[24, 24]}>
-                {Object.keys(modelOptions).map(provider => (
+                {!providerListFailed && providerOptions(providerList).map(({ value: provider, label }) => (
                     <Col xs={24} lg={12} key={provider}>
                         <Card
                             title={
                                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                                         <Key size={16} color="#2dd4a8" />
-                                        <span style={{ color: '#e8e8e8' }}>{provider} Configuration</span>
+                                        <span style={{ color: '#e8e8e8' }}>{label}</span>
                                     </div>
                                     {providerForms[provider].isDirty && (
                                         <Text style={{ fontSize: 12, color: '#d4a72d' }}>Unsaved changes</Text>
@@ -107,7 +120,8 @@ export default function SettingsPage() {
                             }}
                         >
                             <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-                                <div>
+                                {/* 只有要使用者金鑰的供應商才有金鑰欄位（照供應商清單，本機不用） */}
+                                {requiresApiKey(providerList, provider) && <div>
                                     <Text style={{ color: '#e8e8e8', fontSize: 13, display: 'block', marginBottom: 6 }}>API Keys (Try from top to bottom)</Text>
                                     {providerForms[provider].apiKeys.map((key, idx) => (
                                         <div key={idx} style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
@@ -140,7 +154,7 @@ export default function SettingsPage() {
                                     >
                                         + Add API Key
                                     </Button>
-                                </div>
+                                </div>}
 
                                 <div>
                                     <Text style={{ color: '#e8e8e8', fontSize: 13, display: 'block', marginBottom: 6 }}>Default Model</Text>
@@ -148,24 +162,21 @@ export default function SettingsPage() {
                                         value={providerForms[provider].model}
                                         onChange={(v) => updateForm(provider, 'model', v)}
                                         style={{ width: '100%' }}
-                                        options={modelOptions[provider]}
+                                        options={modelOptions(providerList, provider)}
                                     />
                                 </div>
 
-                                <div>
-                                    <Text style={{ color: '#e8e8e8', fontSize: 13, display: 'block', marginBottom: 6 }}>Global Prompt Template</Text>
-                                    <TextArea
-                                        value={providerForms[provider].prompt}
-                                        onChange={(e) => updateForm(provider, 'prompt', e.target.value)}
-                                        placeholder="System level instructions or prompts to guide the model..."
-                                        rows={4}
-                                    />
-                                </div>
+                                <PromptTemplateField
+                                    value={providerForms[provider].prompt}
+                                    onChange={(value) => updateForm(provider, 'prompt', value)}
+                                    disabledReason={providerPromptDisabledReason(providerList, provider)}
+                                />
 
                                 <Divider style={{ borderColor: '#3a3a5c', margin: '4px 0' }} />
 
                                 <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-                                    <Button onClick={() => handleTestProvider(provider)}>
+                                    {/* 測畫面上選的模型：本機要查的是這個模型的權重 */}
+                                    <Button onClick={() => handleTestProvider(provider, providerForms[provider].model)}>
                                         Test Connection
                                     </Button>
                                     <Button
@@ -335,6 +346,30 @@ function LocalModelsCard() {
                 </div>
             </Card>
         </Col>
+    )
+}
+
+/**
+ * 供應商的提示詞範本；這個供應商的模型都不支援提示詞時停用並顯示原因。範本整份取代系統內建的，
+ * 打了字就看不到 placeholder，所以欄位下方的說明一直顯示（#196）。
+ */
+function PromptTemplateField({ value, onChange, disabledReason }) {
+    return (
+        <div>
+            <Text style={{ color: '#e8e8e8', fontSize: 13, display: 'block', marginBottom: 6 }}>Prompt Template</Text>
+            <TextArea
+                value={value}
+                onChange={(e) => onChange(e.target.value)}
+                disabled={Boolean(disabledReason)}
+                placeholder="Empty: the built-in template is used. Anything saved here replaces the whole prompt sent for every file, so keep the instructions that ask for LRC format and timestamps..."
+                rows={4}
+            />
+            <Text style={{ display: 'block', color: '#8888a8', fontSize: 12, marginTop: 4 }}>
+                The whole prompt sent for every file with this provider. Keep the instructions that ask for LRC format and timestamps, or transcription fails.
+                Leave it empty to use the built-in template. To add a line such as speaker names or terms to keep as written, use the prompt on New Transcription instead.
+            </Text>
+            <ReasonText reason={disabledReason} style={{ display: 'block', fontSize: 12, marginTop: 4 }} />
+        </div>
     )
 }
 

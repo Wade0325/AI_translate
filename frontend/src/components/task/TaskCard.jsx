@@ -10,34 +10,55 @@ import {
     Loader2,
 } from "lucide-react"
 import { downloadFormats } from "@/constants/downloadFormats"
+import { TASK_STATUS } from "@/constants/taskStatus"
 import { formatDateTime, formatElapsed } from "@/utils/formatters"
+import { batchDisplayStatus, isBatchFailed, isBatchInterrupted, isBatchProcessing } from "@/utils/taskSessions"
 
 const { Text } = Typography
 
+// 批次紀錄本身的狀態，屬於批次的狀態機（backend/app/core/batch_state.py），和任務狀態清單是兩回事（COMPLETED 只是同名）；
+// 取回後逐檔結果的 status 才是任務狀態，用 TASK_STATUS 比對。UPLOADING_DEAD 與 INTERRUPTED 是停住的批次只在畫面上
+// 用的名稱（batchDisplayStatus）。notice 是狀態旁邊的說明；後端給「恢復」的批次（GET /batch/tasks 的 recoverable）
+// 改用 recoverNotice
 const statusConfig = {
     POLLING: { icon: Loader2, color: "#d4a72d", label: "Gemini 處理中", spin: true },
     UPLOADING: { icon: Loader2, color: "#47b8d4", label: "上傳中", spin: true },
-    UPLOADING_DEAD: { icon: AlertCircle, color: "#e05252", label: "上傳中斷", spin: false },
+    UPLOADING_DEAD: {
+        icon: AlertCircle, color: "#e05252", label: "上傳中斷", spin: false,
+        notice: "Worker 已停止，任務無法完成",
+    },
+    INTERRUPTED: {
+        icon: AlertCircle, color: "#d4a72d", label: "已中斷", spin: false,
+        notice: "沒有在等 Gemini 的結果",
+        recoverNotice: "沒有在等 Gemini 的結果，按「恢復」接著等",
+    },
     RECOVERING: { icon: Loader2, color: "#d4a72d", label: "恢復中", spin: true },
     COMPLETED: { icon: CheckCircle2, color: "#2dd4a8", label: "已完成", spin: false },
     RETRIEVED: { icon: CheckCircle2, color: "#2dd4a8", label: "已取回", spin: false },
+    FAILED: {
+        icon: AlertCircle, color: "#e05252", label: "失敗", spin: false,
+        notice: "沒有送出給 Gemini，無法恢復",
+        recoverNotice: "已送出給 Gemini，按「恢復」再查一次結果",
+    },
 }
 
 export default function TaskCard({
     task,
     expanded,
     retrieving,
+    recovering,
     taskResult,
     onToggleExpand,
     onRetrieve,
+    onRecover,
     onDismiss,
     onDownload,
 }) {
-    const isDead = task.status === "UPLOADING" && task.is_alive === false
-    const displayStatus = isDead ? "UPLOADING_DEAD" : task.status
-    const sc = statusConfig[displayStatus] || statusConfig.POLLING
+    const stopped = isBatchInterrupted(task) || isBatchFailed(task)
+    const sc = statusConfig[batchDisplayStatus(task)] || statusConfig.POLLING
     const StatusIcon = sc.icon
-    const isProcessing = ["POLLING", "UPLOADING", "RECOVERING"].includes(task.status) && !isDead
+    const notice = (task.recoverable && sc.recoverNotice) || sc.notice
+    const isProcessing = isBatchProcessing(task)
     const isCompleted = task.status === "COMPLETED"
     const hasResult = !!taskResult
 
@@ -45,8 +66,8 @@ export default function TaskCard({
         <Card
             size="small"
             style={{
-                border: isDead
-                    ? "1px solid rgba(224, 82, 82, 0.3)"
+                border: stopped
+                    ? `1px solid ${sc.color}4d`
                     : isProcessing
                         ? "1px solid rgba(212, 167, 45, 0.3)"
                         : "1px solid rgba(45, 212, 168, 0.3)",
@@ -106,9 +127,9 @@ export default function TaskCard({
                                 · 已等待 {formatElapsed(task.elapsed_seconds)}
                             </Text>
                         )}
-                        {isDead && (
-                            <Text style={{ fontSize: 11, color: "#e05252" }}>
-                                · Worker 已停止，任務無法完成
+                        {notice && (
+                            <Text style={{ fontSize: 11, color: sc.color }}>
+                                · {notice}
                             </Text>
                         )}
                     </div>
@@ -118,6 +139,16 @@ export default function TaskCard({
                 </div>
 
                 <Space size={4}>
+                    {task.recoverable && (
+                        <Button
+                            size="small"
+                            loading={recovering}
+                            onClick={(e) => { e.stopPropagation(); onRecover() }}
+                            style={{ color: "#d4a72d", borderColor: "#d4a72d", fontSize: 12 }}
+                        >
+                            恢復
+                        </Button>
+                    )}
                     {isCompleted && (
                         <Button
                             type="primary"
@@ -175,17 +206,17 @@ export default function TaskCard({
                                 borderBottom: idx < taskResult.files.length - 1 ? "1px solid #2a2a4820" : "none",
                             }}
                         >
-                            <FileAudio size={14} color={file.status === "COMPLETED" ? "#2dd4a8" : "#e05252"} />
+                            <FileAudio size={14} color={file.status === TASK_STATUS.COMPLETED ? "#2dd4a8" : "#e05252"} />
                             <Text ellipsis style={{ flex: 1, fontSize: 12, color: "#e8e8e8" }}>
                                 {file.original_filename}
                             </Text>
                             <Tag
-                                color={file.status === "COMPLETED" ? "green" : "red"}
+                                color={file.status === TASK_STATUS.COMPLETED ? "green" : "red"}
                                 style={{ fontSize: 11, margin: 0 }}
                             >
-                                {file.status === "COMPLETED" ? "完成" : "失敗"}
+                                {file.status === TASK_STATUS.COMPLETED ? "完成" : "失敗"}
                             </Tag>
-                            {file.status === "COMPLETED" && (
+                            {file.status === TASK_STATUS.COMPLETED && (
                                 <Dropdown
                                     menu={{
                                         items: downloadFormats.map(f => ({

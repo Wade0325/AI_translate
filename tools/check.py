@@ -1,4 +1,4 @@
-"""唯一的檢查清單：ruff → basedpyright → pytest → ESLint → tsc → ratchet。
+"""唯一的檢查清單：ruff → basedpyright → pytest → ESLint → tsc → vitest → ratchet。
 
 用法（在哪個目錄執行都可以，一律以 repo 根目錄為基準）：
 
@@ -8,9 +8,9 @@
     python tools/check.py --staged      # git 的 pre-commit（.githooks/pre-commit）用
 
 CI（.github/workflows/ci.yml）的 python 與 frontend job、git 的 pre-commit、README 與
-.vscode/tasks.json 都呼叫這支腳本，不另寫檢查指令。要加檢查就加在 checks()，各處會
-一起跑；快到可以每次 commit 都跑的，標上 pre_commit。它決定閘門跑哪些檢查，屬於單向門
-（docs/agents/merging.md）。
+.vscode/tasks.json 都呼叫這支腳本，不另寫檢查指令。要加檢查就加在 checks()；CI 的 job 是照
+名稱挑要跑的項目，新項目的名稱也要加進對應 job 的指令，CI 才會跑。快到可以每次 commit 都跑
+的，標上 pre_commit。它決定閘門跑哪些檢查，屬於單向門（docs/agents/merging.md）。
 
 幾個刻意的取捨：
   * 只用標準函式庫：CI 的 frontend job 用 runner 內建的 Python 執行，不裝任何套件
@@ -40,11 +40,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 ESLINT_JS = Path("node_modules") / "eslint" / "bin" / "eslint.js"
 TSC_JS = Path("node_modules") / "typescript" / "bin" / "tsc"
+VITEST_JS = Path("node_modules") / "vitest" / "vitest.mjs"
 
 # 改到這些路徑要跑 Python 的檢查：任何 .py，或這些目錄底下的任何檔案（含
 # backend/requirements*.txt 與測試資料），或這些設定檔。改設定或依賴檔一樣可能讓
 # 測試或 lint 壞掉，所以不只看副檔名
-PYTHON_DIRS = ("backend/", "tests/", "tools/", ".basedpyright/")
+PYTHON_DIRS = ("backend/", "tests/", "tools/", "games/", ".basedpyright/")
 PYTHON_FILES = ("pytest.ini", "ruff.toml", "pyrightconfig.json")
 
 
@@ -84,7 +85,7 @@ def _python_module_missing(module: str) -> Callable[[], str | None]:
     return missing
 
 
-def _node_tool_missing(frontend: Path, entry: Path) -> Callable[[], str | None]:
+def _frontend_tool_missing(frontend: Path, entry: Path) -> Callable[[], str | None]:
     def missing() -> str | None:
         problems = []
         if shutil.which("node") is None:
@@ -111,9 +112,13 @@ def checks(root: Path = ROOT) -> tuple[Check, ...]:
         # 直接用 node 跑 eslint 與 tsc 的入口，避開 Windows 上 npx.cmd／npm.cmd 得經過 shell 的問題。
         # --quiet 只印 error：warning 不擋合併，react-hooks 的 warning 一則十幾行，會把 error 淹掉
         Check("eslint", ("node", str(ESLINT_JS), ".", "--quiet"), frontend,
-              _node_tool_missing(frontend, ESLINT_JS), _frontend_related, pre_commit=True),
+              _frontend_tool_missing(frontend, ESLINT_JS), _frontend_related, pre_commit=True),
         Check("tsc", ("node", str(TSC_JS), "--noEmit", "-p", "tsconfig.json"), frontend,
-              _node_tool_missing(frontend, TSC_JS), _frontend_related, pre_commit=True),
+              _frontend_tool_missing(frontend, TSC_JS), _frontend_related, pre_commit=True),
+        # 前端的測試：和 pytest 一樣交給 CI，不在 commit 前跑。加 run 才會跑完就結束，
+        # 不加的話在終端機裡會進監看模式
+        Check("vitest", ("node", str(VITEST_JS), "run"), frontend,
+              _frontend_tool_missing(frontend, VITEST_JS), _frontend_related),
         Check("ratchet", (python, str(root / "tools" / "ratchet.py")), root,
               runs_for=_ratchet_related, pre_commit=True),
     )

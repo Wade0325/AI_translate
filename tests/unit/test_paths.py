@@ -1,4 +1,4 @@
-"""單元測試：上傳檔名驗證（utils/paths.py 的 resolve_upload_path）
+"""單元測試：上傳檔名驗證（utils/paths.py 的 resolve_upload_path 與 existing_upload_path）
 
 轉錄／批次／VAD 端點都拿前端送來的伺服器檔名去 temp_uploads 找檔案。
 ``base / name`` 遇到絕對路徑會丟掉 base，``..`` 也能跳出目錄，
@@ -8,7 +8,12 @@ from pathlib import Path
 
 import pytest
 
-from app.utils.paths import UnsafeUploadFilenameError, resolve_upload_path
+from app.utils.paths import (
+    MissingUploadError,
+    UnsafeUploadFilenameError,
+    existing_upload_path,
+    resolve_upload_path,
+)
 
 
 @pytest.fixture
@@ -29,7 +34,7 @@ class TestAcceptsPlainFilename:
         assert resolve_upload_path(name, uploads) == uploads / name
 
     def test_keeps_relative_base_unresolved(self, uploads, monkeypatch):
-        """docker 模式 API 與主機 GPU worker 靠 cwd 相對路徑共享上傳檔，回傳值不能變成絕對路徑。"""
+        """Docker 模式的 API 與主機 GPU worker 靠 cwd 相對路徑共享上傳檔，回傳值不能變成絕對路徑。"""
         monkeypatch.chdir(uploads.parent)
         assert resolve_upload_path("a.mp3", Path("uploads")) == Path("uploads") / "a.mp3"
 
@@ -68,3 +73,25 @@ class TestRejectsUnsafeFilename:
         assert "檔案名稱不合法" in message
         # 不把伺服器路徑回顯給使用者
         assert str(uploads) not in message
+
+
+class TestExistingUpload:
+    def test_returns_path_of_the_upload(self, uploads):
+        (uploads / "a.mp3").write_bytes(b"audio")
+        assert existing_upload_path("a.mp3", uploads) == uploads / "a.mp3"
+
+    def test_missing_upload_raises_with_user_readable_message(self, uploads):
+        with pytest.raises(MissingUploadError) as exc_info:
+            existing_upload_path("gone.mp3", uploads)
+        message = str(exc_info.value)
+        assert "找不到上傳的檔案" in message
+        # 訊息是固定的：檔名與伺服器路徑另外記進 log，不回顯給使用者
+        assert "gone.mp3" not in message
+        assert str(uploads) not in message
+        assert exc_info.value.filename == "gone.mp3"
+
+    def test_unsafe_filename_is_rejected_before_looking_for_the_file(self, uploads, tmp_path):
+        secret = tmp_path / "secret.txt"
+        secret.write_text("x")
+        with pytest.raises(UnsafeUploadFilenameError):
+            existing_upload_path(str(secret), uploads)

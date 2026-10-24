@@ -4,8 +4,8 @@
 ws://localhost:8000/api/v1/...，提交轉錄請求、收看任務進度與結果。所以握手時檢查
 Origin 標頭：
 
-- 與伺服器自身同源（scheme、host、port 都相同；standalone 由本服務提供前端）→ 放行
-- 在 CORS 允許清單（``CORS_ALLOWED_ORIGINS``）內 → 放行。docker 開發模式的
+- 與伺服器自身同源（scheme、host、port 都相同；免安裝模式由本服務提供前端）→ 放行
+- 在 CORS 允許清單（``CORS_ALLOWED_ORIGINS``）內 → 放行。Docker 模式開發時，
   Vite proxy 會把 Host 改成後端位址、Origin 原封不動，靠這條放行
 - 其他來源 → 以 1008（policy violation）拒絕
 - 沒有 Origin 標頭：非瀏覽器客戶端（瀏覽器一定會帶），放行

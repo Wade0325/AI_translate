@@ -1,19 +1,14 @@
-"""LocalExecutor（standalone 行程內任務執行器）單元測試。"""
+"""LocalExecutor（免安裝模式的行程內任務執行器）單元測試。"""
 import threading
 import time
 
 import pytest
 
 from app.runtime.executor import (
-    FAILURE,
     LocalExecutor,
     REVOKED,
     SUCCESS,
 )
-
-
-class TransientError(Exception):
-    pass
 
 
 @pytest.fixture
@@ -69,45 +64,10 @@ def test_local_asr_queue_is_serialized(executor):
     assert max(max_parallel) == 1
 
 
-def test_retry_on_transient_error(executor, monkeypatch):
-    monkeypatch.setattr("app.runtime.executor.time.sleep", lambda _: None)
-    attempts = []
-
-    def flaky():
-        attempts.append(1)
-        if len(attempts) < 3:
-            raise TransientError("boom")
-        return "recovered"
-
-    executor.submit(
-        flaky, task_id="t-retry", retry_on=(TransientError,), max_retries=3)
-
-    deadline = time.time() + 5
-    while time.time() < deadline and executor.state("t-retry") not in (SUCCESS, FAILURE):
-        time.sleep(0.05)
-    assert executor.state("t-retry") == SUCCESS
-    assert len(attempts) == 3
-
-
-def test_retry_exhausted_marks_failure(executor, monkeypatch):
-    monkeypatch.setattr("app.runtime.executor.time.sleep", lambda _: None)
-
-    def always_fail():
-        raise TransientError("boom")
-
-    executor.submit(
-        always_fail, task_id="t-fail", retry_on=(TransientError,), max_retries=2)
-
-    deadline = time.time() + 5
-    while time.time() < deadline and executor.state("t-fail") != FAILURE:
-        time.sleep(0.05)
-    assert executor.state("t-fail") == FAILURE
-    assert executor.is_alive("t-fail") is False
-
-
 def test_revoke_before_start_skips_execution(executor):
     blocker_release = threading.Event()
     ran = []
+    abandoned = []
 
     def blocker():
         blocker_release.wait(5)
@@ -117,7 +77,7 @@ def test_revoke_before_start_skips_execution(executor):
 
     # local_asr 只有一個 worker：blocker 佔住後 victim 停在佇列中
     executor.submit(blocker, task_id="blocker", queue="local_asr")
-    executor.submit(victim, task_id="victim", queue="local_asr")
+    executor.submit(victim, task_id="victim", queue="local_asr", on_abandoned=abandoned.append)
     executor.revoke("victim")
     blocker_release.set()
 
@@ -128,6 +88,54 @@ def test_revoke_before_start_skips_execution(executor):
     assert ran == []
     assert executor.state("victim") == REVOKED
     assert executor.is_alive("victim") is False
+    # 不執行的任務照樣收尾：被撤銷的收尾只呼叫一次
+    assert abandoned == [True]
+
+
+@pytest.mark.parametrize("ends_with", [RuntimeError("503"), None],
+                         ids=["ended-with-an-error", "stopped-by-itself"])
+def test_revoking_a_started_task_lets_it_finish(executor, ends_with):
+    """開始之後才撤銷：執行緒不可 kill，照常跑完（任務自己看取消旗標停下、收尾），不另外收尾；
+    結束得了錯也不重試。"""
+    attempts, alive, abandoned = [], [], []
+
+    def cancelled_while_running():
+        attempts.append(1)
+        executor.revoke("t-started")  # 使用者在執行途中取消
+        alive.append(executor.is_alive("t-started"))
+        if ends_with is not None:
+            raise ends_with
+        return "任務看到取消、自己收尾"
+
+    executor.submit(cancelled_while_running, task_id="t-started", on_abandoned=abandoned.append)
+
+    deadline = time.time() + 5
+    while time.time() < deadline and executor.is_alive("t-started"):
+        time.sleep(0.05)
+    assert len(attempts) == 1
+    assert alive == [True]  # 跑完之前都還算存活
+    assert abandoned == []
+    assert executor.is_alive("t-started") is False
+
+
+def test_shutdown_abandons_tasks_still_queued():
+    executor = LocalExecutor(default_concurrency=1)
+    release = threading.Event()
+    abandoned = []
+    executor.submit(lambda: release.wait(5), task_id="running", queue="local_asr",
+                    on_abandoned=abandoned.append)
+    executor.submit(lambda: None, task_id="queued", queue="local_asr",
+                    on_abandoned=abandoned.append)
+    deadline = time.time() + 5
+    while time.time() < deadline and executor.state("running") != "STARTED":
+        time.sleep(0.01)
+
+    executor.shutdown()
+    release.set()
+
+    # 還在排隊的任務不再執行，以「不是被撤銷」收尾；執行中的照常跑完
+    assert abandoned == [False]
+    assert executor.is_alive("queued") is False
 
 
 def test_unknown_task_id_is_not_alive(executor):

@@ -2,10 +2,12 @@ import json
 from typing import Optional, List, Tuple
 from datetime import datetime, timedelta
 
-from sqlalchemy import or_, desc
+from sqlalchemy import case, or_, desc
 from sqlalchemy.orm import Session
 
+from app.core.task_status import TaskStatus
 from app.database.models import TranscriptionLog, BatchJob
+from app.database.session import without_db_details
 from app.utils.identifiers import coerce_uuid
 from app.utils.logger import setup_logger
 
@@ -103,8 +105,8 @@ class HistoryRepository:
             .filter(TranscriptionLog.is_batch.is_(False))
             .filter(
                 or_(
-                    TranscriptionLog.status == "PROCESSING",
-                    (TranscriptionLog.status.in_(["COMPLETED", "FAILED"]))
+                    TranscriptionLog.status == TaskStatus.PROCESSING,
+                    (TranscriptionLog.status.in_([TaskStatus.COMPLETED, TaskStatus.FAILED]))
                     & (TranscriptionLog.request_timestamp >= cutoff),
                 )
             )
@@ -119,7 +121,11 @@ class HistoryRepository:
         *,
         backfill: bool = True,
     ) -> Optional[str]:
-        """取得任務的 LRC 內容；若 log 無資料則從 batch_jobs.results_json 回退。"""
+        """取得任務的 LRC 內容；若 log 無資料則從 batch_jobs.results_json 回退。
+
+        只有 #115 之前批次裡的任務會走到回退：之後的任務完成時都存了 LRC，#116 之後的批次也不再寫
+        results_json。
+        """
         stored = getattr(log, "lrc_content", None)
         if stored and str(stored).strip():
             return str(stored).strip()
@@ -161,27 +167,37 @@ class HistoryRepository:
                 db.refresh(log)
             except Exception as e:
                 db.rollback()
-                logger.warning(f"回寫 lrc_content 失敗 ({task_uuid_str}): {e}")
+                # 回寫的是整列 UPDATE：Postgres 附上的那一列有原始檔名與轉錄結果
+                logger.warning(f"回寫 lrc_content 失敗 ({task_uuid_str}): {without_db_details(e)}")
 
         return lrc
 
     def get_usage(self, db: Session, days: int = 180) -> dict:
-        """彙總最近 days 天內 COMPLETED 任務的每日與各模型用量，供 Dashboard / Billing 使用。"""
+        """彙總最近 days 天內的每日與各模型用量，供 Dashboard / Billing 使用。
+
+        token 與費用加總每個記了用量的任務，不只完成的：失敗與取消的任務，供應商已經回應的部分
+        照樣收費（見 :mod:`app.tasks.lifecycle`）。檔案數只算完成的。沒有完成、也沒記到用量的任務
+        （例如開始前就取消、還在處理中）不算，不會多出全是 0 的一天或一個模型；費用由 token 數算出，
+        沒有 token 就沒有費用。
+        """
         from sqlalchemy import func
 
         # request_timestamp 由應用層的 datetime.now() 寫入（本地時間；Docker 模式見 docker-compose 的 TZ），
         # 因此窗口計算與 func.date() 分桶都必須用本地時間，不能用 utcnow()。
         since = datetime.now() - timedelta(days=days)
         day = func.date(TranscriptionLog.request_timestamp)
+        completed = TranscriptionLog.status == TaskStatus.COMPLETED
+        completed_or_with_usage = or_(completed, TranscriptionLog.total_tokens > 0)
+        files = func.sum(case((completed, 1), else_=0))
 
         daily_rows = (
             db.query(
                 day.label("date"),
                 func.sum(TranscriptionLog.total_tokens),
                 func.sum(TranscriptionLog.cost),
-                func.count(TranscriptionLog.task_uuid),
+                files,
             )
-            .filter(TranscriptionLog.status == "COMPLETED")
+            .filter(completed_or_with_usage)
             .filter(TranscriptionLog.request_timestamp >= since)
             .group_by(day)
             .order_by(day)
@@ -193,9 +209,9 @@ class HistoryRepository:
                 TranscriptionLog.model_used,
                 func.sum(TranscriptionLog.total_tokens),
                 func.sum(TranscriptionLog.cost),
-                func.count(TranscriptionLog.task_uuid),
+                files,
             )
-            .filter(TranscriptionLog.status == "COMPLETED")
+            .filter(completed_or_with_usage)
             .filter(TranscriptionLog.request_timestamp >= since)
             .group_by(TranscriptionLog.model_used)
             .order_by(desc(func.sum(TranscriptionLog.total_tokens)))
@@ -229,16 +245,16 @@ class HistoryRepository:
 
         total = db.query(func.count(TranscriptionLog.task_uuid)).scalar() or 0
         completed = db.query(func.count(TranscriptionLog.task_uuid)).filter(
-            TranscriptionLog.status == "COMPLETED"
+            TranscriptionLog.status == TaskStatus.COMPLETED
         ).scalar() or 0
         failed = db.query(func.count(TranscriptionLog.task_uuid)).filter(
-            TranscriptionLog.status == "FAILED"
+            TranscriptionLog.status == TaskStatus.FAILED
         ).scalar() or 0
         total_cost = db.query(func.sum(TranscriptionLog.cost)).scalar() or 0.0
         total_tokens = db.query(func.sum(TranscriptionLog.total_tokens)).scalar() or 0
         total_duration = db.query(func.sum(TranscriptionLog.audio_duration_seconds)).scalar() or 0.0
         avg_processing_time = db.query(func.avg(TranscriptionLog.processing_time_seconds)).filter(
-            TranscriptionLog.status == "COMPLETED"
+            TranscriptionLog.status == TaskStatus.COMPLETED
         ).scalar() or 0.0
 
         return {

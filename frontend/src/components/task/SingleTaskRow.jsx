@@ -2,17 +2,18 @@ import { Card, Spin, Tag, Typography } from "antd"
 import { LoadingOutlined } from "@ant-design/icons"
 import { AlertCircle, CheckCircle2, FileAudio, Loader2 } from "lucide-react"
 import { formatDateTime } from "@/utils/formatters"
+import { TASK_STATUS } from "@/constants/taskStatus"
 
 const { Text } = Typography
 
 const STATUS_STYLE = {
-    PROCESSING: { icon: Loader2, color: "#d4a72d", label: "處理中", spin: true },
-    COMPLETED: { icon: CheckCircle2, color: "#2dd4a8", label: "已完成", spin: false },
-    FAILED: { icon: AlertCircle, color: "#e05252", label: "失敗", spin: false },
+    [TASK_STATUS.PROCESSING]: { icon: Loader2, color: "#d4a72d", label: "處理中", spin: true },
+    [TASK_STATUS.COMPLETED]: { icon: CheckCircle2, color: "#2dd4a8", label: "已完成", spin: false },
+    [TASK_STATUS.FAILED]: { icon: AlertCircle, color: "#e05252", label: "失敗", spin: false },
 }
 
 export default function SingleTaskRow({ task }) {
-    const sc = STATUS_STYLE[task.status] || STATUS_STYLE.PROCESSING
+    const sc = STATUS_STYLE[task.status] || STATUS_STYLE[TASK_STATUS.PROCESSING]
     const StatusIcon = sc.icon
     const timestamp = task.completed_at || task.request_timestamp
 
@@ -76,17 +77,17 @@ export default function SingleTaskRow({ task }) {
                                 · {formatDateTime(timestamp)}
                             </Text>
                         )}
-                        {task.status === "COMPLETED" && task.total_tokens != null && (
+                        {task.status === TASK_STATUS.COMPLETED && task.total_tokens != null && (
                             <Text style={{ fontSize: 11, color: "#8888a8" }}>
                                 · {task.total_tokens.toLocaleString()} tokens
                             </Text>
                         )}
-                        {task.status === "COMPLETED" && task.cost != null && (
+                        {task.status === TASK_STATUS.COMPLETED && task.cost != null && (
                             <Text style={{ fontSize: 11, color: "#8888a8" }}>
                                 · ${task.cost.toFixed(4)}
                             </Text>
                         )}
-                        {task.status === "FAILED" && task.error_message && (
+                        {task.status === TASK_STATUS.FAILED && task.error_message && (
                             <Text
                                 ellipsis={{ tooltip: task.error_message }}
                                 style={{ fontSize: 11, color: "#e05252", maxWidth: 360 }}

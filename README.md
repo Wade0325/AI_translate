@@ -29,8 +29,8 @@
 
 - **🤖 高品質 AI 轉錄**：整合 Google Gemini 多模態模型，支援 `gemini-3.5-flash` / `gemini-2.5-flash` 等。
 - **🖥️ 本機轉錄**：預設 MOSS-Transcribe-Diarize 一次完成說話者分離與轉錄，再由 Qwen3-ForcedAligner 強制對齊並斷行；另可選 MOSS + Qwen3-ASR、舊版 VibeVoice + Qwen3-ASR（主機 GPU 執行，零 API 費用；以 `local_worker.bat` 啟動）。
-- **🗣️ 去靜音與分段轉錄**：轉錄前剪掉長段靜音以節省 Token；長音檔分段轉錄時，用 Silero VAD 找靜音處當切點。
-- **⏱️ 毫秒級時間戳**：輸出帶 `[mm:ss.xxx]` 精確時間戳的逐字稿。
+- **🗣️ 去靜音與分段轉錄**：轉錄前剪掉長段靜音以節省 Token；長音檔分段轉錄時切在靜音處：去靜音之後切在剪掉靜音的位置，沒有去靜音時用 Silero VAD 找，都找不到時切在正中間。
+- **⏱️ 逐行時間戳**：LRC、SRT、VTT 每一行都帶時間戳（LRC 為 `[mm:ss.xx]`），TXT 只有文字；單檔任務與批次相同。
 - **📦 多格式匯出**：LRC、SRT、VTT、TXT 一鍵下載；批量任務支援 ZIP 打包。
 - **📤 多來源輸入**：支援 MP3 / WAV / FLAC / M4A / MP4 / WebM 等音訊與視頻格式。
 
@@ -39,11 +39,12 @@
 | 功能 | 說明 |
 |------|------|
 | 📚 **批次轉錄** | 採用 Gemini Batch API，**費用為標準 API 的 50%**，適合大量檔案非同步處理 |
-| 🔄 **任務恢復** | 重啟服務後可自動恢復未完成的批次（無需重新上傳） |
-| 👥 **多人對話模式** | 自動以 `Speaker 1:` / `Speaker 2:` 標記不同說話者 |
+| 🔄 **批次恢復** | 應用程式重啟或網路中斷後，停住或失敗的批次在任務頁按「恢復」，就接著等 Gemini 的結果（無需重新上傳） |
+| 👥 **多人對話模式** | 自動標記不同說話者，寫成 `[S0] 文字`、`[S1] 文字`，和本機的模型相同 |
 | 📝 **自訂 Prompt** | 自定指令，搭配術語表、特殊標記、ASMR 聲響描述等 |
 | 📊 **即時進度** | WebSocket 推送 去靜音 → 上傳 → 轉錄 → 完成 各階段狀態 |
-| 💰 **成本追蹤** | 自動計算每次任務的 Token 用量與費用，提供儀表板與計費頁查詢 |
+| 🔁 **暫時錯誤重試** | Gemini 回應 429／503 時只重試出錯的那一段，已經轉好的段不重送；批次只重做出錯的那一步（上傳、送出或查詢狀態）。照回應建議的秒數等待（沒有建議時 10、20、40 秒），等待時畫面寫出是哪一段或哪一步、等幾秒 |
+| 💰 **成本追蹤** | 自動計算每次任務的 Token 用量與費用（包含失敗後被重試取代的那次呼叫；任務失敗或取消時，供應商已經回應的部分照樣收費，也照記），提供儀表板與計費頁查詢 |
 | 🕘 **歷史紀錄** | 所有轉錄結果儲存於 PostgreSQL，可隨時回查與重新下載 |
 
 ---
@@ -108,7 +109,7 @@ copy .env.example .env
 .\dc.bat help                       # 看全部用法
 ```
 
-程式碼以 volume 掛載：改後端（FastAPI `--reload`）與前端（Vite HMR）會自動熱更新；改 celery 需 `.\dc.bat restart celery-worker`。
+程式碼以 volume 掛載：改後端（FastAPI `--reload`）與前端（Vite HMR）會自動熱更新；改 celery 需 `.\dc.bat restart celery-worker`。重啟 celery-worker 時還在等 Gemini 結果的批次，任務頁看不出它停住了（一直顯示處理中，沒有「恢復」），要直接呼叫復原端點接手：`curl.exe -X POST -H "Content-Type: application/json" -d "{}" http://localhost:8000/api/v1/batch/<batch_id>/recover`（完整的 `batch_id` 在 <http://localhost:8000/api/v1/batch/tasks> 查得到）。
 
 若想直接用原生 docker compose 指令：
 
@@ -125,22 +126,23 @@ docker compose --env-file .env down
 ### 步驟 1️⃣ — 設定 API 金鑰
 
 1. 點擊左側選單 **⚙️ 設定 (Settings)**。
-2. 選擇服務商 **Google**，貼上你的 [Gemini API Key](https://aistudio.google.com/apikey)。
-3. 選擇預設模型（推薦 `gemini-2.5-flash`，速度與品質平衡）並儲存。
+2. 在 **Gemini** 的卡片貼上你的 [Gemini API Key](https://aistudio.google.com/apikey)。本機不需要 API 金鑰，卡片上沒有金鑰欄位；免安裝版裡，本機卡片的 **Test Connection** 會檢查顯卡與所選模型的模型權重是否就緒（Docker 模式的本機轉錄在主機端的 GPU worker 執行，設定頁檢查不到）。
+3. 選擇預設模型（推薦 `gemini-2.5-flash`，速度與品質平衡）並儲存。轉錄頁目前不會套用這個預設模型，要在轉錄頁自己選。
 
 ### 步驟 2️⃣ — 上傳並設定轉錄參數
 
 進入 **🎙️ 轉錄 (Transcribe)** 頁面：
 
-1. **上傳檔案**：拖曳或點擊上傳音訊／視頻（可一次選擇多個檔案進入批次模式）。
-2. **選擇來源語言**：日文 / 英文 / 繁體中文。
-3. **（選填）多人對話模式**：開啟後自動標記 `Speaker 1` / `Speaker 2`。
-4. **（選填）自訂 Prompt**：可加入術語表、額外指令；不填則使用系統預設模板。
+1. **選擇供應商與模型**：先選供應商（本機／Gemini），模型選單只列這個供應商的模型。「測試 API」測的是這裡選的模型；「編輯 API」只在選 Gemini 時出現，本機不需要金鑰。
+2. **上傳檔案**：拖曳或點擊上傳音訊／視頻（可一次選擇多個檔案進入批次模式）。
+3. **選擇來源語言**：日文 / 英文 / 繁體中文。
+4. **（選填）多人對話模式**：開啟後自動標記不同說話者（`[S0]`、`[S1]`）。
+5. **（選填）提示詞**：轉錄頁填的提示詞是補充說明，例如說話者是誰、人名照寫，送出時空一行接在提示詞範本後面；範本裡要求 LRC 格式與時間戳的指示一定會送出。全域的提示詞會送給每個沒有個別設定提示詞的檔案，不必按 Apply to All；個別檔案可以在每檔設定改用自己的，清空就回到跟著全域。都沒填時只送提示詞範本。提示詞範本是設定頁各供應商的 Prompt Template 欄位存的（轉錄頁的「編輯參數」也能改，會帶出目前的範本，沒存過就是系統內建的），想整份改寫就改那裡，並保留要求 LRC 格式與時間戳的指示，否則轉錄會失敗。本機的模型不支援提示詞與使用者文稿，選本機的模型時這些欄位會停用並註明原因。
 
 ### 步驟 3️⃣ — 開始轉錄
 
 - **單檔轉錄**：點擊「開始轉錄」，右側即時顯示 去靜音 → 上傳 → 轉錄 → 完成的進度。
-- **批次轉錄**：處理模式選擇「Batch（半價）」後送出，可關閉視窗稍後在 **📋 任務 (Tasks)** 頁面查看；批次即使重啟後端也會自動恢復。
+- **批次轉錄**：處理模式選擇「Batch（半價）」後送出，可關閉視窗稍後在 **📋 任務 (Tasks)** 頁面查看。批次還在等 Gemini 的結果時關掉應用程式（例如關掉免安裝版的黑色視窗），重新開啟後任務頁會把它標成「已中斷」；等結果時網路斷了，批次會標成「失敗」。兩種都按「恢復」接著等，不必重新上傳（要先在 Settings 設定 Gemini 的 API 金鑰）。還在上傳時就關掉的批次沒有送出給 Gemini，重新開啟後標成「失敗」，要重新送出。失敗的批次在任務頁留 24 小時。只有 Gemini 的模型支援 Flex 與批次，選本機的模型時這兩個選項會停用並註明原因，已經選了的會退回標準。
 
 ### 步驟 4️⃣ — 檢視與下載結果
 
@@ -148,11 +150,12 @@ docker compose --env-file .env down
 
 - 預覽逐字稿與時間戳。
 - 下載 `.lrc` / `.srt` / `.vtt` / `.txt`（批次可一鍵 ZIP 下載全部）。
+- SRT／VTT 的字幕照實際說話的時間顯示：另一位說話者插話時，兩行字幕會同時出現，靠行首的說話者標記分辨；同一位說話者的字幕不重疊。每一行至少顯示 0.8 秒，同一位說話者緊接著說下一句時例外。部分字幕編輯器會把重疊的字幕標成錯誤，原因見 [ADR-0008](docs/adr/0008-subtitles-follow-speech-and-may-overlap.md)。
 
 ### 步驟 5️⃣ — 追蹤紀錄與費用
 
 - **🕘 歷史 (History)**：列出所有完成的任務，可重新下載字幕。
-- **💰 計費 (Billing)**：依日期、模型查詢 Token 用量與成本。
+- **💰 計費 (Billing)**：依日期、模型查詢 Token 用量與成本；失敗與取消的任務已經用掉的 Token 與費用也算在內，檔案數只算完成的。
 - **📊 儀表板 (Dashboard)**：總覽近期使用統計。
 
 > 💡 **省錢技巧**：非急件大量檔案請使用「批次轉錄」，費用直接 5 折。
@@ -209,7 +212,7 @@ AI_translate/
 │   │   ├── core/            # 設定、預設 Prompt（單一真實來源）
 │   │   ├── database/        # ORM 模型、自動遷移
 │   │   ├── provider/        # google（Gemini）與 local（MOSS／VibeVoice + Qwen3-ASR／ForcedAligner）客戶端
-│   │   ├── services/        # vad / transcription / converter / calculator
+│   │   ├── services/        # silence_removal（去靜音）/ vad / transcription / output_format（輸出格式）/ calculator
 │   │   └── websocket/       # ConnectionManager + Redis 監聽器
 │   └── main.py
 ├── frontend/                # React 19 + Vite 6
@@ -227,27 +230,20 @@ AI_translate/
 
 ### 新增 AI 模型
 
-1. 在 `frontend/src/constants/modelConfig.js` 新增選項：
+供應商、模型與模型能力只寫在後端，前端從 `GET /api/v1/providers` 讀，不必改前端：
 
-```javascript
-export const modelOptions = {
-  Google: [
-    { value: 'gemini-2.5-flash', label: 'gemini-2.5-flash' },
-    { value: 'gemini-2.5-pro', label: 'gemini-2.5-pro' },
-  ],
-};
-```
-
-2. 若是新供應商，於 `backend/app/provider/{provider}/` 新增對應客戶端模組。
+1. Gemini 的模型加進 `backend/app/provider/google/provider.py` 的 `MODELS`；本機的模型加進 `backend/app/provider/local/weights.py` 的 `MODEL_REPOS`，畫面上的名稱寫在 `backend/app/provider/local/provider.py` 的 `MODEL_LABELS`。清單的順序就是畫面的順序，第一個是預設。
+2. 在 `backend/app/services/calculator/flows.py` 的 `MODEL_PRICES` 補上價格。
+3. 若是新供應商，於 `backend/app/provider/{provider}/` 新增轉接器，並在 `backend/app/provider/registry.py` 登記。
 
 ### 修改預設 Prompt
 
-`backend/app/core/default_prompt.py` 是 **唯一真實來源**，內含 `DEFAULT_PROMPT_TEMPLATE` 與 `build_prompt()`。修改此檔即同步生效於前後端。
+`backend/app/core/default_prompt.py` 是 **唯一真實來源**，內含 `DEFAULT_PROMPT_TEMPLATE` 與 `build_prompt()`。修改此檔即同步生效於前後端。送出的提示詞是提示詞範本（設定頁存的，沒存過就是 `DEFAULT_PROMPT_TEMPLATE`）代入變數之後，空一行接上轉錄頁填的補充說明（照寫的送出，不代入變數）。
 
 ### 執行測試
 
 ```powershell
-backend\.venv\Scripts\python.exe tools/check.py           # 依序跑 ruff → basedpyright → pytest → ESLint → tsc → ratchet
+backend\.venv\Scripts\python.exe tools/check.py           # 依序跑 ruff → basedpyright → pytest → ESLint → tsc → vitest → ratchet
 backend\.venv\Scripts\python.exe tools/check.py pytest    # 只跑指定的項目
 ```
 
@@ -257,7 +253,11 @@ clone 之後執行一次下面這行，讓 git 在每次 commit 前跑快的檢�
 git config core.hooksPath .githooks
 ```
 
-> `tools/check.py` 是唯一的檢查清單，CI 與 pre-commit 跑的也是它。Python 的檢查要先安裝 `backend/requirements-dev.txt`，ESLint 與 tsc 要先在 `frontend/` 執行 `npm ci`。型別檢查只擋新增的錯誤：既有的 Python 錯誤記在錯誤清單 `.basedpyright/baseline.json`，有錯的舊前端檔標了 `// @ts-nocheck`；ratchet 確認兩者都沒有比 `origin/main` 多。修掉清單裡的錯誤時，basedpyright 會自己改寫錯誤清單，記得把它一起 commit。`pytest.ini` 已設定 `pythonpath = backend`，測試可直接 `from app.api import ...` 匯入；測試自帶 SQLite in-memory 與 mock，不需 Postgres/Redis。
+> `tools/check.py` 是唯一的檢查清單，CI 與 pre-commit 跑的也是它。Python 的檢查要先安裝 `backend/requirements-dev.txt`，ESLint、tsc 與 vitest 要先在 `frontend/` 執行 `npm ci`。型別檢查只擋新增的錯誤：既有的 Python 錯誤記在錯誤清單 `.basedpyright/baseline.json`，有錯的舊前端檔標了 `// @ts-nocheck`；ratchet 確認兩者都沒有比 `origin/main` 多。修掉清單裡的錯誤時，basedpyright 會自己改寫錯誤清單，記得把它一起 commit。`pytest.ini` 已設定 `pythonpath = backend`，測試可直接 `from app.api import ...` 匯入；測試自帶暫存的 SQLite 資料庫與 mock，不需 Postgres/Redis。
+
+### 評測轉錄品質
+
+`backend\.venv\Scripts\python.exe -m tools.eval eval ...` 拿轉錄結果和評測集的標準答案比對，算錯字率與說話者歸屬；標準答案留在 repo 外的研究區。用法見 [`tools/eval/README.md`](tools/eval/README.md)。
 
 ### 建置 Windows 免安裝發布包
 

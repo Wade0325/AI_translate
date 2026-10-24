@@ -1,30 +1,20 @@
 import asyncio
-import json
-from contextlib import suppress
+from contextlib import aclosing, suppress
 from typing import Dict, Optional
 
 from fastapi import WebSocket
 
-from app.core.config import get_settings
 from app.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
 
-settings = get_settings()
-REDIS_URL = settings.redis_url
-
-# Redis listener 重連退避（秒）
-_RECONNECT_INITIAL_DELAY = 1
-_RECONNECT_MAX_DELAY = 30
-
 
 class ConnectionManager:
-    """管理 WebSocket 連線和 Redis 訊息監聽。"""
+    """管理 WebSocket 連線，並把執行模式的狀態廣播轉送給對應的連線。"""
 
     def __init__(self):
         self.active_connections: Dict[str, WebSocket] = {}
         self._listener_task: Optional[asyncio.Task] = None
-        self._stopping = False
 
     async def connect(self, websocket: WebSocket, client_id: str):
         await websocket.accept()
@@ -37,10 +27,24 @@ class ConnectionManager:
         self.active_connections[client_id] = websocket
         logger.info(f"新的 WebSocket 連線: {client_id}")
 
-    def disconnect(self, client_id: str):
-        if client_id in self.active_connections:
+    def disconnect(self, client_id: str, websocket: WebSocket):
+        """把這條連線從登記移除。
+
+        同一個 client_id 已經登記了之後連上的另一條連線時不動它：例如重新轉錄時，伺服器還沒發現
+        舊連線斷了，新連線就連上來，舊連線之後才收尾（#203）。
+        """
+        if self.active_connections.get(client_id) is websocket:
             del self.active_connections[client_id]
             logger.info(f"WebSocket 連線關閉: {client_id}")
+
+    async def close(self, client_id: str, websocket: WebSocket, code: int = 1000):
+        """關掉這條連線並從登記移除；和 :meth:`disconnect` 一樣不動之後登記的另一條連線。
+
+        這條連線可能已經被新連線換掉、在 :meth:`connect` 裡關掉了，所以關閉時的錯誤不往外丟。
+        """
+        self.disconnect(client_id, websocket)
+        with suppress(Exception):
+            await websocket.close(code=code)
 
     async def send_personal_message(self, message: dict, client_id: str):
         websocket = self.active_connections.get(client_id)
@@ -50,119 +54,34 @@ class ConnectionManager:
             await websocket.send_json(message)
         except Exception as e:
             logger.error(f"傳送訊息至客戶端 {client_id} 時發生錯誤: {e}")
-            # 送訊息失敗代表連線已斷或不健康，從表中移除並嘗試關閉
-            self.disconnect(client_id)
-            with suppress(Exception):
-                await websocket.close(code=1011)
+            # 送訊息失敗代表連線已斷或不健康，從表中移除並嘗試關閉。等送出的期間可能已經有新連線
+            # 登記上來，所以只移除、只關這條
+            await self.close(client_id, websocket, code=1011)
 
-    async def local_listener(self):
-        """standalone 模式：消費行程內 local_bus 佇列並轉送至對應 WebSocket。"""
-        from app.runtime import local_bus
+    async def _listen(self):
+        """訂閱執行模式的狀態廣播，轉送至對應 WebSocket，直到被取消。"""
+        from app.runtime import run_mode
 
-        queue: asyncio.Queue = asyncio.Queue()
-        local_bus.bind(asyncio.get_running_loop(), queue)
-        logger.info("已綁定行程內 local_bus 狀態通道。")
-        try:
-            while not self._stopping:
-                try:
-                    data = await asyncio.wait_for(queue.get(), timeout=1.0)
-                except asyncio.TimeoutError:
-                    continue
-
+        async with aclosing(run_mode.get().subscribe()) as messages:
+            async for data in messages:
                 try:
                     # 完成訊息帶著整份字幕，只記摘要避免灌爆 log
-                    logger.info(f"從 local_bus 收到訊息: {str(data)[:200]}")
+                    logger.info(f"收到狀態訊息: {str(data)[:200]}")
                     client_id = data.get("client_id")
                     if client_id:
                         await self.send_personal_message(data, client_id)
                 except Exception as e:
-                    logger.error(f"處理 local_bus 訊息時發生錯誤: {e}")
-        finally:
-            local_bus.unbind()
-
-    async def redis_listener(self):
-        """docker 模式：訂閱 Redis pub/sub 並轉送至對應 WebSocket。
-
-        外層 while 確保 Redis 短暫斷線時自動以指數退避重連，
-        直到 shutdown() 被呼叫設定 _stopping=True。
-        """
-        import redis.asyncio as redis
-
-        delay = _RECONNECT_INITIAL_DELAY
-        while not self._stopping:
-            r = None
-            pubsub = None
-            try:
-                r = redis.from_url(REDIS_URL, encoding="utf-8", decode_responses=True)
-                pubsub = r.pubsub()
-                await pubsub.subscribe("transcription_updates")
-                logger.info("已訂閱 'transcription_updates' Redis 頻道。")
-                delay = _RECONNECT_INITIAL_DELAY  # 連線成功後重置退避
-
-                while not self._stopping:
-                    try:
-                        message = await pubsub.get_message(
-                            ignore_subscribe_messages=True, timeout=1.0
-                        )
-                    except asyncio.CancelledError:
-                        raise
-                    except Exception as e:
-                        logger.error(f"Redis get_message 發生錯誤: {e}")
-                        break  # 跳出內層，由外層重連
-
-                    if not message:
-                        continue
-
-                    try:
-                        # 完成訊息帶著整份字幕，只記摘要避免灌爆 log
-                        logger.info(f"從 Redis 收到訊息: {str(message['data'])[:200]}")
-                        data = json.loads(message["data"])
-                        client_id = data.get("client_id")
-                        if client_id:
-                            await self.send_personal_message(data, client_id)
-                    except Exception as e:
-                        logger.error(f"處理 Redis 訊息時發生錯誤: {e}")
-
-            except asyncio.CancelledError:
-                logger.info("Redis listener 被取消")
-                raise
-            except Exception as e:
-                logger.error(f"Redis listener 連線失敗: {e}")
-            finally:
-                if pubsub is not None:
-                    with suppress(Exception):
-                        await pubsub.unsubscribe("transcription_updates")
-                    with suppress(Exception):
-                        await pubsub.close()
-                if r is not None:
-                    with suppress(Exception):
-                        await r.close()
-
-            if self._stopping:
-                break
-            logger.info(f"Redis listener 將在 {delay}s 後重連...")
-            try:
-                await asyncio.sleep(delay)
-            except asyncio.CancelledError:
-                raise
-            delay = min(delay * 2, _RECONNECT_MAX_DELAY)
+                    logger.error(f"處理狀態訊息時發生錯誤: {e}")
 
     def start(self) -> asyncio.Task:
-        """由 lifespan 呼叫，啟動背景 listener（依執行模式選擇通道）。"""
-        self._stopping = False
+        """由 lifespan 呼叫，在背景啟動狀態監聽器。"""
         if self._listener_task is None or self._listener_task.done():
-            if settings.is_standalone:
-                coro = self.local_listener()
-            else:
-                coro = self.redis_listener()
-            self._listener_task = asyncio.create_task(coro)
+            self._listener_task = asyncio.create_task(self._listen())
             logger.info("WebSocket 狀態監聽器已在背景啟動。")
         return self._listener_task
 
     async def shutdown(self):
         """由 lifespan 呼叫，乾淨地關閉 listener 與所有 WebSocket。"""
-        self._stopping = True
-
         if self._listener_task and not self._listener_task.done():
             self._listener_task.cancel()
             with suppress(asyncio.CancelledError):

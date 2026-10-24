@@ -2,18 +2,26 @@
     "files": {
         "./backend/app/api/batch.py": [
             {
-                "code": "reportGeneralTypeIssues",
+                "code": "reportArgumentType",
                 "range": {
-                    "startColumn": 11,
-                    "endColumn": 32,
+                    "startColumn": 39,
+                    "endColumn": 69,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportCallIssue",
+                "range": {
+                    "startColumn": 15,
+                    "endColumn": 45,
                     "lineCount": 1
                 }
             },
             {
                 "code": "reportArgumentType",
                 "range": {
-                    "startColumn": 33,
-                    "endColumn": 54,
+                    "startColumn": 28,
+                    "endColumn": 40,
                     "lineCount": 1
                 }
             },
@@ -28,8 +36,16 @@
             {
                 "code": "reportArgumentType",
                 "range": {
-                    "startColumn": 43,
-                    "endColumn": 61,
+                    "startColumn": 44,
+                    "endColumn": 62,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportGeneralTypeIssues",
+                "range": {
+                    "startColumn": 17,
+                    "endColumn": 91,
                     "lineCount": 1
                 }
             },
@@ -76,40 +92,16 @@
             {
                 "code": "reportArgumentType",
                 "range": {
-                    "startColumn": 30,
-                    "endColumn": 51,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportGeneralTypeIssues",
-                "range": {
-                    "startColumn": 56,
-                    "endColumn": 77,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportGeneralTypeIssues",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 82,
+                    "startColumn": 21,
+                    "endColumn": 33,
                     "lineCount": 1
                 }
             },
             {
                 "code": "reportArgumentType",
                 "range": {
-                    "startColumn": 36,
-                    "endColumn": 52,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportGeneralTypeIssues",
-                "range": {
-                    "startColumn": 11,
-                    "endColumn": 30,
+                    "startColumn": 30,
+                    "endColumn": 51,
                     "lineCount": 1
                 }
             }
@@ -239,7 +231,7 @@
                 "code": "reportGeneralTypeIssues",
                 "range": {
                     "startColumn": 7,
-                    "endColumn": 32,
+                    "endColumn": 41,
                     "lineCount": 1
                 }
             },
@@ -398,90 +390,82 @@
                 }
             }
         ],
-        "./backend/app/celery/cancellation.py": [
+        "./backend/app/celery/task.py": [
             {
-                "code": "reportOperatorIssue",
+                "code": "reportOptionalMemberAccess",
                 "range": {
-                    "startColumn": 19,
-                    "endColumn": 58,
-                    "lineCount": 2
-                }
-            },
-            {
-                "code": "reportAttributeAccessIssue",
-                "range": {
-                    "startColumn": 21,
-                    "endColumn": 27,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./backend/app/celery/notifier.py": [
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 8,
-                    "endColumn": 25,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./backend/app/core/default_prompt.py": [
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 23,
-                    "endColumn": 27,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 20,
-                    "endColumn": 24,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./backend/app/provider/google/gemini.py": [
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 61,
-                    "endColumn": 67,
+                    "startColumn": 34,
+                    "endColumn": 38,
                     "lineCount": 1
                 }
             },
             {
                 "code": "reportOptionalMemberAccess",
                 "range": {
-                    "startColumn": 28,
+                    "startColumn": 51,
+                    "endColumn": 53,
+                    "lineCount": 1
+                }
+            }
+        ],
+        "./backend/app/provider/base.py": [
+            {
+                "code": "reportReturnType",
+                "range": {
+                    "startColumn": 30,
+                    "endColumn": 61,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportReturnType",
+                "range": {
+                    "startColumn": 9,
                     "endColumn": 32,
                     "lineCount": 1
                 }
-            },
+            }
+        ],
+        "./backend/app/provider/google/provider.py": [
             {
-                "code": "reportArgumentType",
+                "code": "reportCallIssue",
                 "range": {
-                    "startColumn": 48,
-                    "endColumn": 64,
+                    "startColumn": 15,
+                    "endColumn": 38,
+                    "lineCount": 3
+                }
+            }
+        ],
+        "./backend/app/provider/registry.py": [
+            {
+                "code": "reportReturnType",
+                "range": {
+                    "startColumn": 30,
+                    "endColumn": 61,
                     "lineCount": 1
                 }
             },
             {
-                "code": "reportOptionalMemberAccess",
+                "code": "reportReturnType",
                 "range": {
-                    "startColumn": 25,
-                    "endColumn": 29,
+                    "startColumn": 52,
+                    "endColumn": 60,
                     "lineCount": 1
                 }
             },
             {
-                "code": "reportArgumentType",
+                "code": "reportReturnType",
                 "range": {
-                    "startColumn": 51,
-                    "endColumn": 56,
+                    "startColumn": 55,
+                    "endColumn": 58,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportAssignmentType",
+                "range": {
+                    "startColumn": 52,
+                    "endColumn": 66,
                     "lineCount": 1
                 }
             }
@@ -490,8 +474,24 @@
             {
                 "code": "reportAttributeAccessIssue",
                 "range": {
-                    "startColumn": 16,
-                    "endColumn": 22,
+                    "startColumn": 12,
+                    "endColumn": 18,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 12,
+                    "endColumn": 33,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 20,
+                    "endColumn": 31,
                     "lineCount": 1
                 }
             }
@@ -540,6 +540,14 @@
         ],
         "./backend/app/repositories/model_manager_repository.py": [
             {
+                "code": "reportReturnType",
+                "range": {
+                    "startColumn": 11,
+                    "endColumn": 38,
+                    "lineCount": 1
+                }
+            },
+            {
                 "code": "reportAttributeAccessIssue",
                 "range": {
                     "startColumn": 22,
@@ -566,6 +574,14 @@
         ],
         "./backend/app/repositories/transcript_segment_repository.py": [
             {
+                "code": "reportReturnType",
+                "range": {
+                    "startColumn": 11,
+                    "endColumn": 67,
+                    "lineCount": 1
+                }
+            },
+            {
                 "code": "reportGeneralTypeIssues",
                 "range": {
                     "startColumn": 15,
@@ -582,28 +598,72 @@
                 }
             }
         ],
-        "./backend/app/runtime/dispatch.py": [
+        "./backend/app/repositories/transcription_log_repository.py": [
             {
-                "code": "reportFunctionMemberAccess",
+                "code": "reportArgumentType",
                 "range": {
-                    "startColumn": 41,
-                    "endColumn": 52,
+                    "startColumn": 20,
+                    "endColumn": 31,
                     "lineCount": 1
                 }
             },
             {
-                "code": "reportFunctionMemberAccess",
+                "code": "reportArgumentType",
                 "range": {
-                    "startColumn": 33,
-                    "endColumn": 38,
+                    "startColumn": 20,
+                    "endColumn": 31,
                     "lineCount": 1
                 }
-            },
+            }
+        ],
+        "./backend/app/runtime/celery_redis.py": [
             {
                 "code": "reportFunctionMemberAccess",
                 "range": {
                     "startColumn": 30,
-                    "endColumn": 35,
+                    "endColumn": 41,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportFunctionMemberAccess",
+                "range": {
+                    "startColumn": 37,
+                    "endColumn": 42,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportFunctionMemberAccess",
+                "range": {
+                    "startColumn": 34,
+                    "endColumn": 39,
+                    "lineCount": 1
+                }
+            }
+        ],
+        "./backend/app/runtime/run_mode.py": [
+            {
+                "code": "reportReturnType",
+                "range": {
+                    "startColumn": 54,
+                    "endColumn": 57,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportReturnType",
+                "range": {
+                    "startColumn": 61,
+                    "endColumn": 64,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportReturnType",
+                "range": {
+                    "startColumn": 27,
+                    "endColumn": 46,
                     "lineCount": 1
                 }
             }
@@ -618,69 +678,37 @@
                 }
             }
         ],
-        "./backend/app/services/transcription/flows.py": [
+        "./backend/app/services/chunked_transcription.py": [
             {
                 "code": "reportCallIssue",
                 "range": {
                     "startColumn": 19,
-                    "endColumn": 13,
-                    "lineCount": 5
-                }
-            },
-            {
-                "code": "reportCallIssue",
-                "range": {
-                    "startColumn": 19,
-                    "endColumn": 13,
-                    "lineCount": 5
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 40,
-                    "endColumn": 45,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 41,
-                    "endColumn": 46,
+                    "endColumn": 80,
                     "lineCount": 1
                 }
             },
             {
                 "code": "reportCallIssue",
                 "range": {
-                    "startColumn": 19,
-                    "endColumn": 13,
-                    "lineCount": 5
-                }
-            },
-            {
-                "code": "reportCallIssue",
-                "range": {
-                    "startColumn": 19,
-                    "endColumn": 13,
-                    "lineCount": 5
-                }
-            },
-            {
-                "code": "reportCallIssue",
-                "range": {
-                    "startColumn": 23,
-                    "endColumn": 17,
-                    "lineCount": 5
-                }
-            },
-            {
-                "code": "reportOptionalMemberAccess",
-                "range": {
-                    "startColumn": 67,
-                    "endColumn": 89,
+                    "startColumn": 31,
+                    "endColumn": 69,
                     "lineCount": 1
+                }
+            },
+            {
+                "code": "reportCallIssue",
+                "range": {
+                    "startColumn": 16,
+                    "endColumn": 96,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportCallIssue",
+                "range": {
+                    "startColumn": 11,
+                    "endColumn": 5,
+                    "lineCount": 8
                 }
             }
         ],
@@ -744,41 +772,65 @@
         ],
         "./backend/app/tasks/batch_core.py": [
             {
-                "code": "reportArgumentType",
+                "code": "reportReturnType",
                 "range": {
-                    "startColumn": 24,
-                    "endColumn": 28,
+                    "startColumn": 11,
+                    "endColumn": 53,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportGeneralTypeIssues",
+                "range": {
+                    "startColumn": 11,
+                    "endColumn": 30,
                     "lineCount": 1
                 }
             },
             {
                 "code": "reportArgumentType",
                 "range": {
-                    "startColumn": 20,
-                    "endColumn": 24,
+                    "startColumn": 32,
+                    "endColumn": 52,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportGeneralTypeIssues",
+                "range": {
+                    "startColumn": 57,
+                    "endColumn": 77,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportGeneralTypeIssues",
+                "range": {
+                    "startColumn": 38,
+                    "endColumn": 42,
                     "lineCount": 1
                 }
             },
             {
                 "code": "reportArgumentType",
                 "range": {
-                    "startColumn": 18,
-                    "endColumn": 32,
+                    "startColumn": 25,
+                    "endColumn": 29,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportGeneralTypeIssues",
+                "range": {
+                    "startColumn": 33,
+                    "endColumn": 68,
                     "lineCount": 1
                 }
             },
             {
                 "code": "reportArgumentType",
                 "range": {
-                    "startColumn": 59,
-                    "endColumn": 70,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 72,
+                    "startColumn": 67,
                     "endColumn": 80,
                     "lineCount": 1
                 }
@@ -786,32 +838,24 @@
             {
                 "code": "reportArgumentType",
                 "range": {
-                    "startColumn": 28,
-                    "endColumn": 94,
+                    "startColumn": 46,
+                    "endColumn": 79,
                     "lineCount": 1
+                }
+            },
+            {
+                "code": "reportGeneralTypeIssues",
+                "range": {
+                    "startColumn": 7,
+                    "endColumn": 78,
+                    "lineCount": 2
                 }
             },
             {
                 "code": "reportArgumentType",
                 "range": {
-                    "startColumn": 25,
-                    "endColumn": 91,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 24,
-                    "endColumn": 47,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 21,
-                    "endColumn": 47,
+                    "startColumn": 26,
+                    "endColumn": 38,
                     "lineCount": 1
                 }
             },
@@ -819,73 +863,23 @@
                 "code": "reportArgumentType",
                 "range": {
                     "startColumn": 52,
-                    "endColumn": 63,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportPossiblyUnboundVariable",
-                "range": {
-                    "startColumn": 27,
-                    "endColumn": 41,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportPossiblyUnboundVariable",
-                "range": {
-                    "startColumn": 40,
-                    "endColumn": 54,
+                    "endColumn": 64,
                     "lineCount": 1
                 }
             },
             {
                 "code": "reportArgumentType",
                 "range": {
-                    "startColumn": 74,
-                    "endColumn": 85,
+                    "startColumn": 30,
+                    "endColumn": 42,
                     "lineCount": 1
                 }
             },
             {
-                "code": "reportArgumentType",
+                "code": "reportOptionalMemberAccess",
                 "range": {
-                    "startColumn": 87,
-                    "endColumn": 95,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./backend/app/tasks/transcribe_core.py": [
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 93,
-                    "endColumn": 97,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 28,
-                    "endColumn": 51,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 25,
-                    "endColumn": 51,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 39,
-                    "endColumn": 48,
+                    "startColumn": 61,
+                    "endColumn": 71,
                     "lineCount": 1
                 }
             },
@@ -893,6 +887,38 @@
                 "code": "reportArgumentType",
                 "range": {
                     "startColumn": 22,
+                    "endColumn": 39,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 17,
+                    "endColumn": 29,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 26,
+                    "endColumn": 47,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 17,
+                    "endColumn": 50,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 18,
                     "endColumn": 31,
                     "lineCount": 1
                 }
@@ -900,15 +926,57 @@
             {
                 "code": "reportArgumentType",
                 "range": {
-                    "startColumn": 35,
-                    "endColumn": 74,
+                    "startColumn": 59,
+                    "endColumn": 87,
                     "lineCount": 1
                 }
             },
             {
                 "code": "reportArgumentType",
                 "range": {
-                    "startColumn": 32,
+                    "startColumn": 15,
+                    "endColumn": 25,
+                    "lineCount": 1
+                }
+            }
+        ],
+        "./backend/app/tasks/lifecycle.py": [
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 21,
+                    "endColumn": 42,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 22,
+                    "endColumn": 62,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 30,
+                    "endColumn": 60,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 21,
+                    "endColumn": 42,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 18,
                     "endColumn": 41,
                     "lineCount": 1
                 }
@@ -916,16 +984,146 @@
             {
                 "code": "reportArgumentType",
                 "range": {
-                    "startColumn": 32,
-                    "endColumn": 41,
+                    "startColumn": 24,
+                    "endColumn": 52,
                     "lineCount": 1
                 }
             },
             {
                 "code": "reportArgumentType",
                 "range": {
-                    "startColumn": 40,
-                    "endColumn": 49,
+                    "startColumn": 24,
+                    "endColumn": 46,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 23,
+                    "endColumn": 40,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 21,
+                    "endColumn": 36,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportGeneralTypeIssues",
+                "range": {
+                    "startColumn": 61,
+                    "endColumn": 85,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 32,
+                    "endColumn": 43,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 44,
+                    "endColumn": 55,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportOptionalMemberAccess",
+                "range": {
+                    "startColumn": 42,
+                    "endColumn": 46,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportOptionalMemberAccess",
+                "range": {
+                    "startColumn": 76,
+                    "endColumn": 80,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 16,
+                    "endColumn": 31,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 45,
+                    "endColumn": 60,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportGeneralTypeIssues",
+                "range": {
+                    "startColumn": 7,
+                    "endColumn": 62,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 46,
+                    "endColumn": 70,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 77,
+                    "endColumn": 95,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 14,
+                    "endColumn": 37,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 55,
+                    "endColumn": 83,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 17,
+                    "endColumn": 53,
+                    "lineCount": 1
+                }
+            }
+        ],
+        "./backend/app/tasks/transcribe_core.py": [
+            {
+                "code": "reportCallIssue",
+                "range": {
+                    "startColumn": 15,
+                    "endColumn": 86,
                     "lineCount": 1
                 }
             }
@@ -936,6 +1134,16 @@
                 "range": {
                     "startColumn": 29,
                     "endColumn": 33,
+                    "lineCount": 1
+                }
+            }
+        ],
+        "./backend/app/websocket/manager.py": [
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 28,
+                    "endColumn": 54,
                     "lineCount": 1
                 }
             }

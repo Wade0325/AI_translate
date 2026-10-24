@@ -1,5 +1,4 @@
 from datetime import datetime
-import json
 
 from fastapi import (
     APIRouter,
@@ -11,13 +10,19 @@ from fastapi import (
 from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session
 from app.celery.models import BatchTranscriptionTaskParams, BatchFileItemParams
-from app.runtime import dispatch
+from app.runtime import run_mode
+from app.core.batch_state import IN_PROGRESS
 from app.core.config import get_settings
-from app.database.session import SessionLocal, get_db
+from app.core.task_status import TaskStatus
+from app.database.session import SessionLocal, get_db, traceback_without_db_details
+from app.provider.registry import UnsupportedModelError, check_request
 from app.repositories.batch_job_repository import BatchJobRepository
+from app.repositories.model_manager_repository import stored_prompt_template
+from app.services import audio_store
 from app.services.api_keys import resolve_api_key
+from app.tasks import batch_core
 from app.utils.logger import setup_logger
-from app.utils.paths import UnsafeUploadFilenameError, resolve_upload_path
+from app.utils.paths import MissingUploadError, UnsafeUploadFilenameError, existing_upload_path
 from app.websocket.manager import manager
 from app.schemas.schemas import (
     WebSocketBatchRequest,
@@ -43,23 +48,22 @@ batch_repo = BatchJobRepository()
 
 @router.get("/tasks", response_model=list[BatchTaskResponse])
 def get_batch_tasks(db: Session = Depends(get_db)):
-    """取得所有活躍的批次（Task 頁面用），自動歸檔超過 24 小時的已完成批次。"""
+    """取得所有活躍的批次（Task 頁面用），自動歸檔超過 24 小時的已完成批次。
+
+    每個批次附上任務頁要不要給「恢復」（:func:`~app.tasks.batch_core.recoverable`）。
+    """
     archived = batch_repo.archive_old_completed(db)
     if archived > 0:
         logger.info(f"自動歸檔 {archived} 個超過 24 小時的已完成批次")
 
     jobs = batch_repo.get_active_tasks(db)
+    files_of = batch_repo.files_of(db, [job.batch_id for job in jobs])
     results = []
     for job in jobs:
-        files = []
-        if job.file_mapping_json:
-            mapping = json.loads(job.file_mapping_json)
-            for idx in sorted(mapping.keys(), key=int):
-                entry = mapping[idx]
-                files.append(BatchTaskFile(
-                    file_uid=entry["file_uid"],
-                    original_filename=entry["original_filename"],
-                ))
+        # 每個檔案在 batch_files 各一列，建立批次時就有（#116）
+        rows = files_of.get(job.batch_id, [])
+        files = [BatchTaskFile(file_uid=row.file_uid, original_filename=row.original_filename)
+                 for row in rows]
 
         elapsed = None
         if job.created_at:
@@ -68,12 +72,13 @@ def get_batch_tasks(db: Session = Depends(get_db)):
             elapsed = (datetime.now() - job.created_at).total_seconds()
 
         is_alive = None
-        if job.status in ("UPLOADING", "POLLING", "RECOVERING"):
-            alive = dispatch.task_is_alive(job.celery_task_id)
+        if job.status in IN_PROGRESS:
+            alive = run_mode.get().is_alive(job.celery_task_id)
             if alive is not None:
                 is_alive = alive
-            elif elapsed and elapsed > 300:
-                # PENDING 狀態超過 5 分鐘，極大概率已死
+            elif job.updated_at and (datetime.now() - job.updated_at).total_seconds() > 300:
+                # 查不出來（PENDING）、派出看著它的任務（或改狀態）之後又超過 5 分鐘：極大概率已死。
+                # 從派出的時候算，剛派出去、還排在佇列裡的復原不算停住。任務頁照它標「已中斷」、給「恢復」
                 is_alive = False
 
         results.append(BatchTaskResponse(
@@ -85,6 +90,7 @@ def get_batch_tasks(db: Session = Depends(get_db)):
             elapsed_seconds=elapsed,
             files=files,
             session_id=job.session_id or job.batch_id,
+            recoverable=batch_core.recoverable(job, rows, alive=is_alive),
         ))
     return results
 
@@ -105,62 +111,49 @@ def recover_batch(batch_id: str, body: RecoverBatchRequest, db: Session = Depend
     """
     恢復指定批次的結果。
 
-    - status=COMPLETED 且有 results_json：直接從 DB 讀取結果
-    - 其他情況：透過 Celery task 從 Gemini 取得結果（batches.get 只能在 worker 中運行）
+    - 批次已經結束：回傳完成的檔案的結果，從任務紀錄與片段讀出
+    - 其他情況：派送復原入口接手批次（batches.get 只能在 worker 中運行），接著輪詢到批次結束
     """
     job = batch_repo.get_job(db, batch_id)
     if not job:
         raise HTTPException(status_code=404, detail="找不到此批次任務")
 
-    file_mapping = json.loads(job.file_mapping_json) if job.file_mapping_json else {}
-
     # ============================================================
-    # 快速路徑：有存檔結果 → 直接從 DB 回傳
+    # 快速路徑：批次已經結束 → 直接從 DB 回傳
     # ============================================================
-    if job.status in ("COMPLETED", "RETRIEVED", "RECOVERING") and job.results_json:
-        logger.info(f"恢復批次 {batch_id}: 從 DB 讀取已存檔的結果 (status={job.status})")
-        stored_results = json.loads(job.results_json)
-
-        file_results = []
-        for file_uid, result_data in stored_results.items():
-            original_filename = file_uid
-            for entry in file_mapping.values():
-                if entry.get("file_uid") == file_uid:
-                    original_filename = entry.get("original_filename", file_uid)
-                    break
-
-            file_results.append(RecoverFileResult(
-                file_uid=file_uid,
-                original_filename=original_filename,
-                status="COMPLETED",
-                result=result_data,
-            ))
-
-        batch_repo.update_job(db, batch_id, {"status": "RETRIEVED"})
+    completed = batch_core.completed_results(db, job)
+    if completed is not None:
+        logger.info(f"恢復批次 {batch_id}: 從 DB 讀取完成的結果 (status={job.status})")
+        file_results = [RecoverFileResult(
+            file_uid=row.file_uid,
+            original_filename=row.original_filename,
+            status=TaskStatus.COMPLETED,
+            result=result,
+        ) for row, result in completed]
+        batch_repo.mark_as_retrieved(db, batch_id)
         return RecoverBatchResponse(batch_id=batch_id, files=file_results)
 
     # ============================================================
-    # Celery 路徑：派送 Celery task 從 Gemini 取得結果
+    # 復原路徑：派送背景任務從 Gemini 取得結果
     # ============================================================
-    if not job.gemini_job_name:
-        raise HTTPException(status_code=400, detail="此任務尚未建立 Gemini batch job，無法恢復")
+    refusal = batch_core.recovery_refusal(db, job)
+    if refusal is not None:
+        raise HTTPException(status_code=400, detail=refusal)
 
     # 前端不再保存明文金鑰：請求沒帶（或只帶遮罩值）時改用資料庫裡的 Google 金鑰
     api_key = resolve_api_key(db, "Google", body.api_keys)
     if not api_key:
         raise HTTPException(
             status_code=400,
-            detail="Gemini 批次任務尚在處理中，需要 API 金鑰才能查詢狀態，"
-                   "請先到 Settings 設定 Google API 金鑰",
+            detail="需要 Gemini 的 API 金鑰才能查詢批次的結果，請先到 Settings 設定",
         )
 
     logger.info(f"恢復批次 {batch_id}: 派送背景任務從 Gemini 取得結果 (當前狀態={job.status})")
+    # 派送背景任務非同步處理，結果稍後透過 WebSocket 通知前端；批次剛好完成了就不派送，
+    # 之後再取回就走快速路徑
+    batch_core.start_recovery(db, batch_id, api_key)
 
-    # 派送背景任務非同步處理。結果稍後透過 WebSocket / pending API 通知前端
-    batch_repo.update_job(db, batch_id, {"status": "RECOVERING"})
-    dispatch.submit_recover(batch_id, api_key)
-
-    # 立刻回傳空結果；前端應透過 WebSocket 或重新查詢 /pending 取得最新狀態
+    # 立刻回傳空結果；前端應透過 WebSocket 或重新查詢 /tasks 取得最新狀態
     return RecoverBatchResponse(batch_id=batch_id, files=[])
 
 
@@ -171,27 +164,47 @@ def start_batch_task_sync(payload_str: str, batch_id: str) -> list[dict]:
     同步函式：解析批次請求並派發批次轉錄任務。
     在獨立執行緒中執行以避免阻塞事件迴圈。
 
-    檔名不合法（不是 temp_uploads 內的單純檔名）的檔案不派發，其餘照常；
+    檔名不合法（不是 temp_uploads 內的單純檔名）或上傳檔已經不在的檔案不派發，其餘照常，
+    一個都不剩時整批不派發；模型不屬於所選供應商、不支援批次或不吃提示詞時也整批不派發。
     回傳被拒檔案的 FAILED 訊息，由 WS 端點送回前端。
     """
     request_data = WebSocketBatchRequest.model_validate_json(payload_str)
+
+    try:
+        # 批次層級與各檔案的提示詞串在一起檢查：任一個填了，串起來就不是空白
+        all_prompts = "".join(p or "" for p in (
+            request_data.prompt, *(f.prompt for f in request_data.files)))
+        provider, _ = check_request(request_data.provider, request_data.model,
+                                    prompt=all_prompts, batch=True)
+    except UnsupportedModelError as e:
+        logger.warning(f"批次 {batch_id} 被拒: {e}")
+        # 被拒絕的批次不會執行：上傳檔不留在電腦上（前端重新送出時會重新上傳）
+        for f in request_data.files:
+            audio_store.discard_upload(f.filename, TEMP_UPLOADS_DIR)
+        return [{
+            "client_id": batch_id,
+            "file_uid": f.file_uid,
+            "status_code": TaskStatus.FAILED,
+            "status_text": str(e),
+        } for f in request_data.files]
 
     file_items = []
     rejected = []
     for f in request_data.files:
         try:
-            temp_file_path = resolve_upload_path(f.filename, TEMP_UPLOADS_DIR)
-        except UnsafeUploadFilenameError as e:
-            logger.warning(f"批次任務拒絕不合法的上傳檔名 (file_uid: {f.file_uid}): {f.filename!r}")
+            temp_file_path = existing_upload_path(f.filename, TEMP_UPLOADS_DIR)
+        except (UnsafeUploadFilenameError, MissingUploadError) as e:
+            if isinstance(e, UnsafeUploadFilenameError):
+                logger.warning(f"批次拒絕不合法的上傳檔名 (file_uid: {f.file_uid}): {f.filename!r}")
+            else:
+                logger.error(f"批次的檔案不存在 (file_uid: {f.file_uid}): {f.filename!r}")
+            # 沒送出的檔案也回失敗狀態，使用者才知道它沒有送出
             rejected.append({
                 "client_id": batch_id,
                 "file_uid": f.file_uid,
-                "status_code": "FAILED",
+                "status_code": TaskStatus.FAILED,
                 "status_text": str(e),
             })
-            continue
-        if not temp_file_path.is_file():
-            logger.error(f"批次任務檔案不存在: {f.filename}")
             continue
 
         file_items.append(BatchFileItemParams(
@@ -205,28 +218,31 @@ def start_batch_task_sync(payload_str: str, batch_id: str) -> list[dict]:
         ))
 
     if not file_items:
-        logger.error(f"批次任務 {batch_id} 沒有有效的檔案，取消任務")
+        logger.error(f"批次 {batch_id} 沒有有效的檔案，不派送")
         return rejected
 
     # 前端不再送明文金鑰：缺少或只帶遮罩值時改用資料庫裡的金鑰
     with SessionLocal() as db:
-        api_key = resolve_api_key(db, request_data.provider, request_data.api_keys)
+        api_key = resolve_api_key(db, provider, request_data.api_keys)
+        # 提示詞範本也從設定讀（#144）：整個批次共用派送時設定頁存的範本，接上每個檔案的補充說明
+        prompt_template = stored_prompt_template(db, provider)
 
     task_params = BatchTranscriptionTaskParams(
         files=file_items,
-        provider=request_data.provider,
+        provider=provider,
         model=request_data.model,
         api_keys=api_key,
         source_lang=request_data.source_lang,
         target_lang=request_data.target_lang,
         prompt=request_data.prompt,
+        prompt_template=prompt_template,
         multi_speaker=request_data.multi_speaker,
         client_id=batch_id,
         batch_id=batch_id,
         session_id=request_data.session_id or batch_id,
     )
 
-    dispatch.submit_batch(task_params.model_dump())
+    run_mode.get().submit_batch(task_params.model_dump())
     logger.info(f"已為 batch_id: {batch_id} 啟動批次轉錄任務 ({len(file_items)} 個檔案)。")
     return rejected
 
@@ -262,12 +278,10 @@ async def batch_websocket_endpoint(
 
     except WebSocketDisconnect:
         logger.info(f"批次 WebSocket 連線由客戶端關閉: {batch_id}")
-        manager.disconnect(batch_id)
+        manager.disconnect(batch_id, websocket)
     except Exception as e:
-        logger.error(
-            f"批次 WebSocket 端點發生錯誤 (batch_id: {batch_id}): {e}",
-            exc_info=True,
-        )
-        if batch_id in manager.active_connections:
-            await manager.active_connections[batch_id].close()
-            manager.disconnect(batch_id)
+        # 資料庫例外（例如派送前讀不到設定）不轉述：log 只記類型與原因，traceback 留著出錯的位置
+        logger.error(f"批次 WebSocket 端點發生錯誤 (batch_id: {batch_id}):\n"
+                     f"{traceback_without_db_details(e)}")
+        # 只關、只移除這條連線：同一個 batch_id 的新連線可能已經登記上來（#203）
+        await manager.close(batch_id, websocket)

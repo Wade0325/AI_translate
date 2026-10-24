@@ -34,7 +34,7 @@ REPO_REVISIONS = {
     DIARIZATION_MODEL_ID: "f22241c2062b3b25272bf117397e03d73381037a",
 }
 
-# 前端 Local provider 的模型選項（frontend/src/constants/modelConfig.js）→ 需要的權重
+# 本機的模型（畫面照這裡的順序列出，第一個是預設；見 GET /providers）→ 需要的權重
 MOSS_ALIGN = "moss-align"
 MOSS_QWEN = "moss-qwen3-asr"
 VIBEVOICE_QWEN = "vibevoice-qwen3-asr"
@@ -176,7 +176,7 @@ def cuda_status() -> tuple[bool, str | None]:
 
 
 def ensure_local_ready(model: str | None = None) -> None:
-    """standalone 模式派發 local 轉錄前的前置檢查；不符合直接拋明確錯誤。"""
+    """本機轉錄前的前置檢查（由本機轉接器呼叫）；不符合直接拋明確錯誤。"""
     cuda_ok, _ = cuda_status()
     if not cuda_ok:
         raise ValueError("Local 轉錄需要 NVIDIA GPU，未偵測到可用的 CUDA 裝置")

@@ -3,11 +3,11 @@
 測試範圍：
   ModelSettingsRepository  — model_manager_repository.py
   HistoryRepository        — history_repository.py
-使用 SQLite in-memory 資料庫，透過 db_session fixture 確保每個測試後回滾。
+使用 SQLite 測試資料庫（tests/conftest.py 的 test_engine），透過 db_session fixture 確保每個測試後回滾。
 """
 import uuid
 from datetime import datetime, timedelta
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from app.database.models import TranscriptionLog
 from app.repositories.model_manager_repository import ModelSettingsRepository
@@ -335,3 +335,26 @@ class TestTranscriptionLogRepositoryStaleSweep:
         assert swept == 1
         db_session.refresh(legacy)
         assert legacy.status == "FAILED"
+
+class TestTranscriptionLogRepositoryFinishing:
+    """任務收尾的條件式更新：已經結束的紀錄不再改寫；狀態一律從資料庫讀。"""
+
+    def setup_method(self):
+        from app.repositories.transcription_log_repository import TranscriptionLogRepository
+        self.repo = TranscriptionLogRepository()
+
+    def test_finished_record_is_not_overwritten(self, db_session: Session):
+        log = _create_transcription_log(db_session, status="CANCELLED")
+
+        assert self.repo.update_log_if_processing(
+            db_session, log.task_uuid, {"status": "COMPLETED"}) is False
+        assert self.repo.current_status(db_session, log.task_uuid) == "CANCELLED"
+
+    def test_status_is_read_from_the_database_not_the_session(
+            self, db_session: Session, test_engine):
+        # 任務的 session 已經載入這筆紀錄；取消端點用另一個 session 把它改成已取消
+        log = _create_transcription_log(db_session, status="PROCESSING")
+        with sessionmaker(bind=test_engine)() as endpoint:
+            assert self.repo.mark_cancelled_if_processing(endpoint, log.task_uuid)
+
+        assert self.repo.current_status(db_session, log.task_uuid) == "CANCELLED"
