@@ -323,8 +323,8 @@ class _ChunkedTranscription:
     def _slice(self, chunk: _Chunk, names: Tuple[str, str],
                point: float) -> Optional[Tuple[_Chunk, _Chunk]]:
         """用 ffmpeg 在 ``point`` 秒把這一段切成兩個 wav；切不出來時回 None。"""
-        audios = (self._temp_dir / f"{chunk.audio.stem}.half1.wav",
-                  self._temp_dir / f"{chunk.audio.stem}.half2.wav")
+        audios = (self._temp_dir / f"{chunk.audio.stem}.chunk1.wav",
+                  self._temp_dir / f"{chunk.audio.stem}.chunk2.wav")
         self._temp_files.extend(audios)
         if not (slice_audio(chunk.audio, audios[0], end=point)
                 and slice_audio(chunk.audio, audios[1], start=point)):
