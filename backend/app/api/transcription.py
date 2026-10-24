@@ -1,3 +1,4 @@
+import traceback
 import uuid
 
 from fastapi import (
@@ -12,7 +13,7 @@ from app.runtime import run_mode
 from app.runtime.run_mode import publish_status
 from app.core.config import get_settings
 from app.core.task_status import TaskStatus
-from app.database.session import SessionLocal
+from app.database.session import SessionLocal, without_db_details
 from app.provider.registry import UnsupportedModelError, check_request
 from app.repositories.model_manager_repository import stored_prompt_template
 from app.repositories.transcription_log_repository import TranscriptionLogRepository
@@ -189,7 +190,8 @@ async def websocket_endpoint(
         logger.info(f"WebSocket 連線由客戶端或伺服器關閉: {file_uid}")
         manager.disconnect(file_uid, websocket)
     except Exception as e:
-        logger.error(
-            f"WebSocket 端點發生錯誤 (file_uid: {file_uid}): {e}", exc_info=True)
+        # 資料庫例外（例如派送前讀不到設定）不轉述：log 只記類型與原因，traceback 留著出錯的位置
+        logger.error(f"WebSocket 端點發生錯誤 (file_uid: {file_uid}):\n"
+                     f"{''.join(traceback.format_exception(without_db_details(e)))}")
         # 只關、只移除這條連線：重新轉錄的新連線可能已經登記在同一個 file_uid 底下（#203）
         await manager.close(file_uid, websocket)

@@ -29,7 +29,7 @@ batch_files 資料表各一列，建立批次時就有（#116 之前送出的批
 停在處理中，一樣從復原入口接著結束。上傳、送出與查詢遇到暫時錯誤（429、503）時，等一段時間再做
 一次那一步（:meth:`~app.exceptions.TransientError.wait_seconds`）。執行模式不重試整個批次：檔案都
 已經開始，整個批次再執行一次會替同一個音檔再開一個任務。資料庫出錯時照任務生命週期的規則，不轉述
-例外（:func:`~app.tasks.lifecycle.without_db_details`）。
+例外（:func:`~app.database.session.without_db_details`）。
 """
 
 from __future__ import annotations
@@ -50,7 +50,7 @@ from app.core.config import get_settings
 from app.core.default_prompt import build_prompt
 from app.core.task_status import TaskStatus
 from app.database.models import BatchFile, BatchJob
-from app.database.session import SessionLocal
+from app.database.session import SessionLocal, without_db_details
 from app.exceptions import TransientError
 from app.provider.base import BatchProvider, BatchStatus
 from app.provider.registry import open_batch_provider, provider_info, reopen_batch_provider
@@ -65,7 +65,6 @@ from app.tasks.lifecycle import (
     TaskLifecycle,
     completed_result,
     shown_to_user,
-    without_db_details,
 )
 from app.utils.logger import setup_logger
 from app.utils.paths import delete_temp_files

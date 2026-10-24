@@ -1,3 +1,4 @@
+import traceback
 from datetime import datetime
 
 from fastapi import (
@@ -14,7 +15,7 @@ from app.runtime import run_mode
 from app.core.batch_state import IN_PROGRESS
 from app.core.config import get_settings
 from app.core.task_status import TaskStatus
-from app.database.session import SessionLocal, get_db
+from app.database.session import SessionLocal, get_db, without_db_details
 from app.provider.registry import UnsupportedModelError, check_request
 from app.repositories.batch_job_repository import BatchJobRepository
 from app.repositories.model_manager_repository import stored_prompt_template
@@ -280,9 +281,8 @@ async def batch_websocket_endpoint(
         logger.info(f"批次 WebSocket 連線由客戶端關閉: {batch_id}")
         manager.disconnect(batch_id, websocket)
     except Exception as e:
-        logger.error(
-            f"批次 WebSocket 端點發生錯誤 (batch_id: {batch_id}): {e}",
-            exc_info=True,
-        )
+        # 資料庫例外（例如派送前讀不到設定）不轉述：log 只記類型與原因，traceback 留著出錯的位置
+        logger.error(f"批次 WebSocket 端點發生錯誤 (batch_id: {batch_id}):\n"
+                     f"{''.join(traceback.format_exception(without_db_details(e)))}")
         # 只關、只移除這條連線：同一個 batch_id 的新連線可能已經登記上來（#203）
         await manager.close(batch_id, websocket)

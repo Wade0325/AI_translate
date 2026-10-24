@@ -3,7 +3,7 @@ from celery.signals import worker_init
 
 from app.core.config import get_settings
 from app.runtime import run_mode
-from app.tasks.lifecycle import without_db_details
+from app.database.session import without_db_details
 from app.utils.logger import setup_logger
 
 logger = setup_logger(__name__)

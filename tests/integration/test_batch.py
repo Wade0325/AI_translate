@@ -18,7 +18,7 @@ from app.core.task_status import TaskStatus
 from app.exceptions import TransientError
 from app.runtime import run_mode
 from app.tasks import batch_core
-from tests.support.db_faults import writes_fail
+from tests.support.db_faults import NOT_NULL, rejected_row, writes_fail
 from tests.support.fake_provider import FAKE_MODEL, Fail, Restart
 from tests.support.older_batches import (
     SPANS,
@@ -421,6 +421,43 @@ def test_database_errors_are_not_passed_on(api, in_process_run_mode, batch_fake,
     assert "轉錄結果沒有存進資料庫" in messages[-1]["status_text"]
     assert not any("INSERT" in m["status_text"] for m in messages)
     assert not any("INSERT INTO" in entry for entry in app_log)
+
+
+@pytest.mark.parametrize("entry", ["run", "recovery"])
+def test_a_file_whose_result_cannot_be_stored_fails_alone_without_passing_on_the_row(
+        api, in_process_run_mode, batch_fake, test_engine, app_log, entry):
+    # 一個檔案的片段寫不進資料庫，Postgres 附上的那一列有轉錄結果（#175、#178）：只有這個檔案失敗，
+    # 同一批的其他檔案照常完成。畫面、任務紀錄與 log 都不轉述資料庫的例外。執行與復原（在輪詢時重啟
+    # 之後）都一樣
+    secret = "来期の人事はまだ内密に。"
+    batch_id = f"batch-secret-row-{entry}"
+    batch_fake.script = [list(LINES), [(0.2, 1.5, 0, secret)], list(LINES)]
+    if entry == "recovery":
+        batch_fake.batch_polls = [Restart()]
+        submit_batch(api, in_process_run_mode, batch_id, NAMES)
+    row = rejected_row("transcript_segments", f"1, 0f5c, 0-0, 0, 0.2, 1.5, S0, {secret}")
+    with writes_fail(test_engine, "transcript_segments", "INSERT", row,
+                     when="NEW.text LIKE '%内密%'"):
+        if entry == "run":
+            messages = run_batch(api, in_process_run_mode, batch_id, NAMES)
+        else:
+            messages = recover(api, batch_id)
+            in_process_run_mode.close(wait=True)  # 等復原整個跑完再拿掉 trigger
+
+    first, failed, third = ends(messages, NAMES)
+    assert codes([first, failed, third]) == [
+        TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.COMPLETED]
+    assert "轉錄結果沒有存進資料庫" in failed["status_text"]
+    shown = [m["status_text"] for m in messages] + [record(api, failed["task_uuid"])["error_message"]]
+    for text in shown:
+        for leaked in (secret, NOT_NULL, "INSERT"):
+            assert leaked not in text
+    log = "\n".join(app_log)
+    assert secret not in log
+    assert "[SQL:" not in log
+    # 排查只能靠 log（ADR-0005）：記下例外類型與資料庫回報的原因
+    assert "IntegrityError" in log
+    assert NOT_NULL in log
 
 
 def test_every_file_fails_when_the_whole_batch_fails(api, in_process_run_mode, batch_fake):
