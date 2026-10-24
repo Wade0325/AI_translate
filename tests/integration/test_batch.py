@@ -7,6 +7,7 @@
 保留音檔、暫存資料夾裡還留著哪些檔案、假供應商收到了什麼，以及批次存進資料庫的樣子。
 """
 import threading
+from contextlib import ExitStack
 from dataclasses import replace
 
 import pytest
@@ -934,6 +935,49 @@ def test_a_batch_archived_after_a_restart_can_still_be_recovered(
 
     assert of_file(messages, "archived-restarted.wav")[-1]["status_code"] == TaskStatus.COMPLETED
     assert listed(api, "batch-archived-restarted")["status"] == "COMPLETED"
+
+
+# ─── 同一個批次 id 的舊連線還沒收尾（#203） ─────────────────────────────────────
+# 同一個批次 id 先後有兩條連線（例如前端重送），伺服器還沒發現舊連線斷了，新連線就連上來：伺服器先關掉
+# 舊連線、登記新連線，舊連線的處理流程之後才收尾。收尾只能動舊連線自己，批次的狀態訊息才送得到新連線
+
+def left_open_after_rejection(ws) -> None:
+    """送出上傳檔已經不在的批次：整批不派送，端點回失敗之後連線照樣開著、等下一則訊息。"""
+    ws.send_json({
+        "files": [{"filename": "swept.wav", "original_filename": "swept.wav", "file_uid": "swept"}],
+        "provider": "fake", "model": FAKE_MODEL, "source_lang": "ja"})
+    assert receive(ws)["status_code"] == TaskStatus.FAILED
+
+
+def test_the_old_connection_disconnecting_later_keeps_the_new_one(
+        api, in_process_run_mode, batch_fake):
+    batch_fake.script = [list(LINES)]
+    path = "/api/v1/batch/ws/batch-old-disconnects"
+    with ExitStack() as old_connection:
+        left_open_after_rejection(old_connection.enter_context(api.websocket_connect(path)))
+        with api.websocket_connect(path) as ws:
+            old_connection.close()  # 舊連線的處理流程這時才收到斷線
+            ws.send_json(batch_request(api, ["reconnect.wav"]))
+            messages = receive_until(ws, TaskStatus.BATCH_COMPLETED)
+    wait_until(lambda: not in_process_run_mode.is_alive(messages[-1]["task_uuid"]))
+
+    assert of_file(messages, "reconnect.wav")[-1]["status_code"] == TaskStatus.COMPLETED
+
+
+def test_the_old_connection_failing_later_keeps_the_new_one(api, in_process_run_mode, batch_fake):
+    batch_fake.script = [list(LINES)]
+    path = "/api/v1/batch/ws/batch-old-fails"
+    with api.websocket_connect(path) as old:
+        left_open_after_rejection(old)
+        with api.websocket_connect(path) as ws:
+            # 舊連線已經被伺服器關掉，它的處理流程接著又收到頁面的心跳：在關掉的連線上收訊息會丟例外，
+            # 走端點發生例外時的收尾
+            old.send_json({"type": "ping"})
+            ws.send_json(batch_request(api, ["reconnect.wav"]))
+            messages = receive_until(ws, TaskStatus.BATCH_COMPLETED)
+    wait_until(lambda: not in_process_run_mode.is_alive(messages[-1]["task_uuid"]))
+
+    assert of_file(messages, "reconnect.wav")[-1]["status_code"] == TaskStatus.COMPLETED
 
 
 # ─── 任務頁的恢復入口 ────────────────────────────────────────────────────────

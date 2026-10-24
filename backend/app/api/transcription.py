@@ -1,4 +1,5 @@
 import uuid
+from contextlib import suppress
 
 from fastapi import (
     APIRouter,
@@ -178,7 +179,7 @@ async def websocket_endpoint(
                 "status_code": TaskStatus.FAILED,
                 "status_text": str(e),
             })
-            manager.disconnect(file_uid)
+            manager.disconnect(file_uid, websocket)
             await websocket.close(code=1008)
             return
 
@@ -188,10 +189,12 @@ async def websocket_endpoint(
 
     except WebSocketDisconnect:
         logger.info(f"WebSocket 連線由客戶端或伺服器關閉: {file_uid}")
-        manager.disconnect(file_uid)
+        manager.disconnect(file_uid, websocket)
     except Exception as e:
         logger.error(
             f"WebSocket 端點發生錯誤 (file_uid: {file_uid}): {e}", exc_info=True)
-        if file_uid in manager.active_connections:
-            await manager.active_connections[file_uid].close()
-            manager.disconnect(file_uid)
+        # 只關、只移除這條連線：重新轉錄的新連線可能已經登記在同一個 file_uid 底下（#203），
+        # 這條也可能早就被它換掉、關掉了
+        manager.disconnect(file_uid, websocket)
+        with suppress(Exception):
+            await websocket.close()

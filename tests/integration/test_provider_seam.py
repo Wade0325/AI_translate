@@ -13,7 +13,7 @@ import subprocess
 import sys
 import textwrap
 import threading
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import replace
 from pathlib import Path
 from urllib.parse import unquote
@@ -945,6 +945,48 @@ class TestStoredProviderName:
 
         db_session.expire_all()
         assert TranscriptionLogRepository().get(db_session, task_uuid).provider == "fake"
+
+
+# ─── 重新轉錄時舊連線還沒收尾（#203） ───────────────────────────────────────
+
+def ping(ws) -> None:
+    """頁面每 30 秒送一次的心跳（frontend/src/hooks/useTranscriptionSocket.js）。"""
+    ws.send_json({"type": "ping"})
+
+
+class TestReTranscriptionBeforeTheOldConnectionEnds:
+    """第一次轉錄的連線，伺服器還沒發現它已經斷了（例如電腦休眠、換網路），重新轉錄的新連線就連上來：
+    伺服器先關掉舊連線、登記新連線，舊連線的處理流程之後才收尾。收尾只能動舊連線自己，新任務的
+    狀態訊息才送得到畫面，檔案卡才不會停在處理中。"""
+
+    PATH = "/api/v1/ws/uid-retranscribe"
+
+    @pytest.fixture(autouse=True)
+    def _script(self, fake):
+        fake.script = list(SCRIPT) * 2
+
+    def test_old_connection_disconnecting_afterwards_keeps_the_new_one(self, api):
+        with ExitStack() as old_connection:
+            old = old_connection.enter_context(api.websocket_connect(self.PATH))
+            submit(old, upload(api))
+            assert receive_until_terminal(old)[-1]["status_code"] == TaskStatus.COMPLETED
+
+            with api.websocket_connect(self.PATH) as ws:
+                old_connection.close()  # 舊連線的處理流程這時才收到斷線
+                submit(ws, upload(api))
+                assert receive_until_terminal(ws)[-1]["status_code"] == TaskStatus.COMPLETED
+
+    def test_old_connection_failing_afterwards_keeps_the_new_one(self, api):
+        with api.websocket_connect(self.PATH) as old:
+            submit(old, upload(api))
+            assert receive_until_terminal(old)[-1]["status_code"] == TaskStatus.COMPLETED
+
+            with api.websocket_connect(self.PATH) as ws:
+                # 舊連線已經被伺服器關掉，它的處理流程接著又收到訊息：在關掉的連線上收訊息會丟例外，
+                # 走端點發生例外時的收尾
+                ping(old)
+                submit(ws, upload(api))
+                assert receive_until_terminal(ws)[-1]["status_code"] == TaskStatus.COMPLETED
 
 
 # ─── 模型能力端點（#108） ───────────────────────────────────────────────────
