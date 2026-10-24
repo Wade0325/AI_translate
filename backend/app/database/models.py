@@ -56,6 +56,7 @@ class BatchJob(Base):
     celery_task_id = Column(String, nullable=True, index=True)  # 看著這個批次的任務：執行，或接手的復原
     file_count = Column(Integer, nullable=True)
     created_at = Column(DateTime, default=datetime.now)
+    # 還在進行的批次，看著它的任務每次查詢都會更新（心跳，app.tasks.batch_core.watched）
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 

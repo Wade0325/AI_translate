@@ -66,6 +66,14 @@ class BatchJobRepository:
             db.commit()
         return bool(moved)
 
+    def touch(self, db: Session, batch_id: str) -> None:
+        """心跳：記下還有任務看著這個批次，還在進行的批次的 ``updated_at`` 改成現在。任務頁看它判斷
+        看著批次的任務還在不在（:func:`app.tasks.batch_core.watched`）；已經結束的批次不動。"""
+        db.query(BatchJob).filter(
+            BatchJob.batch_id == batch_id, BatchJob.status.in_(IN_PROGRESS),
+        ).update({BatchJob.updated_at: datetime.now()}, synchronize_session=False)
+        db.commit()
+
     def batch_ids_in(self, db: Session, state: BatchState) -> List[str]:
         """現在停在這個狀態的批次。"""
         return [batch_id for (batch_id,) in
