@@ -102,14 +102,14 @@ copy .env.example .env
 .\dc.bat                            # 第一次 / 改程式後：build + up -d
 .\dc.bat start                      # 只是要執行（不 build、秒起，最常用）
 .\dc.bat stop                       # 收工：停止但保留容器，下次 start 秒起
-.\dc.bat restart celery-worker      # 改 celery 程式後重啟
+.\dc.bat restart celery-worker      # 手動重啟單一服務（例如 worker 卡住或停掉時）
 .\dc.bat logs backend-service       # 看單一服務 log
 .\dc.bat rebuild                    # --no-cache 重新 build 並重啟
 .\dc.bat down                       # 停止並移除全部容器
 .\dc.bat help                       # 看全部用法
 ```
 
-程式碼以 volume 掛載：改後端（FastAPI `--reload`）與前端（Vite HMR）會自動熱更新；改 celery 需 `.\dc.bat restart celery-worker`。重啟 celery-worker 時還在等 Gemini 結果的批次，任務頁要等約 10 分鐘才會標成「已中斷」並給「恢復」：Celery 看不出 worker 被砍掉了，任務頁看的是看著批次的任務每次查詢時記下的時間。
+程式碼以 volume 掛載：改後端（FastAPI `--reload`）與前端（Vite HMR）會自動熱更新；改 `backend/app/` 底下的 `.py` 檔時，celery-worker 容器裡的 worker 也會自動重啟（watchfiles），執行中的任務會因此中斷。主機的 GPU worker（`local_worker.bat`）不會自動重啟，改了程式要關掉視窗重開。celery-worker 的 worker 重啟時（自動重啟或手動 `.\dc.bat restart celery-worker`），還在等 Gemini 結果的批次，任務頁要等約 10 分鐘才會標成「已中斷」並給「恢復」：Celery 看不出 worker 被砍掉了，任務頁看的是看著批次的任務每次查詢時記下的時間。
 
 若想直接用原生 docker compose 指令：
 
