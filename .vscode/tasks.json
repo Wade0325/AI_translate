@@ -37,7 +37,7 @@
       "presentation": { "reveal": "always", "panel": "dedicated" }
     },
     {
-      "label": "🧪 Checks (ruff + pytest + ESLint + vitest)",
+      "label": "🧪 Checks (lint + typecheck + pytest + vitest)",
       "type": "shell",
       "command": "backend\\.venv\\Scripts\\python.exe tools/check.py",
       "options": {

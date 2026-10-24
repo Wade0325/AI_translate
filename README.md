@@ -109,7 +109,7 @@ copy .env.example .env
 .\dc.bat help                       # 看全部用法
 ```
 
-程式碼以 volume 掛載：改後端（FastAPI `--reload`）與前端（Vite HMR）會自動熱更新；改 `backend/app/` 底下的 `.py` 檔時，celery-worker 容器裡的 worker 也會自動重啟（watchfiles），執行中的任務會因此中斷。主機的 GPU worker（`local_worker.bat`）不會自動重啟，改了程式要關掉視窗重開。celery-worker 的 worker 重啟時（自動重啟或手動 `.\dc.bat restart celery-worker`），還在等 Gemini 結果的批次，任務頁看不出它停住了（一直顯示處理中，沒有「恢復」），要直接呼叫復原端點接手：`curl.exe -X POST -H "Content-Type: application/json" -d "{}" http://localhost:8000/api/v1/batch/<batch_id>/recover`（完整的 `batch_id` 在 <http://localhost:8000/api/v1/batch/tasks> 查得到）。
+程式碼以 volume 掛載：改後端（FastAPI `--reload`）與前端（Vite HMR）會自動熱更新；改 `backend/app/` 底下的 `.py` 檔時，celery-worker 容器裡的 worker 也會自動重啟（watchfiles），執行中的任務會因此中斷。主機的 GPU worker（`local_worker.bat`）不會自動重啟，改了程式要關掉視窗重開。celery-worker 的 worker 重啟時（自動重啟或手動 `.\dc.bat restart celery-worker`），還在等 Gemini 結果的批次，任務頁要等約 10 分鐘才會標成「已中斷」並給「恢復」：Celery 看不出 worker 被砍掉了，任務頁看的是看著批次的任務每次查詢時記下的時間。
 
 若想直接用原生 docker compose 指令：
 
@@ -243,17 +243,17 @@ AI_translate/
 ### 執行測試
 
 ```powershell
-backend\.venv\Scripts\python.exe tools/check.py           # 依序跑 ruff → pytest → ESLint → vitest
+backend\.venv\Scripts\python.exe tools/check.py           # 依序跑 ruff → basedpyright → pytest → ESLint → tsc → vitest → ratchet
 backend\.venv\Scripts\python.exe tools/check.py pytest    # 只跑指定的項目
 ```
 
-clone 之後執行一次下面這行，讓 git 在每次 commit 前跑快的檢查（ruff、ESLint；測試交給 CI）。只影響開發用的 git checkout，免安裝版與 Docker 的使用者不需要：
+clone 之後執行一次下面這行，讓 git 在每次 commit 前跑快的檢查（lint、型別檢查與棘輪；測試交給 CI）。只影響開發用的 git checkout，免安裝版與 Docker 的使用者不需要：
 
 ```powershell
 git config core.hooksPath .githooks
 ```
 
-> `tools/check.py` 是唯一的檢查清單，CI 與 pre-commit 跑的也是它。Python 的檢查要先安裝 `backend/requirements-dev.txt`，ESLint 與 vitest 要先在 `frontend/` 執行 `npm ci`。`pytest.ini` 已設定 `pythonpath = backend`，測試可直接 `from app.api import ...` 匯入；測試自帶暫存的 SQLite 資料庫與 mock，不需 Postgres/Redis。
+> `tools/check.py` 是唯一的檢查清單，CI 與 pre-commit 跑的也是它。Python 的檢查要先安裝 `backend/requirements-dev.txt`，ESLint、tsc 與 vitest 要先在 `frontend/` 執行 `npm ci`。型別檢查只擋新增的錯誤：既有的 Python 錯誤記在錯誤清單 `.basedpyright/baseline.json`，有錯的舊前端檔標了 `// @ts-nocheck`；ratchet 確認兩者都沒有比 `origin/main` 多。修掉清單裡的錯誤時，basedpyright 會自己改寫錯誤清單，記得把它一起 commit。`pytest.ini` 已設定 `pythonpath = backend`，測試可直接 `from app.api import ...` 匯入；測試自帶暫存的 SQLite 資料庫與 mock，不需 Postgres/Redis。
 
 ### 評測轉錄品質
 

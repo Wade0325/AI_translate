@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { Button, Typography, Space, Dropdown } from "antd"
 import { Download, ChevronDown, Calendar, Cpu, Coins } from "lucide-react"
 import { ResultFileCard } from "./result-file-card"

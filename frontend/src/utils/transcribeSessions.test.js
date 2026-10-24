@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { createMemoryStorage } from '../test/memoryStorage';
 import { registerTranscribeSession, resolveSessionIdFromStorage } from './transcribeSessions';

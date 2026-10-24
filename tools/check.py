@@ -1,4 +1,4 @@
-"""唯一的檢查清單：ruff → pytest → ESLint → vitest。
+"""唯一的檢查清單：ruff → basedpyright → pytest → ESLint → tsc → vitest → ratchet。
 
 用法（在哪個目錄執行都可以，一律以 repo 根目錄為基準）：
 
@@ -8,17 +8,19 @@
     python tools/check.py --staged      # git 的 pre-commit（.githooks/pre-commit）用
 
 CI（.github/workflows/ci.yml）的 python 與 frontend job、git 的 pre-commit、README 與
-.vscode/tasks.json 都呼叫這支腳本，不另寫檢查指令。要加檢查（例如 #34 的型別檢查）
-就加在 checks()；CI 的 job 是照名稱挑要跑的項目，新項目的名稱也要加進對應 job 的指令，
-CI 才會跑。快到可以每次 commit 都跑的，標上 pre_commit。它決定閘門跑哪些檢查，屬於
-單向門（docs/agents/merging.md）。
+.vscode/tasks.json 都呼叫這支腳本，不另寫檢查指令。要加檢查就加在 checks()；CI 的 job 是照
+名稱挑要跑的項目，新項目的名稱也要加進對應 job 的指令，CI 才會跑。快到可以每次 commit 都跑
+的，標上 pre_commit。它決定閘門跑哪些檢查，屬於單向門（docs/agents/merging.md）。
 
 幾個刻意的取捨：
   * 只用標準函式庫：CI 的 frontend job 用 runner 內建的 Python 執行，不裝任何套件
   * --staged 只跑標了 pre_commit、而且和暫存區的檔案有關的檢查，測試交給 CI（照 Matt 的
     course-video-manager）。檢查的是工作目錄而不是暫存區的快照：沒暫存的改動也算進去
-  * ruff 與 pytest 用執行這支腳本的直譯器跑（``python -m``），所以要用裝了
+  * ruff、basedpyright 與 pytest 用執行這支腳本的直譯器跑（``python -m``），所以要用裝了
     backend/requirements-dev.txt 的直譯器呼叫，例如 backend/.venv 裡的 python
+  * 型別檢查只擋新增的錯誤：既有的 Python 錯誤記在錯誤清單 .basedpyright/baseline.json
+    （tools/typecheck_py.py），有錯的舊前端檔標 @ts-nocheck；兩者只減不增，由 ratchet
+    （tools/ratchet.py）對 origin/main 檢查
   * 不替子程序開 UTF-8 模式（PYTHONUTF8、-X utf8）：CI 的 Windows 腿要和使用者的
     環境一樣，才抓得到 open() 沒指定 encoding 的 bug
   * 一項失敗也把其餘的跑完再一起回報；任何一項失敗或跑不起來，結束碼就是 1
@@ -37,13 +39,14 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 ESLINT_JS = Path("node_modules") / "eslint" / "bin" / "eslint.js"
+TSC_JS = Path("node_modules") / "typescript" / "bin" / "tsc"
 VITEST_JS = Path("node_modules") / "vitest" / "vitest.mjs"
 
 # 改到這些路徑要跑 Python 的檢查：任何 .py，或這些目錄底下的任何檔案（含
 # backend/requirements*.txt 與測試資料），或這些設定檔。改設定或依賴檔一樣可能讓
 # 測試或 lint 壞掉，所以不只看副檔名
-PYTHON_DIRS = ("backend/", "tests/", "tools/", "games/")
-PYTHON_FILES = ("pytest.ini", "ruff.toml")
+PYTHON_DIRS = ("backend/", "tests/", "tools/", "games/", ".basedpyright/")
+PYTHON_FILES = ("pytest.ini", "ruff.toml", "pyrightconfig.json")
 
 
 @dataclass(frozen=True)
@@ -66,6 +69,10 @@ def _python_related(path: str) -> bool:
 def _frontend_related(path: str) -> bool:
     # dist/ 是建置產物，不是原始碼
     return path.startswith("frontend/") and not path.startswith("frontend/dist/")
+
+
+def _ratchet_related(path: str) -> bool:
+    return path.startswith(("frontend/src/", ".basedpyright/"))
 
 
 def _python_module_missing(module: str) -> Callable[[], str | None]:
@@ -98,16 +105,22 @@ def checks(root: Path = ROOT) -> tuple[Check, ...]:
     return (
         Check("ruff", (python, "-m", "ruff", "check", "."), root,
               _python_module_missing("ruff"), _python_related, pre_commit=True),
+        Check("basedpyright", (python, str(root / "tools" / "typecheck_py.py")), root,
+              _python_module_missing("basedpyright"), _python_related, pre_commit=True),
         Check("pytest", (python, "-m", "pytest", "tests/", "-q"), root,
               _python_module_missing("pytest"), _python_related),
-        # 直接用 node 跑 eslint 的入口，避開 Windows 上 npx.cmd／npm.cmd 得經過 shell 的問題。
+        # 直接用 node 跑 eslint 與 tsc 的入口，避開 Windows 上 npx.cmd／npm.cmd 得經過 shell 的問題。
         # --quiet 只印 error：warning 不擋合併，react-hooks 的 warning 一則十幾行，會把 error 淹掉
         Check("eslint", ("node", str(ESLINT_JS), ".", "--quiet"), frontend,
               _frontend_tool_missing(frontend, ESLINT_JS), _frontend_related, pre_commit=True),
+        Check("tsc", ("node", str(TSC_JS), "--noEmit", "-p", "tsconfig.json"), frontend,
+              _frontend_tool_missing(frontend, TSC_JS), _frontend_related, pre_commit=True),
         # 前端的測試：和 pytest 一樣交給 CI，不在 commit 前跑。加 run 才會跑完就結束，
         # 不加的話在終端機裡會進監看模式
         Check("vitest", ("node", str(VITEST_JS), "run"), frontend,
               _frontend_tool_missing(frontend, VITEST_JS), _frontend_related),
+        Check("ratchet", (python, str(root / "tools" / "ratchet.py")), root,
+              runs_for=_ratchet_related, pre_commit=True),
     )
 
 
