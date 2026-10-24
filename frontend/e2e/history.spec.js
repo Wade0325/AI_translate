@@ -1,4 +1,4 @@
-import { test, expect, downloadedText } from './support/test.js'
+import { test, expect, download } from './support/test.js'
 import { TRANSCRIPTS, reply } from './support/backend.js'
 
 const RECORDS = [
@@ -18,7 +18,7 @@ const RECORDS = [
     },
 ]
 
-const HISTORY = {
+const HISTORY_ROUTES = {
     'GET /history': { items: RECORDS, total: 2, page: 1, page_size: 10, total_pages: 1 },
     'GET /history/stats': {
         total_tasks: 2, completed_tasks: 1, failed_tasks: 1, success_rate: 50.0, total_cost: 0.0042,
@@ -26,37 +26,36 @@ const HISTORY = {
     },
 }
 
+/** 任務紀錄表格裡檔名是 filename 的那一列。 */
+const recordRow = (page, filename) => page.getByRole('row', { name: filename })
+
 /** 已完成那一列的下載選單：滑過下載按鈕才會展開。 */
 async function openDownloadMenu(page, filename) {
-    await page.getByRole('row', { name: new RegExp(filename) }).getByRole('button', { name: 'download' }).hover()
+    await recordRow(page, filename).getByRole('button', { name: 'download' }).hover()
 }
 
 test('列出任務紀錄，從已完成的那一列下載 SRT', async ({ page, mockBackend }) => {
     const backend = await mockBackend({
-        routes: { ...HISTORY, 'GET /history/task-1/download/srt': TRANSCRIPTS.srt },
+        routes: { ...HISTORY_ROUTES, 'GET /history/task-1/download/srt': TRANSCRIPTS.srt },
     })
     await page.goto('/history')
 
-    await expect(page.getByRole('row', { name: /meeting\.wav/ })).toContainText('完成')
-    await expect(page.getByRole('row', { name: /interview\.mp3/ })).toContainText('失敗')
+    await expect(recordRow(page, 'meeting.wav')).toContainText('完成')
+    await expect(recordRow(page, 'interview.mp3')).toContainText('失敗')
     await expect(page.getByText('50.0%')).toBeVisible()
     expect(backend.requests.find((r) => r.path === '/history').query).toEqual({ page: '1', page_size: '10' })
     // 失敗的任務沒有轉錄結果，不能下載
-    await expect(page.getByRole('row', { name: /interview\.mp3/ }).getByRole('button', { name: 'download' }))
-        .toHaveCount(0)
+    await expect(recordRow(page, 'interview.mp3').getByRole('button', { name: 'download' })).toHaveCount(0)
 
     await openDownloadMenu(page, 'meeting.wav')
-    const downloading = page.waitForEvent('download')
-    await page.getByRole('menuitem', { name: 'SRT' }).click()
-    const download = await downloading
-    expect(download.suggestedFilename()).toBe('meeting.srt')
-    expect(await downloadedText(download)).toBe(TRANSCRIPTS.srt)
+    expect(await download(page, () => page.getByRole('menuitem', { name: 'SRT' }).click()))
+        .toEqual({ filename: 'meeting.srt', text: TRANSCRIPTS.srt })
 })
 
 test('下載失敗時顯示後端的原因', async ({ page, mockBackend }) => {
     await mockBackend({
         routes: {
-            ...HISTORY,
+            ...HISTORY_ROUTES,
             'GET /history/task-1/download/srt': reply(404, { detail: '找不到這個任務的轉錄結果' }),
         },
     })

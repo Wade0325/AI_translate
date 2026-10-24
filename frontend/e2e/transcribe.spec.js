@@ -1,5 +1,5 @@
-import { test, expect, downloadedText } from './support/test.js'
-import { TRANSCRIPTS } from './support/backend.js'
+import { test, expect, download } from './support/test.js'
+import { TRANSCRIPTS, transcriptionMessages } from './support/backend.js'
 
 // 內容不重要：音檔只經過假後端，不會被解碼
 const AUDIO = { name: 'meeting.wav', mimeType: 'audio/wav', buffer: Buffer.from('RIFF0000WAVE') }
@@ -9,21 +9,32 @@ async function addAudio(page) {
     await expect(page.getByText(AUDIO.name)).toBeVisible()
 }
 
-test('選本機送出一個檔案，完成後到結果頁下載 SRT', async ({ page, mockBackend }) => {
+test('選本機送出一個檔案，顯示處理中，完成後到結果頁下載 SRT', async ({ page, mockBackend }) => {
+    // 假後端送出處理中之後先停住，等畫面上看到處理中才送完成
+    let finish
+    const finished = new Promise((resolve) => { finish = resolve })
     const backend = await mockBackend({
         routes: { 'POST /upload': { filename: 'meeting_1.wav' } },
+        transcribe: async (request, send) => {
+            const { processing, completed } = transcriptionMessages(request)
+            send(processing)
+            await finished
+            send(completed)
+        },
     })
     await page.goto('/transcribe')
 
     await page.getByLabel('供應商').selectOption('local')
-    await expect(page.getByLabel('模型')).toHaveValue('moss-align')
+    await page.getByLabel('模型').selectOption('moss-align')
     await addAudio(page)
     await page.getByRole('button', { name: 'Start' }).click()
 
+    await expect(page.getByText('轉錄中...')).toBeVisible()
+    finish()
     await expect(page.getByText('轉錄完成')).toBeVisible()
     // 先上傳，再用上傳拿到的伺服器檔名開任務；本機不吃提示詞與使用者文稿，送出時不帶
     expect(backend.requests.filter((r) => r.path === '/upload')).toHaveLength(1)
-    expect(backend.transcriptions).toEqual([
+    expect(backend.transcriptionRequests).toEqual([
         expect.objectContaining({
             filename: 'meeting_1.wav',
             original_filename: AUDIO.name,
@@ -40,11 +51,8 @@ test('選本機送出一個檔案，完成後到結果頁下載 SRT', async ({ p
     await expect(page.getByText(AUDIO.name)).toBeVisible()
 
     await page.getByRole('button', { name: 'Download', exact: true }).hover()
-    const downloading = page.waitForEvent('download')
-    await page.getByText('SRT (Subtitles)').click()
-    const download = await downloading
-    expect(download.suggestedFilename()).toBe('meeting.srt')
-    expect(await downloadedText(download)).toBe(TRANSCRIPTS.srt)
+    expect(await download(page, () => page.getByText('SRT (Subtitles)').click()))
+        .toEqual({ filename: 'meeting.srt', text: TRANSCRIPTS.srt })
 })
 
 test('任務失敗時，檔案卡顯示後端的失敗原因', async ({ page, mockBackend }) => {
@@ -63,6 +71,6 @@ test('任務失敗時，檔案卡顯示後端的失敗原因', async ({ page, mo
 
     await expect(page.getByText(reason)).toBeVisible()
     await expect(page.getByText('1 個任務失敗')).toBeVisible()
-    // 失敗的檔案可以再送一次
+    // 失敗的檔案可以重新轉錄
     await expect(page.getByRole('button', { name: 'Start' })).toBeEnabled()
 })

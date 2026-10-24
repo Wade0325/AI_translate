@@ -36,5 +36,8 @@ export default defineConfig({
         url: `http://127.0.0.1:${PORT}`,
         reuseExistingServer: false,
         timeout: 60_000,
+        // /api 的 proxy 不指向後端預設的 8000：萬一有請求沒被 mock 攔到，也接不到開發者本機
+        // 正在跑的後端（和它的資料庫），只會連線失敗
+        env: { VITE_PROXY_TARGET: 'http://127.0.0.1:9' },
     },
 })

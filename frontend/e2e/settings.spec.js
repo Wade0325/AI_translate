@@ -1,10 +1,11 @@
 import { test, expect } from './support/test.js'
-import { MASKED_KEY, reply } from './support/backend.js'
-
-const SAVED_CONFIG = { provider: 'Google', apiKeys: [MASKED_KEY], model: 'gemini-3.5-flash', prompt: null }
+import { GOOGLE_CONFIG, MASKED_KEY, reply } from './support/backend.js'
 
 /** 設定頁上某個供應商的卡片。 */
 const providerCard = (page, label) => page.locator('.ant-card').filter({ hasText: label })
+
+/** 畫面送出的「儲存供應商設定」請求。 */
+const saveRequests = (backend) => backend.requests.filter((r) => r.method === 'POST' && r.path === '/setting/models')
 
 test('金鑰欄位只顯示遮罩值；沒改金鑰就儲存時，送回的是遮罩值', async ({ page, mockBackend }) => {
     const backend = await mockBackend({
@@ -21,9 +22,8 @@ test('金鑰欄位只顯示遮罩值；沒改金鑰就儲存時，送回的是�
     await gemini.getByRole('button', { name: 'Save' }).click()
 
     await expect(page.getByText('設定保存成功！')).toBeVisible()
-    const saves = backend.requests.filter((r) => r.method === 'POST' && r.path === '/setting/models')
     // 後端收到遮罩值時保留資料庫裡原本的金鑰（#10，由 tests 的 test_api_key_masking.py 涵蓋）
-    expect(saves).toEqual([
+    expect(saveRequests(backend)).toEqual([
         expect.objectContaining({
             body: expect.objectContaining({ provider: 'google', apiKeys: [MASKED_KEY], prompt: '請保留說話者標記' }),
         }),
@@ -36,7 +36,7 @@ test('輸入新金鑰儲存後，欄位換成後端回的遮罩值，明文不�
     let stored = MASKED_KEY
     const backend = await mockBackend({
         routes: {
-            'GET /setting/models/google': () => ({ ...SAVED_CONFIG, apiKeys: [stored] }),
+            'GET /setting/models/google': () => ({ ...GOOGLE_CONFIG, apiKeys: [stored] }),
             'POST /setting/models': () => {
                 stored = newMasked
                 return { success: true }
@@ -51,8 +51,7 @@ test('輸入新金鑰儲存後，欄位換成後端回的遮罩值，明文不�
 
     await expect(keyField).toHaveValue(newMasked)
     // 明文只送一次，給後端存起來
-    const saves = backend.requests.filter((r) => r.method === 'POST' && r.path === '/setting/models')
-    expect(saves.map((r) => r.body.apiKeys)).toEqual([[newKey]])
+    expect(saveRequests(backend).map((r) => r.body.apiKeys)).toEqual([[newKey]])
     const fieldValues = await page.locator('input').evaluateAll((inputs) => inputs.map((input) => input.value))
     expect(fieldValues).not.toContain(newKey)
 })

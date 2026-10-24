@@ -61,7 +61,7 @@ def test_vitest_runs_once_with_node_from_frontend(check):
 
 
 def test_playwright_runs_browser_tests_with_node_from_frontend(check):
-    # 和 vitest 一樣直接用 node 跑入口；test 子指令跑完就結束，不會開報告的網頁伺服器
+    # 和 vitest 一樣直接用 node 跑入口，在 frontend 底下跑，讀的是 frontend/playwright.config.js
     playwright = {c.name: c for c in check.CHECKS}["playwright"]
     assert playwright.cmd[0] == "node"
     assert playwright.cmd[-1] == "test"

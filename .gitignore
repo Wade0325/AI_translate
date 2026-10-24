@@ -27,9 +27,8 @@ frontend/node_modules/
 frontend/dist/
 frontend/build/
 frontend/coverage/
-# Playwright 的瀏覽器測試留下的結果與報告（#51）
+# Playwright 的瀏覽器測試留下的結果（失敗時的 trace，#51）
 frontend/test-results/
-frontend/playwright-report/
 frontend/npm-debug.log*
 frontend/yarn-debug.log*
 frontend/yarn-error.log*
