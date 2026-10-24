@@ -36,7 +36,13 @@ export default defineConfig([
     },
   },
   {
-    files: ['vite.config.js'],
+    // 在 Node 上執行的設定檔與 Playwright 的瀏覽器測試
+    files: ['vite.config.js', 'playwright.config.js', 'e2e/**/*.js'],
     languageOptions: { globals: globals.node },
+  },
+  {
+    // 瀏覽器測試不是 React 程式：Playwright 的 fixture 用 use(...) 交出值，不是 React 的 use hook
+    files: ['e2e/**/*.js'],
+    rules: { 'react-hooks/rules-of-hooks': 'off' },
   },
 ])

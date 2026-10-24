@@ -1,4 +1,4 @@
-"""tools/check.py：唯一的檢查清單（ruff → basedpyright → pytest → ESLint → tsc → vitest → ratchet）。
+"""tools/check.py：唯一的檢查清單（ruff → basedpyright → pytest → ESLint → tsc → vitest → Playwright → ratchet）。
 
 CI 的 job 與本機都經由它跑檢查，所以最要緊的性質是：任何一項失敗或跑不起來，
 結束碼就不是 0，而且其餘項目照樣跑完，一次看到全部的紅燈。
@@ -39,7 +39,7 @@ def _ran(tmp_path):
 
 def test_checks_are_lint_typecheck_test_ratchet_in_order(check):
     assert [c.name for c in check.CHECKS] == [
-        "ruff", "basedpyright", "pytest", "eslint", "tsc", "vitest", "ratchet"]
+        "ruff", "basedpyright", "pytest", "eslint", "tsc", "vitest", "playwright", "ratchet"]
 
 
 def test_python_checks_use_running_interpreter_from_repo_root(check):
@@ -58,6 +58,14 @@ def test_vitest_runs_once_with_node_from_frontend(check):
     assert vitest.cmd[0] == "node"
     assert vitest.cmd[-1] == "run"
     assert vitest.cwd == ROOT / "frontend"
+
+
+def test_playwright_runs_browser_tests_with_node_from_frontend(check):
+    # 和 vitest 一樣直接用 node 跑入口，在 frontend 底下跑，讀的是 frontend/playwright.config.js
+    playwright = {c.name: c for c in check.CHECKS}["playwright"]
+    assert playwright.cmd[0] == "node"
+    assert playwright.cmd[-1] == "test"
+    assert playwright.cwd == ROOT / "frontend"
 
 
 def test_no_arguments_runs_every_check(check, monkeypatch, tmp_path):
@@ -103,7 +111,7 @@ def test_unknown_check_name_is_rejected(check):
 
 
 
-@pytest.mark.parametrize("name", ["eslint", "tsc", "vitest"])
+@pytest.mark.parametrize("name", ["eslint", "tsc", "vitest", "playwright"])
 def test_missing_frontend_tool_names_the_fix_for_that_checkout(check, tmp_path, name):
     tool = {c.name: c for c in check.checks(tmp_path)}[name]
     remedy = tool.missing()
@@ -168,7 +176,8 @@ def test_staged_failure_blocks_the_commit(check, monkeypatch, tmp_path, stage):
 
 
 def test_only_the_tests_are_left_to_ci(check):
-    assert [c.name for c in check.CHECKS if not c.pre_commit] == ["pytest", "vitest"]
+    # 瀏覽器測試也是：要先裝 Chromium，又比較慢（#51）
+    assert [c.name for c in check.CHECKS if not c.pre_commit] == ["pytest", "vitest", "playwright"]
 
 
 def test_python_change_triggers_ruff_and_frontend_change_triggers_eslint(check):
@@ -178,6 +187,9 @@ def test_python_change_triggers_ruff_and_frontend_change_triggers_eslint(check):
     assert not by_name["ruff"].runs_for("README.md")
     assert by_name["eslint"].runs_for("frontend/src/App.jsx")
     assert not by_name["eslint"].runs_for("frontend/dist/index.js")
+    assert by_name["playwright"].runs_for("frontend/src/App.jsx")
+    assert by_name["playwright"].runs_for("frontend/e2e/history.spec.js")
+    assert not by_name["playwright"].runs_for("backend/main.py")
 
 
 def test_type_checks_run_when_their_config_changes(check):

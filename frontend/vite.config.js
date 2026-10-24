@@ -1,4 +1,5 @@
 import { defineConfig } from 'vite'
+import { configDefaults } from 'vitest/config'
 import react from '@vitejs/plugin-react'
 import path from 'path'
 
@@ -27,5 +28,7 @@ export default defineConfig({
     test: {
         // 日期與時間的結果依執行環境的時區而定：測試固定用台北時間，本機與 CI（UTC）結果一樣
         env: { TZ: 'Asia/Taipei' },
+        // e2e/ 是 Playwright 的瀏覽器測試（playwright.config.js），不歸 vitest 跑
+        exclude: [...configDefaults.exclude, 'e2e/**'],
     },
 })
