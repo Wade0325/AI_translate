@@ -171,7 +171,7 @@ export function GlobalDefaults({ config, onChange, onApplyAll, fileCount = 0, pr
                         value={config.prompt}
                         onChange={(e) => update({ prompt: e.target.value })}
                         disabled={Boolean(promptDisabledReason)}
-                        placeholder="Enter shared instructions for all files, e.g. 'Audio contains medical terminology' or 'Focus on speaker names and dates'..."
+                        placeholder="Added after the prompt template for every file that has no prompt of its own, e.g. speaker names or terms to keep as written. To rewrite the whole prompt, edit the prompt template in Settings..."
                         autoSize={{ minRows: 2 }}
                         style={{ fontSize: 12 }}
                     />
@@ -180,7 +180,7 @@ export function GlobalDefaults({ config, onChange, onApplyAll, fileCount = 0, pr
                             <ReasonText reason={promptDisabledReason} />
                         ) : (
                             <Text style={{ fontSize: 10, color: '#8888a8' }}>
-                                This prompt will be sent with every transcription request
+                                Added after the prompt template for every file that has no prompt of its own. The template's LRC and timestamp instructions are kept.
                             </Text>
                         )}
                         <Text style={{ fontSize: 10, color: '#8888a8', fontVariantNumeric: 'tabular-nums' }}>

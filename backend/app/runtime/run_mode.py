@@ -7,13 +7,14 @@
 - :class:`app.runtime.celery_redis.CeleryRedisRunMode`：Celery 派送、Redis pub/sub 與旗標
 
 轉接器在第一次 :func:`get` 時依執行模式選一次（FastAPI 在 lifespan 啟動時、
-Celery worker 在第一個任務時），import 本模組不做任何選擇。測試直接建立轉接器，
-用 :func:`use` 換上，不必 reload 模組。
+Celery worker 在 worker 啟動時），import 本模組不做任何選擇；:func:`close` 之後
+:func:`get` 會拋錯。測試直接建立轉接器，用 :func:`use` 換上，不必 reload 模組。
 """
 
 from __future__ import annotations
 
 import threading
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, AsyncIterator, Optional, Protocol
 
 from app.core.task_status import TaskStatus
@@ -24,14 +25,24 @@ if TYPE_CHECKING:
 
 logger = setup_logger(__name__)
 
-TRANSIENT_RETRIES = 3
-"""單檔任務遇到暫時錯誤時，兩個轉接器都最多再重試幾次（不含第一次執行）。"""
+
+@dataclass(frozen=True)
+class RegisteredTask:
+    """一個檔案最近一次派送的單檔任務；取消端點靠它找到要取消的任務。"""
+
+    task_id: str
+    can_terminate: bool
+    """執行中能不能強制終止：派送時照模型能力登記。取消時讀這裡，不查任務紀錄——紀錄可能
+    還沒建立，紀錄裡的模型也可能已經不在模型清單裡。"""
 
 
 class RunMode(Protocol):
     # ── 派送與控制 ────────────────────────────────────────────────
-    def submit_transcription(self, task_params_dict: dict, queue: str) -> str:
-        """派發單檔轉錄任務，回傳 task_id（同時是 TranscriptionLog 主鍵）。"""
+    def submit_transcription(self, task_id: str, task_params_dict: dict, queue: str) -> None:
+        """派發單檔轉錄任務；``task_id`` 由呼叫端產生，同時是任務紀錄的主鍵。
+
+        派送之後呼叫端立刻登記（:meth:`register_task`），取消端點才找得到還在佇列裡的任務。
+        """
 
     def submit_batch(self, task_params_dict: dict) -> str:
         """派發批次轉錄任務，回傳 task_id。"""
@@ -65,10 +76,16 @@ class RunMode(Protocol):
 
     def clear_cancel(self, file_uid: str) -> None: ...
 
-    def register_task(self, file_uid: str, task_id: str) -> None:
-        """記錄這個檔案最近一次派發的 task_id；再派發時覆蓋。"""
+    def register_task(self, file_uid: str, task_id: str, *, can_terminate: bool) -> None:
+        """登記這個檔案最近一次派發的任務與它能不能強制終止；再派發時覆蓋。"""
 
-    def registered_task(self, file_uid: str) -> Optional[str]: ...
+    def registered_task(self, file_uid: str) -> Optional[RegisteredTask]: ...
+
+    def task_ended(self, file_uid: str, task_id: str) -> None:
+        """任務結束（或不會再執行）：登記的還是這個任務、或已經沒有登記時，清掉登記與取消旗標。
+
+        同一個檔案已經登記了新的任務時都不動：那是新任務的。
+        """
 
     # ── 生命週期 ──────────────────────────────────────────────────
     def close(self) -> None: ...
@@ -88,33 +105,55 @@ def select(settings: Optional["Settings"] = None) -> RunMode:
     return CeleryRedisRunMode.from_url(settings.redis_url)
 
 
+class RunModeClosedError(RuntimeError):
+    """執行模式已經關閉（應用程式正在關閉）。"""
+
+
 _current: Optional[RunMode] = None
+_closed = False
 _lock = threading.Lock()
 
 
 def get() -> RunMode:
-    """目前的轉接器；第一次呼叫時依執行模式選一次。"""
+    """目前的轉接器；第一次呼叫時依執行模式選一次。
+
+    Raises:
+        RunModeClosedError: :func:`close` 之後。應用程式正在關閉，不默默再建一個新的轉接器
+            （新的執行緒池、新的取消旗標，任務的取消與廣播都會落空）。
+    """
     global _current
     if _current is None:
         with _lock:
             if _current is None:
+                if _closed:
+                    raise RunModeClosedError("執行模式已經關閉：應用程式正在關閉")
                 _current = select()
     return _current
 
 
 def use(mode: Optional[RunMode]) -> Optional[RunMode]:
-    """換上指定的轉接器（None 代表下次 get 時重新選），回傳原本的。"""
-    global _current
+    """換上指定的轉接器（None 代表下次 get 時重新選），回傳原本的；關閉之後也可以換上。"""
+    global _current, _closed
     with _lock:
         previous, _current = _current, mode
+        _closed = False
     return previous
 
 
 def close() -> None:
-    """由 lifespan shutdown 呼叫：關閉並卸下目前的轉接器。"""
-    mode = use(None)
+    """由 lifespan shutdown 呼叫：關閉並卸下目前的轉接器，之後的 :func:`get` 會拋錯。
+
+    先關閉再卸下：關閉時還在排隊的任務收尾時（見 :mod:`app.runtime.executor`），
+    還要經由 :func:`get` 清掉它們的登記與取消旗標。
+    """
+    global _current, _closed
+    with _lock:
+        mode = _current
     if mode is not None:
         mode.close()
+    with _lock:
+        _current = None
+        _closed = True
 
 
 def publish_status(

@@ -15,9 +15,23 @@ from pathlib import Path
 from typing import Dict
 
 from app.core.config import get_settings
-from app.provider.base import LOCAL_QUEUE, ModelCapabilities, ProgressAndCancel, TranscribeRequest
+from app.provider.base import (
+    LOCAL_QUEUE,
+    ModelCapabilities,
+    ProgressAndCancel,
+    ProviderInfo,
+    TranscribeRequest,
+)
 from app.provider.local import weights
 from app.services.transcription.models import TranscriptionTaskResult
+
+
+MODEL_LABELS = {
+    weights.MOSS_ALIGN: "MOSS-Transcribe-Diarize",
+    weights.MOSS_QWEN: "MOSS + Qwen3-ASR",
+    weights.VIBEVOICE_QWEN: "VibeVoice + Qwen3-ASR（舊版）",
+}
+"""畫面上的模型名稱；列出的模型與順序依 ``weights.MODEL_REPOS``，第一個是預設。"""
 
 
 def _single_pass_limit_seconds(model: str) -> float:
@@ -49,6 +63,7 @@ def _capabilities(model: str) -> ModelCapabilities:
         accepts_prompt=False,
         accepts_user_text=False,
         supports_batch=False,
+        supports_flex=False,
         pricing="free",
         remove_silence=True,
     )
@@ -89,12 +104,25 @@ class _LocalProviderFactory:
     """registry 認得的本機供應商：列模型能力不建立轉接器、不碰顯卡（API 行程與模型能力
     端點都會列，Docker 模式的 API 容器沒有顯卡）；呼叫它建立一個任務專用的轉接器。"""
 
+    # 在使用者自己的顯卡上轉錄，不用 API 金鑰；設定頁的「測試」查轉錄那台機器的顯卡與權重
+    info = ProviderInfo(label="本機", requires_api_key=False, model_labels=MODEL_LABELS,
+                        checks_transcribing_machine=True)
+
     @staticmethod
     def capabilities() -> Dict[str, ModelCapabilities]:
         return _declared_capabilities()
 
     def __call__(self, model: str, api_key: str = "") -> LocalProvider:
         return LocalProvider(model, api_key)
+
+    @staticmethod
+    def check_ready(model: str, api_key: str = "") -> str:
+        """設定頁的「測試」：和轉錄前的檢查相同，查這個行程看得到的顯卡與這個模型的模型權重，
+        不載入模型。查的是轉錄那台機器（``checks_transcribing_machine``），哪個行程能問由
+        呼叫端依執行模式決定。"""
+        weights.ensure_local_ready(model)
+        _, gpu_name = weights.cuda_status()
+        return f"本機已就緒：顯卡 {gpu_name}，{MODEL_LABELS.get(model, model)} 的模型權重都已下載"
 
 
 local_provider = _LocalProviderFactory()

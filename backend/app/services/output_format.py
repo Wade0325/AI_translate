@@ -3,40 +3,48 @@
 資料來源：
 
 * 有片段的任務從片段產生。
-* 沒有片段的任務（片段上線前的任務、Gemini 的任務、批次裡的任務）退回解析存下來的 LRC，
-  內容和以前相同。
-* 存下來的 LRC 是凍結的原始轉錄副本（ADR-0007），有片段時下載不讀它。
+* 沒有片段的任務（片段上線前的任務、#110 之前的 Gemini 任務、#115 之前批次裡的任務）退回解析
+  存下來的 LRC：LRC、TXT 和以前相同，SRT／VTT 的結束時間照下面同一套規則。
+* 存下來的 LRC 是凍結的原始轉錄副本（ADR-0007）：任務完成時從轉錄結果產生（:func:`for_result`），
+  和下載的 LRC 相同；有片段時下載不讀它。#154 之前存的副本差在一點：秒數取到 0.01 是 60 的行
+  寫成 [00:60.00] 這種時間戳，下載寫成下一分鐘的 [01:00.00]（見 :func:`_lrc_timestamp`）。
 
-本機任務從片段產生的 LRC，和本機轉接器寫出的 LRC 逐字相同：同樣的斷行（見
-:func:`_segment_lines`）、同樣的時間戳；唯一刻意不同的是片段文字裡的換行收成空白（見
-:func:`_one_line`）。沒去靜音也沒切段的任務，存下來的副本就是本機寫出的那一份。去靜音或切段過
-的任務，副本另外經過分段轉錄對 LRC 文字做的時間處理（#110 拿掉），和這裡還有這些差異：
+#110 之前的副本是供應商自己寫的 LRC。Gemini 任務的副本就是 Gemini 寫的 LRC（「Speaker 1:」、
+三位小數的時間戳、沒有時間戳的行都在）。本機任務的副本和這裡斷行相同（見 :func:`_segment_lines`），
+刻意不同的只有片段文字裡的換行收成空白（見 :func:`_one_line`），以及和上面一樣的 [00:60.00]；
+沒去靜音也沒切段的任務，除了這兩點，副本和下載逐字相同。去靜音或切段過的任務，副本另外經過
+分段轉錄對 LRC 文字做的時間處理，和下載還有這些差異：
 
 * 時間戳差 0.01 秒：去靜音的時間還原把秒數捨去到 0.01，切段的後段平移時又四捨五入一次。
   去靜音的任務約一半的行。
 * 在讀點多斷一行：一句中間有讀點、又有被剪掉的靜音時，這裡量的是原音檔時間軸上的長度，
   靜音讓它超過 12 秒就在讀點斷開；本機量的是剪掉之後的長度。和句子實際講多久無關。
 * 有聲段交界的整段跳動：行開頭落在交界時，時間可能跳過一整段被剪掉的靜音，往前往後都會。
-  副本先四捨五入才還原時間，交界前 0.005 秒內就跳到靜音之後；這裡的時間也可能因為浮點誤差
-  落在交界的另一邊。交界的修正交給 #111。
+  副本先四捨五入才還原時間，交界前 0.005 秒內就跳到靜音之後；#111 之前存的片段也可能因為
+  浮點誤差落在交界的另一邊。之後存的片段，交界上的開始算後一段、結束算前一段，不會跳動（見
+  :mod:`app.services.silence_removal`）。
 * 換行後的文字：副本還原時間時只留有時間戳的行，換行後的文字被丟掉；這裡收成空白留著。
 
 除了交界的跳動，這些差異都出在舊的處理，這裡的結果比較準。
 
 版本目前只有原始轉錄，校正後版本留給 v0.2。
 
-四種格式由同一串行產生，說話者標記一律「[S0] 文字」：LRC 一行一個時間戳；SRT／VTT 的
-結束時間是下一行的開始，最後一行加 5 秒（#96 改用真實結束時間）；TXT 只留文字。SRT／VTT
-的時間取 LRC 時間戳讀回來的值，和以前從 LRC 轉換時一樣。斷行的規則見 :func:`_segment_lines`。
+四種格式由同一串行產生，說話者標記一律「[S0] 文字」：LRC 一行一個時間戳；TXT 只留文字；
+SRT／VTT 另有結束時間，照實際說話的時間顯示（ADR-0008，規則見 :func:`_subtitles`）：不同說話者
+的字幕可以重疊，同一位說話者的不疊，每一行至少 0.8 秒，字幕依開始時間排序。有片段的任務和沒有
+片段的任務（從存下來的 LRC 轉換）用同一套規則。SRT／VTT 的開始時間取 LRC 時間戳讀回來的值，和
+以前從 LRC 轉換時一樣；結束時間取到毫秒。斷行的規則見 :func:`_segment_lines`。
 """
 
 from __future__ import annotations
 
 import re
 import unicodedata
-from dataclasses import dataclass
+from bisect import bisect_right
+from dataclasses import dataclass, replace
+from decimal import ROUND_HALF_EVEN, Decimal
 from enum import StrEnum
-from typing import Any, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -94,14 +102,13 @@ def for_task(
 
 
 def for_result(result: TranscriptionTaskResult) -> OutputFiles:
-    """一份轉錄結果的四種輸出格式，任務完成時送給畫面；從轉錄結果寫凍結的原始轉錄副本時
-    （#110）也從這裡取 LRC。
+    """一份轉錄結果的四種輸出格式：任務完成時送給畫面，凍結的原始轉錄副本也是這裡的 LRC。
 
-    有片段時從片段產生，和之後下載的內容相同；沒有片段（Gemini）時轉換轉錄結果的 LRC 文字。
+    從片段產生，和之後下載的內容相同；轉錄結果的 text 不讀。沒有任何一行時四種都是空的。
     """
-    if not result.segments:
-        return convert_from_lrc(result.text)
     lines = _lines(result.segments)
+    if not lines:
+        return OutputFiles(lrc="", srt="", vtt="", txt="")
     return OutputFiles(**{fmt.value: _render(lines, fmt) for fmt in OutputFormat})
 
 
@@ -119,10 +126,11 @@ def convert_from_lrc(lrc_text: str) -> OutputFiles:
 
 @dataclass(frozen=True)
 class Cue:
-    """字幕的一行：開始時間（秒）與文字。"""
+    """字幕的一行：開始時間（秒）、文字與真實結束時間（秒，不知道時是 None）。"""
 
     time: float
     text: str
+    end: Optional[float] = None
 
 
 _LRC_LINE_RE = re.compile(r"\[(\d{2,3}):(\d{2})\.(\d{2,3})\](.*)")
@@ -154,6 +162,8 @@ class _Line:
     """原音檔時間軸上的秒數。"""
     text: str
     """帶說話者標記的文字。"""
+    end: Optional[float]
+    """真實結束時間（原音檔時間軸上的秒數），不知道時是 None。"""
 
 
 def _lines(segments: Sequence[Mapping[str, Any]]) -> List[_Line]:
@@ -172,7 +182,8 @@ def _lines(segments: Sequence[Mapping[str, Any]]) -> List[_Line]:
         if words and not _words_match(text, words):
             unmatched.append(segment["start"])
             words = None
-        lines.extend(_segment_lines(segment["start"], segment.get("speaker"), text, words))
+        lines.extend(_segment_lines(segment["start"], segment.get("end"),
+                                    segment.get("speaker"), text, words))
     if unmatched:
         logger.warning(f"{len(unmatched)} 個片段的逐字時間對不上文字，這些片段整段一行"
                        f"（第一個從 {unmatched[0]:.2f} 秒開始）")
@@ -205,18 +216,22 @@ def _labelled(speaker: Optional[str], text: str) -> str:
 
 def _segment_lines(
     segment_start: float,
+    segment_end: Optional[float],
     speaker: Optional[str],
     text: str,
     words: Optional[Sequence[Mapping[str, Any]]],
 ) -> List[_Line]:
-    """一個片段斷成的行，照本機原本產生 LRC 的規則（provider/local/asr.py 的
-    ``_entry_to_lines`` 與 ``_split_long_unit``；#110 讓供應商不再產生 LRC 後只剩這一份）：
+    """一個片段斷成的行，照本機原本產生 LRC 的規則（#110 之前本機轉接器自己寫 LRC，
+    現在斷行的規則只有這一份）：
 
     * 沒有逐字時間（或對不上文字，由呼叫端換成 None）：整段一行，時間是片段的開始。
     * 在句尾標點（。．！？!?…）後斷句，一句一行，時間是這一句第一個詞的開始。
     * 一句從第一個詞的開始到最後一個詞的結束超過 12 秒時，在讀點（、，,）後再斷開，
       讓每一行盡量不超過 12 秒。
     * 沒有詞的部分（例如「！？」中間斷出來的「？」）併到下一行的行首，片段結尾的併到最後一行。
+
+    每一行另外帶真實結束時間，給 SRT／VTT 用（見 :func:`_subtitles`）：有逐字時間時是這一行
+    最後一個詞的結束，併進來的標點不改變它；整段一行時是片段的結束，片段沒有結束時間時是 None。
 
     逐字時間怎麼對到句子：詞是對齊器斷的，標點不算詞、直接丟掉，所以從詞裡看不出句子在哪裡
     結束。本機先在斷行標點後面補空白再斷詞，詞就不會跨過任何斷行處；斷句以後，每一句各自斷詞
@@ -228,7 +243,7 @@ def _segment_lines(
     絕對時間相減會多出浮點誤差）。去靜音剪掉的靜音若落在一句中間，量到的長度包含那段靜音，
     本機當時量的是剪掉之後的長度。
     """
-    whole = [_Line(segment_start, _labelled(speaker, text))]
+    whole = [_Line(segment_start, _labelled(speaker, text), segment_end)]
     if not words:
         return whole
 
@@ -247,11 +262,14 @@ def _segment_lines(
         pending = ""
         if ends[offset + count - 1] - starts[offset] > MAX_LINE_SECONDS:
             pieces = _split_at_clauses(pieces[0][0], offset, starts, ends)
-        for piece, first in pieces:
-            lines.append(_Line(words[first]["start"], _labelled(speaker, piece.strip())))
+        # 每一段的最後一個詞在下一段的第一個詞前面；最後一段的是這一句的最後一個詞
+        lasts = [first - 1 for _, first in pieces[1:]] + [offset + count - 1]
+        for (piece, first), last in zip(pieces, lasts, strict=True):
+            lines.append(_Line(words[first]["start"], _labelled(speaker, piece.strip()),
+                               words[last]["end"]))
         offset += count
     if pending and lines:
-        lines[-1] = _Line(lines[-1].start, lines[-1].text + pending)
+        lines[-1] = replace(lines[-1], text=lines[-1].text + pending)
     return lines or whole
 
 
@@ -331,14 +349,21 @@ def _is_cjk_ideograph(char: str) -> bool:
 def _render(lines: Sequence[_Line], fmt: OutputFormat) -> str:
     if fmt == OutputFormat.LRC:
         return "\n".join(_lrc_timestamp(line.start) + line.text for line in lines)
-    cues = [Cue(_lrc_seconds(line.start), line.text.strip()) for line in lines]
+    cues = [Cue(_lrc_seconds(line.start), line.text.strip(), line.end) for line in lines]
     renderers = {OutputFormat.SRT: _srt, OutputFormat.VTT: _vtt, OutputFormat.TXT: _txt}
     return renderers[OutputFormat(fmt)](cues)
 
 
 def _lrc_timestamp(seconds: float) -> str:
-    minutes = int(seconds // 60)
-    return f"[{minutes:02d}:{seconds - minutes * 60:05.2f}]"
+    """先把秒數取到 0.01，再拆成分鐘與秒：59.996 秒寫成 [01:00.00]。
+
+    照浮點數實際的值取最接近的 0.01，剛好一半時取偶數，和以前的 ``f"{秒:.2f}"`` 相同。以前先拆
+    分鐘才取，秒數進位到 60 時會寫成 [00:60.00]（#154）。
+    """
+    hundredths = int(Decimal(seconds).quantize(Decimal("0.01"), ROUND_HALF_EVEN) * 100)
+    minutes, rest = divmod(hundredths, 6_000)
+    whole_seconds, fraction = divmod(rest, 100)
+    return f"[{minutes:02d}:{whole_seconds:02d}.{fraction:02d}]"
 
 
 def _lrc_seconds(seconds: float) -> float:
@@ -352,35 +377,103 @@ def _stamp_seconds(match: re.Match) -> float:
     return int(minutes) * 60 + int(seconds) + float(f"0.{fraction}")
 
 
-def _timestamp(seconds: float, separator: str) -> str:
-    if seconds < 0:
-        seconds = 0
-    hours = int(seconds / 3600)
-    minutes = int((seconds % 3600) / 60)
-    secs = int(seconds % 60)
-    milliseconds = int((seconds - int(seconds)) * 1000)
-    return f"{hours:02d}:{minutes:02d}:{secs:02d}{separator}{milliseconds:03d}"
+def _milliseconds(seconds: float) -> int:
+    """開始時間寫進 SRT／VTT 的毫秒數：毫秒以下捨去，負的當成 0。這是以前的寫法，開始時間因此
+    和以前逐字相同（11.60 寫成 11,599）；真實結束時間沒有這個包袱，四捨五入到毫秒。"""
+    seconds = max(seconds, 0.0)
+    return int(seconds) * 1000 + int((seconds - int(seconds)) * 1000)
 
 
-def _end_time(cues: Sequence[Cue], i: int) -> float:
-    """沿用現行規則：下一行的開始，最後一行加 5 秒。"""
-    return cues[i + 1].time if i + 1 < len(cues) else cues[i].time + 5.0
+def _timestamp(milliseconds: int, separator: str) -> str:
+    hours, rest = divmod(milliseconds, 3_600_000)
+    minutes, rest = divmod(rest, 60_000)
+    seconds, millis = divmod(rest, 1000)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}{separator}{millis:03d}"
+
+
+MIN_CUE_SECONDS = 0.8
+"""字幕至少顯示的秒數（ADR-0008）。對齊器給的詞常常只有零點幾秒，甚至是零長度；一兩個字的插話
+（例如「对」）照實際長度顯示會一閃而過。0.8 秒是使用者看過對照影片後選的。"""
+
+_LAST_LINE_SECONDS = 5.0
+"""沒有真實結束時間時，最後一行顯示的秒數（以前的規則）。"""
+
+
+def _subtitles(cues: Sequence[Cue]) -> List[Tuple[str, int, int]]:
+    """SRT／VTT 的每一行：(文字, 開始, 結束)，時間是毫秒，依開始時間排序（ADR-0008）。
+
+    WebVTT 規定字幕依開始時間排列，SRT 照做。行依片段的開始排序，一個片段斷成的幾行可能和別人
+    的片段交錯，所以這裡重新排序，同時開始的行照原本的順序；LRC、TXT 照片段的順序，不排序。
+    下面的「下一行」指之後第一個比這一行晚開始的行，同時開始的不算。
+
+    結束時間依序這樣算，全部在毫秒上：
+
+    1. 有真實結束時間（有逐字時間時是這一行最後一個詞的結束，整段一行時是片段的結束，見
+       :func:`_segment_lines`）就用它，四捨五入到毫秒，不截到別人下一行的開始：不同說話者的
+       字幕可以重疊，靠說話者標記分辨。沒有真實結束時間（沒有片段的任務、片段沒有結束時間）時
+       照以前，顯示到下一行（任何人的）開始，最後一行加 :data:`_LAST_LINE_SECONDS`。
+    2. 至少顯示 :data:`MIN_CUE_SECONDS`；真實結束時間是零長度或顛倒時，就顯示這麼久。
+    3. 同一位說話者的字幕不疊：不晚於他自己下一行的開始（說話者見 :func:`_speaker`）。同一位
+       說話者緊接著說下一句時，這一行因此可能不到 0.8 秒。
+
+    沒有說話者標記的行都算同一位說話者，所以沒有說話者標記、也沒有真實結束時間的輸出和以前逐字
+    相同；只有開始時間倒退或重複的行不同，以前會輸出開始晚於結束、或零長度的字幕。
+
+    #111 之前存的去靜音任務，結束剛好落在有聲段交界的片段，還原時可能跳到被剪掉的靜音之後：
+    這一行多顯示到那段靜音結束，或截到同一位說話者的下一行。之後存的片段，結束在交界的算前一段
+    （見 :mod:`app.services.silence_removal`）。
+    """
+    ordered = sorted(cues, key=lambda cue: cue.time)
+    starts = [_milliseconds(cue.time) for cue in ordered]
+    speakers = [_speaker(cue) for cue in ordered]
+    starts_by_speaker: Dict[Optional[str], List[int]] = {}
+    for speaker, start in zip(speakers, starts, strict=True):
+        starts_by_speaker.setdefault(speaker, []).append(start)
+
+    subtitles: List[Tuple[str, int, int]] = []
+    for cue, start, speaker in zip(ordered, starts, speakers, strict=True):
+        next_start = _first_after(starts, start)
+        if cue.end is not None:
+            end = round(cue.end * 1000)
+        elif next_start is not None:
+            end = next_start
+        else:
+            end = _milliseconds(cue.time + _LAST_LINE_SECONDS)
+        end = max(end, start + round(MIN_CUE_SECONDS * 1000))
+        own_next_start = _first_after(starts_by_speaker[speaker], start)
+        if own_next_start is not None:
+            end = min(end, own_next_start)
+        subtitles.append((cue.text, start, end))
+    return subtitles
+
+
+def _first_after(sorted_starts: Sequence[int], start: int) -> Optional[int]:
+    """排好序的開始時間裡，第一個比 start 晚的；沒有時是 None。"""
+    later = bisect_right(sorted_starts, start)
+    return sorted_starts[later] if later < len(sorted_starts) else None
+
+
+_SPEAKER_LABEL_RE = re.compile(r"\[S\d+\]|Speaker\s*(?:[0-9]+|[A-Z])\s*[:：]")
+
+
+def _speaker(cue: Cue) -> Optional[str]:
+    """這一行的說話者，看行首的說話者標記：[S0]，或存下來的 Gemini LRC 裡的「Speaker 1:」
+    （空白與全形冒號不計）。同一個標記就是同一位說話者；沒有標記時是 None，這些行都算同一位。"""
+    match = _SPEAKER_LABEL_RE.match(cue.text)
+    return re.sub(r"[\s:：]", "", match.group(0)) if match else None
 
 
 def _srt(cues: Sequence[Cue]) -> str:
     blocks: List[str] = []
-    for i, cue in enumerate(cues):
-        blocks += [str(i + 1),
-                   f"{_timestamp(cue.time, ',')} --> {_timestamp(_end_time(cues, i), ',')}",
-                   cue.text, ""]
+    for number, (text, start, end) in enumerate(_subtitles(cues), start=1):
+        blocks += [str(number), f"{_timestamp(start, ',')} --> {_timestamp(end, ',')}", text, ""]
     return "\n".join(blocks)
 
 
 def _vtt(cues: Sequence[Cue]) -> str:
     blocks = ["WEBVTT", ""]
-    for i, cue in enumerate(cues):
-        blocks += [f"{_timestamp(cue.time, '.')} --> {_timestamp(_end_time(cues, i), '.')}",
-                   cue.text, ""]
+    for text, start, end in _subtitles(cues):
+        blocks += [f"{_timestamp(start, '.')} --> {_timestamp(end, '.')}", text, ""]
     return "\n".join(blocks)
 
 

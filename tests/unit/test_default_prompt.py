@@ -1,7 +1,9 @@
 """
-單元測試：Prompt 模板組裝邏輯
+單元測試：送給模型的提示詞怎麼組（提示詞範本代入變數，接上補充說明）
 測試範圍：core/default_prompt.py
 """
+import pytest
+
 from app.core.default_prompt import (
     build_prompt,
     DEFAULT_PROMPT_TEMPLATE,
@@ -120,3 +122,169 @@ class TestBuildPrompt:
         assert "繁體中文" in prompt
         assert "Speaker" in prompt
         assert "7." in prompt
+
+
+# ─── 提示詞範本裡的大括號（#143） ────────────────────────────────────────────
+
+# 以前能用的提示詞範本與送出的字串。期望值寫死，是 #143 修正前的 build_prompt 算出來的；
+# 系統內建範本的措辭改了，default-template 這一項要跟著改
+PROMPTS_THAT_WORKED_BEFORE = [
+    pytest.param(
+        {"source_lang": "ja-JP", "target_lang": "zh-TW", "multi_speaker": True},
+        "你是一位專業的逐字稿專家。請將以下日文音檔精確轉錄為 LRC 格式。\n"
+        "注意：\n"
+        "1. 這是 ASMR 音檔，可能包含耳語、口腔音、環境音效等非語音聲音。\n"
+        "2. 非語音的聲音請適當標注為描述（如：[耳語]、[水聲]）。\n"
+        "3. 時間戳格式為 [mm:ss.xxx]（毫秒精確到三位），必須精確對應聲音的起始位置。\n"
+        "4. 純靜默段落不要產生任何行。\n"
+        "5. 每行文字請盡量簡短。\n"
+        "6. 音檔中有多位說話者，請用 Speaker 1:、Speaker 2: 等標籤區分不同說話者。\n"
+        "7. 請將所有轉錄內容翻譯為繁體中文輸出。",
+        id="default-template"),
+    pytest.param(
+        {"source_lang": "ja-JP", "target_lang": "zh-TW", "multi_speaker": True,
+         "template": "請把{source_lang}音檔轉成 LRC。\n{speaker_instruction}{translate_instruction}"},
+        "請把日文音檔轉成 LRC。\n"
+        "6. 音檔中有多位說話者，請用 Speaker 1:、Speaker 2: 等標籤區分不同說話者。\n"
+        "7. 請將所有轉錄內容翻譯為繁體中文輸出。",
+        id="custom-template-three-variables"),
+    pytest.param(
+        {"source_lang": "ja-JP",
+         "template": "請把{source_lang}音檔轉成 LRC。\n{speaker_instruction}{translate_instruction}"},
+        "請把日文音檔轉成 LRC。",
+        id="custom-template-empty-instructions"),
+    pytest.param(
+        {"source_lang": "ja-JP", "multi_speaker": True,
+         "template": '每一行輸出成 {{"speaker": "S0", "text": "…"}}，音檔是{source_lang}。\n'
+                     "{speaker_instruction}"},
+        '每一行輸出成 {"speaker": "S0", "text": "…"}，音檔是日文。\n'
+        "6. 音檔中有多位說話者，請用 Speaker 1:、Speaker 2: 等標籤區分不同說話者。",
+        id="escaped-braces"),
+    pytest.param(
+        {"source_lang": "ja-JP", "template": "{{source_lang}} 會換成{source_lang}"},
+        "{source_lang} 會換成日文",
+        id="escaped-variable-name"),
+    pytest.param(
+        {"template": "只要逐字稿，不要時間戳。\n\n"},
+        "只要逐字稿，不要時間戳。",
+        id="no-braces"),
+]
+
+
+class TestBracesInTemplate:
+    """設定頁存的提示詞範本：三個變數照樣代入，其他大括號照寫的送出，任務不會因此失敗。"""
+
+    @pytest.mark.parametrize("kwargs, expected", PROMPTS_THAT_WORKED_BEFORE)
+    def test_prompt_that_worked_before_is_sent_unchanged(self, kwargs, expected):
+        assert build_prompt(**kwargs) == expected
+
+    def test_variables_are_filled_in_next_to_other_braces(self):
+        template = '請轉錄{source_lang}音檔，每一行寫成 {"text": "…"}\n{speaker_instruction}{translate_instruction}'
+
+        prompt = build_prompt(
+            source_lang="ja-JP", target_lang="zh-TW", multi_speaker=True, template=template)
+
+        assert prompt == (
+            '請轉錄日文音檔，每一行寫成 {"text": "…"}\n'
+            "6. 音檔中有多位說話者，請用 Speaker 1:、Speaker 2: 等標籤區分不同說話者。\n"
+            "7. 請將所有轉錄內容翻譯為繁體中文輸出。")
+
+    @pytest.mark.parametrize("template", [
+        pytest.param('每一行寫成 {"speaker": "S0", "text": "…"}', id="json"),
+        pytest.param('輸出 {"segment": {"start": 0, "text": "…"}}', id="nested-json"),
+        pytest.param("用 { 開頭的行是註解", id="lone-open-brace"),
+        pytest.param("表情符號 :} 照寫", id="lone-close-brace"),
+        pytest.param("把 {name} 換成說話者的名字", id="unknown-name"),
+        pytest.param("空的 {} 照寫", id="empty-braces"),
+        pytest.param("{source_lang.code}", id="attribute-of-a-variable"),
+        pytest.param("{source_lang[x]}", id="index-of-a-variable"),
+    ])
+    def test_other_braces_are_sent_as_written(self, template):
+        assert build_prompt(source_lang="ja-JP", template=template) == template
+
+    def test_escapes_next_to_other_braces_are_sent_as_written(self):
+        # 只有 {{ }} 時照舊收成單一大括號（見 escaped-variable-name）；旁邊有 str.format
+        # 代入不了的大括號時照寫的送出，巢狀 JSON 結尾的 }} 才不會被改掉，跳脫的名稱也不代入
+        template = '{{source_lang}} 會換成{source_lang}，例如 {"lang": "日文"}'
+
+        prompt = build_prompt(source_lang="ja-JP", template=template)
+
+        assert prompt == '{{source_lang}} 會換成日文，例如 {"lang": "日文"}'
+
+
+# ─── 補充說明接在提示詞範本後面（#144） ──────────────────────────────────────
+
+class TestSupplementAfterTemplate:
+    """轉錄頁填的提示詞（每個檔案的，沒有就是全域的）是補充說明：空一行接在提示詞範本後面，照寫的送出。
+
+    「範本單獨送出時的樣子」由上面寫死的期望值鎖住，這裡拿它當前半段比對。
+    """
+
+    def test_supplement_follows_the_built_in_template(self):
+        prompt = build_prompt(source_lang="ja-JP", supplement="說話者是兩位主持人")
+
+        assert prompt == build_prompt(source_lang="ja-JP") + "\n\n說話者是兩位主持人"
+
+    def test_supplement_follows_the_template_saved_in_settings(self):
+        prompt = build_prompt(
+            source_lang="ja-JP", multi_speaker=True,
+            template="請把{source_lang}音檔轉成 LRC。\n{speaker_instruction}",
+            supplement="人名照寫：佐藤、鈴木")
+
+        assert prompt == (
+            "請把日文音檔轉成 LRC。\n"
+            "6. 音檔中有多位說話者，請用 Speaker 1:、Speaker 2: 等標籤區分不同說話者。\n"
+            "\n"
+            "人名照寫：佐藤、鈴木")
+
+    @pytest.mark.parametrize("supplement", [
+        pytest.param("說話者是兩位主持人", id="note"),
+        pytest.param("只要逐字稿，不要時間戳。", id="contradicts-the-template"),
+        pytest.param("{speaker_instruction}{translate_instruction}", id="template-variables"),
+    ])
+    @pytest.mark.parametrize("settings", [
+        pytest.param({}, id="single-speaker"),
+        pytest.param({"multi_speaker": True, "target_lang": "zh-TW"}, id="speakers-and-translation"),
+    ])
+    def test_template_instructions_are_always_kept(self, supplement, settings):
+        # 範本整份留在前面：要求 LRC 與時間戳的指示，以及說話者、翻譯的指示，一個字都不少
+        template_alone = build_prompt(source_lang="ja-JP", **settings)
+
+        prompt = build_prompt(source_lang="ja-JP", supplement=supplement, **settings)
+
+        assert prompt.startswith(template_alone + "\n\n")
+        assert "LRC 格式" in prompt
+        assert "時間戳格式為 [mm:ss.xxx]" in prompt
+
+    @pytest.mark.parametrize("supplement", [
+        pytest.param('每一行寫成 {"speaker": "S0", "text": "…"}', id="json"),
+        pytest.param('輸出 {"segment": {"start": 0, "text": "…"}}', id="nested-json"),
+        pytest.param("用 { 開頭的行是註解", id="lone-open-brace"),
+        pytest.param("表情符號 :} 照寫", id="lone-close-brace"),
+        pytest.param("把 {name} 換成說話者的名字", id="unknown-name"),
+        pytest.param("{{source_lang}} 照寫", id="escaped-variable-name"),
+        pytest.param("音檔是{source_lang}", id="template-variable"),
+    ])
+    def test_braces_in_the_supplement_are_sent_as_written(self, supplement):
+        # 補充說明不代入變數：範本已經代入過，再代入一次，說話者與翻譯的指示會重複
+        prompt = build_prompt(source_lang="ja-JP", multi_speaker=True, supplement=supplement)
+
+        assert prompt == build_prompt(source_lang="ja-JP", multi_speaker=True) + "\n\n" + supplement
+
+    @pytest.mark.parametrize("supplement", [None, "", " \n\t", "　"],
+                             ids=["none", "empty", "blank", "full-width-space"])
+    def test_blank_supplement_sends_the_template_alone(self, supplement):
+        assert build_prompt(source_lang="ja-JP", supplement=supplement) == build_prompt(
+            source_lang="ja-JP")
+
+    def test_blank_lines_around_the_supplement_are_not_sent(self):
+        prompt = build_prompt(source_lang="ja-JP", supplement="\n\n人名照寫：佐藤\n \n")
+
+        assert prompt == build_prompt(source_lang="ja-JP") + "\n\n人名照寫：佐藤"
+
+    @pytest.mark.parametrize("template", ["", "  \n"], ids=["empty", "blank"])
+    def test_blank_template_saved_in_settings_means_the_built_in_template(self, template):
+        # 設定頁把範本清空再存，存下的是空字串：和沒存過一樣用系統內建的範本
+        prompt = build_prompt(source_lang="ja-JP", template=template, supplement="人名照寫：佐藤")
+
+        assert prompt == build_prompt(source_lang="ja-JP") + "\n\n人名照寫：佐藤"

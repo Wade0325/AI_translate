@@ -5,7 +5,7 @@
 
 模型程式碼來自固定 commit 的 ``moss-transcribe-diarize`` 套件（不走
 ``trust_remote_code``），權重固定 HF revision（``weights.REPO_REVISIONS``）。
-torch / transformers 一律延遲匯入：只有主機 GPU worker 與 standalone 執行緒池會用到。
+torch / transformers 一律延遲匯入：只有主機 GPU worker 與免安裝模式的執行緒池會用到。
 
 Windows：torch 沒有 Flash SDPA，memory-efficient kernel 又不接受 ``enable_gqa``，
 transformers 5.x 在無遮罩時送 GQA → 退回 math kernel，prefill 顯存 O(L²)
@@ -168,7 +168,7 @@ def single_pass_limit_seconds() -> float:
 
 
 def max_single_pass_seconds() -> float:
-    """這台機器上 MOSS 單次推論能處理的最長音檔（秒）；更長的檔由 flows 分段轉錄。
+    """這台機器上 MOSS 單次推論能處理的最長音檔（秒）；更長的檔分段轉錄。
 
     :func:`single_pass_limit_seconds` 再依顯卡容量收斂（16 GB 約 79 分、12 GB 約 52 分、
     8 GB 約 26 分；估算值至少 300 秒——實測 275 秒峰值 2.32 GiB，4 GB 卡即可容納）。

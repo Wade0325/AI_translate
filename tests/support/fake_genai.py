@@ -8,7 +8,8 @@
   沒有另外指定的請求，回應的文字是 ``[00:00.00]<這個請求的提示詞>``；
   送出時請求引用的檔案不在遠端，那個請求回錯誤。
 
-測試從 ``stored`` 看遠端還留著哪些檔案。
+測試從 ``stored`` 看遠端還留著哪些檔案，從 ``prompts`` 看收到了哪些提示詞，從 ``generated`` 看
+送出了哪些生成請求（Gemini 照次收費）。
 """
 
 from __future__ import annotations
@@ -17,21 +18,38 @@ import itertools
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Set, Union
 
+import httpx
 from google.genai import errors, types
 
 
-def _error(cls, code: int, status: str, message: str):
-    return cls(code, {"error": {"code": code, "message": message, "status": status}})
+def _error(cls, code: int, status: str, message: str, *,
+           retry_delay: Optional[str] = None, retry_after: Optional[str] = None):
+    """``retry_delay`` 是錯誤內容裡 RetryInfo 建議的等待（例如 ``"37s"``），``retry_after`` 是回應的
+    Retry-After 標頭；兩者都是 Gemini 建議等多久再重試的方式。"""
+    error: Dict[str, Any] = {"code": code, "message": message, "status": status}
+    if retry_delay is not None:
+        # 和 Gemini 配額用完時一樣，RetryInfo 排在配額說明後面
+        error["details"] = [
+            {"@type": "type.googleapis.com/google.rpc.QuotaFailure",
+             "violations": [{"quotaMetric": "generativelanguage.googleapis.com/generate_content"}]},
+            {"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": retry_delay},
+        ]
+    response = httpx.Response(code, headers={"Retry-After": retry_after}) if retry_after else None
+    return cls(code, {"error": error}, response)
 
 
-def unavailable() -> errors.ServerError:
+def unavailable(*, retry_delay: Optional[str] = None,
+                retry_after: Optional[str] = None) -> errors.ServerError:
     """503：模型超載，可以重試。"""
-    return _error(errors.ServerError, 503, "UNAVAILABLE", "The model is overloaded.")
+    return _error(errors.ServerError, 503, "UNAVAILABLE", "The model is overloaded.",
+                  retry_delay=retry_delay, retry_after=retry_after)
 
 
-def rate_limited() -> errors.ClientError:
+def rate_limited(*, retry_delay: Optional[str] = None,
+                 retry_after: Optional[str] = None) -> errors.ClientError:
     """429：配額用完，可以重試。"""
-    return _error(errors.ClientError, 429, "RESOURCE_EXHAUSTED", "Resource has been exhausted.")
+    return _error(errors.ClientError, 429, "RESOURCE_EXHAUSTED", "Resource has been exhausted.",
+                  retry_delay=retry_delay, retry_after=retry_after)
 
 
 def invalid_argument(message: str = "Request contains an invalid argument.") -> errors.ClientError:
@@ -48,6 +66,8 @@ class Reply:
     output_tokens: int = 200
     served: Optional[str] = None
     """實際用到的處理模式；None 表示照請求的處理模式。"""
+    finish_reason: Optional[types.FinishReason] = None
+    """模型為什麼停止產生；例如 SAFETY、RECITATION 時文字常常是空的。None 表示沒有寫。"""
 
 
 @dataclass
@@ -74,8 +94,9 @@ def _response(outcome: Union[Reply, Blocked], tier: Optional[str]) -> types.Gene
             sdk_http_response=types.HttpResponse(headers=headers),
         )
     return types.GenerateContentResponse(
-        candidates=[types.Candidate(content=types.Content(
-            role="model", parts=[types.Part(text=outcome.text)]))],
+        candidates=[types.Candidate(
+            content=types.Content(role="model", parts=[types.Part(text=outcome.text)]),
+            finish_reason=outcome.finish_reason)],
         usage_metadata=types.GenerateContentResponseUsageMetadata(
             prompt_token_count=outcome.input_tokens,
             candidates_token_count=outcome.output_tokens,
@@ -100,6 +121,8 @@ class FakeGenaiClient:
         """操作名稱（例如 ``"files.upload"``）→ 這個操作每次都拋的錯。"""
         self.replies: List[Outcome] = []
         """generate_content 依序的結果；用完之後都回 ``Reply()``。"""
+        self.generated: List[str] = []
+        """每個送到 generate_content 的請求的處理模式（``"flex"``、``"standard"``），依送出順序。"""
         self.overloaded: Set[str] = set()
         """這些處理模式（``"flex"``、``"standard"``）的請求一律回 503。"""
         self.tier_header = True
@@ -108,6 +131,8 @@ class FakeGenaiClient:
         """每查一次批次依序回報的狀態，停在最後一個。"""
         self.batch_outcomes: Dict[int, BatchOutcome] = {}
         """批次裡第 i 個請求的結果；沒指定的照提示詞回應。"""
+        self.prompts: List[str] = []
+        """依序收到的提示詞：generate_content 每次一則，送出的批次每個請求一則。"""
         self._ids = itertools.count(1)
         self._polls_left: Dict[str, int] = {}
         self._jobs: Dict[str, List[types.InlinedResponse]] = {}
@@ -161,6 +186,8 @@ class _Models:
     def generate_content(self, *, model: str, contents: List[Any],
                          config: types.GenerateContentConfig) -> types.GenerateContentResponse:
         tier = "flex" if config.service_tier == "flex" else "standard"
+        self._client.generated.append(tier)
+        self._client.prompts.extend(part for part in contents if isinstance(part, str))
         for part in contents:
             if isinstance(part, types.File):
                 stored = self._client.stored.get(part.name or "")
@@ -205,6 +232,7 @@ class _Batches:
     def _respond(self, index: int, request: types.InlinedRequest) -> types.InlinedResponse:
         parts = request.contents[0].parts
         prompt = next(p.text for p in parts if p.text)
+        self._client.prompts.append(prompt)
         uri = next(p.file_data.file_uri for p in parts if p.file_data)
         if not any(f.uri == uri for f in self._client.stored.values()):
             return types.InlinedResponse(error=types.JobError(code=5, message=f"File {uri} not found."))

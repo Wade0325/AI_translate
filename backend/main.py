@@ -1,5 +1,7 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy.exc import SQLAlchemyError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from contextlib import asynccontextmanager
 from app.api import local_models
@@ -17,22 +19,19 @@ from app.websocket.origin import WebSocketOriginMiddleware
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import get_settings
 from app.runtime import run_mode
-from app.database.session import init_db, SessionLocal
+from app.database.session import (
+    init_db, SessionLocal, traceback_without_db_details, without_db_details)
 from app.repositories.transcription_log_repository import TranscriptionLogRepository
+from app.tasks import batch_core, older_batches
 from app.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    logger.info("正在啟動 AI Voice Transcription API...")
+def end_stale_processing() -> None:
+    """啟動清掃孤兒紀錄：worker 中途被終止時，單檔任務會留下永遠 PROCESSING 的紀錄，記成失敗。
+    免安裝模式的任務跑在本行程內，重啟後必死 → 全掃（max_age=0）。出錯時只記 log，照樣啟動。"""
     settings = get_settings()
-
-    init_db()
-
-    # 清掃孤兒紀錄：worker 中途被終止時，單檔任務會留下永遠 PROCESSING 的紀錄。
-    # standalone 模式任務跑在本行程內，重啟後必死 → 全掃（max_age=0）
     try:
         stale_hours = 0 if settings.is_standalone \
             else settings.stale_processing_max_age_hours
@@ -42,18 +41,52 @@ async def lifespan(app: FastAPI):
         if swept:
             logger.info(f"啟動清掃：{swept} 筆逾時 PROCESSING 紀錄已標記為 FAILED")
     except Exception as e:
-        logger.warning(f"啟動清掃逾時 PROCESSING 紀錄失敗: {e}")
+        logger.warning(f"啟動清掃逾時 PROCESSING 紀錄失敗: {without_db_details(e)}")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logger.info("正在啟動 AI Voice Transcription API...")
+    settings = get_settings()
+
+    init_db()
+
+    end_stale_processing()
+
+    # 舊版送出的批次補上每個檔案的列：之後和這一版的批次一樣復原、取回結果、在任務頁列出檔名
+    try:
+        with SessionLocal() as db:
+            added = older_batches.add_file_rows(db)
+        if added:
+            logger.info(f"舊版送出的 {added} 個批次補上了每個檔案的列")
+    except Exception as e:
+        logger.warning(f"替舊版送出的批次補列失敗: {without_db_details(e)}")
 
     # 清掉超過保留天數的保留音檔（它不是永久保存）
+    from app.services import audio_store
     try:
-        from app.services import audio_store
         audio_store.purge_expired()
     except Exception as e:
         logger.warning(f"清理過期音檔失敗: {e}")
+    # 清掉暫存區裡逾時的上傳檔：沒機會收尾的任務留下的（例如關閉時還在排隊）
+    try:
+        audio_store.purge_stale_uploads()
+    except Exception as e:
+        logger.warning(f"清理暫存上傳檔失敗: {e}")
 
     # 依執行模式選一次轉接器，再啟動 WebSocket 狀態監聽器
     run_mode.get()
     websocket_manager.start()
+
+    # 免安裝模式的批次跑在本行程內：重啟之後，上傳中的批次必定已經停了，記成失敗。Docker 模式由
+    # worker 啟動時收（app.celery.celery），API 單獨重啟時 worker 可能還在上傳
+    if settings.is_standalone:
+        try:
+            ended = batch_core.end_stopped_uploads()
+            if ended:
+                logger.info(f"啟動清掃：{ended} 個上傳時停住的批次記成失敗")
+        except Exception as e:
+            logger.warning(f"啟動清掃上傳中的批次失敗: {without_db_details(e)}")
 
     # 預熱 VAD，避免首個任務才載模型
     try:
@@ -79,6 +112,22 @@ app = FastAPI(title="AI Voice Transcription API",
               version="1.0.0", lifespan=lifespan)
 
 
+@app.exception_handler(SQLAlchemyError)
+async def database_error(request: Request, error: SQLAlchemyError) -> JSONResponse:
+    """端點沒有自己接住的資料庫例外：log 只記例外類型與原因，回固定訊息的 500。
+
+    例外的文字有 SQL 原文，Postgres 附上的 DETAIL 還可能是寫不進去的整列（任務紀錄與批次的那一列有
+    原始檔名與轉錄結果）。traceback 留著出錯的位置，但不帶訊息與成因。
+    對 SQLAlchemyError 這種特定類別註冊，Starlette 處理完就不再往上拋，uvicorn 不會連同 traceback
+    記進 log；對 Exception 註冊的 handler 處理完照樣往上拋。WebSocket 端點自己接住所有例外。
+    """
+    logger.error(f"{request.method} {request.url.path} 資料庫出錯:\n"
+                 f"{traceback_without_db_details(error)}")
+    return JSONResponse(status_code=500,
+                        content={"detail": "資料庫出錯了，這次的操作沒有完成，請再試一次；"
+                                           "一直失敗的話請回報問題。"})
+
+
 @app.get("/api/v1/health", tags=["Health"])
 def health():
     """launcher / 監控探活用。"""
@@ -102,7 +151,7 @@ app.include_router(transcripts.router, prefix="/api/v1/transcripts",
 app.include_router(vad.router, prefix="/api/v1/vad", tags=["VAD"])
 
 # 只放行設定中的來源（預設為開發用的 Vite dev server），不再用 * 搭配 credentials。
-# docker 開發模式前端經 Vite proxy 呼叫 /api、standalone 由本服務同源提供，
+# Docker 模式開發時前端經 Vite proxy 呼叫 /api、免安裝模式由本服務同源提供，
 # 對瀏覽器而言都是同源請求，不靠 CORS；清單只影響真正跨來源的呼叫
 app.add_middleware(
     CORSMiddleware,
@@ -136,8 +185,8 @@ class _SPAStaticFiles(StaticFiles):
         return response
 
 
-# standalone 模式：FastAPI 同源直接服務 frontend/dist（前端 API/WS 都是
-# 相對路徑，無需任何前端修改）；docker 模式維持 Vite dev server，不掛載
+# 免安裝模式：FastAPI 同源直接服務 frontend/dist（前端 API/WS 都是
+# 相對路徑，無需任何前端修改）；Docker 模式維持 Vite dev server，不掛載
 _static_path = get_settings().static_path
 if _static_path is not None:
     if _static_path.is_dir():

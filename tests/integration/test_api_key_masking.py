@@ -11,14 +11,17 @@
 每個任務再經 WebSocket 送回後端；任何能讀到回應的頁面都拿得到金鑰。
 """
 import json
-from unittest.mock import MagicMock, patch
+import uuid
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import sessionmaker
 
 from app.api import batch, transcription
-from app.database.models import BatchJob, ModelConfiguration
+from app.database.models import BatchFile, BatchJob, ModelConfiguration
+from app.provider import registry
+from app.provider.base import ProviderInfo
+from tests.support.fake_provider import FAKE_MODEL, FakeProvider
 
 REAL_KEY = "AIzaSyTEST-0123456789-abcdefghij-WXYZ"
 REAL_KEY_MASKED = "AIza********WXYZ"
@@ -134,35 +137,41 @@ class TestSaveKeepsStoredKeys:
 # ─── Test Connection：後端自己拿金鑰 ─────────────────────────────────────────
 
 class TestConnectionUsesStoredKey:
-    PROVIDER = "GoogleMaskTest"   # 名稱含 google 才會走 Gemini 測試邏輯
+    """要金鑰的供應商（供應商清單的 requires_api_key）：交給供應商檢查的是資料庫裡的金鑰。"""
+    PROVIDER = "KeyedFake"
+
+    @pytest.fixture
+    def keyed(self):
+        """換上要 API 金鑰的假供應商，測試結束後拿掉。"""
+        provider = FakeProvider()
+        provider.info = ProviderInfo(label="要金鑰的假供應商", requires_api_key=True)
+        previous = registry.register(self.PROVIDER, provider)
+        yield provider
+        registry.register(self.PROVIDER, previous)
 
     def _post_test(self, client, api_keys):
-        status = MagicMock(success=True, message="ok")
-        with patch("app.api.model_manager.GeminiClient") as client_cls:
-            client_cls.return_value.test_connection.return_value = status
-            response = client.post("/api/v1/setting/test", json={
-                "provider": self.PROVIDER,
-                "apiKeys": api_keys,
-                "model": "gemini-2.5-flash",
-            })
-        return response, client_cls
+        return client.post("/api/v1/setting/test", json={
+            "provider": self.PROVIDER,
+            "apiKeys": api_keys,
+            "model": FAKE_MODEL,
+        })
 
-    def test_masked_key_is_resolved_from_db(self, client, stored_keys):
+    def test_masked_key_is_resolved_from_db(self, client, stored_keys, keyed):
         stored_keys(self.PROVIDER, [REAL_KEY])
-        response, client_cls = self._post_test(client, [REAL_KEY_MASKED])
+        response = self._post_test(client, [REAL_KEY_MASKED])
         assert response.status_code == 200
-        client_cls.assert_called_once_with(api_key=REAL_KEY)
+        assert keyed.checked_keys == [REAL_KEY]
 
-    def test_no_key_in_request_uses_db_key(self, client, stored_keys):
+    def test_no_key_in_request_uses_db_key(self, client, stored_keys, keyed):
         stored_keys(self.PROVIDER, [REAL_KEY])
-        response, client_cls = self._post_test(client, [])
+        response = self._post_test(client, [])
         assert response.status_code == 200
-        client_cls.assert_called_once_with(api_key=REAL_KEY)
+        assert keyed.checked_keys == [REAL_KEY]
 
-    def test_no_key_anywhere_returns_400(self, client):
-        response, client_cls = self._post_test(client, [])
+    def test_no_key_anywhere_returns_400(self, client, keyed):
+        response = self._post_test(client, [])
         assert response.status_code == 400
-        client_cls.assert_not_called()
+        assert keyed.checked_keys == []
 
 
 # ─── 任務：缺少金鑰或只帶遮罩值時改用資料庫的金鑰 ───────────────────────────
@@ -180,7 +189,7 @@ def task_env(tmp_path, monkeypatch, test_engine, in_process_run_mode):
 
     calls = []
     monkeypatch.setattr(in_process_run_mode, "submit_transcription",
-                        lambda params, queue: calls.append(params) or "task-id")
+                        lambda task_id, params, queue: calls.append(params))
     monkeypatch.setattr(in_process_run_mode, "submit_batch",
                         lambda params: calls.append(params) or "task-id")
     return calls
@@ -249,10 +258,16 @@ class TestRecoverUsesStoredKey:
 
     @pytest.fixture
     def polling_job(self, db_session):
+        """送出了、還在輪詢的批次，有一個送出的檔案。"""
         db_session.add(BatchJob(batch_id=self.BATCH_ID, gemini_job_name="batches/123",
-                                status="POLLING", file_mapping_json="{}"))
+                                status="POLLING"))
+        db_session.flush()
+        db_session.add(BatchFile(task_uuid=uuid.uuid4(), batch_id=self.BATCH_ID, seq=0,
+                                 file_uid="recover-key.wav", original_filename="recover-key.wav",
+                                 request_index=0, status="PROCESSING"))
         db_session.commit()
         yield
+        db_session.query(BatchFile).filter_by(batch_id=self.BATCH_ID).delete()
         db_session.query(BatchJob).filter_by(batch_id=self.BATCH_ID).delete()
         db_session.commit()
 

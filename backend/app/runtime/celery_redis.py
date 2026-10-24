@@ -1,6 +1,6 @@
 """執行模式的 Celery＋Redis 轉接器（Docker 模式）。
 
-- 派送與撤銷：Celery（docker 的 gevent worker、主機端 GPU worker 的 ``local_asr`` 佇列）
+- 派送與撤銷：Celery（Docker 模式的 gevent worker、主機端 GPU worker 的 ``local_asr`` 佇列）
 - 狀態廣播：Redis pub/sub 的 ``transcription_updates`` 頻道，訂閱端斷線時指數退避重連
 - 取消旗標與任務登記：存 Redis，橫跨 FastAPI、gevent worker 與主機端 solo GPU worker
   三個行程共享；TTL 大於 celery visibility_timeout
@@ -17,6 +17,7 @@ from typing import Any, AsyncIterator, Callable, Optional
 
 import redis
 
+from app.runtime.run_mode import RegisteredTask
 from app.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -54,11 +55,10 @@ class CeleryRedisRunMode:
         )
 
     # ── 派送與控制 ────────────────────────────────────────────────
-    def submit_transcription(self, task_params_dict: dict, queue: str) -> str:
+    def submit_transcription(self, task_id: str, task_params_dict: dict, queue: str) -> None:
         from app.celery.task import transcribe_media_task
 
-        return transcribe_media_task.apply_async(
-            args=[task_params_dict], queue=queue).id
+        transcribe_media_task.apply_async(args=[task_params_dict], queue=queue, task_id=task_id)
 
     def submit_batch(self, task_params_dict: dict) -> str:
         from app.celery.batch_task import batch_transcribe_task
@@ -166,15 +166,40 @@ class CeleryRedisRunMode:
     def clear_cancel(self, file_uid: str) -> None:
         self._redis.delete(_CANCEL_KEY.format(file_uid=file_uid))
 
-    def register_task(self, file_uid: str, task_id: str) -> None:
-        self._redis.set(
-            _TASK_ID_KEY.format(file_uid=file_uid), task_id, ex=_TTL_SECONDS)
+    def register_task(self, file_uid: str, task_id: str, *, can_terminate: bool) -> None:
+        value = json.dumps({"task_id": task_id, "can_terminate": can_terminate})
+        self._redis.set(_TASK_ID_KEY.format(file_uid=file_uid), value, ex=_TTL_SECONDS)
 
-    def registered_task(self, file_uid: str) -> Optional[str]:
-        value = self._redis.get(_TASK_ID_KEY.format(file_uid=file_uid))
-        return value.decode() if value else None
+    def registered_task(self, file_uid: str) -> Optional[RegisteredTask]:
+        return _registration(self._redis.get(_TASK_ID_KEY.format(file_uid=file_uid)))
+
+    def task_ended(self, file_uid: str, task_id: str) -> None:
+        key = _TASK_ID_KEY.format(file_uid=file_uid)
+
+        def clear(pipe) -> None:
+            # WATCH 著登記：比對與刪除之間被改掉（新任務剛登記）時整段重來
+            registered = _registration(pipe.get(key))
+            if registered is not None and registered.task_id != task_id:
+                return
+            pipe.multi()
+            pipe.delete(key, _CANCEL_KEY.format(file_uid=file_uid))
+
+        self._redis.transaction(clear, key)
 
     # ── 生命週期 ──────────────────────────────────────────────────
     def close(self) -> None:
         with suppress(Exception):
             self._redis.close()
+
+
+def _registration(value: Optional[bytes]) -> Optional[RegisteredTask]:
+    """Redis 裡的任務登記；升級前登記的只有 task_id（不能強制終止）。"""
+    if not value:
+        return None
+    try:
+        data = json.loads(value)
+    except ValueError:
+        data = None
+    if not isinstance(data, dict):
+        return RegisteredTask(value.decode(), can_terminate=False)
+    return RegisteredTask(str(data["task_id"]), bool(data.get("can_terminate")))

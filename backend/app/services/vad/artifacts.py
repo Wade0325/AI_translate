@@ -82,12 +82,12 @@ def persist_speech_extraction(
     used_for_transcription: bool,
     force: bool = False,
 ) -> Optional[Path]:
-    """保存去靜音的純語音提取結果（speech_only.wav + segments.json）。"""
-    run_dir = _artifact_run_dir(task_id, original_filename, force=force)
-    if run_dir is None:
-        return None
-
+    """保存去靜音的結果（speech_only.wav + segments.json）；失敗只記 log，不拋例外。"""
     try:
+        run_dir = _artifact_run_dir(task_id, original_filename, force=force)
+        if run_dir is None:
+            return None
+
         manifest = _load_manifest(run_dir)
         manifest["task_id"] = task_id
         manifest["original_filename"] = original_filename
@@ -128,12 +128,12 @@ def persist_split(
     split_point: float,
     force: bool = False,
 ) -> Optional[Path]:
-    """保存 VAD 靜音分割結果（part1.wav + part2.wav）。"""
-    run_dir = _artifact_run_dir(task_id, original_filename, force=force)
-    if run_dir is None:
-        return None
-
+    """保存 VAD 靜音分割結果（part1.wav + part2.wav）；失敗只記 log，不拋例外。"""
     try:
+        run_dir = _artifact_run_dir(task_id, original_filename, force=force)
+        if run_dir is None:
+            return None
+
         manifest = _load_manifest(run_dir)
         manifest["task_id"] = task_id
         manifest["original_filename"] = original_filename

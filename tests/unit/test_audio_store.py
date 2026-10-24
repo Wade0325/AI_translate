@@ -16,6 +16,7 @@ TASK_UUID = "3f2a1b4c-0000-4000-8000-000000000001"
 class _StubSettings:
     retain_audio = True
     audio_retention_days = 30
+    temp_uploads_max_age_hours = 24
 
 
 @pytest.fixture
@@ -134,3 +135,24 @@ class TestPurgeExpired:
 
         assert audio_store.purge_expired() == 0
         assert old.exists()
+
+
+class TestPurgeStaleUploads:
+    """啟動清掃：沒機會收尾的任務（例如應用程式被直接關掉時還在排隊）留在暫存區的上傳檔。"""
+
+    def test_removes_only_files_older_than_the_limit(self, store, upload):
+        fresh = upload.parent / "fresh.wav"
+        fresh.write_bytes(b"x")
+        aged = time.time() - 25 * 3600
+        os.utime(upload, (aged, aged))
+
+        assert audio_store.purge_stale_uploads() == 1
+        assert not upload.exists() and fresh.exists()
+
+    def test_zero_hours_disables_the_sweep(self, store, upload):
+        store.temp_uploads_max_age_hours = 0
+        aged = time.time() - 999 * 3600
+        os.utime(upload, (aged, aged))
+
+        assert audio_store.purge_stale_uploads() == 0
+        assert upload.exists()

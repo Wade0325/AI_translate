@@ -61,7 +61,7 @@ class WebSocketTranscriptionRequest(BaseModel):
     api_keys: str = ""  # 可省略：前端不送明文金鑰，後端改用資料庫裡的金鑰
     source_lang: str
     target_lang: Optional[str] = None
-    prompt: Optional[str] = None
+    prompt: Optional[str] = None  # 補充說明：接在設定頁存的提示詞範本後面送出（#144）
     original_text: Optional[str] = None
     multi_speaker: bool = False
     service_tier: Optional[str] = None  # 'flex' 啟用 Flex 推論
@@ -87,7 +87,7 @@ class WebSocketBatchRequest(BaseModel):
     api_keys: str = ""  # 可省略：前端不送明文金鑰，後端改用資料庫裡的金鑰
     source_lang: str
     target_lang: Optional[str] = None
-    prompt: Optional[str] = None
+    prompt: Optional[str] = None  # 補充說明：補給沒帶自己的檔案，一樣接在提示詞範本後面
     multi_speaker: bool = False
     session_id: Optional[str] = None
 
@@ -131,6 +131,7 @@ class BatchTaskResponse(BaseModel):
     elapsed_seconds: Optional[float] = None
     files: List[BatchTaskFile]
     session_id: Optional[str] = None
+    recoverable: bool = False  # 任務頁要不要給「恢復」（app.tasks.batch_core.recoverable）
 
 
 # ==================== History ====================
@@ -178,7 +179,7 @@ class HistoryStatsResponse(BaseModel):
 
 
 class DailyUsage(BaseModel):
-    """單日用量彙總（僅 COMPLETED 任務）"""
+    """單日用量彙總：token 與費用含失敗與取消的任務記下的用量，檔案數只算完成的"""
     date: str
     tokens: int
     cost: float
@@ -186,7 +187,7 @@ class DailyUsage(BaseModel):
 
 
 class ModelUsage(BaseModel):
-    """單一模型的用量彙總（僅 COMPLETED 任務）"""
+    """單一模型的用量彙總：token 與費用含失敗與取消的任務記下的用量，檔案數只算完成的"""
     model: str
     tokens: int
     cost: float

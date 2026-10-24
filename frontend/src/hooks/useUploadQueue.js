@@ -3,6 +3,8 @@ import { message } from 'antd';
 import { api, WS_URLS } from '../services/api';
 import { registerTranscribeSession } from '../utils/transcribeSessions';
 import { randomId } from '../utils/id';
+import { buildBatchPayload, buildSinglePayload } from '../utils/transcribeRequest';
+import { applyFileResult } from '../utils/fileResult';
 import { TASK_STATUS } from '../constants/taskStatus';
 
 /**
@@ -13,66 +15,18 @@ import { TASK_STATUS } from '../constants/taskStatus';
  *   - socketManager：來自 useTranscriptionSocket()
  *
  * 回傳兩個高階函式：
- *   - startRegular({ provider, model, prompt, defaults, supports }):
+ *   - startRegular({ provider, model, defaults, supports }):
  *       每個檔案各自一條 WS；單檔轉錄／Flex／Standard 模式
- *   - startBatch({ provider, model, prompt, defaults, supports }):
+ *   - startBatch({ provider, model, defaults, supports }):
  *       所有檔案共用一條 batch WS（Gemini Batch API，50% 折扣）
  *
- * 請求不帶 API 金鑰：後端從資料庫取用，明文金鑰不經過瀏覽器。
- *
- * defaults 物件包含全域 fallback：source_lang / multi_speaker / service_tier；
- * 當檔案本身沒指定 per-file 設定時會用 defaults 補上。
- *
- * supports 是所選模型支援的輸入（useProviderList 的 modelSupports）：不支援的欄位在
- * 畫面上已停用並註明原因，送出時不帶上，包括設定裡存的提示詞。
+ * 請求不帶 API 金鑰與提示詞範本：後端從資料庫取用，明文金鑰不經過瀏覽器。
+ * 請求的內容（defaults、supports 怎麼用，每個檔案帶哪個補充說明）見 utils/transcribeRequest.js。
  */
 
 const isRestartable = (f) =>
   (f.status === 'waiting' || f.status === 'error' || f.status === 'cancelled') &&
   !!f.originFileObj;
-
-function buildSinglePayload({ serverFilename, file, provider, model, prompt, defaults, supports, sessionId }) {
-  return {
-    filename: serverFilename,
-    original_filename: file.name,
-    provider,
-    model,
-    source_lang: file.language || defaults.sourceLang,
-    prompt: supports.prompt ? (file.prompt ?? prompt) : null,
-    original_text: supports.userText ? (file.original_text || null) : null,
-    multi_speaker: file.isMultiSpeaker ?? defaults.multiSpeaker,
-    service_tier: defaults.serviceTier,
-    session_id: sessionId,
-  };
-}
-
-// 依 COMPLETED/FAILED/CANCELLED 的 WS 訊息，算出單一 file 的下一個 state。
-function applyFileResult(file, data) {
-  const next = {
-    ...file,
-    statusText: data.status_text,
-    task_uuid: data.task_uuid,
-  };
-  if (data.status_code === TASK_STATUS.COMPLETED) {
-    next.status = 'completed';
-    next.percent = 100;
-    next.result = data.result?.transcripts;
-    next.tokens_used = data.result?.tokens_used;
-    next.cost = data.result?.cost;
-    // Result 頁顯示用：時長、模型與實際使用的來源語言
-    next.audioDurationSec = data.result?.audio_duration_seconds;
-    next.model = data.result?.model ?? file.model;
-    next.sourceLanguage = data.result?.source_language;
-  } else if (data.status_code === TASK_STATUS.FAILED) {
-    next.status = 'error';
-    next.percent = 100;
-    next.error = data.status_text;
-  } else if (data.status_code === TASK_STATUS.CANCELLED) {
-    next.status = 'cancelled';
-    next.percent = 100;
-  }
-  return next;
-}
 
 export function useUploadQueue({ fileList, setFileList, socketManager, onBatchSubmitted }) {
   const updateFile = useCallback((uid, patch) => {
@@ -128,7 +82,7 @@ export function useUploadQueue({ fileList, setFileList, socketManager, onBatchSu
   }, []);
 
   // 一般模式：每個 file uid 一條 WebSocket
-  const startRegular = useCallback(async ({ provider, model, prompt, defaults, supports }) => {
+  const startRegular = useCallback(async ({ provider, model, defaults, supports }) => {
     const candidates = fileList.filter(isRestartable);
     if (candidates.length === 0) {
       return { skipped: true };
@@ -139,16 +93,20 @@ export function useUploadQueue({ fileList, setFileList, socketManager, onBatchSu
     const openTranscriptionSocket = (file, serverFilename) => {
       socketManager.openSocket(file.uid, WS_URLS.transcription(file.uid), {
         onOpen: () => {
-          updateFile(file.uid, { statusText: '連線成功，正在提交任務...', serverFilename });
           const payload = buildSinglePayload({
             serverFilename: serverFilename ?? file.name,
             file,
             provider,
             model,
-            prompt,
             defaults,
             supports,
             sessionId,
+          });
+          // sentPrompt：送出的補充說明，已送出的檔案卡照這個顯示
+          updateFile(file.uid, {
+            statusText: '連線成功，正在提交任務...',
+            serverFilename,
+            sentPrompt: payload.prompt,
           });
           socketManager.sendMessage(file.uid, payload);
         },
@@ -184,7 +142,7 @@ export function useUploadQueue({ fileList, setFileList, socketManager, onBatchSu
   }, [fileList, updateFile, socketManager, handleSingleMessage, beginSession, uploadFile]);
 
   // 批次模式：所有檔案共用一條 batch WebSocket
-  const startBatch = useCallback(async ({ provider, model, prompt, defaults, supports }) => {
+  const startBatch = useCallback(async ({ provider, model, defaults, supports }) => {
     const candidates = fileList.filter(isRestartable);
     if (candidates.length === 0) {
       return { skipped: true, reason: 'no-files' };
@@ -221,32 +179,23 @@ export function useUploadQueue({ fileList, setFileList, socketManager, onBatchSu
 
     socketManager.openSocket(batchId, WS_URLS.batch(batchId), {
       onOpen: () => {
+        const payload = buildBatchPayload({
+          files: uploaded,
+          provider,
+          model,
+          defaults,
+          supports,
+          sessionId,
+        });
+        // sentPrompt：每個檔案送出的補充說明，已送出的檔案卡照這個顯示
+        const sentPrompts = new Map(payload.files.map((f) => [f.file_uid, f.prompt]));
         setFileList((current) =>
           current.map((f) =>
-            uploadedUidSet.has(f.uid)
-              ? { ...f, statusText: '批次任務已提交，等待處理...' }
+            sentPrompts.has(f.uid)
+              ? { ...f, statusText: '批次任務已提交，等待處理...', sentPrompt: sentPrompts.get(f.uid) }
               : f
           )
         );
-
-        const payload = {
-          files: uploaded.map((f) => ({
-            filename: f.serverFilename,
-            original_filename: f.name,
-            file_uid: f.uid,
-            // per-file 設定，後端優先於下方批次層級 fallback 使用
-            source_lang: f.language || defaults.sourceLang,
-            prompt: supports.prompt ? (f.prompt ?? prompt) : null,
-            multi_speaker: f.isMultiSpeaker ?? defaults.multiSpeaker,
-          })),
-          provider,
-          model,
-          // 整個批次的 fallback 值
-          source_lang: defaults.sourceLang,
-          prompt: supports.prompt ? prompt : null,
-          multi_speaker: defaults.multiSpeaker,
-          session_id: sessionId,
-        };
         socketManager.sendMessage(batchId, payload);
       },
       onMessage: (event) => {

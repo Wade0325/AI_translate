@@ -16,58 +16,53 @@ import threading
 import uuid
 from typing import AsyncIterator, Optional
 
-from app.exceptions import GeminiTransientError, TransientError
 from app.runtime.executor import LocalExecutor
-from app.runtime.run_mode import TRANSIENT_RETRIES
+from app.runtime.run_mode import RegisteredTask
 from app.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
 
 
 class InProcessRunMode:
-    def __init__(self, concurrency: int = 4, retry_backoff_max: int = 60):
-        """``retry_backoff_max``：暫時錯誤重試前最多等幾秒，對齊 Celery 任務的
-        ``retry_backoff_max``；測試傳 0，不必真的等。"""
+    def __init__(self, concurrency: int = 4):
         self._executor = LocalExecutor(concurrency)
-        self._retry_backoff_max = retry_backoff_max
         self._lock = threading.Lock()
         self._cancel_flags: set[str] = set()
-        self._task_ids: dict[str, str] = {}
+        self._tasks: dict[str, RegisteredTask] = {}
         self._subscribers: list[tuple[asyncio.AbstractEventLoop, asyncio.Queue]] = []
 
     # ── 派送與控制 ────────────────────────────────────────────────
-    def submit_transcription(self, task_params_dict: dict, queue: str) -> str:
-        from app.tasks.transcribe_core import run_transcription
+    def submit_transcription(self, task_id: str, task_params_dict: dict, queue: str) -> None:
+        from app.tasks.transcribe_core import abandon_transcription, run_transcription
 
-        # task_id 須先於執行產生：呼叫端要先 register_task 供取消使用
-        task_id = str(uuid.uuid4())
-        # 執行器遇到暫時錯誤會再呼叫一次；每次都告訴任務之後還會重試幾次，
-        # 對齊 Celery 的 request.retries
-        retries_left = iter(range(TRANSIENT_RETRIES, -1, -1))
+        def abandoned(revoked: bool) -> None:
+            # 在佇列中被撤銷、或關閉時還在排隊：任務不會執行，照樣收尾
+            abandon_transcription(task_params_dict, task_id, cancelled=revoked)
 
-        def attempt():
-            return run_transcription(task_params_dict, task_id, next(retries_left))
-
+        # 不重試整個任務：暫時錯誤在分段轉錄裡重試出錯的那一段，和 Docker 模式相同
         self._executor.submit(
-            attempt,
+            run_transcription,
+            args=(task_params_dict, task_id),
             task_id=task_id,
             queue=queue,
-            retry_on=(TransientError,),
-            max_retries=TRANSIENT_RETRIES,
-            backoff_max=self._retry_backoff_max,
+            on_abandoned=abandoned,
         )
-        return task_id
 
     def submit_batch(self, task_params_dict: dict) -> str:
-        from app.tasks.batch_core import run_batch
+        from app.tasks.batch_core import abandon_batch, run_batch
 
         task_id = str(uuid.uuid4())
+
+        def abandoned(revoked: bool) -> None:
+            # 關閉時還在排隊：批次不會執行，每個檔案照樣收尾。批次沒有撤銷的入口，revoked 一定是 False
+            abandon_batch(task_params_dict)
+
+        # 不重試整個批次：暫時錯誤在批次裡重做出錯的那一步，和 Docker 模式相同
         self._executor.submit(
             run_batch,
             args=(task_params_dict, task_id),
             task_id=task_id,
-            retry_on=(GeminiTransientError,),
-            backoff_max=self._retry_backoff_max,
+            on_abandoned=abandoned,
         )
         return task_id
 
@@ -130,13 +125,21 @@ class InProcessRunMode:
         with self._lock:
             self._cancel_flags.discard(file_uid)
 
-    def register_task(self, file_uid: str, task_id: str) -> None:
+    def register_task(self, file_uid: str, task_id: str, *, can_terminate: bool) -> None:
         with self._lock:
-            self._task_ids[file_uid] = task_id
+            self._tasks[file_uid] = RegisteredTask(task_id, can_terminate)
 
-    def registered_task(self, file_uid: str) -> Optional[str]:
+    def registered_task(self, file_uid: str) -> Optional[RegisteredTask]:
         with self._lock:
-            return self._task_ids.get(file_uid)
+            return self._tasks.get(file_uid)
+
+    def task_ended(self, file_uid: str, task_id: str) -> None:
+        with self._lock:
+            registered = self._tasks.get(file_uid)
+            if registered is not None and registered.task_id != task_id:
+                return
+            self._tasks.pop(file_uid, None)
+            self._cancel_flags.discard(file_uid)
 
     # ── 生命週期 ──────────────────────────────────────────────────
     def close(self, wait: bool = False) -> None:

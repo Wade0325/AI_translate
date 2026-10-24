@@ -12,7 +12,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Literal, Mapping, Optional, Protocol, Sequence, Tuple
 
@@ -22,6 +23,9 @@ from app.services.transcription.models import TranscriptionTaskResult
 LOCAL_QUEUE = "local_asr"
 """GPU 佇列：Docker 模式由主機端 GPU worker 消化，免安裝模式是序列化的執行緒池。"""
 DEFAULT_QUEUE = "celery"
+
+CANCEL_CHECK_SECONDS = 0.2
+"""等待時（:meth:`ProgressAndCancel.wait`）多久查一次使用者取消了沒有。"""
 
 
 @dataclass(frozen=True)
@@ -42,9 +46,25 @@ class ModelCapabilities:
     accepts_prompt: bool
     accepts_user_text: bool
     supports_batch: bool
+    supports_flex: bool
+    """處理模式能不能選 Flex（請求帶 ``service_tier="flex"``）。"""
     pricing: Literal["per_token", "free"]
     remove_silence: bool
-    """轉錄前要不要剪掉靜音。"""
+    """轉錄前要不要剪掉靜音；不剪的照樣找出靜音當分段轉錄的切點（見
+    :mod:`app.services.silence_removal`）。"""
+
+
+@dataclass(frozen=True)
+class ProviderInfo:
+    """畫面怎麼列出一個供應商：名稱、模型的名稱，以及轉錄要不要使用者的 API 金鑰；
+    還有設定頁的「測試」查的是什麼。"""
+
+    label: str
+    requires_api_key: bool
+    model_labels: Mapping[str, str] = field(default_factory=dict)
+    """畫面上的模型名稱；沒列的模型直接顯示模型名稱。"""
+    checks_transcribing_machine: bool = False
+    """設定頁的「測試」查的是執行轉錄的那台機器（例如顯卡與模型權重），不是只連一次 API。"""
 
 
 @dataclass
@@ -55,7 +75,7 @@ class TranscribeRequest:
     prompt: str = ""
     source_lang: Optional[str] = None
     service_tier: Optional[str] = None
-    """Gemini 的處理模式：None／"standard" 或 "flex"；其他供應商忽略。"""
+    """處理模式：None／"standard" 或 "flex"；只有模型能力標明 ``supports_flex`` 的模型會收到 "flex"。"""
 
 
 class ProgressAndCancel:
@@ -84,6 +104,17 @@ class ProgressAndCancel:
         if self.cancel_requested():
             raise TranscriptionCancelledError("使用者已取消任務")
 
+    def wait(self, seconds: float) -> None:
+        """等 ``seconds`` 秒；期間使用者取消就不等了，拋
+        :class:`~app.exceptions.TranscriptionCancelledError`。"""
+        deadline = time.monotonic() + seconds
+        while True:
+            self.raise_if_cancelled()
+            left = deadline - time.monotonic()
+            if left <= 0:
+                return
+            time.sleep(min(left, CANCEL_CHECK_SECONDS))
+
 
 class Provider(Protocol):
     """一個任務專用的供應商轉接器；任務結束時呼叫 :meth:`release`。
@@ -99,12 +130,15 @@ class Provider(Protocol):
     def transcribe(
         self, audio_path: Path, request: TranscribeRequest, progress: ProgressAndCancel,
     ) -> TranscriptionTaskResult:
-        """轉錄一段音檔，時間軸是這段音檔本身。
+        """轉錄一段音檔，回傳轉錄結果（片段）與用量，不附著 LRC 文字；時間軸是這段音檔本身。
+
+        這一段沒有任何內容（例如沒人說話）時可以回傳成功、沒有片段，``text`` 寫為什麼：
+        分段轉錄照樣合併其他段，整個任務都沒有片段時才由任務生命週期回報失敗。
 
         進度經 ``progress`` 回報。使用者取消時拋
         :class:`~app.exceptions.TranscriptionCancelledError`；暫時錯誤（429、503 之類）拋
-        :class:`~app.exceptions.TransientError`，整個任務交給執行模式重試。
-        其他錯誤由分段轉錄當成這一段失敗處理。
+        :class:`~app.exceptions.TransientError`，回應建議了等待秒數時帶在 ``retry_after``，
+        分段轉錄等一段時間再轉這一段。其他錯誤由分段轉錄當成這一段失敗處理。
         """
 
     def release(self) -> None:
@@ -121,8 +155,9 @@ class BatchStatus:
     """批次已經結束（成功或失敗），不必再查。"""
     succeeded: bool = False
     results: Tuple[TranscriptionTaskResult, ...] = ()
-    """成功結束時每個請求一份轉錄結果，順序和送出時相同；
-    失敗的請求 ``success=False``，``text`` 是給使用者看的失敗原因。"""
+    """成功結束時每個請求一份轉錄結果，順序和送出時相同，處理模式（``service_tier_used``）是
+    ``"batch"``。片段的時間軸是上傳的那個音檔，和 :meth:`Provider.transcribe` 一樣；失敗的請求
+    ``success=False``，``text`` 是給使用者看的失敗原因。"""
 
 
 class BatchProvider(Provider, Protocol):

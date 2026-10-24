@@ -4,17 +4,17 @@ Docker 模式下只在主機端 GPU worker（local_asr 佇列）上執行，免�
 local_asr 執行緒池執行——本機轉接器（provider.py）第一次轉錄時才延遲 import 本模組，
 Docker 容器 worker 不需要 transformers/CUDA 相依。
 
-三種模型（frontend modelConfig 的 Local 選項，權重對照見 weights.MODEL_REPOS）：
+三種模型（畫面列出的本機模型，見 GET /providers；權重對照見 weights.MODEL_REPOS）：
   * moss-align（預設）：MOSS-Transcribe-Diarize 一次產生說話者、時間與文字，
     再由 Qwen3-ForcedAligner 斷行並補逐詞時間戳
   * moss-qwen3-asr：MOSS 分離後，文字改由 Qwen3-ASR 逐段轉錄（MOSS 文字留作 text_alt）
   * vibevoice-qwen3-asr（舊版）：VibeVoice-ASR 分離 + Qwen3-ASR 逐段轉錄
 
 共同的後段：
-  1. Qwen3-ForcedAligner 把每段文字對回音訊 → 逐詞時間戳 → 依句尾標點重新斷行，
-     時間軸以對齊結果為準，說話者標籤繼承所屬分離片段
-  2. 組成 LRC：每行「[mm:ss.xx][S{n}] 文字」，時間軸為輸入檔（上游 flows 負責
-     remap 回原始檔時間軸）；對齊失敗時退回「一個分離片段一行」
+  1. Qwen3-ForcedAligner 把每段文字對回音訊 → 逐詞時間戳；對齊失敗的段沒有逐字時間
+  2. 整理成片段：說話者編號、起訖時間、文字與逐字時間，時間軸為輸入檔（上游的分段轉錄
+     負責還原回原音檔的時間軸）。依句尾標點斷行、四種輸出格式都由輸出格式模組
+     （app.services.output_format）從片段產生
 
 VRAM 策略：各模型依序載入、用完即釋放，不可同時常駐。依音檔長度把部分權重
 放到 CPU（_gpu_weight_limit）只有舊版 VibeVoice 會用到。
@@ -72,12 +72,9 @@ warnings.filterwarnings(
 DIARIZATION_SAMPLE_RATE = 24000   # VibeVoice 要求 24 kHz
 MOSS_SAMPLE_RATE = 16000          # MOSS（Whisper 前端）16 kHz；Qwen3-ASR／對齊器會自行重採樣
 
-# 字幕斷行：句尾標點切行；單行超過上限秒數時在讀點處再切
-MAX_LINE_SECONDS = 12.0
-_SENTENCE_END_RE = re.compile(r"(?<=[。．！？!?…])")
-_CLAUSE_END_RE = re.compile(r"(?<=[、，,])")
 # 內建斷詞把假名視為空白分隔文字、標點僅丟棄不切分，假名串會跨標點黏成一詞；
 # 在斷行標點後補空白強制切開，確保「整段斷詞」與「逐句斷詞」的詞序一致
+# （輸出格式模組斷行時照同樣的規則逐句斷詞，才對得上存下來的逐字時間）
 _ALIGN_BREAK_RE = re.compile(r"([。．！？!?…、，,])")
 
 
@@ -133,11 +130,6 @@ def _free_model(*objects) -> None:
         del obj
     gc.collect()
     torch.cuda.empty_cache()
-
-
-def _lrc_timestamp(seconds: float) -> str:
-    minutes = int(seconds // 60)
-    return f"[{minutes:02d}:{seconds - minutes * 60:05.2f}]"
 
 
 def _to_mono(audio_path: Path, sample_rate: int) -> Path:
@@ -293,11 +285,6 @@ def _transcribe_segments(
     return entries
 
 
-def _split_keep_delimiters(text: str, pattern: re.Pattern) -> List[str]:
-    """依標點切開並保留標點於前段尾端，濾掉空白片段。"""
-    return [part for part in pattern.split(text) if part.strip()]
-
-
 def _align_segments(
     wav_path: Path,
     entries: List[dict],
@@ -306,8 +293,7 @@ def _align_segments(
     """Qwen3-ForcedAligner 逐段強制對齊，將逐詞時間戳寫入 entry["words"]。
 
     詞的時間為「該段內」相對秒數；斷詞用內建逐字模式（language=None，
-    不依賴 nagisa），對字幕級精度足夠。回傳 aligner 的 processor 供斷行
-    時以相同斷詞方式計數。
+    不依賴 nagisa），對字幕級精度足夠。
     """
     import torch
     from transformers import AutoProcessor, Qwen3ASRForTokenClassification
@@ -349,134 +335,30 @@ def _align_segments(
             if i % 10 == 0 or i == total:
                 progress.report(f"本地模型：時間軸對齊中 {i}/{total}...")
     finally:
-        # processor 為 CPU 端物件不佔 VRAM，保留供斷行時以相同斷詞方式計數
-        _free_model(model)
+        _free_model(model, processor)
         segment_wav.unlink(missing_ok=True)
 
-    return processor
 
-
-def _entry_to_lines(entry: dict, count_words) -> List[str]:
-    """把一個轉錄片段依對齊結果斷成多行 LRC；無對齊資料時退回單行。
-
-    count_words: 文字 → 對齊詞數。必須與 _align_segments 餵給
-    prepare_forced_aligner_inputs 的斷詞方式一致（先 _insert_align_breaks
-    再 split_words_for_alignment），才能把文字單元對應回對齊詞序列的位置。
-
-    下載的輸出格式由 app.services.output_format 從片段照同樣的規則斷行；改規則要兩邊一起改
-    （#110 讓供應商不再產生 LRC 後，只剩那一份）。
-    """
-    speaker_tag = f"[S{entry['speaker']}]"
-    fallback = [f"{_lrc_timestamp(entry['start'])}{speaker_tag} {entry['text']}"]
-
-    words = entry.get("words")
-    if not words:
-        return fallback
-
-    sentences = _split_keep_delimiters(entry["text"], _SENTENCE_END_RE)
-    if not sentences:
-        return fallback
-
-    # 每個句子再展開成 (文字, 詞數)；過長句子在讀點處細分
-    units: List[tuple] = []
-    for sentence in sentences:
-        units.append((sentence, count_words(sentence)))
-
-    if sum(n for _, n in units) != len(words):
-        logger.warning("斷行詞數與對齊詞數不一致，退回片段時間戳")
-        return fallback
-
-    lines: List[str] = []
-    offset = 0
-    pending_text = ""       # 純標點單元（詞數 0）併入下一行行首
-    for text, count in units:
-        if count == 0:
-            pending_text += text
-            continue
-        unit_start = words[offset]["start_time"]
-        unit_end = words[offset + count - 1]["end_time"]
-
-        pieces = [(pending_text + text, offset, count)]
-        pending_text = ""
-        if unit_end - unit_start > MAX_LINE_SECONDS:
-            pieces = _split_long_unit(pieces[0][0], offset, words, count_words)
-
-        for piece_text, piece_offset, _ in pieces:
-            start = entry["start"] + words[piece_offset]["start_time"]
-            lines.append(f"{_lrc_timestamp(start)}{speaker_tag} {piece_text.strip()}")
-        offset += count
-
-    # 結尾殘留的純標點單元（如末尾省略號）併入最後一行
-    if pending_text and lines:
-        lines[-1] += pending_text
-
-    return lines or fallback
-
-
-def _split_long_unit(text: str, offset: int, words: List[dict], count_words) -> List[tuple]:
-    """過長句子在讀點（、，,）處切成多行，每行不超過 MAX_LINE_SECONDS。
-
-    回傳 [(文字, 詞序起點, 詞數)]；無法細分時整句一行。
-    """
-    clauses = _split_keep_delimiters(text, _CLAUSE_END_RE)
-    if len(clauses) < 2:
-        return [(text, offset, count_words(text))]
-
-    pieces: List[tuple] = []
-    cur_text, cur_offset, cur_count, cur_start = "", None, 0, None
-    pos = offset
-    for clause in clauses:
-        n = count_words(clause)
-        if n == 0:
-            cur_text += clause
-            continue
-        clause_end = words[pos + n - 1]["end_time"]
-        if cur_offset is not None and clause_end - cur_start > MAX_LINE_SECONDS:
-            pieces.append((cur_text, cur_offset, cur_count))
-            cur_text, cur_offset, cur_count = "", None, 0
-        if cur_offset is None:
-            cur_offset = pos
-            cur_start = words[pos]["start_time"]
-        cur_text += clause
-        cur_count += n
-        pos += n
-    if cur_text:
-        pieces.append((cur_text, cur_offset if cur_offset is not None else offset, cur_count))
-    return pieces
-
-
-def _build_lrc_lines(
+def _align_with_fallback(
     wav_path: Path,
     entries: List[dict],
     progress: ProgressAndCancel,
-) -> List[str]:
-    """強制對齊 + 依句斷行；對齊流程整體失敗時退回「一個片段一行」。"""
+) -> None:
+    """強制對齊，把逐字時間寫進各段；對齊流程整體失敗時不拋例外，只通知使用者，沒對到的段
+    不帶逐字時間，輸出格式模組把它們整段當成一行。"""
     try:
         progress.report("本地模型：Qwen3-ForcedAligner 時間軸對齊中...")
-        aligner_processor = _align_segments(wav_path, entries, progress)
+        _align_segments(wav_path, entries, progress)
     except TranscriptionCancelledError:
         raise
     except Exception as e:
         logger.warning(f"強制對齊不可用，全部退回片段時間戳: {e}")
         # 結果仍可用但少了斷行與逐字時間（例如對齊器首次下載失敗），讓使用者看得到
         progress.report("本地模型：時間軸對齊不可用，改以片段為單位輸出（詳見日誌）")
-        return [
-            f"{_lrc_timestamp(entry['start'])}[S{entry['speaker']}] {entry['text']}"
-            for entry in entries
-        ]
-
-    def count_words(text: str) -> int:
-        return len(aligner_processor.split_words_for_alignment(
-            _insert_align_breaks(text), None))
-
-    lines: List[str] = []
-    for entry in entries:
-        lines.extend(_entry_to_lines(entry, count_words))
-    return lines
 
 
 def _build_segment_records(entries: List[dict], source: str = "qwen") -> List[dict]:
-    """把片段整理成上層要持久化的結構（時間軸＝輸入檔，由 flows 負責 remap）。
+    """把片段整理成上層要持久化的結構（時間軸＝輸入檔，由分段轉錄平移、還原回原音檔）。
 
     ``seg_key`` 是序號而非時間，因為重新轉錄時片段順序穩定、時間可能微幅
     浮動；以序號為鍵才能覆寫而不是長出重複資料。``source`` 記錄主要文字的來源模型。
@@ -510,7 +392,7 @@ def transcribe_with_local_models(
     progress: ProgressAndCancel,
     model: Optional[str] = None,
 ) -> Dict:
-    """對單一音訊檔執行分離＋轉錄，回傳與 Gemini provider 相同合約的 dict。
+    """對單一音訊檔執行分離＋轉錄，回傳轉錄結果（片段與用量）的 dict，不附著 LRC 文字。
 
     model 為前端 Local 選項（見模組說明）；未指定或不認得時用預設的 moss-align。
     使用者取消時，各檢查點經 ``progress`` 拋出 TranscriptionCancelledError；
@@ -543,16 +425,18 @@ def transcribe_with_local_models(
                 f"本地模型：分離完成（{len(speakers)} 位說話者），Qwen3-ASR 轉錄中...")
             entries = _transcribe_segments(wav, segments, language, progress)
             source = "qwen"
-        lines = _build_lrc_lines(wav, entries, progress)
+        _align_with_fallback(wav, entries, progress)
+        records = _build_segment_records(entries, source)
 
         return {
-            "success": bool(lines),
-            "text": "\n".join(lines),
+            # 本機沒有內容時照舊算失敗（分段轉錄時整個任務失敗），只是寫明原因
+            "success": bool(records),
+            "text": "" if records else "[[本機的模型沒有轉錄出任何內容]]",
             "input_tokens": 0,
             "output_tokens": 0,
             "total_tokens": 0,
             "service_tier_used": "local",
-            "segments": _build_segment_records(entries, source),
+            "segments": records,
         }
     finally:
         if wav:
