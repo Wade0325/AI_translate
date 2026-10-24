@@ -91,10 +91,11 @@ backend\.venv\Scripts\python.exe -m tools.eval eval --reference rec17_A.draft --
 | `environment.gpu` | 顯卡名稱、顯存（GB）與 `CUDA_VISIBLE_DEVICES`；沒有顯卡時是 `null` |
 | `environment.model_revisions` | 本機模型權重釘住的 revision |
 | `environment.settings` | 去靜音與切段的設定 |
-| `run` | 成功與否、片段數、耗時（秒）、RTF（耗時 ÷ 音檔長度）、峰值顯存（GB）、各階段耗時 |
+| `run` | 成功與否、片段數、耗時（秒）、RTF、峰值顯存（GB）、各階段耗時 |
 
 - 峰值顯存是 PyTorch 向顯卡要過的最大量（`torch.cuda.max_memory_reserved`），不含 CUDA 本身佔用的部分，所以比工作管理員看到的少。
-- 各階段照轉錄時的進度訊息切開：第一則訊息之前算「建立供應商轉接器」；訊息裡的數字換成 `#`，例如「MOSS 轉錄中 #/# 分鐘...」，同一個階段併成一筆。
+- 耗時與 RTF（耗時 ÷ 音檔長度）是從建立供應商轉接器到轉錄結束的整段，含載入模型與去靜音，和使用者在應用程式裡等的時間相當。
+- 各階段照轉錄時的進度訊息切開：階段的名稱就是畫面上的進度訊息，涵蓋從這則訊息到下一則之間做的事，不一定和名稱相符，例如載入 MOSS 模型算在「本地模型：MOSS 轉錄與說話者分離中...」，之後的「本地模型：MOSS 轉錄中 #/# 分鐘...」才是生成。第一則訊息之前算「建立供應商轉接器」；訊息裡的數字換成 `#`，同一個階段併成一筆。改了進度訊息的文字，階段的名稱也跟著變。
 - `settings.single_pass_seconds` 是模型能力列出的上限，本機轉接器實際轉錄時可能依顯卡容量切得更短。
 - 產生 manifest 的函式在 `backend/app/services/environment_manifest.py`，之後要記錄轉錄環境的地方共用它。
 

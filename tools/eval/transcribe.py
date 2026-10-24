@@ -25,7 +25,7 @@ from typing import Any
 from .cli import REPO_ROOT, UsageError, _git, _refuse_writing_references, default_lab_dir
 
 FIRST_STAGE = "建立供應商轉接器"
-"""第一則進度訊息之前的階段：轉錄任務從建立供應商轉接器開始，本機轉接器在這裡確認權重。"""
+"""開始時記下的階段：轉錄任務在第一則進度訊息之前建立供應商轉接器，本機轉接器在這裡確認權重。"""
 
 _COUNTER = re.compile(r"\d+(?:\.\d+)?")
 """進度訊息裡的計數（「MOSS 轉錄中 3/38 分鐘...」），換成 # 後同一個階段的訊息才併得起來。"""
@@ -66,14 +66,14 @@ def cmd_transcribe(args) -> int:
                 print("\n已取消，沒有轉錄。")
                 return 1
 
+    from app.services import environment_manifest
+    from app.utils.audio import get_audio_duration
+
     code = {"commit": _git("rev-parse", "HEAD", cwd=REPO_ROOT),
             "dirty": _dirty()}
+    duration = get_audio_duration(audio)
     out.mkdir(parents=True, exist_ok=True)
-    run, lines = _run(audio, provider, model, args.language, transcript)
-    duration = run.pop("audio_duration_seconds")
-
-    from app.services import environment_manifest
-
+    run = _run(audio, provider, model, args.language, transcript, duration)
     manifest = {
         "command": "transcribe",
         "created_at": datetime.now().isoformat(timespec="seconds"),
@@ -90,7 +90,7 @@ def cmd_transcribe(args) -> int:
         print(f"\n轉錄失敗：{run['error']}\nmanifest：{manifest_path}", file=sys.stderr)
         return 1
     vram = "（沒有用到顯卡）" if run["peak_vram_gb"] is None else f"{run['peak_vram_gb']} GB"
-    print(f"\n轉錄結果：{transcript}（{lines} 行）\nmanifest：{manifest_path}\n"
+    print(f"\n轉錄結果：{transcript}（{run['segments']} 個片段）\nmanifest：{manifest_path}\n"
           f"耗時 {run['seconds']} 秒，RTF {run['rtf']}，峰值顯存 {vram}\n"
           f"計分：python -m tools.eval eval --reference <名稱> --transcript {transcript}")
     return 0
@@ -121,14 +121,14 @@ def _resolve_model(provider: str, model: str | None):
     return entry.provider, model, registry.model_capabilities(entry.provider, model)
 
 
-def _run(audio: Path, provider: str, model: str, language: str,
-         transcript: Path) -> tuple[dict[str, Any], int]:
-    """轉錄一次，成功時寫出 LRC；回傳 manifest 的 run 區塊（另帶音檔長度）與 LRC 的行數。"""
+def _run(audio: Path, provider: str, model: str, language: str, transcript: Path,
+         duration: float | None) -> dict[str, Any]:
+    """轉錄一次，成功時寫出 LRC；回傳 manifest 的 run 區塊。``duration`` 是音檔長度（秒），
+    算 RTF 用。"""
     from app.celery.models import TranscriptionTaskParams
     from app.provider.base import ProgressAndCancel
     from app.services import output_format
     from app.tasks.transcribe_core import transcribe_audio
-    from app.utils.audio import get_audio_duration
 
     task_id = f"eval-{uuid.uuid4().hex[:12]}"
     params = TranscriptionTaskParams(
@@ -136,13 +136,12 @@ def _run(audio: Path, provider: str, model: str, language: str,
         source_lang=language, original_filename=audio.name,
         client_id="tools.eval", file_uid=task_id)
     start = time.perf_counter()
-    reports: list[tuple[float, str | None]] = [(0.0, None)]
+    reports: list[tuple[float, str]] = [(0.0, FIRST_STAGE)]
     progress = ProgressAndCancel(
         report=lambda text: reports.append((time.perf_counter() - start, text)),
         cancel_requested=lambda: False)
 
     error = None
-    lines = 0
     segments = 0
     try:
         result = transcribe_audio(params, task_id, audio, progress)
@@ -151,14 +150,10 @@ def _run(audio: Path, provider: str, model: str, language: str,
     else:
         if result.success and result.segments:
             segments = len(result.segments)
-            lrc = output_format.for_result(result).lrc
-            transcript.write_text(lrc, encoding="utf-8")
-            lines = len(lrc.splitlines())
+            transcript.write_text(output_format.for_result(result).lrc, encoding="utf-8")
         else:
             error = result.text or "沒有轉錄出任何片段"
     seconds = time.perf_counter() - start
-
-    duration = get_audio_duration(audio)
     return {
         "success": error is None,
         "error": error,
@@ -167,19 +162,18 @@ def _run(audio: Path, provider: str, model: str, language: str,
         "rtf": round(seconds / duration, 4) if duration else None,
         "peak_vram_gb": _peak_vram_gb(),
         "stages": _stages(reports, end=seconds),
-        "audio_duration_seconds": duration,
-    }, lines
+    }
 
 
-def _stages(reports: list[tuple[float, str | None]], end: float) -> list[dict[str, Any]]:
+def _stages(reports: list[tuple[float, str]], end: float) -> list[dict[str, Any]]:
     """依進度訊息把整段耗時切成各階段：每則訊息到下一則（最後一則到 ``end``）算它的階段。
 
-    ``reports`` 是（從開始算起的秒數，進度訊息）；第一筆是開始，訊息是 None。訊息裡的計數換成
-    #，連續的同一個階段併成一筆。
+    ``reports`` 是（從開始算起的秒數，進度訊息），第一筆是開始時的 :data:`FIRST_STAGE`。階段的
+    名稱就是進度訊息，訊息裡的計數換成 #，連續的同一個階段併成一筆。
     """
     stages: list[dict[str, Any]] = []
-    for (at, text), (until, _) in zip(reports, [*reports[1:], (end, None)], strict=True):
-        name = FIRST_STAGE if text is None else _COUNTER.sub("#", text)
+    for (at, text), (until, _) in zip(reports, [*reports[1:], (end, "")], strict=True):
+        name = _COUNTER.sub("#", text)
         if stages and stages[-1]["stage"] == name:
             stages[-1]["seconds"] += until - at
         else:

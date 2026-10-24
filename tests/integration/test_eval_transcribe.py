@@ -8,7 +8,9 @@ import hashlib
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -119,9 +121,9 @@ def test_manifest_records_the_run_without_any_transcript_text(fake, uploads, aud
 
 
 def test_progress_counters_fold_into_one_stage():
-    from tools.eval.transcribe import _stages
+    from tools.eval.transcribe import FIRST_STAGE, _stages
 
-    reports = [(0.0, None), (1.0, "準備音訊..."), (2.0, "MOSS 轉錄中 1/3 分鐘..."),
+    reports = [(0.0, FIRST_STAGE), (1.0, "準備音訊..."), (2.0, "MOSS 轉錄中 1/3 分鐘..."),
                (3.0, "MOSS 轉錄中 2/3 分鐘..."), (5.0, "MOSS 轉錄中 3/3 分鐘..."),
                (6.0, "時間還原回原音檔...")]
     assert _stages(reports, end=6.5) == [
@@ -130,6 +132,17 @@ def test_progress_counters_fold_into_one_stage():
         {"stage": "MOSS 轉錄中 #/# 分鐘...", "seconds": 4.0},
         {"stage": "時間還原回原音檔...", "seconds": 0.5},
     ]
+
+
+def test_peak_vram_comes_from_the_gpu_this_run_used(monkeypatch):
+    from tools.eval.transcribe import _peak_vram_gb
+
+    gib = 1024 ** 3
+    torch = SimpleNamespace(cuda=SimpleNamespace(is_available=lambda: True,
+                                                 max_memory_reserved=lambda: int(5.5 * gib)))
+    monkeypatch.setitem(sys.modules, "torch", torch)
+
+    assert _peak_vram_gb() == 5.5
 
 
 def test_asks_to_stop_other_gpu_work_before_starting(fake, uploads, audio, tmp_path, monkeypatch,

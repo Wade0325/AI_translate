@@ -20,8 +20,6 @@ from app.provider.registry import model_capabilities
 PACKAGES = ("torch", "transformers", "moss-transcribe-diarize")
 """轉錄結果會隨版本改變的套件（以安裝時的名稱）。"""
 
-LOCAL_PROVIDER = "local"
-
 
 def describe(provider: str, model: str) -> Dict[str, Any]:
     """這個供應商的這個模型在目前環境裡的描述，可以直接寫成 JSON。
@@ -34,7 +32,7 @@ def describe(provider: str, model: str) -> Dict[str, Any]:
     return {
         "packages": {name: package(name) for name in PACKAGES},
         "gpu": gpu(),
-        "model_revisions": model_revisions(provider, model),
+        "model_revisions": model_revisions(model),
         "settings": {
             "remove_silence": capabilities.remove_silence,
             "speech_ratio_skip_threshold": settings.vad_speech_ratio_skip_threshold,
@@ -82,11 +80,10 @@ def gpu() -> Optional[Dict[str, Any]]:
         return None
 
 
-def model_revisions(provider: str, model: str) -> Dict[str, str]:
-    """模型權重釘住的 revision（Hugging Face 的 repo → commit）；只有本機的模型有，雲端模型的
-    版本由供應商決定，這裡記不到。"""
-    if provider.lower() != LOCAL_PROVIDER:
-        return {}
+def model_revisions(model: str) -> Dict[str, str]:
+    """模型權重釘住的 revision（Hugging Face 的 repo → commit）；只有本機的模型有（權重的清單
+    在 :mod:`app.provider.local.weights`），雲端模型的版本由供應商決定，這裡記不到。"""
     from app.provider.local import weights
 
-    return {repo: weights.REPO_REVISIONS[repo] for repo in weights.repos_for_model(model)}
+    # 不經 repos_for_model：它把不認得的模型當成預設模型
+    return {repo: weights.REPO_REVISIONS[repo] for repo in weights.MODEL_REPOS.get(model, ())}
