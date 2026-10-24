@@ -13,14 +13,15 @@ from app.celery.models import BatchTranscriptionTaskParams, BatchFileItemParams
 from app.runtime import run_mode
 from app.core.config import get_settings
 from app.core.task_status import TaskStatus
-from app.database.session import SessionLocal, get_db
+from app.database.session import SessionLocal, get_db, traceback_without_db_details
 from app.provider.registry import UnsupportedModelError, check_request
 from app.repositories.batch_job_repository import BatchJobRepository
+from app.repositories.model_manager_repository import stored_prompt_template
 from app.services import audio_store
 from app.services.api_keys import resolve_api_key
 from app.tasks import batch_core
 from app.utils.logger import setup_logger
-from app.utils.paths import UnsafeUploadFilenameError, resolve_upload_path
+from app.utils.paths import MissingUploadError, UnsafeUploadFilenameError, existing_upload_path
 from app.websocket.manager import manager
 from app.schemas.schemas import (
     WebSocketBatchRequest,
@@ -155,8 +156,8 @@ def start_batch_task_sync(payload_str: str, batch_id: str) -> list[dict]:
     同步函式：解析批次請求並派發批次轉錄任務。
     在獨立執行緒中執行以避免阻塞事件迴圈。
 
-    檔名不合法（不是 temp_uploads 內的單純檔名）的檔案不派發，其餘照常；
-    模型不屬於所選供應商、不支援批次或不吃提示詞時整批不派發。
+    檔名不合法（不是 temp_uploads 內的單純檔名）或上傳檔已經不在的檔案不派發，其餘照常，
+    一個都不剩時整批不派發；模型不屬於所選供應商、不支援批次或不吃提示詞時也整批不派發。
     回傳被拒檔案的 FAILED 訊息，由 WS 端點送回前端。
     """
     request_data = WebSocketBatchRequest.model_validate_json(payload_str)
@@ -183,18 +184,19 @@ def start_batch_task_sync(payload_str: str, batch_id: str) -> list[dict]:
     rejected = []
     for f in request_data.files:
         try:
-            temp_file_path = resolve_upload_path(f.filename, TEMP_UPLOADS_DIR)
-        except UnsafeUploadFilenameError as e:
-            logger.warning(f"批次拒絕不合法的上傳檔名 (file_uid: {f.file_uid}): {f.filename!r}")
+            temp_file_path = existing_upload_path(f.filename, TEMP_UPLOADS_DIR)
+        except (UnsafeUploadFilenameError, MissingUploadError) as e:
+            if isinstance(e, UnsafeUploadFilenameError):
+                logger.warning(f"批次拒絕不合法的上傳檔名 (file_uid: {f.file_uid}): {f.filename!r}")
+            else:
+                logger.error(f"批次的檔案不存在 (file_uid: {f.file_uid}): {f.filename!r}")
+            # 沒送出的檔案也回失敗狀態，使用者才知道它沒有送出
             rejected.append({
                 "client_id": batch_id,
                 "file_uid": f.file_uid,
                 "status_code": TaskStatus.FAILED,
                 "status_text": str(e),
             })
-            continue
-        if not temp_file_path.is_file():
-            logger.error(f"批次的檔案不存在: {f.filename!r}")
             continue
 
         file_items.append(BatchFileItemParams(
@@ -214,6 +216,8 @@ def start_batch_task_sync(payload_str: str, batch_id: str) -> list[dict]:
     # 前端不再送明文金鑰：缺少或只帶遮罩值時改用資料庫裡的金鑰
     with SessionLocal() as db:
         api_key = resolve_api_key(db, provider, request_data.api_keys)
+        # 提示詞範本也從設定讀（#144）：整個批次共用派送時設定頁存的範本，接上每個檔案的補充說明
+        prompt_template = stored_prompt_template(db, provider)
 
     task_params = BatchTranscriptionTaskParams(
         files=file_items,
@@ -223,6 +227,7 @@ def start_batch_task_sync(payload_str: str, batch_id: str) -> list[dict]:
         source_lang=request_data.source_lang,
         target_lang=request_data.target_lang,
         prompt=request_data.prompt,
+        prompt_template=prompt_template,
         multi_speaker=request_data.multi_speaker,
         client_id=batch_id,
         batch_id=batch_id,
@@ -265,12 +270,10 @@ async def batch_websocket_endpoint(
 
     except WebSocketDisconnect:
         logger.info(f"批次 WebSocket 連線由客戶端關閉: {batch_id}")
-        manager.disconnect(batch_id)
+        manager.disconnect(batch_id, websocket)
     except Exception as e:
-        logger.error(
-            f"批次 WebSocket 端點發生錯誤 (batch_id: {batch_id}): {e}",
-            exc_info=True,
-        )
-        if batch_id in manager.active_connections:
-            await manager.active_connections[batch_id].close()
-            manager.disconnect(batch_id)
+        # 資料庫例外（例如派送前讀不到設定）不轉述：log 只記類型與原因，traceback 留著出錯的位置
+        logger.error(f"批次 WebSocket 端點發生錯誤 (batch_id: {batch_id}):\n"
+                     f"{traceback_without_db_details(e)}")
+        # 只關、只移除這條連線：同一個 batch_id 的新連線可能已經登記上來（#203）
+        await manager.close(batch_id, websocket)

@@ -44,7 +44,7 @@
 | 📝 **自訂 Prompt** | 自定指令，搭配術語表、特殊標記、ASMR 聲響描述等 |
 | 📊 **即時進度** | WebSocket 推送 去靜音 → 上傳 → 轉錄 → 完成 各階段狀態 |
 | 🔁 **暫時錯誤重試** | Gemini 回應 429／503 時只重試出錯的那一段，已經轉好的段不重送；批次只重做出錯的那一步（上傳、送出或查詢狀態）。照回應建議的秒數等待（沒有建議時 10、20、40 秒），等待時畫面寫出是哪一段或哪一步、等幾秒 |
-| 💰 **成本追蹤** | 自動計算每次任務的 Token 用量與費用（包含失敗後被重試取代的那次呼叫），提供儀表板與計費頁查詢 |
+| 💰 **成本追蹤** | 自動計算每次任務的 Token 用量與費用（包含失敗後被重試取代的那次呼叫；任務失敗或取消時，供應商已經回應的部分照樣收費，也照記），提供儀表板與計費頁查詢 |
 | 🕘 **歷史紀錄** | 所有轉錄結果儲存於 PostgreSQL，可隨時回查與重新下載 |
 
 ---
@@ -137,12 +137,12 @@ docker compose --env-file .env down
 2. **上傳檔案**：拖曳或點擊上傳音訊／視頻（可一次選擇多個檔案進入批次模式）。
 3. **選擇來源語言**：日文 / 英文 / 繁體中文。
 4. **（選填）多人對話模式**：開啟後自動標記不同說話者（`[S0]`、`[S1]`）。
-5. **（選填）提示詞**：全域的提示詞會送給每個沒有個別設定提示詞的檔案，不必按 Apply to All；個別檔案可以在每檔設定改用自己的，清空就回到跟著全域。都沒填時用設定頁的提示詞範本；那裡也沒填，就用系統內建的提示詞範本。填了的提示詞會整個取代提示詞範本，要保留範本裡要求 LRC 格式與時間戳的指示（「編輯參數」會帶出目前的提示詞範本，沒存過就是系統內建的，從那裡改起）。本機的模型不支援提示詞與使用者文稿，選本機的模型時這些欄位會停用並註明原因。
+5. **（選填）提示詞**：轉錄頁填的提示詞是補充說明，例如說話者是誰、人名照寫，送出時空一行接在提示詞範本後面；範本裡要求 LRC 格式與時間戳的指示一定會送出。全域的提示詞會送給每個沒有個別設定提示詞的檔案，不必按 Apply to All；個別檔案可以在每檔設定改用自己的，清空就回到跟著全域。都沒填時只送提示詞範本。提示詞範本是設定頁各供應商的 Prompt Template 欄位存的（轉錄頁的「編輯參數」也能改，會帶出目前的範本，沒存過就是系統內建的），想整份改寫就改那裡，並保留要求 LRC 格式與時間戳的指示，否則轉錄會失敗。本機的模型不支援提示詞與使用者文稿，選本機的模型時這些欄位會停用並註明原因。
 
 ### 步驟 3️⃣ — 開始轉錄
 
 - **單檔轉錄**：點擊「開始轉錄」，右側即時顯示 去靜音 → 上傳 → 轉錄 → 完成的進度。
-- **批次轉錄**：處理模式選擇「Batch（半價）」後送出，可關閉視窗稍後在 **📋 任務 (Tasks)** 頁面查看。批次還在等 Gemini 的結果時關掉應用程式（例如關掉免安裝版的黑色視窗），重新開啟後任務頁會把它標成「已中斷」；等結果時網路斷了，批次會標成「失敗」。兩種都按「恢復」接著等，不必重新上傳（要先在 Settings 設定 Gemini 的 API 金鑰）。失敗的批次在任務頁留 24 小時。只有 Gemini 的模型支援批次，選本機的模型時這個選項會停用並註明原因。
+- **批次轉錄**：處理模式選擇「Batch（半價）」後送出，可關閉視窗稍後在 **📋 任務 (Tasks)** 頁面查看。批次還在等 Gemini 的結果時關掉應用程式（例如關掉免安裝版的黑色視窗），重新開啟後任務頁會把它標成「已中斷」；等結果時網路斷了，批次會標成「失敗」。兩種都按「恢復」接著等，不必重新上傳（要先在 Settings 設定 Gemini 的 API 金鑰）。還在上傳時就關掉的批次沒有送出給 Gemini，重新開啟後標成「失敗」，要重新送出。失敗的批次在任務頁留 24 小時。只有 Gemini 的模型支援 Flex 與批次，選本機的模型時這兩個選項會停用並註明原因，已經選了的會退回標準。
 
 ### 步驟 4️⃣ — 檢視與下載結果
 
@@ -155,7 +155,7 @@ docker compose --env-file .env down
 ### 步驟 5️⃣ — 追蹤紀錄與費用
 
 - **🕘 歷史 (History)**：列出所有完成的任務，可重新下載字幕。
-- **💰 計費 (Billing)**：依日期、模型查詢 Token 用量與成本。
+- **💰 計費 (Billing)**：依日期、模型查詢 Token 用量與成本；失敗與取消的任務已經用掉的 Token 與費用也算在內，檔案數只算完成的。
 - **📊 儀表板 (Dashboard)**：總覽近期使用統計。
 
 > 💡 **省錢技巧**：非急件大量檔案請使用「批次轉錄」，費用直接 5 折。
@@ -238,22 +238,26 @@ AI_translate/
 
 ### 修改預設 Prompt
 
-`backend/app/core/default_prompt.py` 是 **唯一真實來源**，內含 `DEFAULT_PROMPT_TEMPLATE` 與 `build_prompt()`。修改此檔即同步生效於前後端。
+`backend/app/core/default_prompt.py` 是 **唯一真實來源**，內含 `DEFAULT_PROMPT_TEMPLATE` 與 `build_prompt()`。修改此檔即同步生效於前後端。送出的提示詞是提示詞範本（設定頁存的，沒存過就是 `DEFAULT_PROMPT_TEMPLATE`）代入變數之後，空一行接上轉錄頁填的補充說明（照寫的送出，不代入變數）。
 
 ### 執行測試
 
 ```powershell
-backend\.venv\Scripts\python.exe tools/check.py           # 依序跑 ruff → pytest → ESLint → vitest
+backend\.venv\Scripts\python.exe tools/check.py           # 依序跑 ruff → basedpyright → pytest → ESLint → tsc → vitest → ratchet
 backend\.venv\Scripts\python.exe tools/check.py pytest    # 只跑指定的項目
 ```
 
-clone 之後執行一次下面這行，讓 git 在每次 commit 前跑快的檢查（ruff、ESLint；測試交給 CI）。只影響開發用的 git checkout，免安裝版與 Docker 的使用者不需要：
+clone 之後執行一次下面這行，讓 git 在每次 commit 前跑快的檢查（lint、型別檢查與棘輪；測試交給 CI）。只影響開發用的 git checkout，免安裝版與 Docker 的使用者不需要：
 
 ```powershell
 git config core.hooksPath .githooks
 ```
 
-> `tools/check.py` 是唯一的檢查清單，CI 與 pre-commit 跑的也是它。Python 的檢查要先安裝 `backend/requirements-dev.txt`，ESLint 與 vitest 要先在 `frontend/` 執行 `npm ci`。`pytest.ini` 已設定 `pythonpath = backend`，測試可直接 `from app.api import ...` 匯入；測試自帶暫存的 SQLite 資料庫與 mock，不需 Postgres/Redis。
+> `tools/check.py` 是唯一的檢查清單，CI 與 pre-commit 跑的也是它。Python 的檢查要先安裝 `backend/requirements-dev.txt`，ESLint、tsc 與 vitest 要先在 `frontend/` 執行 `npm ci`。型別檢查只擋新增的錯誤：既有的 Python 錯誤記在錯誤清單 `.basedpyright/baseline.json`，有錯的舊前端檔標了 `// @ts-nocheck`；ratchet 確認兩者都沒有比 `origin/main` 多。修掉清單裡的錯誤時，basedpyright 會自己改寫錯誤清單，記得把它一起 commit。`pytest.ini` 已設定 `pythonpath = backend`，測試可直接 `from app.api import ...` 匯入；測試自帶暫存的 SQLite 資料庫與 mock，不需 Postgres/Redis。
+
+### 評測轉錄品質
+
+`backend\.venv\Scripts\python.exe -m tools.eval eval ...` 拿轉錄結果和評測集的標準答案比對，算錯字率與說話者歸屬；標準答案留在 repo 外的研究區。用法見 [`tools/eval/README.md`](tools/eval/README.md)。
 
 ### 建置 Windows 免安裝發布包
 

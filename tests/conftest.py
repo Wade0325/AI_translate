@@ -150,7 +150,7 @@ class _Collector(logging.Handler):
 
 @pytest.fixture
 def app_log():
-    """app 寫進 log 的內容，一筆一個字串。
+    """app 寫進 log 的內容（``app.*`` 與 backend/main.py 的 logger），一筆一個字串。
 
     app 的 logger 不往上傳（app/utils/logger.py 設了 propagate=False），caplog 收不到，
     所以在每個 app 的 logger 上直接接一個收集的 handler。只接得到 fixture 啟動時已經
@@ -158,7 +158,8 @@ def app_log():
     """
     handler = _Collector()
     loggers = [logger for name, logger in logging.Logger.manager.loggerDict.items()
-               if name.startswith("app.") and isinstance(logger, logging.Logger)]
+               if (name.startswith("app.") or name == "main")
+               and isinstance(logger, logging.Logger)]
     for logger in loggers:
         logger.addHandler(handler)
     yield handler.entries

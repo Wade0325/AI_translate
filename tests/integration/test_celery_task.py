@@ -478,3 +478,59 @@ def test_batch_recovers_in_docker_mode(batch_tasks, uploads, fake, broadcasts, c
     # 去靜音之後 2.3 秒是第二個有聲段的開頭（有聲段前後各留 0.3 秒）
     assert [(s["start"], s["text"]) for s in segments] == [
         (pytest.approx(0.2), "おはよう。"), (pytest.approx(4.7), "こんにちは。")]
+
+
+class StartingWorker:
+    """worker 啟動時（``worker_init``）收到的 worker：只看它的 app 要消費哪些佇列（``-Q``）。"""
+
+    def __init__(self, *queues: str):
+        from celery import Celery
+
+        self.app = Celery("starting-worker", broker="memory://")
+        if queues:
+            self.app.amqp.queues.select(list(queues))
+
+
+def stopped_while_uploading(run, uploads, batch_id: str, file_uid: str) -> None:
+    """worker 在上傳時被砍掉：批次停在上傳中，結果後端還記著那次執行在跑（task_track_started）。"""
+    from app.celery.celery import celery_app
+
+    run_id = str(uuid.uuid4())
+    with pytest.raises(Restart):
+        run.apply(args=[batch_params(uploads, batch_id, [file_uid])], task_id=run_id)
+    celery_app.backend.store_result(run_id, None, "STARTED")
+
+
+def test_a_batch_stopped_while_uploading_fails_when_the_worker_starts_again(
+        batch_tasks, uploads, fake, broadcasts, client):
+    # 批次只在消費預設佇列的 worker 上跑：它重新啟動時，之前在上傳的批次一定已經停了
+    from app.celery import celery as worker
+
+    run, _ = batch_tasks
+    fake.upload_errors = [Restart()]
+    stopped_while_uploading(run, uploads, "batch-docker-uploading", "docker-uploading")
+    assert shown(client, "batch-docker-uploading") == ("UPLOADING", True, False)
+
+    worker.on_worker_start(sender=StartingWorker())
+
+    assert shown(client, "batch-docker-uploading") == ("FAILED", None, False)
+    ended = file_results(broadcasts())["docker-uploading"]
+    assert ended["status_code"] == TaskStatus.FAILED
+    saved = client.get(f"/api/v1/history/{ended['task_uuid']}").json()
+    assert (saved["status"], saved["is_batch"]) == (TaskStatus.FAILED, True)
+    assert list(uploads.iterdir()) == []
+
+
+def test_the_gpu_worker_starting_leaves_uploading_batches_alone(
+        batch_tasks, uploads, fake, broadcasts, client):
+    # 主機的 GPU worker 只消費 local_asr（local_worker.bat 的 -Q）：它啟動時，預設佇列的 worker 可能
+    # 還在上傳，不動上傳中的批次
+    from app.celery import celery as worker
+
+    run, _ = batch_tasks
+    fake.upload_errors = [Restart()]
+    stopped_while_uploading(run, uploads, "batch-gpu-worker", "gpu-worker")
+
+    worker.on_worker_start(sender=StartingWorker("local_asr"))
+
+    assert shown(client, "batch-gpu-worker") == ("UPLOADING", True, False)

@@ -36,6 +36,7 @@ CAPABILITIES = ModelCapabilities(
     accepts_prompt=True,
     accepts_user_text=True,
     supports_batch=False,
+    supports_flex=False,
     pricing="free",
     remove_silence=True,
 )
@@ -128,9 +129,10 @@ class FakeProvider:
         self.checked_keys: List[str] = []
         # 依序收到的提示詞：每一段轉錄一則，送出的批次每個請求一則
         self.prompts: List[str] = []
-        # 批次：上傳時依序拋的錯（None 代表那一個照常上傳）、送出時依序拋的錯，以及每次查詢依序
-        # 的結果；查詢用完之後一律回報 batch_outcome，"SUCCEEDED" 時附上送出時照劇本轉錄的結果
-        self.upload_errors: List[Optional[Exception]] = []
+        # 批次：上傳時依序拋的錯（None 代表那一個照常上傳，Restart 代表上傳時重啟）、送出時依序拋的
+        # 錯，以及每次查詢依序的結果；查詢用完之後一律回報 batch_outcome，"SUCCEEDED" 時附上送出時
+        # 照劇本轉錄的結果
+        self.upload_errors: List[Optional[BaseException]] = []
         self.submit_errors: List[Exception] = []
         self.batch_polls: List[BatchPoll] = []
         self.batch_outcome = "SUCCEEDED"

@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { Row, Col } from "antd"
 import {
     FileAudio,

@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { useState, useEffect, useCallback } from "react"
 import { Card, Button, Input, Select, Switch, Typography, Row, Col, Spin, Divider, Progress, Alert } from "antd"
 import { Key, Bell, Save, Trash2, Cpu, Download, CheckCircle2 } from "lucide-react"
@@ -348,18 +349,25 @@ function LocalModelsCard() {
     )
 }
 
-/** 供應商的提示詞範本；這個供應商的模型都不支援提示詞時停用並顯示原因。 */
+/**
+ * 供應商的提示詞範本；這個供應商的模型都不支援提示詞時停用並顯示原因。範本整份取代系統內建的，
+ * 打了字就看不到 placeholder，所以欄位下方的說明一直顯示（#196）。
+ */
 function PromptTemplateField({ value, onChange, disabledReason }) {
     return (
         <div>
-            <Text style={{ color: '#e8e8e8', fontSize: 13, display: 'block', marginBottom: 6 }}>Global Prompt Template</Text>
+            <Text style={{ color: '#e8e8e8', fontSize: 13, display: 'block', marginBottom: 6 }}>Prompt Template</Text>
             <TextArea
                 value={value}
                 onChange={(e) => onChange(e.target.value)}
                 disabled={Boolean(disabledReason)}
-                placeholder="System level instructions or prompts to guide the model..."
+                placeholder="Empty: the built-in template is used. Anything saved here replaces the whole prompt sent for every file, so keep the instructions that ask for LRC format and timestamps..."
                 rows={4}
             />
+            <Text style={{ display: 'block', color: '#8888a8', fontSize: 12, marginTop: 4 }}>
+                The whole prompt sent for every file with this provider. Keep the instructions that ask for LRC format and timestamps, or transcription fails.
+                Leave it empty to use the built-in template. To add a line such as speaker names or terms to keep as written, use the prompt on New Transcription instead.
+            </Text>
             <ReasonText reason={disabledReason} style={{ display: 'block', fontSize: 12, marginTop: 4 }} />
         </div>
     )

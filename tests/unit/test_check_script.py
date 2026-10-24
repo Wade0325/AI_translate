@@ -1,4 +1,4 @@
-"""tools/check.py：唯一的檢查清單（ruff → pytest → ESLint → vitest）。
+"""tools/check.py：唯一的檢查清單（ruff → basedpyright → pytest → ESLint → tsc → vitest → ratchet）。
 
 CI 的 job 與本機都經由它跑檢查，所以最要緊的性質是：任何一項失敗或跑不起來，
 結束碼就不是 0，而且其餘項目照樣跑完，一次看到全部的紅燈。
@@ -37,16 +37,18 @@ def _ran(tmp_path):
     return log.read_text(encoding="utf-8") if log.exists() else ""
 
 
-def test_checks_are_ruff_pytest_eslint_vitest_in_order(check):
-    assert [c.name for c in check.CHECKS] == ["ruff", "pytest", "eslint", "vitest"]
+def test_checks_are_lint_typecheck_test_ratchet_in_order(check):
+    assert [c.name for c in check.CHECKS] == [
+        "ruff", "basedpyright", "pytest", "eslint", "tsc", "vitest", "ratchet"]
 
 
 def test_python_checks_use_running_interpreter_from_repo_root(check):
     by_name = {c.name: c for c in check.CHECKS}
-    for name in ("ruff", "pytest"):
+    for name in ("ruff", "basedpyright", "pytest", "ratchet"):
         assert by_name[name].cmd[0] == sys.executable
         assert by_name[name].cwd == ROOT
     assert by_name["eslint"].cwd == ROOT / "frontend"
+    assert by_name["tsc"].cwd == ROOT / "frontend"
 
 
 def test_vitest_runs_once_with_node_from_frontend(check):
@@ -101,7 +103,7 @@ def test_unknown_check_name_is_rejected(check):
 
 
 
-@pytest.mark.parametrize("name", ["eslint", "vitest"])
+@pytest.mark.parametrize("name", ["eslint", "tsc", "vitest"])
 def test_missing_frontend_tool_names_the_fix_for_that_checkout(check, tmp_path, name):
     tool = {c.name: c for c in check.checks(tmp_path)}[name]
     remedy = tool.missing()
@@ -165,8 +167,8 @@ def test_staged_failure_blocks_the_commit(check, monkeypatch, tmp_path, stage):
     assert check.main(["--staged"]) == 1
 
 
-def test_only_ruff_and_eslint_run_before_commit(check):
-    assert [c.name for c in check.CHECKS if c.pre_commit] == ["ruff", "eslint"]
+def test_only_the_tests_are_left_to_ci(check):
+    assert [c.name for c in check.CHECKS if not c.pre_commit] == ["pytest", "vitest"]
 
 
 def test_python_change_triggers_ruff_and_frontend_change_triggers_eslint(check):
@@ -176,3 +178,17 @@ def test_python_change_triggers_ruff_and_frontend_change_triggers_eslint(check):
     assert not by_name["ruff"].runs_for("README.md")
     assert by_name["eslint"].runs_for("frontend/src/App.jsx")
     assert not by_name["eslint"].runs_for("frontend/dist/index.js")
+
+
+def test_type_checks_run_when_their_config_changes(check):
+    by_name = {c.name: c for c in check.CHECKS}
+    assert by_name["basedpyright"].runs_for("backend/app/main.py")
+    assert by_name["basedpyright"].runs_for("pyrightconfig.json")
+    assert by_name["basedpyright"].runs_for(".basedpyright/baseline.json")
+    assert not by_name["basedpyright"].runs_for("frontend/src/App.jsx")
+    assert by_name["tsc"].runs_for("frontend/tsconfig.json")
+    assert by_name["tsc"].runs_for("frontend/src/App.jsx")
+    assert not by_name["tsc"].runs_for("backend/main.py")
+    assert by_name["ratchet"].runs_for("frontend/src/App.jsx")
+    assert by_name["ratchet"].runs_for(".basedpyright/baseline.json")
+    assert not by_name["ratchet"].runs_for("backend/main.py")

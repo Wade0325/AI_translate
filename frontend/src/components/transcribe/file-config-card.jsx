@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { useState } from "react"
 import {
     X,
@@ -84,8 +85,8 @@ export function FileConfigCard({
     const submittable = ["waiting", "error", "cancelled"].includes(config.status)
     const notSentReason = (reason) => (submittable ? reason : null)
 
-    // 提示詞標籤顯示會送出的那一個，和請求用同一個函式算（包括提示詞範本）；已送出的檔案
-    // 顯示當初送出的。所選的模型不吃提示詞時，填了的值照 #108 劃掉並寫出原因
+    // 提示詞標籤顯示會送出的補充說明，和請求用同一個函式算；已送出的檔案顯示當初送出的。提示詞範本
+    // 每次都送，不顯示在這裡。所選的模型不吃提示詞時，填了的值照 #108 劃掉並寫出原因
     const shownPrompt = submittable ? config.promptToSend : config.sentPrompt
     const typedPrompt = (config.filePrompt ?? "").trim().length > 0
 
@@ -411,14 +412,15 @@ export function FileConfigCard({
                                 <span style={{ fontSize: 10, color: "rgba(136, 136, 168, 0.5)", marginLeft: 4 }}>(same as global)</span>
                             )}
                         </Text>
-                        {/* 欄位只放這個檔案自己的提示詞；清空就回到跟著全域，placeholder 顯示全域的 */}
+                        {/* 欄位只放這個檔案自己的提示詞；清空就回到跟著全域，placeholder 顯示全域的。
+                            兩者都是補充說明，送出時接在提示詞範本後面（#144） */}
                         <TextArea
                             value={config.prompt}
                             onChange={(e) => update({ prompt: e.target.value })}
                             disabled={Boolean(disabledReasons.prompt)}
                             placeholder={config.followsGlobalPrompt && (globalConfig.prompt ?? "").trim()
                                 ? `Same as global: ${globalConfig.prompt}`
-                                : "Override the global prompt for this file..."}
+                                : "Used instead of the global prompt for this file, added after the prompt template..."}
                             autoSize={{ minRows: 2 }}
                             style={{ fontSize: 12 }}
                         />

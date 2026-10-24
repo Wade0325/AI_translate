@@ -74,6 +74,11 @@ class BatchJobRepository:
         ).update({BatchJob.updated_at: datetime.now()}, synchronize_session=False)
         db.commit()
 
+    def batch_ids_in(self, db: Session, state: BatchState) -> List[str]:
+        """現在停在這個狀態的批次。"""
+        return [batch_id for (batch_id,) in
+                db.query(BatchJob.batch_id).filter(BatchJob.status == state).all()]
+
     def get_job(self, db: Session, batch_id: str) -> Optional[BatchJob]:
         """
         依 batch_id 查詢單筆記錄。

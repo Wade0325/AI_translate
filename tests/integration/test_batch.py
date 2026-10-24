@@ -7,16 +7,18 @@
 保留音檔、暫存資料夾裡還留著哪些檔案、假供應商收到了什麼，以及批次存進資料庫的樣子。
 """
 import threading
+from contextlib import ExitStack
 from dataclasses import replace
 
 import pytest
 from fastapi.testclient import TestClient
 
+from app.core.default_prompt import build_prompt
 from app.core.task_status import TaskStatus
 from app.exceptions import TransientError
 from app.runtime import run_mode
 from app.tasks import batch_core
-from tests.support.db_faults import writes_fail
+from tests.support.db_faults import NOT_NULL, assert_logged_without, rejected_row, writes_fail
 from tests.support.fake_provider import FAKE_MODEL, Fail, Restart
 from tests.support.older_batches import (
     SPANS,
@@ -36,6 +38,8 @@ from tests.support.task_api import (
     leftovers,
     listed,
     listed_batch_ids,
+    ping,
+    receive,
     receive_until,
     shown,
     stored_segments,
@@ -226,6 +230,23 @@ def test_a_failed_file_does_not_stop_the_others(api, in_process_run_mode, batch_
     assert [s["text"] for s in stored_segments(api, third["task_uuid"])] == ["三つ目。"]
 
 
+def test_a_failed_file_is_still_billed_at_the_batch_discount(api, in_process_run_mode, batch_fake):
+    # 供應商回報這個請求失敗（例如 Gemini 的回應被阻擋），照樣收費：用量記在失敗的任務紀錄上，和
+    # 完成的檔案一樣打批次的折扣（#155；價目見 test_provider_seam.py 的計價測試，一次 0.30 美元）
+    batch_fake.model_capabilities = replace(batch_fake.model_capabilities, pricing="per_token")
+    batch_fake.usage = (200_000, 40_000)
+    batch_fake.script = [Fail("回應被阻擋")]
+
+    [failed] = ends(run_batch(api, in_process_run_mode, "batch-failed-billed", ["billed.wav"]),
+                    ["billed.wav"])
+
+    assert failed["status_code"] == TaskStatus.FAILED
+    saved = record(api, failed["task_uuid"])
+    assert saved["status"] == TaskStatus.FAILED
+    assert (saved["total_tokens"], saved["cost"]) == (240_000, pytest.approx(0.15))
+    assert saved["service_tier_used"] == "batch"
+
+
 def test_records_store_the_listed_provider_name(api, in_process_run_mode, batch_fake, db_session):
     # 舊前端、直接呼叫 API 的人可能送大寫；任務紀錄存的是供應商清單上的名稱（#97）
     from app.repositories.transcription_log_repository import TranscriptionLogRepository
@@ -238,18 +259,34 @@ def test_records_store_the_listed_provider_name(api, in_process_run_mode, batch_
     assert TranscriptionLogRepository().get(db_session, end["task_uuid"]).provider == "fake"
 
 
-def test_prompts_reach_the_provider_as_written(api, in_process_run_mode, batch_fake):
-    # 第一個檔案沿用批次的提示詞（變數照樣代入，JSON 的大括號原樣留著，#143），第二個檔案有自己的
-    batch_fake.script = [list(LINES), list(LINES)]
+def test_each_file_sends_the_saved_template_and_its_supplement(
+        api, in_process_run_mode, batch_fake, saved_prompt_template):
+    # 和單檔任務同一個規則（#144）：設定頁存的範本（變數照樣代入，JSON 的大括號原樣留著，#143），
+    # 空一行接上這個檔案的補充說明：自己的，沒有就用批次層級的；補充說明照寫的送出
+    saved_prompt_template("fake", '請轉錄{source_lang}音檔，每一行寫成 {"speaker": "S0", "text": "…"}')
+    batch_fake.script = [list(LINES), list(LINES), list(LINES)]
     own_prompt = "這一檔有兩位說話者，分別標成 {A} 與 {B}"
 
     run_batch(api, in_process_run_mode, "batch-prompts", ["prompt-a.wav", "prompt-b.wav"],
               fields_per_file={"prompt-b.wav": {"prompt": own_prompt}},
-              prompt='請轉錄{source_lang}音檔，每一行寫成 {"speaker": "S0", "text": "…"}',
+              prompt="人名照寫：佐藤", source_lang="ja-JP")
+    run_batch(api, in_process_run_mode, "batch-template-alone", ["prompt-c.wav"],
               source_lang="ja-JP")
 
+    template = '請轉錄日文音檔，每一行寫成 {"speaker": "S0", "text": "…"}'
     assert batch_fake.prompts == [
-        '請轉錄日文音檔，每一行寫成 {"speaker": "S0", "text": "…"}', own_prompt]
+        template + "\n\n人名照寫：佐藤", template + "\n\n" + own_prompt, template]
+
+
+def test_supplement_is_sent_after_the_built_in_template(api, in_process_run_mode, batch_fake):
+    # 設定頁沒存過範本：系統內建範本裡要求 LRC 與時間戳的指示照樣送出，補充說明接在最後
+    batch_fake.script = [list(LINES)]
+
+    run_batch(api, in_process_run_mode, "batch-built-in-template", ["prompt-d.wav"],
+              fields_per_file={"prompt-d.wav": {"prompt": "說話者是兩位主持人"}},
+              source_lang="ja-JP")
+
+    assert batch_fake.prompts == [build_prompt(source_lang="ja-JP") + "\n\n說話者是兩位主持人"]
 
 
 # ─── 語音視圖 ────────────────────────────────────────────────────────────────
@@ -314,6 +351,39 @@ def test_a_file_that_cannot_be_uploaded_fails_alone(api, in_process_run_mode, ba
     assert [s["text"] for s in stored_segments(api, third["task_uuid"])] == ["三つ目。"]
 
 
+def test_a_file_whose_upload_is_gone_fails_alone(api, in_process_run_mode, batch_fake):
+    # 第二個檔案送出的檔名在上傳資料夾裡找不到，和上傳檔已經被清掃掉一樣（#153）
+    batch_fake.script = [[(0.2, 1.5, 0, "一つ目。")], [(0.2, 1.5, 0, "三つ目。")]]
+
+    messages = run_batch(api, in_process_run_mode, "batch-upload-gone", NAMES,
+                         fields_per_file={NAMES[1]: {"filename": "swept-away.wav"}})
+
+    # 只有那個檔案失敗並說明原因，使用者才知道它沒有送出；其他檔案照常送出
+    first, gone, third = ends(messages, NAMES)
+    assert codes([first, gone, third]) == [
+        TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.COMPLETED]
+    assert "找不到上傳的檔案" in gone["status_text"]
+    assert len(batch_fake.prompts) == 2
+    assert [s["text"] for s in stored_segments(api, third["task_uuid"])] == ["三つ目。"]
+
+
+def test_a_batch_whose_uploads_are_all_gone_is_not_sent(api, batch_fake):
+    names = NAMES[:2]
+    with api.websocket_connect("/api/v1/batch/ws/batch-all-gone") as ws:
+        ws.send_json({
+            "files": [{"filename": f"swept-{name}", "original_filename": name, "file_uid": name}
+                      for name in names],
+            "provider": "fake", "model": FAKE_MODEL, "source_lang": "ja"})
+        messages = [receive(ws) for _ in names]
+
+    # 每個檔案都失敗並說明原因；沒有檔案可以送出，整批不派送
+    assert [(m["file_uid"], m["status_code"]) for m in messages] == [
+        (name, TaskStatus.FAILED) for name in names]
+    assert all("找不到上傳的檔案" in m["status_text"] for m in messages)
+    assert "batch-all-gone" not in listed_batch_ids(api)
+    assert batch_fake.opened == 0
+
+
 def test_every_file_fails_when_the_batch_cannot_be_submitted(api, in_process_run_mode, batch_fake):
     batch_fake.submit_errors = [RuntimeError("請求太大")]
 
@@ -349,9 +419,73 @@ def test_database_errors_are_not_passed_on(api, in_process_run_mode, batch_fake,
     end = of_file(messages, "twice-b.wav")[-1]
     assert end["status_code"] == TaskStatus.FAILED
     assert "轉錄結果沒有存進資料庫" in end["status_text"]
-    assert "轉錄結果沒有存進資料庫" in messages[-1]["status_text"]
+    assert "資料庫出錯了" in messages[-1]["status_text"]
     assert not any("INSERT" in m["status_text"] for m in messages)
     assert not any("INSERT INTO" in entry for entry in app_log)
+
+
+@pytest.mark.parametrize("entry", ["run", "recovery"])
+def test_a_file_whose_result_cannot_be_stored_fails_alone_without_passing_on_the_row(
+        api, in_process_run_mode, batch_fake, test_engine, app_log, entry):
+    # 一個檔案的片段寫不進資料庫，Postgres 附上的那一列有轉錄結果（#175、#178）：只有這個檔案失敗，
+    # 同一批的其他檔案照常完成。畫面、任務紀錄與 log 都不轉述資料庫的例外。執行與復原（在輪詢時重啟
+    # 之後）都一樣
+    secret = "来期の人事はまだ内密に。"
+    batch_id = f"batch-secret-row-{entry}"
+    batch_fake.script = [list(LINES), [(0.2, 1.5, 0, secret)], list(LINES)]
+    if entry == "recovery":
+        batch_fake.batch_polls = [Restart()]
+        submit_batch(api, in_process_run_mode, batch_id, NAMES)
+    row = rejected_row("transcript_segments", f"1, 0f5c, 0-0, 0, 0.2, 1.5, S0, {secret}")
+    with writes_fail(test_engine, "transcript_segments", "INSERT", row,
+                     when="NEW.text LIKE '%内密%'"):
+        if entry == "run":
+            messages = run_batch(api, in_process_run_mode, batch_id, NAMES)
+        else:
+            messages = recover(api, batch_id)
+            in_process_run_mode.close(wait=True)  # 等復原整個跑完再拿掉 trigger
+
+    first, failed, third = ends(messages, NAMES)
+    assert codes([first, failed, third]) == [
+        TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.COMPLETED]
+    assert "轉錄結果沒有存進資料庫" in failed["status_text"]
+    shown = [m["status_text"] for m in messages] + [record(api, failed["task_uuid"])["error_message"]]
+    for text in shown:
+        for leaked in (secret, NOT_NULL, "INSERT"):
+            assert leaked not in text
+    assert_logged_without(app_log, secret)
+
+
+@pytest.mark.parametrize("entry", ["run", "recovery"])
+def test_a_batch_that_cannot_be_recorded_as_completed_keeps_its_files_without_passing_on_the_row(
+        api, in_process_run_mode, batch_fake, test_engine, app_log, entry):
+    # 檔案都完成了，批次卻記不成完成，Postgres 附上的那一列有原始檔名與轉錄結果（#175、#178）：
+    # 完成的檔案照樣完成。批次的訊息說資料庫出錯，不說成沒有轉錄結果，也不轉述資料庫的例外。執行
+    # 時批次記成失敗；復原時退回輪詢中，之後可以再按「恢復」
+    filename, secret = "社長との面談_極秘.wav", "来期の人事はまだ内密に。"
+    batch_id = f"batch-end-unrecorded-{entry}"
+    batch_fake.script = [list(LINES), list(LINES)]
+    if entry == "recovery":
+        batch_fake.batch_polls = [Restart()]
+        submit_batch(api, in_process_run_mode, batch_id, NAMES[:2])
+    row = rejected_row("batch_jobs", f'{batch_id}, null, batches/1, COMPLETED, '
+                                     f'{{"original_filename": "{filename}"}}, {{"text": "{secret}"}}')
+    with writes_fail(test_engine, "batch_jobs", "UPDATE", row, when="NEW.status = 'COMPLETED'"):
+        if entry == "run":
+            messages = run_batch(api, in_process_run_mode, batch_id, NAMES[:2])
+        else:
+            messages = recover(api, batch_id)
+            in_process_run_mode.close(wait=True)  # 等復原整個跑完再拿掉 trigger
+
+    assert codes(ends(messages, NAMES[:2])) == [TaskStatus.COMPLETED, TaskStatus.COMPLETED]
+    assert messages[-1]["status_code"] == TaskStatus.BATCH_COMPLETED
+    assert "資料庫出錯了" in messages[-1]["status_text"]
+    assert "轉錄結果沒有存進資料庫" not in messages[-1]["status_text"]
+    assert listed(api, batch_id)["status"] == ("FAILED" if entry == "run" else "POLLING")
+    for text in [m["status_text"] for m in messages]:
+        for leaked in (filename, secret, NOT_NULL, "UPDATE", "batch_jobs"):
+            assert leaked not in text
+    assert_logged_without(app_log, filename, secret)
 
 
 def test_every_file_fails_when_the_whole_batch_fails(api, in_process_run_mode, batch_fake):
@@ -869,6 +1003,49 @@ def test_a_batch_archived_after_a_restart_can_still_be_recovered(
     assert listed(api, "batch-archived-restarted")["status"] == "COMPLETED"
 
 
+# ─── 同一個批次 id 的舊連線還沒收尾（#203） ─────────────────────────────────────
+# 同一個批次 id 先後有兩條連線（例如前端重送），伺服器還沒發現舊連線斷了，新連線就連上來：伺服器先關掉
+# 舊連線、登記新連線，舊連線的處理流程之後才收尾。收尾只能動舊連線自己，批次的狀態訊息才送得到新連線
+
+def send_rejected_batch(ws) -> None:
+    """送出上傳檔已經不在的批次：整批不派送，端點回失敗之後連線照樣開著、等下一則訊息。"""
+    ws.send_json({
+        "files": [{"filename": "swept.wav", "original_filename": "swept.wav", "file_uid": "swept"}],
+        "provider": "fake", "model": FAKE_MODEL, "source_lang": "ja"})
+    assert receive(ws)["status_code"] == TaskStatus.FAILED
+
+
+def test_the_old_connection_disconnecting_later_keeps_the_new_one(
+        api, in_process_run_mode, batch_fake):
+    batch_fake.script = [list(LINES)]
+    path = "/api/v1/batch/ws/batch-old-disconnects"
+    with ExitStack() as old_connection:
+        send_rejected_batch(old_connection.enter_context(api.websocket_connect(path)))
+        with api.websocket_connect(path) as ws:
+            old_connection.close()  # 舊連線的處理流程這時才收到斷線
+            ws.send_json(batch_request(api, ["reconnect.wav"]))
+            messages = receive_until(ws, TaskStatus.BATCH_COMPLETED)
+    wait_until(lambda: not in_process_run_mode.is_alive(messages[-1]["task_uuid"]))
+
+    assert of_file(messages, "reconnect.wav")[-1]["status_code"] == TaskStatus.COMPLETED
+
+
+def test_the_old_connection_failing_later_keeps_the_new_one(api, in_process_run_mode, batch_fake):
+    batch_fake.script = [list(LINES)]
+    path = "/api/v1/batch/ws/batch-old-fails"
+    with api.websocket_connect(path) as old:
+        send_rejected_batch(old)
+        with api.websocket_connect(path) as ws:
+            # 舊連線已經被伺服器關掉，它的處理流程接著又收到頁面的心跳：在關掉的連線上收訊息會丟例外，
+            # 走端點發生例外時的收尾
+            ping(old)
+            ws.send_json(batch_request(api, ["reconnect.wav"]))
+            messages = receive_until(ws, TaskStatus.BATCH_COMPLETED)
+    wait_until(lambda: not in_process_run_mode.is_alive(messages[-1]["task_uuid"]))
+
+    assert of_file(messages, "reconnect.wav")[-1]["status_code"] == TaskStatus.COMPLETED
+
+
 # ─── 任務頁的恢復入口 ────────────────────────────────────────────────────────
 
 def test_a_batch_left_waiting_by_restarts_is_offered_for_recovery(
@@ -1110,3 +1287,58 @@ def test_a_batch_still_queued_when_the_app_closes_is_recorded_as_failed(
     assert api.get(f"/api/v1/transcripts/{listed['task_uuid']}/audio").content == synthetic_audio()
     assert leftovers(data_dir) == []
     assert len(batch_fake.calls) == 1
+
+
+# ─── 上傳中停住的批次 ────────────────────────────────────────────────────────
+
+def stop_while_uploading(api: TestClient, batch_id: str, names: list[str]) -> None:
+    """送出批次，在上傳最後一個檔案時應用程式重啟（:class:`Restart`）：等這次執行停下來。"""
+    with api.websocket_connect(f"/api/v1/batch/ws/{batch_id}") as ws:
+        ws.send_json(batch_request(api, names))
+        wait_until(lambda: listed_batch_ids(api).count(batch_id) == 1
+                   and listed(api, batch_id)["is_alive"] is False)
+
+
+def test_a_batch_stopped_while_uploading_is_recorded_as_failed_at_startup(
+        api, in_process_run_mode, batch_fake, data_dir):
+    # 第一個檔案上傳好了，第二個上傳失敗，第三個上傳到一半時應用程式重啟：批次停在上傳中，
+    # 還沒結束的檔案停在處理中
+    names = ["stopped-a.wav", "stopped-b.wav", "stopped-c.wav"]
+    batch_fake.upload_errors = [None, RuntimeError("讀不到檔案"), Restart()]
+    stop_while_uploading(api, "batch-stopped-uploading", names)
+    assert shown(api, "batch-stopped-uploading") == ("UPLOADING", False, False)
+    records = {item["original_filename"]: item for item in api.get(
+        "/api/v1/history", params={"keyword": "stopped-"}).json()["items"]}
+    assert [records[name]["status"] for name in names] == [
+        TaskStatus.PROCESSING, TaskStatus.FAILED, TaskStatus.PROCESSING]
+
+    # 啟動時：沒有任務還看著它，批次記成失敗；沒送出過，所以不給「恢復」
+    batch_core.end_stopped_uploads()
+
+    assert shown(api, "batch-stopped-uploading") == ("FAILED", None, False)
+    for name in names:
+        saved = record(api, records[name]["task_uuid"])
+        assert saved["status"] == TaskStatus.FAILED
+        assert saved["is_batch"] is True
+        # 和單檔任務一樣：上傳檔照保留設定處理
+        assert api.get(
+            f"/api/v1/transcripts/{saved['task_uuid']}/audio").content == synthetic_audio()
+    # 已經因為上傳失敗結束的檔案，原因不被蓋掉
+    assert "讀不到檔案" in record(api, records["stopped-b.wav"]["task_uuid"])["error_message"]
+    for name in ("stopped-a.wav", "stopped-c.wav"):
+        assert "上傳" in record(api, records[name]["task_uuid"])["error_message"]
+    assert leftovers(data_dir) == []
+
+
+def test_a_batch_already_sent_is_left_for_recovery_at_startup(
+        api, in_process_run_mode, batch_fake):
+    # 送出之後才重啟的批次停在輪詢中：啟動時不動它，照樣從任務頁恢復到完成
+    batch_fake.script = [list(LINES)]
+    batch_fake.batch_polls = [Restart()]
+    submit_batch(api, in_process_run_mode, "batch-sent-before-restart", ["sent.wav"])
+
+    batch_core.end_stopped_uploads()
+
+    assert shown(api, "batch-sent-before-restart") == ("POLLING", False, True)
+    end = of_file(recover(api, "batch-sent-before-restart"), "sent.wav")[-1]
+    assert end["status_code"] == TaskStatus.COMPLETED

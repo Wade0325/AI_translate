@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
+  allowedProcessingMode,
   missingApiKey,
+  modelSupports,
   modelForProvider,
   modelOptions,
+  processingModeNote,
   providerOptions,
   providerTestRequest,
   requiresApiKey,
@@ -139,6 +142,51 @@ describe('選單的選項', () => {
         { value: 'moss-align', label: 'MOSS-Transcribe-Diarize' },
         { value: 'vibevoice-qwen3-asr', label: 'VibeVoice + Qwen3-ASR（舊版）' },
       ],
+    ]);
+  });
+});
+
+describe('處理模式依模型能力（#162）', () => {
+  const GEMINI = { supports_batch: true, supports_flex: true };
+  const LOCAL = { supports_batch: false, supports_flex: false };
+
+  it('模型能力標明不支援的處理模式，modelSupports 就是 false；還沒載入時當成支援', () => {
+    expect([modelSupports(GEMINI), modelSupports(LOCAL), modelSupports(null)]
+      .map(({ flex, batch }) => ({ flex, batch }))).toEqual([
+      { flex: true, batch: true },
+      { flex: false, batch: false },
+      { flex: true, batch: true },
+    ]);
+  });
+
+  it('所選的模型支援時照使用者選的處理模式', () => {
+    expect(['standard', 'flex', 'batch'].map((mode) => allowedProcessingMode(mode, modelSupports(GEMINI))))
+      .toEqual(['standard', 'flex', 'batch']);
+  });
+
+  it('換到不支援的模型時，Flex 與批次都退回標準', () => {
+    expect(['standard', 'flex', 'batch'].map((mode) => allowedProcessingMode(mode, modelSupports(LOCAL))))
+      .toEqual(['standard', 'standard', 'standard']);
+  });
+
+  it('只退回不支援的那一個', () => {
+    const flexOnly = modelSupports({ supports_batch: false, supports_flex: true });
+
+    expect(['flex', 'batch'].map((mode) => allowedProcessingMode(mode, flexOnly)))
+      .toEqual(['flex', 'standard']);
+  });
+
+  it('選單下方說明哪些處理模式不能用；都能用時沒有說明', () => {
+    expect([
+      processingModeNote(modelSupports(LOCAL)),
+      processingModeNote(modelSupports({ supports_batch: false, supports_flex: true })),
+      processingModeNote(modelSupports({ supports_batch: true, supports_flex: false })),
+      processingModeNote(modelSupports(GEMINI)),
+    ]).toEqual([
+      '所選的模型不支援 Flex 與批次，只能用標準',
+      '所選的模型不支援批次',
+      '所選的模型不支援 Flex',
+      null,
     ]);
   });
 });

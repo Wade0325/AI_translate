@@ -1,9 +1,11 @@
+// @ts-nocheck
 import { useCallback } from 'react';
 import { message } from 'antd';
 import { api, WS_URLS } from '../services/api';
 import { registerTranscribeSession } from '../utils/transcribeSessions';
 import { randomId } from '../utils/id';
 import { buildBatchPayload, buildSinglePayload } from '../utils/transcribeRequest';
+import { applyFileResult } from '../utils/fileResult';
 import { TASK_STATUS } from '../constants/taskStatus';
 
 /**
@@ -14,47 +16,18 @@ import { TASK_STATUS } from '../constants/taskStatus';
  *   - socketManager：來自 useTranscriptionSocket()
  *
  * 回傳兩個高階函式：
- *   - startRegular({ provider, model, promptTemplate, defaults, supports }):
+ *   - startRegular({ provider, model, defaults, supports }):
  *       每個檔案各自一條 WS；單檔轉錄／Flex／Standard 模式
- *   - startBatch({ provider, model, promptTemplate, defaults, supports }):
+ *   - startBatch({ provider, model, defaults, supports }):
  *       所有檔案共用一條 batch WS（Gemini Batch API，50% 折扣）
  *
- * 請求不帶 API 金鑰：後端從資料庫取用，明文金鑰不經過瀏覽器。
- * 請求的內容（defaults、promptTemplate、supports 怎麼用，每個檔案帶哪個提示詞）見
- * utils/transcribeRequest.js。
+ * 請求不帶 API 金鑰與提示詞範本：後端從資料庫取用，明文金鑰不經過瀏覽器。
+ * 請求的內容（defaults、supports 怎麼用，每個檔案帶哪個補充說明）見 utils/transcribeRequest.js。
  */
 
 const isRestartable = (f) =>
   (f.status === 'waiting' || f.status === 'error' || f.status === 'cancelled') &&
   !!f.originFileObj;
-
-// 依 COMPLETED/FAILED/CANCELLED 的 WS 訊息，算出單一 file 的下一個 state。
-function applyFileResult(file, data) {
-  const next = {
-    ...file,
-    statusText: data.status_text,
-    task_uuid: data.task_uuid,
-  };
-  if (data.status_code === TASK_STATUS.COMPLETED) {
-    next.status = 'completed';
-    next.percent = 100;
-    next.result = data.result?.transcripts;
-    next.tokens_used = data.result?.tokens_used;
-    next.cost = data.result?.cost;
-    // Result 頁顯示用：時長、模型與實際使用的來源語言
-    next.audioDurationSec = data.result?.audio_duration_seconds;
-    next.model = data.result?.model ?? file.model;
-    next.sourceLanguage = data.result?.source_language;
-  } else if (data.status_code === TASK_STATUS.FAILED) {
-    next.status = 'error';
-    next.percent = 100;
-    next.error = data.status_text;
-  } else if (data.status_code === TASK_STATUS.CANCELLED) {
-    next.status = 'cancelled';
-    next.percent = 100;
-  }
-  return next;
-}
 
 export function useUploadQueue({ fileList, setFileList, socketManager, onBatchSubmitted }) {
   const updateFile = useCallback((uid, patch) => {
@@ -110,7 +83,7 @@ export function useUploadQueue({ fileList, setFileList, socketManager, onBatchSu
   }, []);
 
   // 一般模式：每個 file uid 一條 WebSocket
-  const startRegular = useCallback(async ({ provider, model, promptTemplate, defaults, supports }) => {
+  const startRegular = useCallback(async ({ provider, model, defaults, supports }) => {
     const candidates = fileList.filter(isRestartable);
     if (candidates.length === 0) {
       return { skipped: true };
@@ -126,12 +99,11 @@ export function useUploadQueue({ fileList, setFileList, socketManager, onBatchSu
             file,
             provider,
             model,
-            promptTemplate,
             defaults,
             supports,
             sessionId,
           });
-          // sentPrompt：送出的提示詞，已送出的檔案卡照這個顯示
+          // sentPrompt：送出的補充說明，已送出的檔案卡照這個顯示
           updateFile(file.uid, {
             statusText: '連線成功，正在提交任務...',
             serverFilename,
@@ -171,7 +143,7 @@ export function useUploadQueue({ fileList, setFileList, socketManager, onBatchSu
   }, [fileList, updateFile, socketManager, handleSingleMessage, beginSession, uploadFile]);
 
   // 批次模式：所有檔案共用一條 batch WebSocket
-  const startBatch = useCallback(async ({ provider, model, promptTemplate, defaults, supports }) => {
+  const startBatch = useCallback(async ({ provider, model, defaults, supports }) => {
     const candidates = fileList.filter(isRestartable);
     if (candidates.length === 0) {
       return { skipped: true, reason: 'no-files' };
@@ -212,12 +184,11 @@ export function useUploadQueue({ fileList, setFileList, socketManager, onBatchSu
           files: uploaded,
           provider,
           model,
-          promptTemplate,
           defaults,
           supports,
           sessionId,
         });
-        // sentPrompt：每個檔案送出的提示詞，已送出的檔案卡照這個顯示
+        // sentPrompt：每個檔案送出的補充說明，已送出的檔案卡照這個顯示
         const sentPrompts = new Map(payload.files.map((f) => [f.file_uid, f.prompt]));
         setFileList((current) =>
           current.map((f) =>

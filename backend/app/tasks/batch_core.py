@@ -10,6 +10,9 @@ Docker 模式由 :mod:`app.celery.batch_task` 的 Celery shim 包裝執行，免
 - 復原（:func:`run_recover`，由 :func:`start_recovery` 派送）：重啟或輪詢中斷之後接手（復原中）
   → 輪詢到批次結束 → 結束送出的檔案
 
+上傳時停住的批次（例如上傳時關掉了應用程式）沒有送出、不能復原：執行批次的行程再啟動時，由
+:func:`end_stopped_uploads` 記成失敗。
+
 送出之後只有一份流程（:class:`_Watch`）：輪詢到批次結束，再結束送出的每個檔案。每個檔案在
 batch_files 資料表各一列，建立批次時就有（#116 之前送出的批次在應用程式啟動時或復原入口補上，見
 :mod:`app.tasks.older_batches`）；送出時記下它是第幾個請求與語音視圖的序列化形式。結束時
@@ -26,7 +29,7 @@ batch_files 資料表各一列，建立批次時就有（#116 之前送出的批
 停在處理中，一樣從復原入口接著結束。上傳、送出與查詢遇到暫時錯誤（429、503）時，等一段時間再做
 一次那一步（:meth:`~app.exceptions.TransientError.wait_seconds`）。執行模式不重試整個批次：檔案都
 已經開始，整個批次再執行一次會替同一個音檔再開一個任務。資料庫出錯時照任務生命週期的規則，不轉述
-例外（:func:`~app.tasks.lifecycle.without_db_details`）。
+例外（:func:`~app.database.session.without_db_details`）。
 """
 
 from __future__ import annotations
@@ -38,7 +41,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, List, Optional, Sequence, Tuple, TypeVar, Union
+from typing import Any, Callable, List, Optional, Sequence, Tuple, TypeVar, Union, cast
 
 from sqlalchemy.orm import Session
 
@@ -48,8 +51,8 @@ from app.core.config import get_settings
 from app.core.default_prompt import build_prompt
 from app.core.task_status import TaskStatus
 from app.database.models import BatchFile, BatchJob
-from app.database.session import SessionLocal
-from app.exceptions import TransientError
+from app.database.session import SessionLocal, without_db_details
+from app.exceptions import TaskDatabaseError, TransientError
 from app.provider.base import BatchProvider, BatchStatus
 from app.provider.registry import open_batch_provider, provider_info, reopen_batch_provider
 from app.repositories.batch_job_repository import BatchJobRepository
@@ -58,13 +61,7 @@ from app.runtime.run_mode import publish_status
 from app.services.silence_removal import SpeechTimeline, SpeechView, speech_view
 from app.services.transcription.models import TranscriptionTaskResult
 from app.tasks import older_batches
-from app.tasks.lifecycle import (
-    Task,
-    TaskLifecycle,
-    completed_result,
-    shown_to_user,
-    without_db_details,
-)
+from app.tasks.lifecycle import Task, TaskLifecycle, completed_result
 from app.utils.logger import setup_logger
 from app.utils.paths import delete_temp_files
 
@@ -93,6 +90,25 @@ class _BatchError(Exception):
 
 class _Interrupted(_BatchError):
     """輪詢中斷：送出的檔案都照失敗結束、批次記成失敗了，之後還能從復原入口接手。"""
+
+
+STOPPED_WHILE_UPLOADING = "上傳時服務停止了，批次沒有送出"
+"""上傳時停住的批次，還沒結束的檔案失敗的原因（:func:`end_stopped_uploads`）。"""
+
+_DB_ERROR_IN_RUN = "資料庫出錯了，批次沒有正常結束；每個檔案有沒有完成，以檔案自己的狀態為準"
+"""執行批次時資料庫出錯，批次層級給使用者看的原因：出錯時可能有檔案已經完成了。"""
+_DB_ERROR_IN_RECOVERY = "資料庫出錯了，請稍後再按「恢復」"
+"""恢復時資料庫出錯，批次層級給使用者看的原因：批次退回輪詢中，之後可以再恢復。"""
+
+
+def _batch_reason(error: Exception, on_db_error: str) -> str:
+    """整批失敗時給使用者看的原因：資料庫出錯換成 ``on_db_error``，原因只記在 log；其他例外
+    （例如供應商回報的錯誤）照例外訊息。
+
+    不用檔案層級的固定訊息（:func:`~app.tasks.lifecycle.shown_to_user`）：它說的是一個檔案沒有
+    轉錄結果，放在批次上會讓人以為整批都沒有。
+    """
+    return on_db_error if isinstance(error, TaskDatabaseError) else str(error)
 
 
 def run_batch(task_params_dict: dict, task_uuid: str) -> None:
@@ -125,14 +141,18 @@ def watched(job: BatchJob) -> Optional[bool]:
     不在。上傳中不記心跳（一個大檔可能傳很久），只在執行模式查不出來（Docker 模式的 PENDING）時才看
     ``updated_at``。
     """
-    if job.status not in IN_PROGRESS:
+    # 讀出來的值：型別檢查把 Column 的屬性看成欄位本身，不是它的值
+    status = cast(str, job.status)
+    updated_at = cast(Optional[datetime], job.updated_at)
+    if status not in IN_PROGRESS:
         return None
-    alive = run_mode.get().is_alive(job.celery_task_id)
+    # 還沒有任務 id 時傳空字串：執行模式當成查不出來（None）
+    alive = run_mode.get().is_alive(cast(Optional[str], job.celery_task_id) or "")
     if alive is False:
         return False
-    quiet = (job.updated_at is not None
-             and (datetime.now() - job.updated_at).total_seconds() > WATCH_TIMEOUT_SECONDS)
-    if quiet and (alive is None or job.status != BatchState.UPLOADING):
+    quiet = (updated_at is not None
+             and (datetime.now() - updated_at).total_seconds() > WATCH_TIMEOUT_SECONDS)
+    if quiet and (alive is None or status != BatchState.UPLOADING):
         return False
     return alive
 
@@ -236,7 +256,55 @@ def run_recover(batch_id: str, api_key: str) -> None:
     except Exception as e:
         error = without_db_details(e)
         logger.error(f"復原批次 {batch_id} 失敗:\n{''.join(traceback.format_exception(error))}")
-        back_to_polling(f"恢復批次失敗: {shown_to_user(error)}")
+        back_to_polling(f"恢復批次失敗: {_batch_reason(error, _DB_ERROR_IN_RECOVERY)}")
+
+
+def end_stopped_uploads() -> int:
+    """執行批次的行程啟動時，把上傳中的批次記成失敗，回傳記了幾個：之前執行它的行程已經停了。
+
+    呼叫端只能是執行批次的行程，在它開始執行任何批次之前：免安裝模式是應用程式啟動時（批次跑在
+    應用程式的行程裡），Docker 模式是消費預設佇列的 worker 啟動時（:mod:`app.celery.celery`）。
+    Docker 模式只有一個這樣的 worker；Celery 收到任務就確認（沒有開 ``acks_late``），被砍掉的
+    worker 在跑的批次不會再派給別人，所以它一啟動，上傳中的批次就沒有任務看著了。API 啟動時不收：
+    API 單獨重啟（例如 ``--reload``）時 worker 可能還在上傳。
+
+    批次還沒送出（沒有記下送出的批次名稱），不能從復原入口接手，只能記成失敗。還沒結束的檔案從
+    任務紀錄接回任務生命週期、照失敗結束：和其他失敗一樣保留或清理上傳檔、宣告結果；已經結束的
+    （例如上傳失敗）不動。每個批次各自處理：出錯的只記 log、留在上傳中，下次啟動再收，不影響
+    其他批次。
+
+    送出之後、記下送出的批次名稱之前就停住的批次也在這裡：供應商那邊的批次照樣會跑完，但沒有
+    記下名稱，拿不回結果。
+    """
+    jobs = BatchJobRepository()
+    with SessionLocal() as db:
+        stopped = jobs.batch_ids_in(db, BatchState.UPLOADING)
+    ended = 0
+    for batch_id in stopped:
+        try:
+            # 先結束檔案、再記成失敗：中途又停了的話，下次啟動還找得到這個批次與沒結束的檔案
+            with SessionLocal() as db:
+                unfinished = [row for row in jobs.files(db, batch_id)
+                              if row.status == TaskStatus.PROCESSING]
+            for row in unfinished:
+                _end_stopped_file(batch_id, row)
+            with SessionLocal() as db:
+                if jobs.move(db, batch_id, BatchState.FAILED, only_from={BatchState.UPLOADING}):
+                    ended += 1
+                    logger.warning(f"批次 {batch_id} 在上傳時停住了，記成失敗")
+        except Exception as e:
+            logger.error(f"批次 {batch_id} 無法記成失敗: {without_db_details(e)}")
+    return ended
+
+
+def _end_stopped_file(batch_id: str, row: BatchFile) -> None:
+    """上傳時停住的批次裡還沒結束的一個檔案，照失敗結束；任務紀錄不在了的只記下列的結果狀態。"""
+    lifecycle = TaskLifecycle.resume(str(row.task_uuid), file_path=row.file_path,
+                                     duration=row.audio_duration_seconds or 0.0)
+    if lifecycle is None:
+        _record_status(batch_id, str(row.task_uuid), TaskStatus.FAILED)
+        return
+    _end_file(batch_id, lifecycle, _BatchError(STOPPED_WHILE_UPLOADING))
 
 
 def abandon_batch(task_params_dict: dict) -> None:
@@ -361,10 +429,13 @@ class _Run:
                 self._end(file, e)
         except Exception as e:
             failure = without_db_details(e)
+            # 免安裝模式的執行模式不記往上拋的例外：排查只能靠這一筆 log（ADR-0005）
+            logger.error(
+                f"批次 {self._batch_id} 失敗:\n{''.join(traceback.format_exception(failure))}")
             # 還沒結束的檔案都照失敗結束：畫面靠每個檔案自己的結果離開處理中
             for file in self._files:
                 self._end(file, failure)
-            self._fail_batch(f"批次失敗: {shown_to_user(failure)}")
+            self._fail_batch(f"批次失敗: {_batch_reason(failure, _DB_ERROR_IN_RUN)}")
         finally:
             if adapter is not None:
                 # 刪掉上傳到供應商的遠端檔
@@ -457,7 +528,8 @@ class _Run:
             source_lang=item.source_lang or params.source_lang,
             target_lang=item.target_lang or params.target_lang,
             multi_speaker=params.multi_speaker if item.multi_speaker is None else item.multi_speaker,
-            template=(item.prompt or params.prompt) or None,
+            template=params.prompt_template,
+            supplement=item.prompt or params.prompt,
         )
 
     def _fail_batch(self, text: str) -> None:
@@ -717,7 +789,8 @@ def _create_record(db: Session, params: BatchTranscriptionTaskParams, files: Seq
                 source_lang=params.source_lang,
                 target_lang=params.target_lang,
                 multi_speaker=params.multi_speaker,
-                template=params.prompt or None,
+                template=params.prompt_template,
+                supplement=params.prompt,
             ),
         }),
         celery_task_id=run_id,

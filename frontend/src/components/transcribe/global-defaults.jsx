@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { Select, Switch, Slider, Typography, Input, Tooltip } from "antd"
 import { Languages, Users, Clock, MessageSquareText, ChevronDown, CopyCheck } from "lucide-react"
 import { useState } from "react"
@@ -171,7 +172,7 @@ export function GlobalDefaults({ config, onChange, onApplyAll, fileCount = 0, pr
                         value={config.prompt}
                         onChange={(e) => update({ prompt: e.target.value })}
                         disabled={Boolean(promptDisabledReason)}
-                        placeholder="Sent with every file that has no prompt of its own. It replaces the whole prompt template, so keep the LRC and timestamp instructions..."
+                        placeholder="Added after the prompt template for every file that has no prompt of its own, e.g. speaker names or terms to keep as written. To rewrite the whole prompt, edit the prompt template in Settings..."
                         autoSize={{ minRows: 2 }}
                         style={{ fontSize: 12 }}
                     />
@@ -180,7 +181,7 @@ export function GlobalDefaults({ config, onChange, onApplyAll, fileCount = 0, pr
                             <ReasonText reason={promptDisabledReason} />
                         ) : (
                             <Text style={{ fontSize: 10, color: '#8888a8' }}>
-                                Sent with every file that has no prompt of its own. Replaces the prompt template.
+                                Added after the prompt template for every file that has no prompt of its own. The template's LRC and timestamp instructions are kept.
                             </Text>
                         )}
                         <Text style={{ fontSize: 10, color: '#8888a8', fontVariantNumeric: 'tabular-nums' }}>

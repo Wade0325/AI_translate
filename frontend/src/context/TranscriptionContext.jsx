@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { message } from 'antd';
 import { useModelManager } from '../components/ModelManager';
@@ -6,6 +7,7 @@ import { useUploadQueue } from '../hooks/useUploadQueue';
 import { useDownloadBundle } from '../hooks/useDownloadBundle';
 import { PROVIDER_LIST_FAILED, useProviderList } from '../hooks/useProviderList';
 import {
+  allowedProcessingMode,
   disabledReasonsFor,
   findModelCapabilities,
   missingApiKey,
@@ -16,7 +18,7 @@ import {
   withProvider,
 } from '../utils/providerList';
 import { forRetranscription, requestDefaults } from '../utils/transcribeRequest';
-import { cancelOutcome } from '../utils/cancelOutcome';
+import { cancelFile } from '../utils/cancelOutcome';
 import { api } from '../services/api';
 
 const TranscriptionContext = createContext(null);
@@ -31,15 +33,14 @@ export const useTranscription = () => {
 
 export const TranscriptionProvider = ({ children }) => {
   const [fileList, setFileList] = useState([]);
-  const [targetLang, setTargetLang] = useState('zh-TW');
+  const [sourceLang, setSourceLang] = useState('zh-TW');
   const [isProcessing, setIsProcessing] = useState(false);
-  // 'standard' | 'flex' | 'batch'
-  const [processingMode, setProcessingMode] = useState('batch');
+  // 使用者選的處理模式：'standard' | 'flex' | 'batch'。實際用的是下面的 processingMode
+  const [chosenProcessingMode, setChosenProcessingMode] = useState('batch');
   const [multiSpeaker, setMultiSpeaker] = useState(false);
-  // 轉錄頁的全域提示詞：送給沒有每檔設定提示詞的檔案（不必先按 Apply to All）
+  // 轉錄頁的全域提示詞：補充說明，送給沒有每檔設定提示詞的檔案（不必先按 Apply to All），
+  // 後端接在提示詞範本後面
   const [globalPrompt, setGlobalPrompt] = useState('');
-
-  const useBatchMode = processingMode === 'batch';
 
   const { getProviderConfig } = useModelManager();
 
@@ -60,24 +61,15 @@ export const TranscriptionProvider = ({ children }) => {
     setSelection((current) => withModel(current, nextModel));
   }, []);
 
-  // 所選供應商的提示詞範本（設定頁）：檔案卡照送出時的規則顯示提示詞，要用到它。
-  // getProviderConfig 有快取，改了範本快取會換新，這裡跟著重讀
-  const [promptTemplate, setPromptTemplate] = useState(null);
-  useEffect(() => {
-    if (!provider) return undefined;
-    let active = true;
-    getProviderConfig(provider).then((config) => {
-      if (active) setPromptTemplate(config?.prompt ?? null);
-    });
-    return () => {
-      active = false;
-    };
-  }, [provider, getProviderConfig]);
-
   // 所選模型支援哪些輸入與處理方式；模型能力還沒載入時不限制，由後端把關
   const capabilities = findModelCapabilities(providerList, provider, model);
   const supports = useMemo(() => modelSupports(capabilities), [capabilities]);
   const reasons = useMemo(() => disabledReasonsFor(supports), [supports]);
+
+  // 換到不支援所選處理模式的模型時退回標準，之後換回來也維持標準（#162）
+  const processingMode = allowedProcessingMode(chosenProcessingMode, supports);
+  if (processingMode !== chosenProcessingMode) setChosenProcessingMode(processingMode);
+  const useBatchMode = processingMode === 'batch';
 
   const [isPreviewModalVisible, setIsPreviewModalVisible] = useState(false);
   const [previewContent, setPreviewContent] = useState('');
@@ -184,7 +176,7 @@ export const TranscriptionProvider = ({ children }) => {
   }, [socketManager]);
 
   // 取消單檔轉錄：後端設置取消旗標並 revoke，最終狀態由 WS 的 CANCELLED 訊息更新；
-  // 顯示的提示見 utils/cancelOutcome.js
+  // 沒有取消時顯示的提示與檔案卡怎麼改見 utils/cancelOutcome.js
   const cancelTranscription = useCallback(async (uid) => {
     const target = fileList.find((f) => f.uid === uid);
     if (!target || target.status !== 'processing') return;
@@ -193,15 +185,11 @@ export const TranscriptionProvider = ({ children }) => {
       current.map((f) => (f.uid === uid ? { ...f, statusText: '正在取消...' } : f))
     );
     try {
-      const { cancelled, notice } = cancelOutcome(await api.transcription.cancel(uid), target.name);
+      const { notice, apply } = await cancelFile(target, api);
       message.open(notice);
-      if (!cancelled) {
+      if (apply) {
         setFileList((current) =>
-          current.map((f) =>
-            f.uid === uid && f.status === 'processing'
-              ? { ...f, statusText: '處理中...' }
-              : f
-          )
+          current.map((f) => (f.uid === uid && f.status === 'processing' ? apply(f) : f))
         );
       }
     } catch (err) {
@@ -227,17 +215,14 @@ export const TranscriptionProvider = ({ children }) => {
       message.error(`請先在設定頁為 ${providerLabel(providerList, provider)} 設定 API 金鑰。`);
       return;
     }
-    if (useBatchMode && reasons.batch) {
-      message.error(reasons.batch);
-      return;
-    }
 
-    const defaults = requestDefaults({ language: targetLang, multiSpeaker, processingMode, globalPrompt });
+    const defaults = requestDefaults({ language: sourceLang, multiSpeaker, processingMode, globalPrompt });
 
     setIsProcessing(true);
 
+    // 提示詞範本不經前端：後端派送時從設定讀，接上每個檔案的補充說明（utils/transcribeRequest.js）
     const runner = useBatchMode ? startBatch : startRegular;
-    const result = await runner({ provider, model, promptTemplate: config?.prompt, defaults, supports });
+    const result = await runner({ provider, model, defaults, supports });
 
     if (result?.skipped) {
       setIsProcessing(false);
@@ -249,13 +234,12 @@ export const TranscriptionProvider = ({ children }) => {
     providerList,
     providerListFailed,
     getProviderConfig,
-    targetLang,
+    sourceLang,
     multiSpeaker,
     globalPrompt,
     processingMode,
     useBatchMode,
     supports,
-    reasons,
     startBatch,
     startRegular,
   ]);
@@ -263,8 +247,8 @@ export const TranscriptionProvider = ({ children }) => {
   const value = {
     fileList,
     setFileList,
-    targetLang,
-    setTargetLang,
+    sourceLang,
+    setSourceLang,
     providerList,
     providerListFailed,
     reloadProviderList,
@@ -273,11 +257,10 @@ export const TranscriptionProvider = ({ children }) => {
     model,
     setModel,
     supports,
-    promptTemplate,
     disabledReasons: reasons,
     isProcessing,
     processingMode,
-    setProcessingMode,
+    setProcessingMode: setChosenProcessingMode,
     multiSpeaker,
     setMultiSpeaker,
     globalPrompt,

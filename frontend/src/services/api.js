@@ -1,3 +1,4 @@
+// @ts-nocheck
 /**
  * 統一的後端 API 客戶端：集中 baseURL 與錯誤格式，endpoint 變更時只改此檔。
  */
@@ -88,6 +89,10 @@ export const api = {
     /** Dashboard / Billing 用量彙總：每日、各模型、計費表 */
     usage({ days = 180 } = {}) {
       return request(`/history/usage?days=${days}`);
+    },
+    /** 單一任務的任務紀錄（不帶轉錄結果）；查不到時丟 404 的 ApiError */
+    get(taskUuid) {
+      return request(`/history/${taskUuid}`);
     },
     delete(taskUuid) {
       return request(`/history/${taskUuid}`, { method: 'DELETE' });

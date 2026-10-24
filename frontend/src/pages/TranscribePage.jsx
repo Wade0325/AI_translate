@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { useState, useRef } from "react"
 import { Card, Typography, Button, Input, Modal, Pagination, Space, Dropdown, Popconfirm, message } from "antd"
 import { ReasonText, ReasonTooltip } from "@/components/disabled-reason"
@@ -9,7 +10,7 @@ import VadTestModal from "@/components/transcribe/VadTestModal"
 import { useTranscription } from "@/context/TranscriptionContext"
 import { useModelManager } from "@/components/ModelManager"
 import { PROVIDER_LIST_FAILED } from "@/hooks/useProviderList"
-import { modelOptions, providerOptions, providerPromptDisabledReason, requiresApiKey } from "@/utils/providerList"
+import { modelOptions, processingModeNote, providerOptions, providerPromptDisabledReason, requiresApiKey } from "@/utils/providerList"
 import { filePrompt, followsGlobalPrompt, globalSettingsPatch, promptToSend } from "@/utils/transcribeRequest"
 import { api } from "@/services/api"
 import { DownloadOutlined } from "@ant-design/icons"
@@ -34,8 +35,8 @@ export default function TranscribePage() {
     const {
         fileList,
         setFileList,
-        targetLang,
-        setTargetLang,
+        sourceLang,
+        setSourceLang,
         providerList,
         providerListFailed,
         reloadProviderList,
@@ -44,7 +45,6 @@ export default function TranscribePage() {
         model,
         setModel,
         supports,
-        promptTemplate,
         disabledReasons,
         isProcessing,
         processingMode,
@@ -67,6 +67,7 @@ export default function TranscribePage() {
     } = useTranscription()
 
     const { handleEditProvider, handleEditProviderParams, handleTestProvider } = useModelManager()
+    const modeNote = processingModeNote(supports)
 
     const [currentPage, setCurrentPage] = useState(1)
     const [isTextModalVisible, setIsTextModalVisible] = useState(false)
@@ -81,7 +82,7 @@ export default function TranscribePage() {
     const promptTemplateDisabledReason = providerPromptDisabledReason(providerList, provider)
 
     const [globalConfig, setGlobalConfig] = useState({
-        language: targetLang || "zh-TW",
+        language: sourceLang || "zh-TW",
         isMultiSpeaker: multiSpeaker,
         speakerCount: 2,
         prompt: globalPrompt,
@@ -90,7 +91,7 @@ export default function TranscribePage() {
 
     const handleGlobalConfigChange = (newConfig) => {
         setGlobalConfig(newConfig)
-        if (newConfig.language !== targetLang) setTargetLang(newConfig.language)
+        if (newConfig.language !== sourceLang) setSourceLang(newConfig.language)
         if (newConfig.isMultiSpeaker !== multiSpeaker) setMultiSpeaker(newConfig.isMultiSpeaker)
         if (newConfig.prompt !== globalPrompt) setGlobalPrompt(newConfig.prompt)
     }
@@ -284,13 +285,15 @@ export default function TranscribePage() {
                             }}
                         >
                             <option value="standard">標準（即時）</option>
-                            <option value="flex">Flex（50% 費用．分鐘級延遲）</option>
-                            <option value="batch" disabled={Boolean(disabledReasons.batch)}>
+                            <option value="flex" disabled={!supports.flex}>
+                                Flex（50% 費用．分鐘級延遲）
+                            </option>
+                            <option value="batch" disabled={!supports.batch}>
                                 批次（50% 費用．非同步）
                             </option>
                         </select>
-                        {processingMode === "batch" && disabledReasons.batch ? (
-                            <ReasonText reason={disabledReasons.batch} />
+                        {modeNote ? (
+                            <ReasonText reason={modeNote} />
                         ) : (
                             <Text style={{ fontSize: 10, color: "#8888a8" }}>
                                 {processingMode === "flex"
@@ -387,11 +390,11 @@ export default function TranscribePage() {
                             // 這個檔案自己的提示詞（每檔設定裡編輯的就是它）；清空就回到跟著全域
                             prompt: file.prompt ?? "",
                             followsGlobalPrompt: followsGlobalPrompt(file),
-                            // 這個檔案用的提示詞：自己的，沒有就是全域的（還沒輪到提示詞範本）
+                            // 這個檔案用的提示詞：自己的，沒有就是全域的
                             filePrompt: filePrompt(file, globalConfig.prompt),
-                            // 檔案卡顯示的提示詞：還沒送出的照送出時的規則算（包括提示詞範本），
-                            // 已送出的顯示當初送出的（utils/transcribeRequest.js）
-                            promptToSend: promptToSend(file, globalConfig.prompt, promptTemplate, supports),
+                            // 檔案卡顯示的補充說明：還沒送出的照送出時的規則算，已送出的顯示當初送出的；
+                            // 提示詞範本每次都送，不顯示在卡片上（utils/transcribeRequest.js）
+                            promptToSend: promptToSend(file, globalConfig.prompt, supports),
                             sentPrompt: file.sentPrompt ?? null,
                             includeTimestamps: file.includeTimestamps ?? globalConfig.includeTimestamps,
                             hasOverride: file.hasOverride || false,
