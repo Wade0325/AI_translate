@@ -1,11 +1,13 @@
+import traceback
 from pathlib import Path
 
 from sqlalchemy import create_engine, event, select, text, inspect as sa_inspect
 from sqlalchemy.engine import make_url
-from sqlalchemy.exc import DBAPIError
+from sqlalchemy.exc import DBAPIError, SQLAlchemyError
 from sqlalchemy.orm import sessionmaker
 from .models import Base, ModelConfiguration
 from app.core.config import get_settings
+from app.exceptions import TaskDatabaseError
 from app.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -69,6 +71,26 @@ def describe_db_error(error: Exception) -> str:
     cause = error.orig
     reason = next(iter(str(cause).splitlines()), "").strip()
     return f"{type(error).__name__}: ({type(cause).__module__}.{type(cause).__name__}) {reason}"
+
+
+def without_db_details(error: Exception) -> Exception:
+    """資料庫例外換成 :class:`~app.exceptions.TaskDatabaseError`，其他例外原樣傳回；記進 log、
+    往上拋或給使用者看之前都先換。
+
+    資料庫例外的訊息與它的成因（DBAPI 的原始例外）都帶著 SQL 原文，Postgres 在第一行之後
+    附上的 DETAIL 還可能是寫不進去的整列（見 :func:`describe_db_error`）。換掉的例外沿用
+    原本的 traceback，log 照樣看得到在哪裡出錯；執行模式也會把往上拋的例外連同 traceback
+    記進 log（Docker 模式的 Celery worker），還存進 Celery 的結果後端。
+    """
+    if not isinstance(error, SQLAlchemyError):
+        return error
+    return TaskDatabaseError(describe_db_error(error)).with_traceback(error.__traceback__)
+
+
+def traceback_without_db_details(error: Exception) -> str:
+    """記進 log 的 traceback：出錯的位置照留，資料庫例外先換成只有類型與原因的
+    （:func:`without_db_details`），不帶 SQL 原文與資料庫附上的資料列。"""
+    return "".join(traceback.format_exception(without_db_details(error)))
 
 
 def _migrate_add_missing_columns():

@@ -1,5 +1,7 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy.exc import SQLAlchemyError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from contextlib import asynccontextmanager
 from app.api import local_models
@@ -17,24 +19,19 @@ from app.websocket.origin import WebSocketOriginMiddleware
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import get_settings
 from app.runtime import run_mode
-from app.database.session import init_db, SessionLocal
+from app.database.session import (
+    init_db, SessionLocal, traceback_without_db_details, without_db_details)
 from app.repositories.transcription_log_repository import TranscriptionLogRepository
 from app.tasks import batch_core, older_batches
-from app.tasks.lifecycle import without_db_details
 from app.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    logger.info("正在啟動 AI Voice Transcription API...")
+def end_stale_processing() -> None:
+    """啟動清掃孤兒紀錄：worker 中途被終止時，單檔任務會留下永遠 PROCESSING 的紀錄，記成失敗。
+    免安裝模式的任務跑在本行程內，重啟後必死 → 全掃（max_age=0）。出錯時只記 log，照樣啟動。"""
     settings = get_settings()
-
-    init_db()
-
-    # 清掃孤兒紀錄：worker 中途被終止時，單檔任務會留下永遠 PROCESSING 的紀錄。
-    # 免安裝模式的任務跑在本行程內，重啟後必死 → 全掃（max_age=0）
     try:
         stale_hours = 0 if settings.is_standalone \
             else settings.stale_processing_max_age_hours
@@ -44,7 +41,17 @@ async def lifespan(app: FastAPI):
         if swept:
             logger.info(f"啟動清掃：{swept} 筆逾時 PROCESSING 紀錄已標記為 FAILED")
     except Exception as e:
-        logger.warning(f"啟動清掃逾時 PROCESSING 紀錄失敗: {e}")
+        logger.warning(f"啟動清掃逾時 PROCESSING 紀錄失敗: {without_db_details(e)}")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logger.info("正在啟動 AI Voice Transcription API...")
+    settings = get_settings()
+
+    init_db()
+
+    end_stale_processing()
 
     # 舊版送出的批次補上每個檔案的列：之後和這一版的批次一樣復原、取回結果、在任務頁列出檔名
     try:
@@ -103,6 +110,22 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="AI Voice Transcription API",
               version="1.0.0", lifespan=lifespan)
+
+
+@app.exception_handler(SQLAlchemyError)
+async def database_error(request: Request, error: SQLAlchemyError) -> JSONResponse:
+    """端點沒有自己接住的資料庫例外：log 只記例外類型與原因，回固定訊息的 500。
+
+    例外的文字有 SQL 原文，Postgres 附上的 DETAIL 還可能是寫不進去的整列（任務紀錄與批次的那一列有
+    原始檔名與轉錄結果）。traceback 留著出錯的位置，但不帶訊息與成因。
+    對 SQLAlchemyError 這種特定類別註冊，Starlette 處理完就不再往上拋，uvicorn 不會連同 traceback
+    記進 log；對 Exception 註冊的 handler 處理完照樣往上拋。WebSocket 端點自己接住所有例外。
+    """
+    logger.error(f"{request.method} {request.url.path} 資料庫出錯:\n"
+                 f"{traceback_without_db_details(error)}")
+    return JSONResponse(status_code=500,
+                        content={"detail": "資料庫出錯了，這次的操作沒有完成，請再試一次；"
+                                           "一直失敗的話請回報問題。"})
 
 
 @app.get("/api/v1/health", tags=["Health"])

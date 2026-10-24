@@ -6,6 +6,11 @@
   單檔任務（run_transcription）            任務紀錄或片段寫不進去：log 只記例外類型與原因，
                                           畫面與任務紀錄給固定的訊息
   沒開始的任務（abandon_transcription）     任務紀錄寫不進去：log 只記例外類型與原因
+  下載時回寫 lrc_content                    寫不進去：照樣下載得到，log 只記例外類型與原因
+  啟動清掃（main.end_stale_processing）      寫不進去：log 只記例外類型與原因
+  HTTP 端點                                 資料庫出錯：回固定的錯誤訊息，log 只記例外類型與原因，
+                                          例外不離開應用程式（uvicorn 不記 traceback）
+  WebSocket 端點                            派送前讀不到設定：log 只記例外類型與原因
   兩種執行模式的 engine                     例外文字都不附 SQL 參數，含 Celery 的結果後端
 
 漏洞重現：SQLAlchemy 的例外文字預設附上 SQL 參數。設定存檔時資料庫出錯（例如 SQLite 的
@@ -17,34 +22,36 @@ traceback：Postgres 在例外訊息第一行之後附上的 DETAIL 是寫不進
 
 資料庫出錯用 SQLite 的 trigger 模擬：測試期間擋下某張表的 INSERT 或 UPDATE。
 """
+import json
 import traceback
 import uuid
 from contextlib import contextmanager
+from dataclasses import replace
+from datetime import datetime, timedelta
 
 import numpy as np
 import pytest
 import soundfile as sf
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
+import main
 from app.core.task_status import TaskStatus
 from app.database import session
-from app.database.models import ModelConfiguration, TranscriptionLog
+from app.database.models import BatchJob, ModelConfiguration, TranscriptionLog
 from app.exceptions import TaskDatabaseError
 from app.tasks.transcribe_core import abandon_transcription, run_transcription
-from tests.support.db_faults import DISK_FULL, writes_fail
+from tests.support.db_faults import (
+    DISK_FULL,
+    NOT_NULL,
+    assert_logged_without,
+    rejected_row,
+    writes_fail,
+)
 from tests.support.fake_provider import FAKE_MODEL, FakeProvider
+from tests.support.task_api import upload
 
 KEY = "AIzaSyLEAK-0123456789-abcdefghij-QRST"
-NOT_NULL = "violates not-null constraint"
-
-
-def rejected_row(table: str, row: str) -> str:
-    """Postgres 回報違反約束的訊息：第一行是原因，之後的 DETAIL 是寫不進去的那一整列。
-
-    SQLite 不會附上資料列，用 trigger 的錯誤訊息模擬。
-    """
-    return (f'null value in column "created_at" of relation "{table}" {NOT_NULL}\n'
-            f'DETAIL:  Failing row contains ({row}).')
 
 
 NOT_NULL_WITH_ROW = rejected_row(
@@ -309,6 +316,133 @@ def test_run_mode_gets_the_reason_but_not_the_row_or_the_sql(
     assert private not in reported
     assert "[SQL:" not in reported
     assert NOT_NULL in reported
+
+
+# ─── 下載時回寫 lrc_content ──────────────────────────────────────────────────
+
+class TestBackfillingTheStoredLrcFails:
+    def test_download_still_works_and_the_log_keeps_the_reason_but_not_the_row(
+            self, client: TestClient, db_session, test_engine, app_log):
+        # #115 之前的批次：任務紀錄沒存 LRC，下載時從批次的結果讀出，順手回寫進任務紀錄。回寫的是
+        # 整列 UPDATE，Postgres 附上的那一列有原始檔名與轉錄結果
+        task_uuid = uuid.uuid4()
+        batch_id = f"batch-{task_uuid.hex[:8]}"
+        lrc = f"[00:00.20]{TRANSCRIPT}"
+        db_session.add(BatchJob(
+            batch_id=batch_id,
+            results_json=json.dumps({"f1": {"transcripts": {"lrc": lrc}}}, ensure_ascii=False),
+            file_log_uuids_json=json.dumps({"f1": str(task_uuid)})))
+        db_session.commit()
+        db_session.add(TranscriptionLog(task_uuid=task_uuid, status=TaskStatus.COMPLETED,
+                                        original_filename=FILENAME, is_batch=True,
+                                        batch_id=batch_id))
+        db_session.commit()
+
+        row = rejected_row("transcription_logs", f"{task_uuid}, COMPLETED, {FILENAME}, {lrc}")
+        with writes_fail(test_engine, "transcription_logs", "UPDATE", row):
+            response = client.get(f"/api/v1/history/{task_uuid}/download/lrc")
+
+        assert response.status_code == 200
+        assert response.text == lrc
+        assert_logged_without(app_log, FILENAME, TRANSCRIPT)
+
+
+# ─── 啟動清掃 ────────────────────────────────────────────────────────────────
+
+@pytest.fixture
+def stale_task(db_session):
+    """一個一個月前開始、還停在處理中的單檔任務：應用程式啟動時清掃會把它記成失敗。
+
+    原始檔名是 FILENAME；測試結束後刪掉，別的測試列出處理中的任務時才不會看到它。
+    """
+    task_uuid = uuid.uuid4()
+    db_session.add(TranscriptionLog(
+        task_uuid=task_uuid, status=TaskStatus.PROCESSING, original_filename=FILENAME,
+        is_batch=False, request_timestamp=datetime.now() - timedelta(days=30)))
+    db_session.commit()
+    yield task_uuid
+    db_session.query(TranscriptionLog).filter_by(task_uuid=task_uuid).delete()
+    db_session.commit()
+
+
+def test_startup_sweep_logs_the_reason_but_not_the_row(task_db, stale_task, test_engine, app_log):
+    # 記成失敗的是整列 UPDATE，Postgres 附上的那一列有原始檔名與轉錄結果
+    row = rejected_row("transcription_logs", f"{stale_task}, FAILED, {FILENAME}, null")
+    with writes_fail(test_engine, "transcription_logs", "UPDATE", row):
+        main.end_stale_processing()
+
+    assert_logged_without(app_log, FILENAME)
+
+
+# ─── HTTP 端點 ───────────────────────────────────────────────────────────────
+
+@pytest.fixture
+def finished_batch(db_session):
+    """一個完成的批次：那一列有原始檔名（任務參數）與轉錄結果。回傳批次 id。"""
+    batch_id = f"batch-{uuid.uuid4().hex[:8]}"
+    db_session.add(BatchJob(
+        batch_id=batch_id, status="COMPLETED",
+        task_params_json=json.dumps({"files": [{"original_filename": FILENAME}]},
+                                    ensure_ascii=False),
+        results_json=json.dumps({"f1": {"transcripts": {"lrc": TRANSCRIPT}}}, ensure_ascii=False)))
+    db_session.commit()
+    return batch_id
+
+
+class TestEndpointHitsADatabaseError:
+    """沒有自己接住資料庫例外的端點（例如任務頁的「關閉」、刪除歷史紀錄）。
+
+    例外離開應用程式時，uvicorn 把它連同 traceback 記進 log（免安裝版的主控台也印出來），畫面只收到
+    Internal Server Error。TestClient 則把離開應用程式的例外拋回測試，所以這裡的請求沒有拋出例外，
+    就表示 uvicorn 不會記下它。
+    """
+
+    def test_dismissing_a_batch_gives_a_fixed_message_and_logs_the_reason_but_not_the_row(
+            self, client: TestClient, finished_batch, test_engine, app_log):
+        row = rejected_row("batch_jobs", f"{finished_batch}, RETRIEVED, {FILENAME}, {TRANSCRIPT}")
+        with writes_fail(test_engine, "batch_jobs", "UPDATE", row):
+            response = client.post(f"/api/v1/batch/{finished_batch}/dismiss")
+
+        assert response.status_code == 500
+        for leaked in (FILENAME, TRANSCRIPT, NOT_NULL, "UPDATE", "batch_jobs"):
+            assert leaked not in response.text
+        assert_logged_without(app_log, FILENAME, TRANSCRIPT)
+
+    def test_deleting_a_record_gives_a_fixed_message_and_logs_the_reason(
+            self, client: TestClient, stale_task, test_engine, app_log):
+        with writes_fail(test_engine, "transcription_logs", "DELETE",
+                         rejected_row("transcription_logs", str(stale_task))):
+            response = client.delete(f"/api/v1/history/{stale_task}")
+
+        assert response.status_code == 500
+        assert "DELETE" not in response.text
+        assert NOT_NULL not in response.text
+        assert_logged_without(app_log, FILENAME)
+
+
+# ─── WebSocket 端點 ──────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("path", ["/api/v1/ws/uid-178", "/api/v1/batch/ws/batch-178"],
+                         ids=["single-file", "batch"])
+def test_websocket_logs_the_reason_but_not_the_sql(api, fake, test_engine, app_log, path):
+    # 派送前從設定讀金鑰與提示詞範本：讀不到時（例如資料庫檔壞掉後重建，少了這張表）例外裡有 SQL 原文
+    fake.model_capabilities = replace(fake.model_capabilities, supports_batch=True)
+    filename = upload(api, "ws-178.wav")
+    item = {"filename": filename, "original_filename": "ws-178.wav", "file_uid": "uid-178"}
+    payload = ({"files": [item]} if "batch" in path else item) | {
+        "provider": "fake", "model": FAKE_MODEL, "source_lang": "ja"}
+    with table_missing(test_engine, "model_configurations"):
+        with api.websocket_connect(path) as ws:
+            ws.send_json(payload)
+            # 端點記下錯誤之後關掉這條連線
+            with pytest.raises(WebSocketDisconnect):
+                ws.receive_json()
+
+    log = "\n".join(app_log)
+    assert "OperationalError" in log
+    assert "no such table" in log
+    assert "[SQL:" not in log
+    assert "SELECT" not in log
 
 
 # ─── 兩種執行模式 ────────────────────────────────────────────────────────────
