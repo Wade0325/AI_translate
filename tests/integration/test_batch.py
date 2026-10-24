@@ -247,6 +247,33 @@ def test_a_failed_file_is_still_billed_at_the_batch_discount(api, in_process_run
     assert saved["service_tier_used"] == "batch"
 
 
+@pytest.mark.parametrize("entry", ["run", "recovery"])
+def test_a_result_that_cannot_be_placed_on_the_original_audio_is_still_billed(
+        api, in_process_run_mode, batch_fake, entry):
+    # 供應商回應成功、回報了用量，片段卻放不回原音檔的時間軸（這裡是開始時間不是數字，#197）：這個
+    # 檔案照失敗結束，同一批的其他檔案照常完成。供應商照樣收費：用量記在失敗的任務紀錄上，和完成的
+    # 檔案一樣打批次的折扣（價目同上）。執行與復原（在輪詢時重啟之後）都一樣
+    batch_fake.model_capabilities = replace(batch_fake.model_capabilities, pricing="per_token")
+    batch_fake.usage = (200_000, 40_000)
+    batch_fake.script = [[("0:00.2", 1.5, 0, "おはよう。")], list(LINES)]
+    batch_id = f"batch-unplaced-{entry}"
+    if entry == "run":
+        messages = run_batch(api, in_process_run_mode, batch_id, NAMES[:2])
+    else:
+        batch_fake.batch_polls = [Restart()]
+        submit_batch(api, in_process_run_mode, batch_id, NAMES[:2])
+        messages = recover(api, batch_id)
+
+    unplaced, other = ends(messages, NAMES[:2])
+    assert codes([unplaced, other]) == [TaskStatus.FAILED, TaskStatus.COMPLETED]
+    saved = record(api, unplaced["task_uuid"])
+    assert saved["status"] == TaskStatus.FAILED
+    assert "結果放不回原音檔的時間軸" in saved["error_message"]
+    assert (saved["total_tokens"], saved["cost"]) == (240_000, pytest.approx(0.15))
+    assert saved["service_tier_used"] == "batch"
+    assert saved["audio_duration_seconds"] == pytest.approx(12.0, abs=0.1)
+
+
 def test_records_store_the_listed_provider_name(api, in_process_run_mode, batch_fake, db_session):
     # 舊前端、直接呼叫 API 的人可能送大寫；任務紀錄存的是供應商清單上的名稱（#97）
     from app.repositories.transcription_log_repository import TranscriptionLogRepository
