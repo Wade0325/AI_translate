@@ -273,7 +273,7 @@ export function FileConfigCard({
                     {!readOnly && isActive && onCancel && (
                         <Popconfirm
                             title="確定取消此任務？"
-                            description="已取消的任務可重新處理"
+                            description="取消後可以把檔案放回清單，另開新任務"
                             onConfirm={() => onCancel(config.id)}
                             okText="確定"
                             cancelText="返回"
@@ -290,7 +290,7 @@ export function FileConfigCard({
                         </Popconfirm>
                     )}
                     {!readOnly && (isCompleted || isError || isCancelled) && onReprocess && (
-                        <Tooltip title="重新處理">
+                        <Tooltip title="放回清單，按 Start 另開新任務">
                             <Button
                                 type="text"
                                 size="small"

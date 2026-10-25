@@ -82,7 +82,7 @@ export function useUploadQueue({ fileList, setFileList, socketManager, onBatchSu
     return filename;
   }, []);
 
-  // 一般模式：每個 file uid 一條 WebSocket
+  // 標準與 Flex 模式：每個 file uid 一條 WebSocket
   const startRegular = useCallback(async ({ provider, model, defaults, supports }) => {
     const candidates = fileList.filter(isRestartable);
     if (candidates.length === 0) {
@@ -171,7 +171,7 @@ export function useUploadQueue({ fileList, setFileList, socketManager, onBatchSu
     }
 
     if (uploaded.length === 0) {
-      message.error('所有檔案上傳失敗，無法啟動批次任務');
+      message.error('所有檔案上傳失敗，無法送出批次');
       return { skipped: true, reason: 'all-upload-failed' };
     }
 
@@ -193,7 +193,7 @@ export function useUploadQueue({ fileList, setFileList, socketManager, onBatchSu
         setFileList((current) =>
           current.map((f) =>
             sentPrompts.has(f.uid)
-              ? { ...f, statusText: '批次任務已提交，等待處理...', sentPrompt: sentPrompts.get(f.uid) }
+              ? { ...f, statusText: '批次已送出，等待處理...', sentPrompt: sentPrompts.get(f.uid) }
               : f
           )
         );
@@ -217,7 +217,7 @@ export function useUploadQueue({ fileList, setFileList, socketManager, onBatchSu
                 : f
             )
           );
-          message.success('批次任務已提交，可繼續其他操作。結果將自動更新或可稍後恢復。');
+          message.success('批次已送出，可繼續其他操作。結果將自動更新或可稍後恢復。');
           onBatchSubmitted?.(batchId);
           socketManager.closeSocket(batchId, 1000);
           return;
@@ -243,7 +243,7 @@ export function useUploadQueue({ fileList, setFileList, socketManager, onBatchSu
         }
       },
       onError: () => {
-        message.error('批次任務連線發生錯誤');
+        message.error('批次連線發生錯誤');
         setFileList((current) =>
           current.map((f) =>
             uploadedUidSet.has(f.uid) && f.status === 'processing'

@@ -152,15 +152,15 @@ def test_progress_counters_fold_into_one_stage():
 
     reports = [(0.0, FIRST_STAGE), (1.0, "準備音訊..."), (2.0, "MOSS 轉錄中 1/3 分鐘..."),
                (3.0, "MOSS 轉錄中 2/3 分鐘..."), (5.0, "MOSS 轉錄中 3/3 分鐘..."),
-               (6.0, "Qwen3-ForcedAligner 時間軸對齊中..."), (6.5, "時間軸對齊中 1/2..."),
-               (7.0, "時間軸對齊中 2/2..."), (8.0, "時間還原回原音檔...")]
+               (6.0, "Qwen3-ForcedAligner 強制對齊中..."), (6.5, "強制對齊中 1/2..."),
+               (7.0, "強制對齊中 2/2..."), (8.0, "時間還原回原音檔...")]
     assert _stages(reports, end=8.5) == [
         {"stage": "建立供應商轉接器", "seconds": 1.0},
         {"stage": "準備音訊...", "seconds": 1.0},
         {"stage": "MOSS 轉錄中 #/# 分鐘...", "seconds": 4.0},
         # 模型名稱裡的數字不是計數
-        {"stage": "Qwen3-ForcedAligner 時間軸對齊中...", "seconds": 0.5},
-        {"stage": "時間軸對齊中 #/#...", "seconds": 1.5},
+        {"stage": "Qwen3-ForcedAligner 強制對齊中...", "seconds": 0.5},
+        {"stage": "強制對齊中 #/#...", "seconds": 1.5},
         {"stage": "時間還原回原音檔...", "seconds": 0.5},
     ]
 

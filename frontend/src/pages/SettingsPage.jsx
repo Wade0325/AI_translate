@@ -278,7 +278,7 @@ function LocalModelsCard() {
                     <Text style={{ color: status.gpu_available ? '#2dd4a8' : '#d46a2d', fontSize: 13 }}>
                         {status.gpu_available
                             ? `GPU: ${status.gpu_name}`
-                            : '未偵測到 NVIDIA GPU — Local 轉錄不可用（Gemini 不受影響）'}
+                            : '未偵測到 NVIDIA GPU — 本機轉錄不可用（Gemini 不受影響）'}
                     </Text>
 
                     {status.models.map(m => (

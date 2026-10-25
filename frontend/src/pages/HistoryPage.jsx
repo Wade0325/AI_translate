@@ -93,9 +93,9 @@ export default function HistoryPage() {
             const content = await api.history.downloadTranscript(record.task_uuid, format)
             const fileName = record.original_filename || "transcript"
             downloadBlob(content, renameExtension(fileName, format))
-            message.success(`已下載 ${format.toUpperCase()} 字幕`)
+            message.success(`已下載 ${format.toUpperCase()} 檔`)
         } catch (error) {
-            console.error("下載字幕失敗:", error)
+            console.error("下載轉錄結果失敗:", error)
             message.error(error?.message || "下載失敗")
         }
     }
@@ -139,7 +139,7 @@ export default function HistoryPage() {
                         </Tag>
                     )
                 }
-                return <Tag style={{ fontSize: 11 }}>一般</Tag>
+                return <Tag style={{ fontSize: 11 }}>標準</Tag>
             },
         },
         {
@@ -206,7 +206,7 @@ export default function HistoryPage() {
                                 onClick: ({ key }) => handleDownload(record, key),
                             }}
                         >
-                            <Tooltip title="下載字幕">
+                            <Tooltip title="下載轉錄結果">
                                 <Button
                                     type="text"
                                     size="small"
@@ -307,7 +307,7 @@ export default function HistoryPage() {
                         style={{ width: 120 }}
                         allowClear
                         options={[
-                            { value: "regular", label: "一般" },
+                            { value: "regular", label: "標準" },
                             { value: "batch", label: "批次" },
                         ]}
                     />

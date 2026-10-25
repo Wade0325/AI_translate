@@ -92,7 +92,7 @@ def dismiss_batch_task(batch_id: str, db: Session = Depends(get_db)):
     """用戶手動忽略/歸檔一個批次。"""
     success = batch_repo.mark_as_retrieved(db, batch_id)
     if not success:
-        raise HTTPException(status_code=404, detail="找不到此批次任務")
+        raise HTTPException(status_code=404, detail="找不到這個批次")
     return {"success": True}
 
 
@@ -108,7 +108,7 @@ def recover_batch(batch_id: str, body: RecoverBatchRequest, db: Session = Depend
     """
     job = batch_repo.get_job(db, batch_id)
     if not job:
-        raise HTTPException(status_code=404, detail="找不到此批次任務")
+        raise HTTPException(status_code=404, detail="找不到這個批次")
 
     # ============================================================
     # 快速路徑：批次已經結束 → 直接從 DB 回傳

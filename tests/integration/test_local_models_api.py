@@ -1,4 +1,4 @@
-"""Local 模型權重 API：必要／選用權重的狀態與下載目標。"""
+"""本機模型權重 API：必要／選用權重的狀態與下載目標。"""
 import huggingface_hub
 import pytest
 

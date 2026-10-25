@@ -60,14 +60,14 @@ def _download_worker(repos: list[str]):
             with _lock:
                 _state.update(
                     repo_index=idx, repo_count=total, current_repo=repo, progress_pct=None)
-            logger.info(f"下載 Local 模型權重 ({idx}/{total}): {repo}")
+            logger.info(f"下載本機模型權重 ({idx}/{total}): {repo}")
             weights.download_snapshot(repo, tqdm_class=tqdm_cls)
         with _lock:
             _state.update(state="completed", current_repo=None)
-        logger.info("Local 模型權重下載完成")
+        logger.info("本機模型權重下載完成")
     except Exception as e:
         # 例外的文字可能帶著使用者電腦上的路徑：原因只記在 log，畫面給固定訊息
-        logger.error(f"Local 模型權重下載失敗: {type(e).__name__}: {e}")
+        logger.error(f"本機模型權重下載失敗: {type(e).__name__}: {e}")
         with _lock:
             _state.update(state="failed", error="請確認網路連線與磁碟空間，一直失敗的話請回報問題")
 
@@ -79,7 +79,7 @@ def _target_repos(model: Optional[str]) -> tuple[str, ...]:
         return weights.ALL_REPOS
     if model in weights.MODEL_REPOS:
         return weights.MODEL_REPOS[model]
-    raise HTTPException(status_code=400, detail=f"不支援的 Local 模型: {model}")
+    raise HTTPException(status_code=400, detail=f"不支援的本機模型: {model}")
 
 
 @router.get("/local-models/status")
@@ -119,7 +119,7 @@ def local_models_status():
 @router.post("/local-models/download")
 def start_local_models_download(
     model: Optional[str] = Query(
-        None, description="省略＝預設模型所需；all＝所有 Local 模型；或指定模型名稱"),
+        None, description="省略＝預設模型所需；all＝所有本機模型；或指定模型名稱"),
 ):
     """啟動（或續傳）權重下載。已在下載中或目標已齊備時為 no-op。"""
     repos = _target_repos(model)
