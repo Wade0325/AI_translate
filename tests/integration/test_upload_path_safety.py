@@ -247,9 +247,16 @@ class TestBatchTranscription:
         assert dispatched[0]["files"][0]["file_path"] == str(root / "ok.mp3")
 
 
-# ─── VAD 測試端點 ─────────────────────────────────────────────────────────────
+# ─── 去靜音與切點預覽的端點 ───────────────────────────────────────────────────
 
 class TestVadTest:
+    @pytest.fixture(autouse=True)
+    def dev_tools(self, monkeypatch):
+        """去靜音與切點預覽是開發者工具，要開了才跑（#13 Q6）。"""
+        from app.core.config import get_settings
+
+        monkeypatch.setattr(get_settings(), "dev_tools", True)
+
     @pytest.mark.parametrize("kind", ["absolute", "dotdot", "absolute_via_uploads"])
     def test_rejects_path_outside_uploads(self, client: TestClient, uploads, monkeypatch, kind):
         root, secret = uploads

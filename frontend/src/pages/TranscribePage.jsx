@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { useState, useRef } from "react"
+import { useEffect, useState, useRef } from "react"
 import { Card, Typography, Button, Input, Modal, Pagination, Space, Dropdown, Popconfirm, message } from "antd"
 import { ReasonText, ReasonTooltip } from "@/components/disabled-reason"
 import { UploadZone } from "@/components/transcribe/upload-zone"
@@ -76,7 +76,15 @@ export default function TranscribePage() {
     const [vadTestingUid, setVadTestingUid] = useState(null)
     const [vadModalOpen, setVadModalOpen] = useState(false)
     const [vadResult, setVadResult] = useState(null)
+    // 去靜音與切點預覽是開發者工具（#13 Q6）：後端設定 DEV_TOOLS 開了才顯示；問不到時當成沒開
+    const [vadPreviewEnabled, setVadPreviewEnabled] = useState(false)
     const fileInputRef = useRef(null)
+
+    useEffect(() => {
+        api.vad.enabled()
+            .then(({ enabled }) => setVadPreviewEnabled(enabled === true))
+            .catch((err) => console.error("查詢開發者工具是否開啟失敗:", err))
+    }, [])
 
     // 「編輯參數」改的是供應商的提示詞範本，和設定頁同一條規則：供應商的模型都不吃提示詞才停用
     const promptTemplateDisabledReason = providerPromptDisabledReason(providerList, provider)
@@ -165,7 +173,7 @@ export default function TranscribePage() {
     const handleVadTest = async (fileUid) => {
         const file = fileList.find((f) => f.uid === fileUid)
         if (!file?.originFileObj) {
-            message.error("VAD 測試僅支援本機音訊檔案")
+            message.error("預覽只支援這台電腦上的音檔")
             return
         }
         if (isProcessing || vadTestingUid) return
@@ -174,7 +182,7 @@ export default function TranscribePage() {
         setFileList((prev) =>
             prev.map((f) =>
                 f.uid === fileUid
-                    ? { ...f, status: "processing", statusText: "VAD 測試中...", percent: 0 }
+                    ? { ...f, status: "processing", statusText: "預覽去靜音與切點中...", percent: 0 }
                     : f
             )
         )
@@ -190,12 +198,12 @@ export default function TranscribePage() {
             setVadResult(result)
             setVadModalOpen(true)
             if (result.success) {
-                message.success("VAD 測試完成，請查看結果與保存路徑")
+                message.success("預覽完成，請查看結果與保存路徑")
             } else {
-                message.warning(result.error || "VAD 測試部分失敗")
+                message.warning(result.error || "預覽有部分步驟失敗")
             }
         } catch (err) {
-            message.error(`VAD 測試失敗: ${err.message}`)
+            message.error(`預覽失敗: ${err.message}`)
         } finally {
             setVadTestingUid(null)
             setFileList((prev) =>
@@ -416,7 +424,7 @@ export default function TranscribePage() {
                         // 使用者文稿到不了任務之前（#66）沒有模型吃它，入口跟著隱藏（#13 Q4）
                         onAttachText={supports.userText ? handleAttachText : undefined}
                         onAttachTextFromFile={handleAttachTextFromFile}
-                        onVadTest={file.originFileObj ? handleVadTest : undefined}
+                        onVadTest={vadPreviewEnabled && file.originFileObj ? handleVadTest : undefined}
                         onCancel={file.transcribeMode === 'single' ? cancelTranscription : undefined}
                         vadTesting={vadTestingUid === file.uid}
                         disabledReasons={disabledReasons}

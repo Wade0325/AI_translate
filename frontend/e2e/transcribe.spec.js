@@ -115,3 +115,39 @@ test('所選的模型吃使用者文稿時，附加的使用者文稿隨請求�
         expect.objectContaining({ provider: 'google', user_supplied_text: 'おはよう。' }),
     ])
 })
+
+test('去靜音與切點預覽是開發者工具：沒開時檔案卡沒有按鈕', async ({ page, mockBackend }) => {
+    await mockBackend()
+    await page.goto('/transcribe')
+    await addAudio(page)
+
+    await expect(page.getByRole('button', { name: '去靜音與切點預覽' })).toHaveCount(0)
+})
+
+test('開了開發者工具時，預覽一個檔案並顯示找到的切點', async ({ page, mockBackend }) => {
+    const backend = await mockBackend({
+        routes: {
+            'GET /vad/enabled': { enabled: true },
+            'POST /upload': { filename: 'meeting_1.wav' },
+            'POST /vad/test': {
+                success: true, task_id: 'abc', original_filename: AUDIO.name, artifact_dir: null, error: null,
+                speech_extraction: {
+                    success: true, speech_ratio: 0.6, speech_duration_seconds: 3.0, total_duration_seconds: 5.0,
+                    segment_count: 1, would_use_speech_only: true, segments: [{ start: 0.5, end: 3.5 }],
+                    segments_truncated: false,
+                },
+                split: { success: true, split_point_seconds: 2.5, part1_duration_seconds: 2.5, part2_duration_seconds: 2.5 },
+            },
+        },
+    })
+    await page.goto('/transcribe')
+    await addAudio(page)
+
+    await page.getByRole('button', { name: '去靜音與切點預覽' }).click()
+
+    const dialog = page.getByRole('dialog', { name: '去靜音與切點預覽' })
+    await expect(dialog.getByText('去靜音（speech_only）')).toBeVisible()
+    await expect(dialog.getByText('2.5s').first()).toBeVisible()
+    expect(backend.requests.find((r) => r.path === '/vad/test').body)
+        .toEqual({ filename: 'meeting_1.wav', original_filename: AUDIO.name, include_split: true })
+})

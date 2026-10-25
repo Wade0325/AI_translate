@@ -7,7 +7,7 @@ function SegmentPreview({ segments, truncated }) {
     if (!segments?.length) return null
     return (
         <div style={{ marginTop: 8 }}>
-            <Text style={{ fontSize: 12, color: "#8888a8" }}>語音片段（前 {segments.length} 段）</Text>
+            <Text style={{ fontSize: 12, color: "#8888a8" }}>有聲段（前 {segments.length} 段）</Text>
             <div
                 style={{
                     marginTop: 6,
@@ -28,7 +28,7 @@ function SegmentPreview({ segments, truncated }) {
                     </div>
                 ))}
                 {truncated && (
-                    <Text style={{ fontSize: 11, color: "#8888a8" }}>…更多片段見 segments.json</Text>
+                    <Text style={{ fontSize: 11, color: "#8888a8" }}>…更多有聲段見 segments.json</Text>
                 )}
             </div>
         </div>
@@ -46,7 +46,7 @@ export default function VadTestModal({ open, result, onClose }) {
             title={
                 <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
                     <Scissors size={16} color="#2dd4a8" />
-                    VAD 切割測試結果
+                    去靜音與切點預覽
                 </span>
             }
             open={open}
@@ -70,7 +70,7 @@ export default function VadTestModal({ open, result, onClose }) {
                 {ext && (
                     <div style={{ border: "1px solid #3a3a5c", borderRadius: 8, padding: 12 }}>
                         <Text style={{ fontSize: 13, fontWeight: 600, color: "#e8e8e8" }}>
-                            靜音移除（speech_only）
+                            去靜音（speech_only）
                         </Text>
                         {ext.success ? (
                             <>
@@ -84,7 +84,7 @@ export default function VadTestModal({ open, result, onClose }) {
                                     <Descriptions.Item label="語音佔比">
                                         {(ext.speech_ratio * 100).toFixed(1)}%
                                     </Descriptions.Item>
-                                    <Descriptions.Item label="片段數">
+                                    <Descriptions.Item label="有聲段數">
                                         {ext.segment_count}
                                     </Descriptions.Item>
                                     <Descriptions.Item label="有聲時長">
@@ -97,7 +97,7 @@ export default function VadTestModal({ open, result, onClose }) {
                                 <Tag color={ext.would_use_speech_only ? "green" : "default"} style={{ marginTop: 4 }}>
                                     {ext.would_use_speech_only
                                         ? "正式轉錄會使用 speech_only.wav"
-                                        : "正式轉錄會跳過 VAD，直接用原檔"}
+                                        : "正式轉錄不去靜音，直接用原檔"}
                                 </Tag>
                                 <SegmentPreview
                                     segments={ext.segments}
@@ -113,7 +113,7 @@ export default function VadTestModal({ open, result, onClose }) {
                 {split && (
                     <div style={{ border: "1px solid #3a3a5c", borderRadius: 8, padding: 12 }}>
                         <Text style={{ fontSize: 13, fontWeight: 600, color: "#e8e8e8" }}>
-                            靜音分割（part1 / part2）
+                            切點（part1 / part2）
                         </Text>
                         {split.success ? (
                             <Descriptions
@@ -123,7 +123,7 @@ export default function VadTestModal({ open, result, onClose }) {
                                 labelStyle={{ color: "#8888a8" }}
                                 contentStyle={{ color: "#e8e8e8" }}
                             >
-                                <Descriptions.Item label="分割點">
+                                <Descriptions.Item label="切點">
                                     {split.split_point_seconds}s
                                 </Descriptions.Item>
                                 <Descriptions.Item label="Part 1">
@@ -154,7 +154,7 @@ export default function VadTestModal({ open, result, onClose }) {
                         <FolderOpen size={16} color="#2dd4a8" style={{ marginTop: 2, flexShrink: 0 }} />
                         <div>
                             <Text style={{ fontSize: 12, color: "#2dd4a8", fontWeight: 600 }}>
-                                產物已保存，可本機试听檢查
+                                產物已保存，可在本機試聽檢查
                             </Text>
                             <Paragraph
                                 copyable

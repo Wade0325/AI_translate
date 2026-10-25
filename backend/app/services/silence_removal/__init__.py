@@ -14,7 +14,7 @@
 沒有 Silero 也照樣去靜音。找不到有聲段（全段靜音、轉檔失敗）時送原音檔。開了
 ``VAD_KEEP_ARTIFACTS`` 時，只剩語音的音檔與有聲段存進 vad_artifacts/，給本機檢查切得對不對。
 
-VAD 測試端點（services/vad/test.py）不轉錄，只顯示去靜音找到的有聲段，判斷會不會剪用這裡的
+去靜音與切點預覽的端點（services/vad/test.py）不轉錄，只顯示去靜音找到的有聲段，判斷會不會剪用這裡的
 :func:`worth_removing`。
 """
 
