@@ -76,6 +76,29 @@ def test_writes_the_transcript_on_the_original_timeline(fake, uploads, audio, tm
     assert fake.released == 1
 
 
+def test_removes_silence_from_other_formats_in_a_fresh_data_folder(fake, tmp_path, monkeypatch,
+                                                                   no_prompt):
+    # 應用程式的暫存上傳區在 API 模組 import 時建立；這個指令不經 API，全新的資料夾裡還沒有它。
+    # WAV 不必轉檔，其他格式要先由 ffmpeg 轉成 WAV 寫進暫存上傳區，資料夾不存在就轉不了，
+    # 去靜音會悄悄退回送原音檔
+    from app.core.config import get_settings
+
+    settings = get_settings()
+    data = tmp_path / "fresh-data"
+    monkeypatch.setattr(settings, "temp_uploads_dir", str(data / "temp_uploads"))
+    monkeypatch.setattr(settings, "audio_store_dir", str(data / "audio_store"))
+    monkeypatch.setattr(settings, "vad_artifacts_dir", str(data / "vad_artifacts"))
+    audio = tmp_path / "meeting.flac"
+    audio.write_bytes(synthetic_audio("FLAC"))
+    fake.script = [LINES]
+
+    assert _run(audio, tmp_path / "out", "--yes") == 0
+
+    # 送進模型的是去靜音之後的語音視圖，和應用程式相同
+    assert fake.durations == [pytest.approx(7.2, abs=0.05)]
+    assert list((data / "temp_uploads").iterdir()) == []
+
+
 def test_manifest_records_the_run_without_any_transcript_text(fake, uploads, audio, tmp_path,
                                                              no_prompt):
     fake.script = [LINES]

@@ -67,6 +67,7 @@ def cmd_transcribe(args) -> int:
                 print("\n已取消，沒有轉錄。")
                 return 1
 
+    from app.core.config import get_settings
     from app.services import environment_manifest
     from app.utils.audio import get_audio_duration
 
@@ -74,6 +75,9 @@ def cmd_transcribe(args) -> int:
             "dirty": _dirty()}
     duration = get_audio_duration(audio)
     out.mkdir(parents=True, exist_ok=True)
+    # 應用程式的暫存上傳區由 API 模組在 import 時建立，這個指令不經 API。少了它，WAV 以外的
+    # 音檔轉不成 WAV，去靜音會悄悄退回送原音檔，結果就和應用程式不同
+    get_settings().temp_uploads_path.mkdir(parents=True, exist_ok=True)
     run = _run(audio, provider, model, args.language, transcript, duration)
     manifest = {
         "command": "transcribe",
