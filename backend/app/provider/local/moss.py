@@ -238,7 +238,7 @@ def _make_progress_streamer(tokenizer, duration: float, status_callback: Callabl
             minute = int(start // 60)
             if minute != self._last_minute:
                 self._last_minute = minute
-                status_callback(f"本地模型：MOSS 轉錄中 {minute}/{total_minutes} 分鐘...")
+                status_callback(f"本機模型：MOSS 轉錄中 {minute}/{total_minutes} 分鐘...")
 
         def end(self):
             return None

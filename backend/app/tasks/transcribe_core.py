@@ -98,7 +98,7 @@ def _transcribe_speech_view(
     # 暫存檔寫到那裡就清不掉
     temp_dir = get_settings().temp_uploads_path
     original_filename = params.original_filename or audio.name
-    progress.report("分析語音活動...")
+    progress.report("分析靜音位置...")
     view = speech_view(
         audio,
         duration,

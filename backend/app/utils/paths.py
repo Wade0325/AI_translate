@@ -65,7 +65,7 @@ def delete_temp_files(paths: Iterable[Path]) -> None:
             else:
                 logger.warning(f"已跳過清理不在 temp_uploads 目錄中的檔案: {path}")
         except Exception as e:
-            logger.warning(f"清理本地檔案 {path} 失敗: {e}")
+            logger.warning(f"清理本機檔案 {path} 失敗: {e}")
 
 
 def resolve_upload_path(filename, base_dir=None) -> Path:

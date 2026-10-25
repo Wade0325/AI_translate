@@ -88,7 +88,7 @@ export const TranscriptionProvider = ({ children }) => {
     },
   });
 
-  // 批次任務狀態輪詢：偵測 batch_pending 檔案是否已完成
+  // 批次狀態輪詢：偵測 batch_pending 檔案是否已完成
   const hasBatchPending = fileList.some((f) => f.status === 'batch_pending');
   useEffect(() => {
     if (!hasBatchPending) return;
@@ -162,7 +162,7 @@ export const TranscriptionProvider = ({ children }) => {
   const handleReprocess = useCallback((uidToReprocess) => {
     const target = fileList.find((f) => f.uid === uidToReprocess);
     if (target) {
-      message.info(`任務 "${target.name}" 已重新加入佇列。`);
+      message.info(`"${target.name}" 已放回清單，按 Start 會另開新任務。`);
     }
     setFileList((current) =>
       current.map((file) => (file.uid === uidToReprocess ? forRetranscription(file) : file))

@@ -277,7 +277,7 @@ def _transcribe_segments(
                     "text_alt": (seg.get("Content") or "").strip() or None,
                 })
             if i % 10 == 0 or i == total:
-                progress.report(f"本地模型：Qwen3-ASR 轉錄中 {i}/{total}...")
+                progress.report(f"本機模型：Qwen3-ASR 轉錄中 {i}/{total}...")
     finally:
         _free_model(model, processor)
         segment_wav.unlink(missing_ok=True)
@@ -333,7 +333,7 @@ def _align_segments(
             except Exception as e:
                 logger.warning(f"片段 {i}/{total} 強制對齊失敗，退回片段時間戳: {e}")
             if i % 10 == 0 or i == total:
-                progress.report(f"本地模型：時間軸對齊中 {i}/{total}...")
+                progress.report(f"本機模型：強制對齊中 {i}/{total}...")
     finally:
         _free_model(model, processor)
         segment_wav.unlink(missing_ok=True)
@@ -347,14 +347,14 @@ def _align_with_fallback(
     """強制對齊，把逐字時間寫進各段；對齊流程整體失敗時不拋例外，只通知使用者，沒對到的段
     不帶逐字時間，輸出格式模組把它們整段當成一行。"""
     try:
-        progress.report("本地模型：Qwen3-ForcedAligner 時間軸對齊中...")
+        progress.report("本機模型：Qwen3-ForcedAligner 強制對齊中...")
         _align_segments(wav_path, entries, progress)
     except TranscriptionCancelledError:
         raise
     except Exception as e:
         logger.warning(f"強制對齊不可用，全部退回片段時間戳: {e}")
         # 結果仍可用但少了斷行與逐字時間（例如對齊器首次下載失敗），讓使用者看得到
-        progress.report("本地模型：時間軸對齊不可用，改以片段為單位輸出（詳見日誌）")
+        progress.report("本機模型：強制對齊不可用，改以片段為單位輸出（詳見日誌）")
 
 
 def _build_segment_records(entries: List[dict], source: str = "qwen") -> List[dict]:
@@ -404,15 +404,15 @@ def transcribe_with_local_models(
     wav: Optional[Path] = None
 
     try:
-        progress.report("本地模型：準備音訊...")
+        progress.report("本機模型：準備音訊...")
         wav = _to_mono(audio_path, MOSS_SAMPLE_RATE if use_moss else DIARIZATION_SAMPLE_RATE)
         progress.raise_if_cancelled()
 
         if use_moss:
-            progress.report("本地模型：MOSS 轉錄與說話者分離中...")
+            progress.report("本機模型：MOSS 轉錄與說話者分離中...")
             segments = _run_moss(wav, progress)
         else:
-            progress.report("本地模型：VibeVoice-ASR 說話者分離中（長檔需較久）...")
+            progress.report("本機模型：VibeVoice-ASR 說話者分離中（長檔需較久）...")
             segments = _run_diarization(wav, progress)
         speakers = {int(s.get("Speaker", 0)) for s in segments}
         logger.info(f"說話者分離完成: {len(segments)} 段, {len(speakers)} 位說話者 (model={model})")
@@ -422,7 +422,7 @@ def transcribe_with_local_models(
             source = "moss"
         else:
             progress.report(
-                f"本地模型：分離完成（{len(speakers)} 位說話者），Qwen3-ASR 轉錄中...")
+                f"本機模型：說話者分離完成（{len(speakers)} 位說話者），Qwen3-ASR 轉錄中...")
             entries = _transcribe_segments(wav, segments, language, progress)
             source = "qwen"
         _align_with_fallback(wav, entries, progress)

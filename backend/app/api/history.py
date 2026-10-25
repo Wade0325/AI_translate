@@ -169,7 +169,7 @@ def download_transcript(
     if not log:
         raise HTTPException(status_code=404, detail="找不到此任務紀錄")
     if log.status != TaskStatus.COMPLETED:
-        raise HTTPException(status_code=400, detail="任務尚未完成，無法下載字幕")
+        raise HTTPException(status_code=400, detail="任務尚未完成，無法下載轉錄結果")
 
     content = output_format.for_task(db, log, output)
     if content is None:

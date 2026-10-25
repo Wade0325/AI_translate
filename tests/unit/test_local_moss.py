@@ -254,7 +254,7 @@ class TestWeights:
         monkeypatch.setattr(weights, "repo_is_ready", lambda repo: repo == weights.MOSS_MODEL_ID)
         weights.notice_if_missing(weights.MOSS_MODEL_ID, "MOSS", messages.append)
         weights.notice_if_missing(weights.ALIGNER_MODEL_ID, "Qwen3-ForcedAligner", messages.append)
-        assert messages == ["本地模型：首次使用，下載 Qwen3-ForcedAligner 權重（約 1.9 GB）..."]
+        assert messages == ["本機模型：首次使用，下載 Qwen3-ForcedAligner 權重（約 1.9 GB）..."]
 
     def test_load_pretrained_does_not_retry_other_errors(self, monkeypatch, tmp_path):
         snap = self._snapshot(tmp_path / "snap")

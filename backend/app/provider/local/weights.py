@@ -48,7 +48,7 @@ MODEL_REPOS = {
 
 # 預設模型所需：Settings 頁「下載」預設只抓這些
 REQUIRED_REPOS = MODEL_REPOS[DEFAULT_LOCAL_MODEL]
-# 所有 Local 模型用得到的 repo（去重、保持順序），供狀態頁列出選用權重
+# 所有本機模型用得到的 repo（去重、保持順序），供狀態頁列出選用權重
 ALL_REPOS = tuple(dict.fromkeys(r for repos in MODEL_REPOS.values() for r in repos))
 
 # 各 repo 的約略大小（GB）：下載前的磁碟空間檢查與 Settings 頁按鈕標示
@@ -157,7 +157,7 @@ def load_pretrained(repo_id: str, loader: Callable[[str], T]) -> T:
 def notice_if_missing(repo_id: str, label: str, status_callback=None) -> None:
     """首次使用時權重下載在任務內進行（無法取消），先告知使用者不是卡住。"""
     if status_callback and not repo_is_ready(repo_id):
-        status_callback(f"本地模型：首次使用，下載 {label} 權重（約 {size_gb([repo_id])} GB）...")
+        status_callback(f"本機模型：首次使用，下載 {label} 權重（約 {size_gb([repo_id])} GB）...")
 
 
 def missing_repos(model: str | None = None) -> list[str]:
@@ -179,9 +179,9 @@ def ensure_local_ready(model: str | None = None) -> None:
     """本機轉錄前的前置檢查（由本機轉接器呼叫）；不符合直接拋明確錯誤。"""
     cuda_ok, _ = cuda_status()
     if not cuda_ok:
-        raise ValueError("Local 轉錄需要 NVIDIA GPU，未偵測到可用的 CUDA 裝置")
+        raise ValueError("本機轉錄需要 NVIDIA GPU，未偵測到可用的 CUDA 裝置")
     missing = missing_repos(model)
     if missing:
         raise ValueError(
-            "Local 模型權重尚未下載完成，請至 Settings 頁面下載（缺少: "
+            "本機模型權重尚未下載完成，請至 Settings 頁面下載（缺少: "
             + ", ".join(missing) + "）")
