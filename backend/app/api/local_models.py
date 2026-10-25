@@ -73,13 +73,10 @@ def _download_worker(repos: list[str]):
 
 
 def _target_repos(model: Optional[str]) -> tuple[str, ...]:
-    if model is None:
-        return weights.REQUIRED_REPOS
-    if model == "all":
-        return weights.ALL_REPOS
-    if model in weights.MODEL_REPOS:
-        return weights.MODEL_REPOS[model]
-    raise HTTPException(status_code=400, detail=f"不支援的本機模型: {model}")
+    try:
+        return weights.download_targets(model)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"不支援的本機模型: {model}") from None
 
 
 @router.get("/local-models/status")

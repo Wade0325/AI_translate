@@ -51,6 +51,9 @@ REQUIRED_REPOS = MODEL_REPOS[DEFAULT_LOCAL_MODEL]
 # 所有本機模型用得到的 repo（去重、保持順序），供狀態頁列出選用權重
 ALL_REPOS = tuple(dict.fromkeys(r for repos in MODEL_REPOS.values() for r in repos))
 
+# 在主機下載權重的指令（app/provider/local/download_weights.py），從 backend 資料夾執行
+DOWNLOAD_COMMAND = r".venv\Scripts\python.exe -m app.provider.local.download_weights"
+
 # 各 repo 的約略大小（GB）：下載前的磁碟空間檢查與 Settings 頁按鈕標示
 REPO_SIZE_GB = {  # 各釘住版本快照的實測大小
     MOSS_MODEL_ID: 1.8,
@@ -164,6 +167,18 @@ def missing_repos(model: str | None = None) -> list[str]:
     return [r for r in repos_for_model(model) if not repo_is_ready(r)]
 
 
+def download_targets(model: str | None) -> tuple[str, ...]:
+    """要下載的權重：省略＝預設模型所需；``all``＝所有本機模型；或指定模型用到的。
+    設定頁的權重卡與下載指令共用。"""
+    if model is None:
+        return REQUIRED_REPOS
+    if model == "all":
+        return ALL_REPOS
+    if model in MODEL_REPOS:
+        return MODEL_REPOS[model]
+    raise ValueError(f"不支援的本機模型: {model}")
+
+
 def cuda_status() -> tuple[bool, str | None]:
     """回傳 (CUDA 可用, GPU 名稱)；torch 缺失或無 GPU 時 (False, None)。"""
     try:
@@ -182,6 +197,14 @@ def ensure_local_ready(model: str | None = None) -> None:
         raise ValueError("本機轉錄需要 NVIDIA GPU，未偵測到可用的 CUDA 裝置")
     missing = missing_repos(model)
     if missing:
-        raise ValueError(
-            "本機模型權重尚未下載完成，請至 Settings 頁面下載（缺少: "
-            + ", ".join(missing) + "）")
+        raise ValueError(_missing_weights_message(model, missing))
+
+
+def _missing_weights_message(model: str | None, missing: list[str]) -> str:
+    listed = ", ".join(missing)
+    # 權重卡只在免安裝模式的設定頁（api/local_models.py 回報的 standalone）。Docker 模式在
+    # 主機的 GPU worker 轉錄，權重也要下載到主機，改指向在主機執行的下載指令（#123）
+    if get_settings().is_standalone:
+        return f"本機模型權重尚未下載完成，請至 Settings 頁面下載（缺少: {listed}）"
+    return (f"本機模型權重尚未下載完成（缺少: {listed}）。請在主機的 backend 資料夾執行 "
+            f"{DOWNLOAD_COMMAND} {normalize_model(model)}")
