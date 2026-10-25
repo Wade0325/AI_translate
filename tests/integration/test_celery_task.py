@@ -1,7 +1,7 @@
 """Docker 模式的單檔任務與批次：Celery 任務包裝層接上 Celery＋Redis 執行模式（#113、#115）。
 
 Celery 任務在測試行程裡以 eager 方式執行（``apply``），Redis 換成 fakeredis，供應商換成假供應商；任務生命週期、分段轉錄、ffmpeg 與 SQLite
-測試資料庫都走真的。經 broker 的派送不在 CI 測。
+測試資料庫都走真的。經 broker 派送給 worker、撤銷與存活查詢見 test_docker_mode_dispatch.py。
 
 測試只從外部觀察：Celery 回報的結果、執行模式廣播的狀態訊息、供應商被呼叫幾次，
 以及 API 查到的任務紀錄。
@@ -237,7 +237,8 @@ def test_task_revoked_before_it_runs_is_recorded_and_its_upload_handled(
 class QueuedInBroker:
     """派送的任務都還排在 broker 裡、沒有 worker 拿走；撤銷只記下參數，其餘照轉。
 
-    Celery 本身的派送與撤銷不在 CI 測：取消端點依登記決定要不要強制終止，在這個接縫上看。
+    撤銷時帶不帶強制終止，在 worker 上看不出來（本機的任務一律不強制終止）：取消端點依登記
+    決定，在這個接縫上看。
     """
 
     def __init__(self, inner):
