@@ -545,11 +545,28 @@ class TestSpeechView:
 
 
 class TestVadTestEndpoint:
-    """轉錄頁的 VAD 測試：只跑去靜音與 Silero 的切點，不轉錄。"""
+    """轉錄頁的去靜音與切點預覽：只跑去靜音與 Silero 的切點，不轉錄。
+
+    是開發者工具（#13 Q6）：設定 ``DEV_TOOLS`` 沒開時，轉錄頁看不到，端點也不跑。
+    """
+
+    def test_is_off_unless_dev_tools_are_on(self, api, data_dir):
+        # 一般使用者看不到，也不會在資料夾留下預覽產生的音檔
+        filename = upload(api)
+
+        assert api.get("/api/v1/vad/enabled").json() == {"enabled": False}
+        response = api.post("/api/v1/vad/test", json={"filename": filename})
+
+        assert response.status_code == 404
+        assert "DEV_TOOLS" in response.json()["detail"]
+        assert not (data_dir / "vad_artifacts").exists()
 
     @pytest.mark.parametrize("voiced, cut", [(VOICED, True), (MOSTLY_VOICED, False)],
                              ids=["mostly-silent", "mostly-speech"])
-    def test_reports_silence_removal_without_silero(self, api, voiced, cut):
+    def test_reports_silence_removal_without_silero(
+            self, api, settings, monkeypatch, voiced, cut):
+        monkeypatch.setattr(settings, "dev_tools", True)
+        assert api.get("/api/v1/vad/enabled").json() == {"enabled": True}
         # 測試環境沒有 Silero：去靜音照樣回報找到的有聲段，會不會剪和轉錄時用同一個門檻；
         # 只有要 Silero 的切點那一段失敗
         filename = upload(api, voiced=voiced)

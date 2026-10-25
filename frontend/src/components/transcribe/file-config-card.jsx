@@ -240,14 +240,15 @@ export function FileConfigCard({
                             </Tooltip>
                         </Dropdown>
                     )}
-                    {/* VAD 切割測試：僅等待中的本機音訊 */}
+                    {/* 去靜音與切點預覽（開發者工具，#13 Q6）：開了才有 onVadTest，僅等待中的本機音訊 */}
                     {!readOnly && !isCompleted && !isActive && onVadTest && (
-                        <Tooltip title="VAD 切割測試（不轉錄）">
+                        <Tooltip title="去靜音與切點預覽（不轉錄）">
                             <Button
                                 type="text"
                                 size="small"
                                 loading={vadTesting}
                                 icon={<Scissors size={14} />}
+                                aria-label="去靜音與切點預覽"
                                 onClick={() => onVadTest(config.id)}
                                 style={{ width: 28, height: 28, color: "#47b8d4" }}
                             />

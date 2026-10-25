@@ -1,4 +1,4 @@
-"""VAD 切割測試 — 僅執行前處理，不呼叫 Gemini 轉錄。"""
+"""去靜音與切點預覽（開發者工具，#13 Q6）— 只做轉錄前的處理，不轉錄。"""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ def _cleanup_paths(paths: list[Path]) -> None:
             if path.exists() and is_temp_upload(path):
                 path.unlink()
         except Exception as e:
-            logger.warning(f"清理 VAD 測試暫存檔失敗 ({path.name}): {e}")
+            logger.warning(f"清理預覽的暫存檔失敗 ({path.name}): {e}")
 
 
 def run_vad_test(
@@ -33,9 +33,9 @@ def run_vad_test(
     include_split: bool = True,
 ) -> dict[str, Any]:
     """
-    對單一音檔執行 VAD 測試：
+    預覽單一音檔的去靜音與切點：
       1. 去靜音 → speech_only.wav（只看音量，不需要 Silero）
-      2. （可選）靜音分割 → part1.wav / part2.wav（Silero）
+      2. （可選）找切點 → part1.wav / part2.wav（Silero）
 
     產物一律保存到 vad_artifacts/（不受 VAD_KEEP_ARTIFACTS 開關限制）。
     """
@@ -84,7 +84,7 @@ def run_vad_test(
             "error": "無法提取語音片段（可能全段靜音或格式不支援）",
         }
 
-    # --- 2. 靜音分割（模擬轉錄失敗後的重試切割）---
+    # --- 2. 找切點（模擬轉錄失敗後的切段重試）---
     if include_split:
         wav_path = convert_to_wav(file_path, temp_dir)
         if wav_path is None:
@@ -123,7 +123,7 @@ def run_vad_test(
             else:
                 split_payload = {
                     "success": False,
-                    "error": "找不到合適的靜音分割點",
+                    "error": "找不到合適的切點",
                 }
 
     _cleanup_paths(to_cleanup)
@@ -140,5 +140,5 @@ def run_vad_test(
         "artifact_dir": artifact_dir,
         "speech_extraction": extraction_payload,
         "split": split_payload,
-        "error": None if overall_ok else "VAD 測試未產生有效結果",
+        "error": None if overall_ok else "預覽沒有產生有效結果",
     }

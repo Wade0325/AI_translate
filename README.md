@@ -263,6 +263,10 @@ git config core.hooksPath .githooks
 
 > `tools/check.py` 是唯一的檢查清單，CI 與 pre-commit 跑的也是它。Python 的檢查要先安裝 `backend/requirements-dev.txt`，ESLint、tsc、vitest 與 Playwright 要先在 `frontend/` 執行 `npm ci`，Playwright 另外要上面的 Chromium。型別檢查只擋新增的錯誤：既有的 Python 錯誤記在錯誤清單 `.basedpyright/baseline.json`，有錯的舊前端檔標了 `// @ts-nocheck`；ratchet 確認兩者都沒有比 `origin/main` 多。修掉清單裡的錯誤時，basedpyright 會自己改寫錯誤清單，記得把它一起 commit。`pytest.ini` 已設定 `pythonpath = backend`，測試可直接 `from app.api import ...` 匯入；測試自帶暫存的 SQLite 資料庫與 mock，不需 Postgres/Redis。
 
+### 預覽去靜音與切點（開發者工具）
+
+轉錄頁的檔案卡可以多一個「去靜音與切點預覽」按鈕：不轉錄，只顯示這個音檔的語音佔比、找到的有聲段與切點，並把剪好的音檔存進 `vad_artifacts/` 給你試聽。它會在資料夾留下音檔副本，一般使用者用不到，所以預設關閉。要用時加一行 `DEV_TOOLS=true`：Docker 模式加在專案根目錄的 `.env`，再執行一次 `.\dc.bat` 重建容器；免安裝版加在解壓資料夾的 `data\` 裡的 `.env`，再重新開啟應用程式。
+
 ### 評測轉錄品質
 
 `backend\.venv\Scripts\python.exe -m tools.eval transcribe ...` 用正式的轉錄路徑轉錄一個音檔，輸出轉錄結果與記下環境和耗時的 manifest；`backend\.venv\Scripts\python.exe -m tools.eval eval ...` 拿轉錄結果和評測集的標準答案比對，算錯字率與說話者歸屬。標準答案留在 repo 外的研究區。用法見 [`tools/eval/README.md`](tools/eval/README.md)。

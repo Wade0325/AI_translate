@@ -103,6 +103,9 @@ class Settings(BaseSettings):
     # 去靜音與切點的除錯：保留切割產物供本機試聽檢查（預設關閉）
     vad_keep_artifacts: bool = False
     vad_artifacts_dir: str = "vad_artifacts"
+    # 開發者工具（#13 Q6）：轉錄頁的「去靜音與切點預覽」。預覽一律把音檔存進 vad_artifacts，
+    # 一般使用者用不到，預設關閉；開了要重新啟動
+    dev_tools: bool = False
 
     # 轉錄完成後留下保留音檔（校正介面要能重播）；到期後由啟動清掃刪除
     retain_audio: bool = True

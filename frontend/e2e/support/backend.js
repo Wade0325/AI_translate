@@ -78,6 +78,8 @@ const DEFAULT_ROUTES = {
     'GET /history': { items: [], total: 0, page: 1, page_size: 10, total_pages: 1 },
     'GET /history/active': [],
     'GET /batch/tasks': [],
+    // 去靜音與切點預覽是開發者工具，預設沒開（#13 Q6）
+    'GET /vad/enabled': { enabled: false },
 }
 
 const REPLY = Symbol('reply')

@@ -128,6 +128,10 @@ export const api = {
     },
   },
   vad: {
+    /** 去靜音與切點預覽（開發者工具）有沒有開：{ enabled } */
+    enabled() {
+      return request('/vad/enabled');
+    },
     test({ filename, originalFilename, includeSplit = true }) {
       return request('/vad/test', {
         method: 'POST',

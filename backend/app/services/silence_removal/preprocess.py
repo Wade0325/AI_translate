@@ -3,7 +3,7 @@
 （例如語音佔比閾值判斷）由呼叫端依情境決定。
 
 單檔任務與批次的去靜音經 :func:`app.services.silence_removal.speech_view` 拿到語音視圖，它也用這裡找
-有聲段。還直接呼叫這裡的：VAD 測試端點與 tests/ 底下的工具腳本。
+有聲段。還直接呼叫這裡的：去靜音與切點預覽的端點與 tests/ 底下的工具腳本。
 
 Silero VAD 只在分段轉錄找切點時用（:mod:`app.services.vad`，見
 :mod:`app.services.chunked_transcription`）：依單次長度分段與失敗後的切段重試用同一套切點。
