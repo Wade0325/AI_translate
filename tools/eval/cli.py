@@ -1,8 +1,8 @@
-"""``python -m tools.eval`` 的指令：eval（對標準答案計分）、selftest（自我驗證）與 transcribe
-（跑正式的轉錄路徑，產生要計分的轉錄結果）。
+"""``python -m tools.eval`` 的指令：eval（對標準答案計分）、summary（整理成 PR 的評測摘要）、
+selftest（自我驗證）與 transcribe（跑正式的轉錄路徑，產生要計分的轉錄結果）。
 
-在 repo 根目錄執行，用法見同一個資料夾的 README.md。eval 與 selftest 離線計分，不呼叫任何 API、
-不讀音檔；transcribe 讀音檔、用本機模型轉錄，見 transcribe.py。
+在 repo 根目錄執行，用法見同一個資料夾的 README.md。eval、summary 與 selftest 離線執行，不呼叫
+任何 API、不讀音檔；transcribe 讀音檔、用本機模型轉錄，見 transcribe.py。
 """
 
 from __future__ import annotations
@@ -117,6 +117,8 @@ class _Scored:
             "per_excerpt": [r.to_dict() for r in self.results],
             "total_mer": round(sum(r.errors for r in self.results)
                                / max(1, sum(r.ref_len for r in self.results)), 4),
+            "cp_mer_global": round(self.cp_global, 4),
+            "global_mapping": self.global_map,
         }
 
 
@@ -131,16 +133,37 @@ def _score(excerpts: Sequence[Excerpt], transcript: Path, vocabulary: CustomVoca
     return _Scored(transcript, results, global_map, cp_global)
 
 
-def _paired_comparison(a: _Scored, b: _Scored, bootstrap: int) -> str:
+@dataclass
+class _Paired:
+    """兩份轉錄結果的成對比較：MER 差（後者 − 前者）與它的 95% 區間。"""
+
+    delta: float
+    low: float
+    high: float
+
+    @property
+    def significant(self) -> bool:
+        return (self.low < 0 and self.high < 0) or (self.low > 0 and self.high > 0)
+
+    def to_dict(self) -> dict:
+        return {"delta_mer": round(self.delta, 4), "ci": [round(self.low, 4), round(self.high, 4)],
+                "significant": self.significant}
+
+
+def _paired(a: _Scored, b: _Scored, bootstrap: int) -> _Paired:
     from . import mer
 
     lens = [n for r in a.results for n in r.line_ref_len]
     errors_a = [e for r in a.results for e in r.line_errors]
     errors_b = [e for r in b.results for e in r.line_errors]
-    mean, lo, hi = mer.paired_delta_ci(errors_a, errors_b, lens, n=bootstrap)
-    sig = "顯著" if (lo < 0 and hi < 0) or (lo > 0 and hi > 0) else "不顯著（區間跨 0）"
+    return _Paired(*mer.paired_delta_ci(errors_a, errors_b, lens, n=bootstrap))
+
+
+def _paired_comparison(a: _Scored, b: _Scored, paired: _Paired) -> str:
+    sig = "顯著" if paired.significant else "不顯著（區間跨 0）"
     return (f"成對比較（{b.transcript.name} − {a.transcript.name}）：負值代表後者較好\n"
-            f"  ΔMER {mean*100:+.2f} pp   95% CI [{lo*100:+.2f}, {hi*100:+.2f}]   {sig}")
+            f"  ΔMER {paired.delta*100:+.2f} pp   "
+            f"95% CI [{paired.low*100:+.2f}, {paired.high*100:+.2f}]   {sig}")
 
 
 def cmd_eval(args) -> int:
@@ -171,9 +194,10 @@ def cmd_eval(args) -> int:
     vocabulary = load_custom_vocabulary(*vpaths)
     scored = [_score(excerpts, t, vocabulary, args.bootstrap) for t in transcripts]
     print(("\n\n" + "=" * 70 + "\n\n").join(s.report() for s in scored))
-    if len(scored) == 2:
+    paired = _paired(*scored, bootstrap=args.bootstrap) if len(scored) == 2 else None
+    if paired is not None:
         print("\n" + "=" * 70)
-        print(_paired_comparison(*scored, bootstrap=args.bootstrap))
+        print(_paired_comparison(*scored, paired))
 
     if args.json:
         out = Path(args.json)
@@ -188,6 +212,7 @@ def cmd_eval(args) -> int:
             "systems": [s.to_dict() for s in scored],
             "global_mapping": {"mapping": scored[0].global_map,
                                "cp_mer": round(scored[0].cp_global, 4)},
+            "paired": paired.to_dict() if paired is not None else None,
         }
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -227,8 +252,14 @@ def _parser() -> argparse.ArgumentParser:
                    help="另外把數字寫成 JSON；不能寫進標準答案的資料夾")
     p.set_defaults(fn=cmd_eval)
 
-    # 在函式裡 import：transcribe.py 從這裡拿共用的函式
+    # 在函式裡 import：summary.py 與 transcribe.py 從這裡拿共用的函式
+    from .summary import cmd_summary
     from .transcribe import cmd_transcribe
+
+    p = sub.add_parser("summary", help="把 eval --json 的結果與兩邊的 manifest 整理成 PR 的評測摘要（只有數字）")
+    p.add_argument("eval_json", metavar="eval 的 JSON",
+                   help="eval --json 寫的檔案；manifest 從轉錄結果旁邊找（<音檔名稱>.manifest.json）")
+    p.set_defaults(fn=cmd_summary)
 
     p = sub.add_parser("transcribe", help="跑正式的轉錄路徑，輸出轉錄結果（LRC）與 manifest（會用顯卡）")
     p.add_argument("--audio", required=True, help="要轉錄的音檔")

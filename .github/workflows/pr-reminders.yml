@@ -1,0 +1,39 @@
+# PR 的路徑提醒（#38）：依改動的路徑在 PR 上留一則留言，之後每次 push 改同一則。
+#
+# - 動到單向門的路徑（清單讀 docs/agents/merging.md 第 4 步）：列出這些檔案，提醒在內文標明。
+# - 動到 ML 依賴或 backend/Dockerfile：提醒要在本機重建 Docker 確認，因為 CI 不安裝 ML 依賴。
+#
+# 只是提醒，不擋合併，所以不放進 ci.yml、也不是 `check` 的一部分；ci.yml 被 release.yml 呼叫時
+# 也就不必多給寫入權限。判斷寫在 tools/pr_checks.py（有 pytest）。
+# 從 fork 開的 PR，GITHUB_TOKEN 只能讀、留不了言，提醒改寫在 job 的摘要。
+
+name: PR 提醒
+
+on:
+  pull_request:
+
+permissions: {}
+
+concurrency:
+  group: pr-reminders-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  paths:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write # 列出改動的檔案、留言與改留言
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: 依改動的路徑留言提醒
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          REPO: ${{ github.repository }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: python3 tools/pr_checks.py paths

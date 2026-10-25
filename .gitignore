@@ -54,7 +54,7 @@ celerybeat.pid
 /tests/audio_input/
 /tests/audio_output/
 
-# 本地模型快取（HF_HOME）
+# 本機模型快取（HF_HOME）
 /models/
 
 # 測試用假 Gemini server（本機實驗，不進版控）

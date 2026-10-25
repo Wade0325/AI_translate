@@ -12,6 +12,10 @@ name: CI
 
 on:
   pull_request:
+    # 預設的三種之外加上 edited：改了 PR 內文要重新檢查 pr-body。edited 也會把其他 job 重跑一次
+    # （上面的 concurrency 會取消還在跑的那一次）；只重跑 pr-body 的話，這一次的 `check` 會在
+    # 其他 job 沒跑的情況下轉綠，蓋掉前一次的結果
+    types: [opened, synchronize, reopened, edited]
   push:
     branches: [main]
   schedule:
@@ -279,9 +283,29 @@ jobs:
           GH_TOKEN: ${{ github.token }} # 線上稽核（impostor-commit 等）要查 action 的 repo
         run: zizmor .
 
+  pr-body:
+    # PR 內文要有「使用者看得到的變更」（#38）：用 --body-file 開的 PR 不會套用範本，靠這一步擋。
+    # 從 API 讀 PR 現在的內文，重新執行時讀得到補上之後的版本。不是 PR 時不檢查、直接通過
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read # 讀 PR 的內文
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: 檢查 PR 內文
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: python3 tools/pr_checks.py body
+
   check:
     if: always()
-    needs: [changes, python, frontend, browser, docker, workflows]
+    needs: [changes, python, frontend, browser, docker, workflows, pr-body]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
