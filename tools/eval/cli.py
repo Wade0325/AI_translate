@@ -1,6 +1,8 @@
-"""``python -m tools.eval`` 的指令：eval（對標準答案計分）與 selftest（自我驗證）。
+"""``python -m tools.eval`` 的指令：eval（對標準答案計分）、selftest（自我驗證）與 transcribe
+（跑正式的轉錄路徑，產生要計分的轉錄結果）。
 
-在 repo 根目錄執行，用法見同一個資料夾的 README.md。離線計分，不呼叫任何 API、不讀音檔。
+在 repo 根目錄執行，用法見同一個資料夾的 README.md。eval 與 selftest 離線計分，不呼叫任何 API、
+不讀音檔；transcribe 讀音檔、用本機模型轉錄，見 transcribe.py。
 """
 
 from __future__ import annotations
@@ -14,10 +16,16 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from . import mer, reference_set, selftest
+from . import reference_set
 from .custom_vocabulary import CustomVocabulary, load_custom_vocabulary
 from .reference_set import Excerpt
+
+# 計分的 mer 與 selftest 要 opencc、rapidfuzz、pypinyin（requirements-dev.txt），用到時才
+# import：只裝了應用程式依賴的 venv 也能跑 transcribe
+if TYPE_CHECKING:
+    from . import mer
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LAB_ENV = "AIT_LAB_DIR"
@@ -80,11 +88,12 @@ def _resolve(names: Sequence[str], directory: Path, suffix: str, what: str) -> l
     return out
 
 
-def _refuse_writing_references(target: Path, protected_dirs: Sequence[Path]) -> None:
+def _refuse_writing_references(target: Path, protected_dirs: Sequence[Path],
+                               option: str = "--json") -> None:
     resolved = target.resolve()
     for protected in {d.resolve() for d in protected_dirs}:
         if resolved == protected or protected in resolved.parents:
-            raise UsageError(f"--json 不能寫進標準答案的資料夾 {protected}：工具只讀取標準答案，不寫入。")
+            raise UsageError(f"{option} 不能寫進標準答案的資料夾 {protected}：工具只讀取標準答案，不寫入。")
 
 
 @dataclass
@@ -97,6 +106,8 @@ class _Scored:
     cp_global: float
 
     def report(self) -> str:
+        from . import mer
+
         return mer.format_report(self.results, self.transcript.name, self.global_map,
                                  self.cp_global)
 
@@ -111,6 +122,8 @@ class _Scored:
 
 def _score(excerpts: Sequence[Excerpt], transcript: Path, vocabulary: CustomVocabulary,
            bootstrap: int) -> _Scored:
+    from . import mer
+
     results = [mer.evaluate(ex, reference_set.clip_transcript(transcript, ex.start, ex.end),
                             vocabulary, bootstrap=bootstrap)
                for ex in excerpts]
@@ -119,6 +132,8 @@ def _score(excerpts: Sequence[Excerpt], transcript: Path, vocabulary: CustomVoca
 
 
 def _paired_comparison(a: _Scored, b: _Scored, bootstrap: int) -> str:
+    from . import mer
+
     lens = [n for r in a.results for n in r.line_ref_len]
     errors_a = [e for r in a.results for e in r.line_errors]
     errors_b = [e for r in b.results for e in r.line_errors]
@@ -181,13 +196,15 @@ def cmd_eval(args) -> int:
 
 
 def cmd_selftest(_) -> int:
+    from . import selftest
+
     return 0 if selftest.run() else 1
 
 
 def _parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         prog="python -m tools.eval",
-        description="評測工具：拿轉錄結果和標準答案比對（離線，不呼叫任何 API）。")
+        description="評測工具：用正式的轉錄路徑產生轉錄結果，再拿它和標準答案比對。")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("selftest", help="正規化、錯誤分類與同音判斷的自我驗證"
@@ -209,6 +226,21 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--json", metavar="路徑",
                    help="另外把數字寫成 JSON；不能寫進標準答案的資料夾")
     p.set_defaults(fn=cmd_eval)
+
+    # 在函式裡 import：transcribe.py 從這裡拿共用的函式
+    from .transcribe import cmd_transcribe
+
+    p = sub.add_parser("transcribe", help="跑正式的轉錄路徑，輸出轉錄結果（LRC）與 manifest（會用顯卡）")
+    p.add_argument("--audio", required=True, help="要轉錄的音檔")
+    p.add_argument("--provider", default="local",
+                   help="供應商（預設 local）；要 API 金鑰的供應商會拒絕，音檔不離開這台電腦")
+    p.add_argument("--model", help="模型（預設：供應商的預設模型）")
+    p.add_argument("--language", required=True, help="音檔的語言，和轉錄頁送出的相同，例如 zh-TW")
+    p.add_argument("--out", required=True, metavar="資料夾",
+                   help="輸出資料夾：寫 <音檔名稱>.lrc 與 <音檔名稱>.manifest.json，已經有時拒絕；"
+                        "不能是標準答案的資料夾")
+    p.add_argument("--yes", action="store_true", help="不停下來確認已經停掉其他使用顯卡的工作")
+    p.set_defaults(fn=cmd_transcribe)
     return ap
 
 
