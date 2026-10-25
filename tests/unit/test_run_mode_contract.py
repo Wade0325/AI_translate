@@ -2,7 +2,8 @@
 
 涵蓋兩者共有的行為：狀態廣播與訂閱、取消旗標的要求／查詢／清除、任務登記與查詢、
 任務結束時清掉登記與旗標。
-Celery 本身的派送與撤銷不納入；行程內執行緒池的派送、撤銷與重試見 test_local_executor.py。
+派送、撤銷與存活查詢各自測：Celery 的見 tests/integration/test_docker_mode_dispatch.py，
+行程內執行緒池的（含重試）見 test_local_executor.py。
 """
 import asyncio
 from contextlib import aclosing, asynccontextmanager, suppress
