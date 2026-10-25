@@ -124,22 +124,23 @@ test('去靜音與切點預覽是開發者工具：沒開時檔案卡沒有按�
     await expect(page.getByRole('button', { name: '去靜音與切點預覽' })).toHaveCount(0)
 })
 
-test('開了開發者工具時，預覽一個檔案並顯示找到的切點', async ({ page, mockBackend }) => {
-    const backend = await mockBackend({
-        routes: {
-            'GET /vad/enabled': { enabled: true },
-            'POST /upload': { filename: 'meeting_1.wav' },
-            'POST /vad/test': {
-                success: true, task_id: 'abc', original_filename: AUDIO.name, artifact_dir: null, error: null,
-                speech_extraction: {
-                    success: true, speech_ratio: 0.6, speech_duration_seconds: 3.0, total_duration_seconds: 5.0,
-                    segment_count: 1, would_use_speech_only: true, segments: [{ start: 0.5, end: 3.5 }],
-                    segments_truncated: false,
-                },
-                split: { success: true, split_point_seconds: 2.5, part1_duration_seconds: 2.5, part2_duration_seconds: 2.5 },
-            },
+/** 開了開發者工具、預覽回一個語音佔比 60%（低於門檻）的音檔。 */
+const VAD_PREVIEW_ROUTES = {
+    'GET /vad/enabled': { enabled: true },
+    'POST /upload': { filename: 'meeting_1.wav' },
+    'POST /vad/test': {
+        success: true, task_id: 'abc', original_filename: AUDIO.name, artifact_dir: null, error: null,
+        speech_extraction: {
+            success: true, speech_ratio: 0.6, speech_duration_seconds: 3.0, total_duration_seconds: 5.0,
+            segment_count: 1, would_use_speech_only: true, segments: [{ start: 0.5, end: 3.5 }],
+            segments_truncated: false,
         },
-    })
+        split: { success: true, split_point_seconds: 2.5, part1_duration_seconds: 2.5, part2_duration_seconds: 2.5 },
+    },
+}
+
+test('開了開發者工具時，預覽一個檔案並顯示找到的切點', async ({ page, mockBackend }) => {
+    const backend = await mockBackend({ routes: VAD_PREVIEW_ROUTES })
     await page.goto('/transcribe')
     await addAudio(page)
 
@@ -148,6 +149,22 @@ test('開了開發者工具時，預覽一個檔案並顯示找到的切點', as
     const dialog = page.getByRole('dialog', { name: '去靜音與切點預覽' })
     await expect(dialog.getByText('去靜音（speech_only）')).toBeVisible()
     await expect(dialog.getByText('2.5s').first()).toBeVisible()
+    // 預設的供應商是 Gemini，它的模型去靜音
+    await expect(dialog.getByText('正式轉錄會使用 speech_only.wav')).toBeVisible()
     expect(backend.requests.find((r) => r.path === '/vad/test').body)
         .toEqual({ filename: 'meeting_1.wav', original_filename: AUDIO.name, include_split: true })
+})
+
+test('預覽依所選的模型說明正式轉錄：本機的模型不去靜音，切在靜音的正中間', async ({ page, mockBackend }) => {
+    await mockBackend({ routes: VAD_PREVIEW_ROUTES })
+    await page.goto('/transcribe')
+    await page.getByLabel('供應商').selectOption('local')
+    await addAudio(page)
+
+    await page.getByRole('button', { name: '去靜音與切點預覽' }).click()
+
+    const dialog = page.getByRole('dialog', { name: '去靜音與切點預覽' })
+    await expect(dialog.getByText('所選的模型不去靜音：正式轉錄用原檔，分段轉錄時切在靜音的正中間'))
+        .toBeVisible()
+    await expect(dialog.getByText('正式轉錄會使用 speech_only.wav')).toHaveCount(0)
 })

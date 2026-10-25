@@ -168,7 +168,8 @@ class Settings(BaseSettings):
     batch_cost_discount: float = 0.5
     flex_cost_discount: float = 0.5
     # 語音佔比 >= 此閾值（預設 0.9）時跳過去靜音，直接用原檔轉錄；
-    # 空白超過 10%（語音佔比 < 90%）才執行去靜音
+    # 空白超過 10%（語音佔比 < 90%）才執行去靜音。不去靜音的模型（本機的模型，#95）只用它決定
+    # 切點：低於閾值切在靜音的正中間，否則由 Silero 找
     vad_speech_ratio_skip_threshold: float = 0.90
     # 去靜音之後（或跳過去靜音時的原檔）仍超過此時長（秒）的音檔，
     # 轉錄前先在最接近中點的靜音處切成兩段，遞迴直到每段低於閾值；0 = 停用。

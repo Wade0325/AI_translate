@@ -5,10 +5,11 @@
 批次不分段，把它的序列化形式存進資料庫（:meth:`SpeechView.serialized`），結果回來時（可能在重啟
 之後）用它把片段放回原音檔的時間軸。剪不剪看兩件事：
 
-- 模型能力的「轉錄前要不要剪掉靜音」：不剪的模型送原音檔，但照樣找出靜音，每段靜音的正中間
-  當分段轉錄的切點。
+- 模型能力的「轉錄前要不要剪掉靜音」：不剪的模型（本機的模型，#95）送原音檔，但照樣找出靜音，
+  每段靜音的正中間當分段轉錄的切點。
 - 語音佔比：低於門檻（``VAD_SPEECH_RATIO_SKIP_THRESHOLD``，預設 90%）才剪。幾乎全是語音的音檔
-  剪不到什麼，送原音檔，切點交給分段轉錄另外找（Silero），和以前一樣。
+  剪不到什麼，送原音檔，切點交給分段轉錄另外找（Silero），和以前一樣。不剪靜音的模型也看這個
+  門檻：幾乎全是語音的音檔不拿靜音當切點，切法和剪靜音的模型相同。
 
 找靜音只看音量（RMS，見 :func:`app.services.silence_removal.preprocess.remove_silence`），用不到 Silero：
 沒有 Silero 也照樣去靜音。找不到有聲段（全段靜音、轉檔失敗）時送原音檔。開了
@@ -169,7 +170,7 @@ class SpeechView:
     """:attr:`audio` 的時間怎麼對回原音檔。"""
     silence_boundaries: Tuple[float, ...] = ()
     """:attr:`audio` 裡的靜音位置（秒），分段轉錄優先切在這裡：去靜音之後是有聲段的交界，不剪
-    靜音的模型是原音檔裡每段靜音的正中間；跳過去靜音時沒有，切點交給分段轉錄另外找。"""
+    靜音的模型是原音檔裡每段靜音的正中間；語音佔比不低於門檻時沒有，切點交給分段轉錄另外找。"""
     temp_files: Tuple[Path, ...] = ()
     """這裡產生的暫存檔（轉成的 wav、只剩語音的音檔），呼叫端用完要清掉；輸入音檔不在裡面。"""
 
@@ -218,15 +219,21 @@ def speech_view(
     if not found.success:
         return unchanged
     voiced = tuple((segment["start"], segment["end"]) for segment in found.segments)
+    use_speech_only = worth_removing(found.speech_ratio)
 
     if not remove_silence:
-        # 不剪靜音的模型：送原音檔，兩個有聲段中間那段靜音的正中間當切點
+        # 不剪靜音的模型：送原音檔。語音佔比不低於門檻時切點交給 Silero，和剪靜音的模型相同；
+        # 低於門檻時，兩個有聲段中間那段靜音的正中間當切點
+        if not use_speech_only:
+            logger.info(f"不剪靜音的模型：語音佔比 {found.speech_ratio:.1%}，不低於門檻，"
+                        f"送原音檔，切點交給 Silero")
+            return unchanged
         midpoints = tuple((end + start) / 2
                           for (_, end), (start, _) in zip(voiced, voiced[1:], strict=False))
-        logger.info(f"不剪靜音的模型：送原音檔，{len(midpoints)} 段靜音的正中間當切點")
+        logger.info(f"不剪靜音的模型：語音佔比 {found.speech_ratio:.1%}，送原音檔，"
+                    f"{len(midpoints)} 段靜音的正中間當切點")
         return replace(unchanged, silence_boundaries=midpoints)
 
-    use_speech_only = worth_removing(found.speech_ratio)
     if found.speech_only_path is not None:
         persist_speech_extraction(
             task_id=task_id,

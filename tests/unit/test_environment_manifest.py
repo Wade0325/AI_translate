@@ -15,8 +15,8 @@ def test_local_models_record_their_pinned_weight_revisions():
         weights.MOSS_MODEL_ID: weights.REPO_REVISIONS[weights.MOSS_MODEL_ID],
         weights.ALIGNER_MODEL_ID: weights.REPO_REVISIONS[weights.ALIGNER_MODEL_ID],
     }
-    # 本機的模型都去靜音；單次長度的上限照模型能力
-    assert described["settings"]["remove_silence"] is True
+    # 本機的模型都不去靜音（#95）；單次長度的上限照模型能力
+    assert described["settings"]["remove_silence"] is False
     assert described["settings"]["single_pass_seconds"] > 0
 
 

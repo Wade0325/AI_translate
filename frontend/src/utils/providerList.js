@@ -92,7 +92,8 @@ export function findModelCapabilities(providerList, provider, model) {
 }
 
 /**
- * 所選模型支援哪些輸入與處理方式：{ prompt, userText, batch, flex }。
+ * 所選模型支援哪些輸入與處理方式：{ prompt, userText, batch, flex, removeSilence }。
+ * removeSilence 是轉錄前會不會去靜音；不去靜音的模型照樣拿靜音的位置當切點（#95）。
  * 不支援的輸入送出時不帶上；還不知道模型能力時一律當成支援。
  */
 export function modelSupports(capabilities) {
@@ -101,6 +102,7 @@ export function modelSupports(capabilities) {
     userText: capabilities?.accepts_user_text ?? true,
     batch: capabilities?.supports_batch ?? true,
     flex: capabilities?.supports_flex ?? true,
+    removeSilence: capabilities?.remove_silence ?? true,
   };
 }
 
