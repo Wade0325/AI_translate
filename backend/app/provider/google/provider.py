@@ -77,7 +77,9 @@ def _capabilities() -> ModelCapabilities:
         can_terminate=True,
         split_retry_on_failure=True,
         accepts_prompt=True,
-        accepts_user_text=True,
+        # 使用者文稿還沒交給任務（#66）：照實說不吃，送來的明確拒絕、轉錄頁也不提供入口（#13 Q4 定案
+        # 先隱藏）。修好 #66 時改回 True
+        accepts_user_text=False,
         supports_batch=True,
         supports_flex=True,
         pricing="per_token",

@@ -413,7 +413,8 @@ export default function TranscribePage() {
                         onPreview={handleOpenPreview}
                         onDownload={downloadFile}
                         onReprocess={handleReprocess}
-                        onAttachText={handleAttachText}
+                        // 使用者文稿到不了任務之前（#66）沒有模型吃它，入口跟著隱藏（#13 Q4）
+                        onAttachText={supports.userText ? handleAttachText : undefined}
                         onAttachTextFromFile={handleAttachTextFromFile}
                         onVadTest={file.originFileObj ? handleVadTest : undefined}
                         onCancel={file.transcribeMode === 'single' ? cancelTranscription : undefined}

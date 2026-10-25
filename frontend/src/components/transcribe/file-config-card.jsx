@@ -20,7 +20,7 @@ import {
 } from "lucide-react"
 import { Button, Select, Switch, Slider, Tag, Typography, Input, Dropdown, Spin, Tooltip, Popconfirm } from "antd"
 import { LoadingOutlined } from "@ant-design/icons"
-import { ReasonText, ReasonTooltip } from "@/components/disabled-reason"
+import { ReasonText } from "@/components/disabled-reason"
 import { languages, formatLang } from "@/constants/languages"
 import { downloadFormats } from "@/constants/downloadFormats"
 import { globalSettingsPatch } from "@/utils/transcribeRequest"
@@ -40,7 +40,8 @@ const statusConfig = {
 /**
  * disabledReasons：所選的模型不支援的輸入與原因（{ prompt, userText }，見 utils/providerList.js 的
  * disabledReasonsFor）；
- * 有原因的欄位停用並顯示它，已經填了的值標成不會送出。
+ * 有原因的提示詞欄位停用並顯示它，已經填了的提示詞與使用者文稿標成不會送出。使用者文稿的按鈕
+ * 只在模型吃使用者文稿時才有（由 onAttachText 決定）。
  */
 export function FileConfigCard({
     config,
@@ -252,22 +253,22 @@ export function FileConfigCard({
                             />
                         </Tooltip>
                     )}
-                    {/* 使用者文稿：處理中時隱藏；所選的模型不支援使用者文稿時停用並說明原因 */}
+                    {/* 使用者文稿：處理中時隱藏；所選的模型吃使用者文稿時才有 onAttachText（#13 Q4） */}
                     {!readOnly && !isCompleted && !isActive && onAttachText && (
-                        <ReasonTooltip title={disabledReasons.userText || "附加使用者文稿"}>
+                        <Tooltip title="附加使用者文稿">
                             <Button
                                 type="text"
                                 size="small"
                                 icon={<FileText size={14} />}
-                                disabled={Boolean(disabledReasons.userText)}
+                                aria-label="附加使用者文稿"
                                 onClick={() => onAttachText(config.id)}
                                 style={{
                                     width: 28,
                                     height: 28,
-                                    color: config.original_text && !disabledReasons.userText ? "#2dd4a8" : "#8888a8",
+                                    color: config.original_text ? "#2dd4a8" : "#8888a8",
                                 }}
                             />
-                        </ReasonTooltip>
+                        </Tooltip>
                     )}
                     {/* Cancel：僅執行中且由單檔轉錄啟動的任務 */}
                     {!readOnly && isActive && onCancel && (

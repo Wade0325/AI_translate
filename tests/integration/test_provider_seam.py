@@ -1037,15 +1037,24 @@ class TestModelCapabilitiesEndpoint:
             "remove_silence": True,
         }
 
-    def test_local_models_take_no_prompt_or_user_text_gemini_models_do(self, api):
+    def test_local_models_take_no_prompt_gemini_models_do(self, api):
         listed = listed_capabilities(api)
         local = {model: c for (provider, model), c in listed.items() if provider == "local"}
         gemini = {model: c for (provider, model), c in listed.items() if provider == "google"}
 
         assert set(local) == {"moss-align", "moss-qwen3-asr", "vibevoice-qwen3-asr"}
         assert {"gemini-3.5-flash", "gemini-2.5-flash"} <= set(gemini)
-        assert not any(c["accepts_prompt"] or c["accepts_user_text"] for c in local.values())
-        assert all(c["accepts_prompt"] and c["accepts_user_text"] for c in gemini.values())
+        assert not any(c["accepts_prompt"] for c in local.values())
+        assert all(c["accepts_prompt"] for c in gemini.values())
+
+    def test_no_model_takes_user_text_until_it_reaches_the_task(self, api):
+        # 使用者文稿還沒交給任務（#66），#13 Q4 定案先隱藏入口：模型能力照實說不吃，轉錄頁就不提供
+        # 附加的按鈕。修好 #66 時把 Gemini 的改回來
+        listed = listed_capabilities(api)
+        models = [c for (provider, _), c in listed.items() if provider in ("local", "google")]
+
+        assert models
+        assert not any(c["accepts_user_text"] for c in models)
 
     def test_only_gemini_models_take_flex_and_batch(self, api):
         # 轉錄頁依這兩項停用本機選不了的處理模式（#162）
@@ -1134,6 +1143,14 @@ class TestInputsTheModelDoesNotTake:
 
         assert "moss-align" in reason
         assert reported in reason
+
+    def test_gemini_model_rejects_user_text_until_it_reaches_the_task(self, api):
+        # 以前 Gemini 收下使用者文稿，任務卻沒拿到（#66）：現在送出時就明確拒絕
+        reason = task_rejection(api, "uid-gemini-user-text", provider="google",
+                                model="gemini-3.5-flash", original_text="おはよう。")
+
+        assert "gemini-3.5-flash" in reason
+        assert "使用者文稿" in reason
 
     def test_model_that_takes_them_runs_as_usual(self, api, fake):
         fake.script = list(SCRIPT)

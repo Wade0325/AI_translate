@@ -1,5 +1,5 @@
 import { test, expect, download } from './support/test.js'
-import { TRANSCRIPTS, transcriptionMessages } from './support/backend.js'
+import { PROVIDERS, TRANSCRIPTS, transcriptionMessages } from './support/backend.js'
 
 // 內容不重要：音檔只經過假後端，不會被解碼
 const AUDIO = { name: 'meeting.wav', mimeType: 'audio/wav', buffer: Buffer.from('RIFF0000WAVE') }
@@ -73,4 +73,45 @@ test('任務失敗時，檔案卡顯示後端的失敗原因', async ({ page, mo
     await expect(page.getByText('1 個任務失敗')).toBeVisible()
     // 失敗的檔案可以重新轉錄
     await expect(page.getByRole('button', { name: 'Start' })).toBeEnabled()
+})
+
+/** 供應商清單，但 Gemini 的模型吃使用者文稿（#66 修好之後的樣子）。 */
+const GEMINI_TAKES_USER_TEXT = PROVIDERS.map((p) => p.provider !== 'google' ? p : {
+    ...p,
+    models: p.models.map((m) => ({ ...m, capabilities: { ...m.capabilities, accepts_user_text: true } })),
+})
+
+test('沒有模型吃使用者文稿時，檔案卡不提供附加使用者文稿的按鈕', async ({ page, mockBackend }) => {
+    // #66 修好之前使用者文稿到不了任務，#13 Q4 定案先隱藏入口
+    await mockBackend()
+    await page.goto('/transcribe')
+    await addAudio(page)
+
+    for (const provider of ['google', 'local']) {
+        await page.getByLabel('供應商').selectOption(provider)
+        await expect(page.getByRole('button', { name: '附加使用者文稿' })).toHaveCount(0)
+    }
+})
+
+test('所選的模型吃使用者文稿時，附加的使用者文稿隨請求送出', async ({ page, mockBackend }) => {
+    const backend = await mockBackend({
+        routes: { 'GET /providers': GEMINI_TAKES_USER_TEXT, 'POST /upload': { filename: 'meeting_1.wav' } },
+    })
+    await page.goto('/transcribe')
+    await page.getByLabel('供應商').selectOption('google')
+    // 假後端只模擬單檔任務
+    await page.getByLabel('處理模式').selectOption('standard')
+    await addAudio(page)
+
+    await page.getByRole('button', { name: '附加使用者文稿' }).click()
+    const dialog = page.getByRole('dialog', { name: '附加使用者文稿' })
+    await dialog.getByRole('textbox').fill('おはよう。')
+    // antd 在兩個中文字的按鈕字中間插一個空格
+    await dialog.getByRole('button', { name: /^保\s*存$/ }).click()
+    await page.getByRole('button', { name: 'Start' }).click()
+
+    await expect(page.getByText('轉錄完成')).toBeVisible()
+    expect(backend.transcriptionRequests).toEqual([
+        expect.objectContaining({ provider: 'google', original_text: 'おはよう。' }),
+    ])
 })
