@@ -129,13 +129,13 @@ def _transcribe_speech_view(
 
 def _prompt(params: TranscriptionTaskParams) -> str:
     # 有使用者文稿時改用「對齊」的提示詞：只補時間戳，不重新轉錄
-    if params.original_text:
+    if params.user_supplied_text:
         return f"""
 請你扮演一位專業的逐字稿專家。你的任務是將提供的音檔與以下的完整逐字稿內容進行對齊，並生成一個帶有時間戳的LRC格式檔案。
 
 這是完整的逐字稿：
 ---
-{params.original_text}
+{params.user_supplied_text}
 ---
 
 請仔細聆聽音檔，為這份逐字稿加上精確的時間戳，並以LRC格式輸出。

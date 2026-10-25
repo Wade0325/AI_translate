@@ -19,7 +19,7 @@ class TranscriptionTaskParams(BaseModel):
     prompt: Optional[str] = None
     # 設定頁為這個供應商存的提示詞範本，派送時從資料庫讀出；None 時用系統內建的範本
     prompt_template: Optional[str] = None
-    original_text: Optional[str] = None
+    user_supplied_text: Optional[str] = None
     target_lang: Optional[str] = None
     multi_speaker: bool = False
     service_tier: Optional[str] = None  # 'flex' 啟用 Flex 推論，其餘視為 Standard

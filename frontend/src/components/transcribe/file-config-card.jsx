@@ -104,7 +104,7 @@ export function FileConfigCard({
                 notSentReason: shownPrompt ? null : notSentReason(disabledReasons.prompt),
             }]
             : []),
-        ...(config.original_text
+        ...(config.userSuppliedText
             ? [{
                 label: "使用者文稿",
                 icon: FileText,
@@ -265,7 +265,7 @@ export function FileConfigCard({
                                 style={{
                                     width: 28,
                                     height: 28,
-                                    color: config.original_text ? "#2dd4a8" : "#8888a8",
+                                    color: config.userSuppliedText ? "#2dd4a8" : "#8888a8",
                                 }}
                             />
                         </Tooltip>

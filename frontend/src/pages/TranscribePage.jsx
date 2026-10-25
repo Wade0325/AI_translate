@@ -112,14 +112,14 @@ export default function TranscribePage() {
     const handleAttachText = (fileUid) => {
         const file = fileList.find((f) => f.uid === fileUid)
         setTextModalFileUid(fileUid)
-        setTextModalContent(file?.original_text || "")
+        setTextModalContent(file?.userSuppliedText || "")
         setIsTextModalVisible(true)
     }
 
     const handleSaveText = () => {
         setFileList((prev) =>
             prev.map((f) =>
-                f.uid === textModalFileUid ? { ...f, original_text: textModalContent } : f
+                f.uid === textModalFileUid ? { ...f, userSuppliedText: textModalContent } : f
             )
         )
         setIsTextModalVisible(false)
@@ -138,7 +138,7 @@ export default function TranscribePage() {
             const text = await file.text()
             setFileList((prev) =>
                 prev.map((f) =>
-                    f.uid === textModalFileUid ? { ...f, original_text: text } : f
+                    f.uid === textModalFileUid ? { ...f, userSuppliedText: text } : f
                 )
             )
             message.success(`已從 "${file.name}" 載入文本`)
@@ -405,7 +405,7 @@ export default function TranscribePage() {
                             cost: file.cost,
                             result: file.result,
                             error: file.error,
-                            original_text: file.original_text,
+                            userSuppliedText: file.userSuppliedText,
                         }}
                         globalConfig={globalConfig}
                         onUpdate={handleFileConfigUpdate}

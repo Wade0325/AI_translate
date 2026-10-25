@@ -41,7 +41,7 @@ test('選本機送出一個檔案，顯示處理中，完成後到結果頁下�
             provider: 'local',
             model: 'moss-align',
             prompt: null,
-            original_text: null,
+            user_supplied_text: null,
         }),
     ])
 
@@ -112,6 +112,6 @@ test('所選的模型吃使用者文稿時，附加的使用者文稿隨請求�
 
     await expect(page.getByText('轉錄完成')).toBeVisible()
     expect(backend.transcriptionRequests).toEqual([
-        expect.objectContaining({ provider: 'google', original_text: 'おはよう。' }),
+        expect.objectContaining({ provider: 'google', user_supplied_text: 'おはよう。' }),
     ])
 })

@@ -167,9 +167,9 @@ class TestWebSocketTranscriptionRequest:
         req = WebSocketTranscriptionRequest(**self._valid_payload())
         assert req.prompt is None
 
-    def test_original_text_optional(self):
+    def test_user_supplied_text_optional(self):
         req = WebSocketTranscriptionRequest(**self._valid_payload())
-        assert req.original_text is None
+        assert req.user_supplied_text is None
 
     def test_missing_required_field_raises_error(self):
         payload = self._valid_payload()
