@@ -295,6 +295,16 @@ cd backend
 .\backend\.venv\Scripts\python.exe -m pip install --no-deps av==18.1.0 "moss-transcribe-diarize @ https://github.com/OpenMOSS/MOSS-Transcribe-Diarize/archive/e3bdd93f8ad58418e04659818efd5fd87a0bc486.zip"
 ```
 
+Docker 模式的設定頁沒有模型權重的卡片。第一次用本機轉錄前，先在主機下載模型權重；
+缺權重時，任務失敗的訊息也會指向這個指令。權重下載到和 `local_worker.bat` 相同的
+`HF_HOME`，已下載的會跳過，中斷後再執行一次會接著下載：
+
+```powershell
+cd backend
+.\.venv\Scripts\python.exe -m app.provider.local.download_weights       # 預設模型所需
+.\.venv\Scripts\python.exe -m app.provider.local.download_weights all   # 所有本機模型
+```
+
 ---
 
 ## 📝 授權
