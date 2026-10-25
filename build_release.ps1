@@ -24,7 +24,14 @@ $StageDir = Join-Path $BuildDir "AI_Translate"
 $PythonEmbedVersion = "3.11.9"   # 需與 requirements-standalone 的 wheel 支援版本相符
 $PythonEmbedUrl = "https://www.python.org/ftp/python/$PythonEmbedVersion/python-$PythonEmbedVersion-embed-amd64.zip"
 $UvUrl = "https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-pc-windows-msvc.zip"
-$FfmpegUrl = "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl.zip"
+# ffmpeg：BtbN 的 LGPL build，和 CI（.github/workflows/ci.yml）同一個，釘版並驗 SHA-256（#17、#129）。
+# 用月底的日期 tag 釘版（BtbN 只承諾月底版保留兩年）；升版時和 ci.yml 一起換，
+# tests/unit/test_ffmpeg_pin.py 檢查兩邊一致
+$FfmpegTag = "autobuild-2026-09-30-13-08"
+$FfmpegBuild = "ffmpeg-n9.0.2-17-g2a571b6068"
+$FfmpegSha256 = "6b264b9e6019103f601d98c292bd332fd87acf1c5e941ddff4fb71760fe63432"
+$FfmpegAsset = "$FfmpegBuild-win64-lgpl-9.0.zip"
+$FfmpegUrl = "https://github.com/BtbN/FFmpeg-Builds/releases/download/$FfmpegTag/$FfmpegAsset"
 
 function Step($msg) { Write-Host "==> $msg" -ForegroundColor Cyan }
 
@@ -94,7 +101,13 @@ $uvExe = Get-ChildItem -Path $uvTmp -Recurse -Filter "uv.exe" | Select-Object -F
 if (-not $uvExe) { throw "uv 壓縮包中找不到 uv.exe" }
 Copy-Item $uvExe.FullName (Join-Path $binDir "uv.exe")
 
-$ffZip = Get-Cached $FfmpegUrl "ffmpeg-win64.zip"
+$ffZip = Get-Cached $FfmpegUrl $FfmpegAsset
+$ffHash = (Get-FileHash -Algorithm SHA256 $ffZip).Hash.ToLowerInvariant()
+if ($ffHash -ne $FfmpegSha256) {
+    # 刪掉快取，下次重新下載，不會一直用到壞掉或被換掉的檔案
+    Remove-Item -Force $ffZip
+    throw "$FfmpegAsset 的 SHA-256 不符：預期 $FfmpegSha256，實際 $ffHash"
+}
 $ffTmp = Join-Path $BuildDir "ffmpeg-extract"
 if (Test-Path $ffTmp) { Remove-Item -Recurse -Force $ffTmp }
 Expand-Archive -Path $ffZip -DestinationPath $ffTmp -Force
