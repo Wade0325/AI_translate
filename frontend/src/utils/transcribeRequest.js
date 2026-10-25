@@ -77,7 +77,7 @@ export function buildSinglePayload({ serverFilename, file, provider, model, defa
     model,
     source_lang: file.language || defaults.sourceLang,
     prompt: promptToSend(file, defaults.prompt, supports),
-    original_text: supports.userText ? (file.original_text || null) : null,
+    user_supplied_text: supports.userText ? (file.userSuppliedText || null) : null,
     multi_speaker: file.isMultiSpeaker ?? defaults.multiSpeaker,
     service_tier: defaults.serviceTier,
     session_id: sessionId,

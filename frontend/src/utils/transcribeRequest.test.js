@@ -173,7 +173,7 @@ describe('單檔任務送出的內容', () => {
       model: 'moss-align',
       source_lang: 'ja-JP',
       prompt: null,
-      original_text: null,
+      user_supplied_text: null,
       multi_speaker: false,
       service_tier: null,
       session_id: 's1',

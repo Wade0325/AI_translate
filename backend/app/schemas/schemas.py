@@ -62,7 +62,7 @@ class WebSocketTranscriptionRequest(BaseModel):
     source_lang: str
     target_lang: Optional[str] = None
     prompt: Optional[str] = None  # 補充說明：接在設定頁存的提示詞範本後面送出（#144）
-    original_text: Optional[str] = None
+    user_supplied_text: Optional[str] = None
     multi_speaker: bool = False
     service_tier: Optional[str] = None  # 'flex' 啟用 Flex 推論
     session_id: Optional[str] = None  # 同一次 Start 的任務群組 ID

@@ -1135,7 +1135,7 @@ class TestModelCapabilitiesEndpoint:
 class TestInputsTheModelDoesNotTake:
     @pytest.mark.parametrize("fields, reported", [
         ({"prompt": "語助詞也要寫出來"}, "提示詞"),
-        ({"original_text": "おはよう。こんにちは。"}, "使用者文稿"),
+        ({"user_supplied_text": "おはよう。こんにちは。"}, "使用者文稿"),
     ], ids=["prompt", "user-text"])
     def test_local_model_rejects_them_with_clear_error(self, api, fields, reported):
         reason = task_rejection(
@@ -1147,7 +1147,7 @@ class TestInputsTheModelDoesNotTake:
     def test_gemini_model_rejects_user_text_until_it_reaches_the_task(self, api):
         # 以前 Gemini 收下使用者文稿，任務卻沒拿到（#66）：現在送出時就明確拒絕
         reason = task_rejection(api, "uid-gemini-user-text", provider="google",
-                                model="gemini-3.5-flash", original_text="おはよう。")
+                                model="gemini-3.5-flash", user_supplied_text="おはよう。")
 
         assert "gemini-3.5-flash" in reason
         assert "使用者文稿" in reason
@@ -1156,15 +1156,15 @@ class TestInputsTheModelDoesNotTake:
         fake.script = list(SCRIPT)
 
         messages = transcribe(api, "uid-with-inputs",
-                              prompt="語助詞也要寫出來", original_text="おはよう。")
+                              prompt="語助詞也要寫出來", user_supplied_text="おはよう。")
 
         assert codes(messages)[-1] == TaskStatus.COMPLETED
         assert len(fake.calls) == 1
 
     @pytest.mark.parametrize("fields", [
-        {"prompt": None, "original_text": None},
-        {"prompt": "", "original_text": ""},
-        {"prompt": " \n", "original_text": "\t"},
+        {"prompt": None, "user_supplied_text": None},
+        {"prompt": "", "user_supplied_text": ""},
+        {"prompt": " \n", "user_supplied_text": "\t"},
     ], ids=["null", "empty", "blank"])
     def test_unfilled_inputs_are_submitted_as_usual(self, api, fake, fields):
         fake.model_capabilities = replace(
