@@ -27,8 +27,9 @@ from .cli import REPO_ROOT, UsageError, _git, _refuse_writing_references, defaul
 FIRST_STAGE = "建立供應商轉接器"
 """開始時記下的階段：轉錄任務在第一則進度訊息之前建立供應商轉接器，本機轉接器在這裡確認權重。"""
 
-_COUNTER = re.compile(r"\d+(?:\.\d+)?")
-"""進度訊息裡的計數（「MOSS 轉錄中 3/38 分鐘...」），換成 # 後同一個階段的訊息才併得起來。"""
+_COUNTER = re.compile(r"(?<![A-Za-z])\d+(?:\.\d+)?")
+"""進度訊息裡的計數（「MOSS 轉錄中 3/38 分鐘...」），換成 # 後同一個階段的訊息才併得起來；
+接在英文字母後面的是模型名稱（「Qwen3-ForcedAligner」），不換。"""
 
 _GPU_NOTICE = """\
 這次用本機模型在顯卡上轉錄，一次只用一張顯卡（CUDA_VISIBLE_DEVICES={devices}）。
@@ -150,7 +151,9 @@ def _run(audio: Path, provider: str, model: str, language: str, transcript: Path
     else:
         if result.success and result.segments:
             segments = len(result.segments)
-            transcript.write_text(output_format.for_result(result).lrc, encoding="utf-8")
+            # newline=""：和應用程式下載的 LRC 一樣只用 LF，Windows 上也不換成 CRLF
+            transcript.write_text(output_format.for_result(result).lrc, encoding="utf-8",
+                                  newline="")
         else:
             error = result.text or "沒有轉錄出任何片段"
     seconds = time.perf_counter() - start

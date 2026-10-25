@@ -9,6 +9,7 @@ import json
 import os
 import subprocess
 import sys
+import textwrap
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -66,6 +67,8 @@ def test_writes_the_transcript_on_the_original_timeline(fake, uploads, audio, tm
     transcript = lrc.read(out / "meeting.lrc")
     assert [(line.seconds, line.speaker, line.text) for line in transcript.lines] == [
         (0.0, "S0", "第一句測試"), (pytest.approx(5.4), "S1", "第二句測試")]
+    # 和應用程式下載的 LRC 逐位元組相同：只用 LF，Windows 上也不換成 CRLF
+    assert b"\r" not in (out / "meeting.lrc").read_bytes()
     # 送進模型的是去靜音之後的語音視圖，不是原音檔
     assert fake.durations == [pytest.approx(7.2, abs=0.05)]
     # 暫存檔都清掉了，模型的轉接器也釋放了
@@ -126,13 +129,37 @@ def test_progress_counters_fold_into_one_stage():
 
     reports = [(0.0, FIRST_STAGE), (1.0, "準備音訊..."), (2.0, "MOSS 轉錄中 1/3 分鐘..."),
                (3.0, "MOSS 轉錄中 2/3 分鐘..."), (5.0, "MOSS 轉錄中 3/3 分鐘..."),
-               (6.0, "時間還原回原音檔...")]
-    assert _stages(reports, end=6.5) == [
+               (6.0, "Qwen3-ForcedAligner 時間軸對齊中..."), (6.5, "時間軸對齊中 1/2..."),
+               (7.0, "時間軸對齊中 2/2..."), (8.0, "時間還原回原音檔...")]
+    assert _stages(reports, end=8.5) == [
         {"stage": "建立供應商轉接器", "seconds": 1.0},
         {"stage": "準備音訊...", "seconds": 1.0},
         {"stage": "MOSS 轉錄中 #/# 分鐘...", "seconds": 4.0},
+        # 模型名稱裡的數字不是計數
+        {"stage": "Qwen3-ForcedAligner 時間軸對齊中...", "seconds": 0.5},
+        {"stage": "時間軸對齊中 #/#...", "seconds": 1.5},
         {"stage": "時間還原回原音檔...", "seconds": 0.5},
     ]
+
+
+def test_starts_without_the_scoring_dependencies(tmp_path):
+    # 計分用的 opencc、rapidfuzz、pypinyin 在 requirements-dev.txt；只裝了應用程式依賴的
+    # backend\.venv 也要能轉錄
+    code = textwrap.dedent(f"""
+        import sys
+        for name in ("opencc", "rapidfuzz", "pypinyin"):
+            sys.modules[name] = None  # import 時拋 ImportError
+        from tools.eval import cli
+        sys.exit(cli.main(["transcribe", "--audio", {str(tmp_path / "missing.wav")!r},
+                           "--language", "zh-TW", "--out", {str(tmp_path / "out")!r}]))
+    """)
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
+    done = subprocess.run([sys.executable, "-c", code], cwd=ROOT, capture_output=True,
+                          encoding="utf-8", env=env)
+
+    # 走到 transcribe 自己的檢查：找不到音檔
+    assert done.returncode == 2, done.stderr
+    assert "找不到音檔" in done.stderr
 
 
 def test_peak_vram_comes_from_the_gpu_this_run_used(monkeypatch):

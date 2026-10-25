@@ -16,10 +16,16 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from . import mer, reference_set, selftest
+from . import reference_set
 from .custom_vocabulary import CustomVocabulary, load_custom_vocabulary
 from .reference_set import Excerpt
+
+# 計分的 mer 與 selftest 要 opencc、rapidfuzz、pypinyin（requirements-dev.txt），用到時才
+# import：只裝了應用程式依賴的 venv 也能跑 transcribe
+if TYPE_CHECKING:
+    from . import mer
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LAB_ENV = "AIT_LAB_DIR"
@@ -100,6 +106,8 @@ class _Scored:
     cp_global: float
 
     def report(self) -> str:
+        from . import mer
+
         return mer.format_report(self.results, self.transcript.name, self.global_map,
                                  self.cp_global)
 
@@ -114,6 +122,8 @@ class _Scored:
 
 def _score(excerpts: Sequence[Excerpt], transcript: Path, vocabulary: CustomVocabulary,
            bootstrap: int) -> _Scored:
+    from . import mer
+
     results = [mer.evaluate(ex, reference_set.clip_transcript(transcript, ex.start, ex.end),
                             vocabulary, bootstrap=bootstrap)
                for ex in excerpts]
@@ -122,6 +132,8 @@ def _score(excerpts: Sequence[Excerpt], transcript: Path, vocabulary: CustomVoca
 
 
 def _paired_comparison(a: _Scored, b: _Scored, bootstrap: int) -> str:
+    from . import mer
+
     lens = [n for r in a.results for n in r.line_ref_len]
     errors_a = [e for r in a.results for e in r.line_errors]
     errors_b = [e for r in b.results for e in r.line_errors]
@@ -184,6 +196,8 @@ def cmd_eval(args) -> int:
 
 
 def cmd_selftest(_) -> int:
+    from . import selftest
+
     return 0 if selftest.run() else 1
 
 
