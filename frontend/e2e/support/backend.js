@@ -5,8 +5,11 @@
  * 欄位一改名，這裡要跟著改；畫面讀哪些欄位見 src/services/api.js 與 src/utils/providerList.js。
  */
 
-/** GET /providers：Gemini 要金鑰、支援提示詞與三種處理模式；本機不要金鑰，只有標準。 */
-const PROVIDERS = [
+/**
+ * GET /providers：Gemini 要金鑰、支援提示詞與三種處理模式；本機不要金鑰，只有標準。兩邊都不吃
+ * 使用者文稿（#66 修好之前 Gemini 也不吃）。
+ */
+export const PROVIDERS = [
     {
         provider: 'google',
         label: 'Gemini',
@@ -17,7 +20,7 @@ const PROVIDERS = [
                 label: 'gemini-3.5-flash',
                 capabilities: {
                     single_pass_seconds: 900.0, queue: 'celery', can_terminate: true,
-                    split_retry_on_failure: true, accepts_prompt: true, accepts_user_text: true,
+                    split_retry_on_failure: true, accepts_prompt: true, accepts_user_text: false,
                     supports_batch: true, supports_flex: true, pricing: 'per_token', remove_silence: true,
                 },
             },
