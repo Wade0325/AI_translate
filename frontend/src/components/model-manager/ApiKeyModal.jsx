@@ -1,29 +1,18 @@
-import { Modal, Input, Button } from 'antd';
-import { MinusCircleOutlined } from '@ant-design/icons';
+import { Modal, Input } from 'antd';
 
 /**
- * 編輯供應商的 API Keys Modal；providerLabel 是畫面上的供應商名稱。
+ * 編輯供應商的 API 金鑰 Modal；providerLabel 是畫面上的供應商名稱。
+ * 金鑰只有一個欄位（#19），清空後保存就是刪掉金鑰。
  * 邏輯仍在 ModelManagerProvider 中，這裡只負責呈現。
  */
 export default function ApiKeyModal({
     open,
     providerLabel,
-    apiKeys,
-    onApiKeysChange,
+    apiKey,
+    onApiKeyChange,
     onOk,
     onCancel,
 }) {
-    const handleKeyChange = (index, event) => {
-        const next = [...apiKeys];
-        next[index] = event.target.value;
-        onApiKeysChange(next);
-    };
-
-    const removeKey = (index) => {
-        const next = apiKeys.filter((_, i) => i !== index);
-        onApiKeysChange(next.length > 0 ? next : ['']);
-    };
-
     return (
         <Modal
             title={`編輯API - ${providerLabel}`}
@@ -37,26 +26,11 @@ export default function ApiKeyModal({
         >
             <div style={{ marginBottom: '24px' }}>
                 <div style={{ marginBottom: '8px', fontWeight: 500 }}>API金鑰</div>
-
-                {apiKeys.map((key, index) => (
-                    <div key={index} style={{ display: 'flex', alignItems: 'center', marginBottom: '8px' }}>
-                        <Input
-                            placeholder={`API Key ${index + 1}`}
-                            value={key}
-                            onChange={(e) => handleKeyChange(index, e)}
-                            style={{ flexGrow: 1 }}
-                        />
-                        {apiKeys.length > 1 && (
-                            <Button
-                                type="text"
-                                danger
-                                icon={<MinusCircleOutlined />}
-                                onClick={() => removeKey(index)}
-                                style={{ marginLeft: '8px' }}
-                            />
-                        )}
-                    </div>
-                ))}
+                <Input
+                    placeholder="API Key"
+                    value={apiKey}
+                    onChange={(e) => onApiKeyChange(e.target.value)}
+                />
             </div>
         </Modal>
     );
