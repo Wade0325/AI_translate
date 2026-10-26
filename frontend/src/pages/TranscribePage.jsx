@@ -500,6 +500,7 @@ export default function TranscribePage() {
             <VadTestModal
                 open={vadModalOpen}
                 result={vadResult}
+                removesSilence={supports.removeSilence}
                 onClose={() => setVadModalOpen(false)}
             />
 

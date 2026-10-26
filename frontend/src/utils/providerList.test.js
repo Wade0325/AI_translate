@@ -190,3 +190,13 @@ describe('處理模式依模型能力（#162）', () => {
     ]);
   });
 });
+
+describe('去靜音依模型能力（#95）', () => {
+  it('模型能力說不去靜音的就是 false；還沒載入時當成會去靜音', () => {
+    expect([
+      modelSupports({ remove_silence: true }).removeSilence,
+      modelSupports({ remove_silence: false }).removeSilence,
+      modelSupports(null).removeSilence,
+    ]).toEqual([true, false, true]);
+  });
+});

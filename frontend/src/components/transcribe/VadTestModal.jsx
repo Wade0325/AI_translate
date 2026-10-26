@@ -35,11 +35,32 @@ function SegmentPreview({ segments, truncated }) {
     )
 }
 
-export default function VadTestModal({ open, result, onClose }) {
+/**
+ * 正式轉錄會怎麼處理這個音檔。would_use_speech_only 是語音佔比低於門檻，也就是去靜音的模型會用
+ * speech_only.wav；不去靜音的模型（#95）一律用原檔，低於門檻時切在靜音的正中間，否則和去靜音的
+ * 模型一樣由 Silero 找切點。
+ */
+function transcriptionNote(ext, removesSilence) {
+    if (removesSilence) {
+        return ext.would_use_speech_only
+            ? { color: "green", text: "正式轉錄會使用 speech_only.wav" }
+            : { color: "default", text: "正式轉錄不去靜音，直接用原檔" }
+    }
+    return {
+        color: "default",
+        text: ext.would_use_speech_only
+            ? "所選的模型不去靜音：正式轉錄用原檔，分段轉錄時切在靜音的正中間"
+            : "所選的模型不去靜音：正式轉錄用原檔，分段轉錄時由 Silero 找切點",
+    }
+}
+
+/** removesSilence：所選的模型轉錄前會不會去靜音（模型能力），決定對話框怎麼說明正式轉錄。 */
+export default function VadTestModal({ open, result, removesSilence = true, onClose }) {
     if (!result) return null
 
     const ext = result.speech_extraction
     const split = result.split
+    const note = ext?.success ? transcriptionNote(ext, removesSilence) : null
 
     return (
         <Modal
@@ -94,10 +115,8 @@ export default function VadTestModal({ open, result, onClose }) {
                                         {ext.total_duration_seconds}s
                                     </Descriptions.Item>
                                 </Descriptions>
-                                <Tag color={ext.would_use_speech_only ? "green" : "default"} style={{ marginTop: 4 }}>
-                                    {ext.would_use_speech_only
-                                        ? "正式轉錄會使用 speech_only.wav"
-                                        : "正式轉錄不去靜音，直接用原檔"}
+                                <Tag color={note.color} style={{ marginTop: 4 }}>
+                                    {note.text}
                                 </Tag>
                                 <SegmentPreview
                                     segments={ext.segments}

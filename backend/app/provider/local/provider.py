@@ -65,7 +65,9 @@ def _capabilities(model: str) -> ModelCapabilities:
         supports_batch=False,
         supports_flex=False,
         pricing="free",
-        remove_silence=True,
+        # 不剪靜音（#95）：剪掉靜音之後 MOSS 的說話者分離變差，同一位旁白 47% 的行被拆成兩位，
+        # 處理時間只省 5%。照樣找出靜音當分段轉錄的切點
+        remove_silence=False,
     )
 
 

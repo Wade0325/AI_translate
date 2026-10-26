@@ -407,6 +407,10 @@ class TestSingleFileTask:
 MOSTLY_VOICED = [(0.0, 10.0), (11.5, 21.5)]
 """有聲 0–10、11.5–21.5 秒，中間靜音 1.5 秒：語音佔比約 96%，不低於門檻。"""
 
+EARLY_GAP = [(0.0, 5.0), (6.5, 21.5)]
+"""有聲 0–5、6.5–21.5 秒，中間靜音 1.5 秒：語音佔比約 96%，不低於門檻。靜音的正中間在 5.75 秒，
+不在音檔的正中間（10.75 秒）。"""
+
 LONG_GAP = [(0.0, 6.0), (14.0, 20.0)]
 """有聲 0–6 秒、靜音 6–14 秒、有聲 14–20 秒。去靜音剪掉 6.3–13.7 秒（有聲段前後各留 0.3 秒），
 語音視圖 12.6 秒，兩個有聲段在語音視圖的 6.3 秒交界。"""
@@ -472,6 +476,20 @@ class TestSpeechView:
         assert flat_times(segments) == pytest.approx([0.5, 1.5, 5.5, 6.5, 10.5, 11.5])
         assert [s["seg_key"] for s in segments] == ["a.0000", "b.a.0000", "b.b.0000"]
         assert leftovers(data_dir) == []
+
+    def test_model_that_keeps_silences_leaves_mostly_speech_audio_to_silero(self, api, fake):
+        # 幾乎全是語音的音檔（見 EARLY_GAP）：不剪靜音的模型也不拿找到的靜音當切點，和剪靜音的模型
+        # 一樣交給 Silero，這類音檔的切法不變（#95）。測試環境沒有 Silero，所以切在正中間，不在
+        # 5.75 秒的靜音。單次只能處理 16 秒
+        fake.model_capabilities = replace(
+            fake.model_capabilities, remove_silence=False, single_pass_seconds=16.0)
+        fake.script = [[(0.5, 2.0, 0, "前半。")], [(1.25, 2.75, 1, "後半。")]]
+        messages = transcribe(api, "uid-keeps-silences-mostly-speech", voiced=EARLY_GAP)
+
+        assert codes(messages)[-1] == TaskStatus.COMPLETED
+        assert fake.durations == pytest.approx([10.75, 10.75], abs=0.01)
+        assert flat_times(stored_segments(api, messages[-1]["task_uuid"])) == pytest.approx(
+            [0.5, 2.0, 12.0, 13.5])
 
     @JUNCTIONS
     def test_times_on_a_junction_stay_out_of_the_removed_silence(self, api, fake, junction):
@@ -1064,6 +1082,15 @@ class TestModelCapabilitiesEndpoint:
         assert not any(c["accepts_prompt"] for c in local.values())
         assert all(c["accepts_prompt"] for c in gemini.values())
 
+    def test_local_models_keep_silences_gemini_models_cut_them(self, api):
+        # 剪掉靜音之後 MOSS 的說話者分離變差（#95）：本機的模型送原音檔，只拿靜音的位置當切點
+        listed = listed_capabilities(api)
+        models = {(provider, model): c["remove_silence"] for (provider, model), c in listed.items()
+                  if provider in ("local", "google")}
+
+        assert models
+        assert models == {(provider, model): provider == "google" for provider, model in models}
+
     def test_no_model_takes_user_text_until_it_reaches_the_task(self, api):
         # 使用者文稿還沒交給任務（#66），#13 Q4 定案先隱藏入口：模型能力照實說不吃，轉錄頁就不提供
         # 附加的按鈕。修好 #66 時把 Gemini 的改回來
@@ -1143,7 +1170,7 @@ class TestModelCapabilitiesEndpoint:
         read = set(re.findall(r"\.([a-z]+(?:_[a-z]+)+)\b", source))
 
         assert {"accepts_prompt", "accepts_user_text", "supports_batch", "supports_flex",
-                "requires_api_key"} <= read
+                "remove_silence", "requires_api_key"} <= read
         assert read <= listed_fields(api)
 
 

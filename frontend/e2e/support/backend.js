@@ -6,8 +6,8 @@
  */
 
 /**
- * GET /providers：Gemini 要金鑰、支援提示詞與三種處理模式；本機不要金鑰，只有標準。兩邊都不吃
- * 使用者文稿（#66 修好之前 Gemini 也不吃）。
+ * GET /providers：Gemini 要金鑰、支援提示詞與三種處理模式；本機不要金鑰，只有標準，也不去靜音（#95）。
+ * 兩邊都不吃使用者文稿（#66 修好之前 Gemini 也不吃）。
  */
 export const PROVIDERS = [
     {
@@ -37,7 +37,7 @@ export const PROVIDERS = [
                 capabilities: {
                     single_pass_seconds: 4200.0, queue: 'local_asr', can_terminate: false,
                     split_retry_on_failure: false, accepts_prompt: false, accepts_user_text: false,
-                    supports_batch: false, supports_flex: false, pricing: 'free', remove_silence: true,
+                    supports_batch: false, supports_flex: false, pricing: 'free', remove_silence: false,
                 },
             },
         ],
