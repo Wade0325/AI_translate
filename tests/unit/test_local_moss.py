@@ -42,6 +42,11 @@ class TestParseOutput:
             {"Start": 16.0, "End": 17.5, "Speaker": 1, "Content": "好"},
         ]
 
+    def test_adjacent_numeric_brackets_inside_text_do_not_end_segment(self):
+        # 沒有說話者標籤的段落開頭是帶小數的時間戳；文字裡相連的 [3][4] 不是下一段
+        text = "[10.0][S01]請看第[3][4]章[15.2][16.0][S02]好[17.5]"
+        assert [s["Content"] for s in moss.parse_output(text)] == ["請看第[3][4]章", "好"]
+
     def test_truncated_last_segment_is_dropped(self):
         # 生成被截斷：最後一段沒有結束時間戳，不能憑空補上
         segs = moss.parse_output("[0.0][S01]完整[1.0][2.0][S01]被截斷的")
@@ -50,6 +55,36 @@ class TestParseOutput:
     def test_empty_or_garbage(self):
         assert moss.parse_output("") == []
         assert moss.parse_output("no timestamps here") == []
+
+    def test_segments_without_speaker_tag_take_the_previous_speaker(self):
+        # 上游 issue #40：有起訖時間戳、沒有 [Sxx]。文字不能丟，沿用前一位說話者（#134）
+        text = "[0.0][S02]前面[1.0][2.0]沒有標記[3.0][3.5]也沒有[4.0][5.0][S01]後面[6.0]"
+        assert moss.parse_output(text) == [
+            {"Start": 0.0, "End": 1.0, "Speaker": 1, "Content": "前面"},
+            {"Start": 2.0, "End": 3.0, "Speaker": 1, "Content": "沒有標記"},
+            {"Start": 3.5, "End": 4.0, "Speaker": 1, "Content": "也沒有"},
+            {"Start": 5.0, "End": 6.0, "Speaker": 0, "Content": "後面"},
+        ]
+
+    def test_untagged_segments_before_the_first_tag_are_the_first_speaker(self):
+        text = "[0.0]前言[1.0][2.0][S02]本文[3.0]"
+        assert moss.parse_output(text) == [
+            {"Start": 0.0, "End": 1.0, "Speaker": 0, "Content": "前言"},
+            {"Start": 2.0, "End": 3.0, "Speaker": 1, "Content": "本文"},
+        ]
+
+    def test_output_without_any_speaker_tag_is_kept_as_the_first_speaker(self):
+        # 上游 issue #61：整段只剩開頭與結尾的時間戳。前面沒有說話者可以沿用時，當成第一位
+        assert moss.parse_output("[0.00]全部的文字都在這裡[115.30]") == [
+            {"Start": 0.0, "End": 115.3, "Speaker": 0, "Content": "全部的文字都在這裡"},
+        ]
+
+    def test_numeric_brackets_inside_untagged_text_do_not_end_segment(self):
+        text = "[10.0]請看第[3]章的內容[15.2][16.0]好[17.5]"
+        assert moss.parse_output(text) == [
+            {"Start": 10.0, "End": 15.2, "Speaker": 0, "Content": "請看第[3]章的內容"},
+            {"Start": 16.0, "End": 17.5, "Speaker": 0, "Content": "好"},
+        ]
 
 
 # ─── 長度預算 ────────────────────────────────────────────────────────────

@@ -52,6 +52,13 @@ _NUM = r"\d+(?:\.\d+)?"
 # 結束時間戳後面必須緊接下一段的「[起][Sxx]」或輸出結尾，文字裡的 [3]、[2024] 才不會被誤認
 _SEGMENT_RE = re.compile(
     rf"\[({_NUM})\]\[S(\d+)\](.*?)\[({_NUM})\](?=\s*(?:\[{_NUM}\]\[S\d+\]|\Z))", re.S)
+# 沒有說話者標籤的輸出（上游 issue #40、#61，#134）只剩時間戳可以切段。MOSS 的時間戳都帶兩位
+# 小數（例如 [0.48]、[2.00]），文字裡的 [3]、[2024] 是整數，不會被當成時間戳
+_TIME = r"\d+\.\d+"
+_UNTAGGED_SEGMENT_RE = re.compile(
+    rf"\[({_TIME})\](.*?)\[({_TIME})\](?=\s*(?:\[{_TIME}\]|\Z))", re.S)
+# 帶標籤的段落裡夾著「[迄][起]」：後面沒有標籤的段落被併進了前一段
+_UNTAGGED_BOUNDARY_RE = re.compile(rf"\[({_TIME})\]\s*\[({_TIME})\]")
 # 進度回報只看段落開頭（後面接說話者標籤）的時間戳
 _SEGMENT_START_RE = re.compile(rf"\[({_NUM})\]\[S\d+\]")
 
@@ -191,15 +198,34 @@ def parse_output(text: str) -> List[dict]:
     """``[起][Sxx]文字[迄]`` → ``[{Start, End, Speaker, Content}]``。
 
     說話者 S01 → 0、S02 → 1（與 VibeVoice 的編號一致）；空文字與迄 < 起的片段丟棄。
+    沒有說話者標籤的段落沿用前一段的說話者，前面沒有時當成第一位（#134）。
     """
-    segments: List[dict] = []
-    for m in _SEGMENT_RE.finditer(text or ""):
-        start, speaker, body, end = float(m[1]), int(m[2]), m[3].strip(), float(m[4])
-        if not body or end < start:
-            continue
-        segments.append({"Start": start, "End": end,
-                         "Speaker": max(speaker - 1, 0), "Content": body})
-    return segments
+    text = text or ""
+    # 第一個說話者標籤之前（整份都沒有標籤時就是全部）沒有說話者可以沿用，當成第一位
+    first_tag = _SEGMENT_START_RE.search(text)
+    head = text[:first_tag.start()] if first_tag else text
+    pieces = [(float(m[1]), 0, m[2], float(m[3])) for m in _UNTAGGED_SEGMENT_RE.finditer(head)]
+    untagged = len(pieces)
+    if first_tag:
+        for m in _SEGMENT_RE.finditer(text, first_tag.start()):
+            split = _split_untagged(float(m[1]), m[3], float(m[4]))
+            untagged += len(split) - 1
+            pieces.extend((start, max(int(m[2]) - 1, 0), body, end) for start, body, end in split)
+    if untagged:
+        logger.warning(f"MOSS 輸出有 {untagged} 段沒有說話者標籤，沿用前一位說話者")
+    return [{"Start": start, "End": end, "Speaker": speaker, "Content": body.strip()}
+            for start, speaker, body, end in pieces if body.strip() and end >= start]
+
+
+def _split_untagged(start: float, body: str, end: float) -> List[Tuple[float, str, float]]:
+    """把併進這一段的、沒有說話者標籤的段落拆出來：``A[迄][起]B`` → ``A``、``B``。"""
+    pieces = []
+    last = 0
+    for boundary in _UNTAGGED_BOUNDARY_RE.finditer(body):
+        pieces.append((start, body[last:boundary.start()], float(boundary[1])))
+        start, last = float(boundary[2]), boundary.end()
+    pieces.append((start, body[last:], end))
+    return pieces
 
 
 def latest_segment_start(text: str) -> Optional[float]:
