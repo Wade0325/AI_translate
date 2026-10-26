@@ -2,7 +2,7 @@
 
 拿轉錄結果（LRC）和評測集的標準答案比對，算錯字率（MER）、說話者歸屬與錯誤分類。改轉錄流程的 PR 用它附上評測數字；工具本身在版控裡，PR 可以指出用的是哪個 commit 的工具。
 
-`eval` 與 `selftest` 離線計分：不呼叫任何 API、不讀音檔、不碰資料庫。要計分的轉錄結果用 `transcribe` 產生：它跑正式的轉錄路徑，會讀音檔、用顯卡，見[產生轉錄結果](#產生轉錄結果transcribe)。
+`eval`、`summary` 與 `selftest` 離線執行：不呼叫任何 API、不讀音檔、不碰資料庫。要計分的轉錄結果用 `transcribe` 產生：它跑正式的轉錄路徑，會讀音檔、用顯卡，見[產生轉錄結果](#產生轉錄結果transcribe)。
 
 ## 資料放在哪裡
 
@@ -116,6 +116,27 @@ backend\.venv\Scripts\python.exe -m tools.eval eval --reference rec17_A.draft --
 - **錯誤預算**：每段差異分成跨語言術語、術語拼寫、中文術語、口音同音、漏字、插入、其他。
 
 正規化兩邊同時做（全半形、[聽不清]、草稿標記、繁簡、大小寫、標點、語助詞、逐字母縮寫、個位數字）。繁簡用 `t2s` 而不是 `tw2sp`：後者會做詞彙替換，把真正的辨識錯誤洗掉。細節見 `mer.py` 開頭的說明。
+
+## PR 的評測摘要（summary）
+
+PR 範本（`.github/pull_request_template.md`）的「評測摘要」用這個指令產生：
+
+```powershell
+# main 與 PR 的轉錄結果做成對比較，寫成 JSON
+backend\.venv\Scripts\python.exe -m tools.eval eval --reference <名稱> `
+    --transcript <研究區>\runs\<main>\<音檔名稱>.lrc --vs <研究區>\runs\<PR>\<音檔名稱>.lrc `
+    --json <研究區>\runs\<名稱>.json
+
+# 整理成 Markdown，整段貼進 PR
+backend\.venv\Scripts\python.exe -m tools.eval summary <研究區>\runs\<名稱>.json
+```
+
+- 讀 `eval --json` 的檔案，以及每份轉錄結果旁邊的 manifest（`transcribe` 寫的 `<音檔名稱>.manifest.json`）。轉錄結果的路徑是相對路徑時，先照目前的資料夾找，再照 JSON 所在的資料夾找。
+- 印出：commit、模型與語言、錯字率與 cpMER（全域對應）、RTF 與峰值顯存、結尾核對，兩份轉錄結果時再加上 ΔMER 與 95% CI；另外列出音檔的 SHA-256、標準答案的名稱與草稿標記、用的指令，以及判定。
+- **結尾核對**：LRC 最後一行開始的時間和音檔長度比，看結尾有沒有掉尾。只讀時間戳。
+- **判定**：回歸的判定規則還沒定（#15），一律寫「待回歸判定」。
+- 只輸出數字、雜湊與檔名，不輸出錯誤範例或任何轉錄文字，可以直接貼進 PR。找不到 manifest 的欄位寫「—」，摘要最後會列出找不到的是哪一份。
+- `eval --json` 為此多寫了兩項：每份轉錄結果的 `cp_mer_global`（全域對應的 cpMER）與 `global_mapping`，以及兩份轉錄結果時的 `paired`（`delta_mer`、`ci`、`significant`）。
 
 ## 和研究區的關係
 
