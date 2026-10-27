@@ -17,7 +17,7 @@ from app.provider.registry import UnsupportedModelError, check_request
 from app.repositories.model_manager_repository import stored_prompt_template
 from app.repositories.transcription_log_repository import TranscriptionLogRepository
 from app.services import audio_store
-from app.services.api_keys import resolve_api_key
+from app.services.api_keys import PlaintextApiKeyError, refuse_plaintext_api_keys, resolve_api_key
 from app.utils.logger import setup_logger
 from app.utils.paths import MissingUploadError, UnsafeUploadFilenameError, existing_upload_path
 from app.websocket.manager import manager
@@ -42,24 +42,26 @@ def start_transcription_task_sync(payload_str: str, file_uid: str) -> None:
         UnsupportedModelError: 模型不屬於所選的供應商、模型不支援請求的處理模式（Flex），
             或填了模型不吃的提示詞或使用者文稿
             （:class:`~app.provider.registry.UnsupportedInputError`）。
+        PlaintextApiKeyError: 請求帶了明文金鑰（#16 Q8b）。
     """
     request_data = WebSocketTranscriptionRequest.model_validate_json(
         payload_str)
 
     # 先驗證再碰檔案：不符的組合不能默默跑到別的供應商，模型不吃的輸入也不能默默丟掉
     try:
+        refuse_plaintext_api_keys(request_data.api_keys)
         provider, capabilities = check_request(
             request_data.provider, request_data.model,
             prompt=request_data.prompt, user_text=request_data.user_supplied_text,
             service_tier=request_data.service_tier)
-    except UnsupportedModelError:
+    except (PlaintextApiKeyError, UnsupportedModelError):
         # 被拒絕的請求不會變成任務：上傳檔不留在電腦上（前端重新送出時會重新上傳）
         audio_store.discard_upload(request_data.filename, TEMP_UPLOADS_DIR)
         raise
 
     server_file_path = str(existing_upload_path(request_data.filename, TEMP_UPLOADS_DIR))
 
-    # 前端不再送明文金鑰：缺少或只帶遮罩值時改用資料庫裡的金鑰
+    # 請求不帶金鑰或只帶遮罩值（明文在上面已經拒收）：用資料庫裡的金鑰
     with SessionLocal() as db:
         api_key = resolve_api_key(db, provider, request_data.api_keys)
         # 提示詞範本也從設定讀（#144）：用派送這個檔案時設定頁存的範本，接上請求帶的補充說明
@@ -163,14 +165,15 @@ async def websocket_endpoint(
 
         try:
             await run_in_threadpool(start_transcription_task_sync, payload_str=payload_str, file_uid=file_uid)
-        except (UnsafeUploadFilenameError, MissingUploadError, UnsupportedModelError) as e:
+        except (UnsafeUploadFilenameError, MissingUploadError, UnsupportedModelError,
+                PlaintextApiKeyError) as e:
             # 檔名的錯誤訊息是固定的：檔名要另外記，排查只能靠使用者附上的 log（ADR-0005）。
             # 用 repr，換行等控制字元才不會在 log 裡偽造出別的行
             if isinstance(e, UnsafeUploadFilenameError):
                 logger.warning(f"拒絕不合法的上傳檔名 (file_uid: {file_uid}): {e.filename!r}")
             elif isinstance(e, MissingUploadError):
                 logger.error(f"檔案不存在 (file_uid: {file_uid}): {e.filename!r}")
-            else:
+            else:  # 訊息固定，不含金鑰或檔名
                 logger.warning(f"拒絕轉錄請求 (file_uid: {file_uid}): {e}")
             await websocket.send_json({
                 "client_id": file_uid,

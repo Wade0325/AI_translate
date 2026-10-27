@@ -14,9 +14,8 @@ from app.api import history
 from app.api import transcripts
 from app.api import vad
 from app.websocket.manager import manager as websocket_manager
-from app.websocket.origin import WebSocketOriginMiddleware
 
-from fastapi.middleware.cors import CORSMiddleware
+from app.core.api_access import api_docs_urls, restrict_access
 from app.core.config import get_settings
 from app.core.version import APP_VERSION
 from app.runtime import run_mode
@@ -110,7 +109,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="AI Voice Transcription API",
-              version=APP_VERSION, lifespan=lifespan)
+              version=APP_VERSION, lifespan=lifespan, **api_docs_urls(get_settings()))
 
 
 @app.exception_handler(SQLAlchemyError)
@@ -157,19 +156,8 @@ app.include_router(transcripts.router, prefix="/api/v1/transcripts",
                    tags=["Transcripts"])
 app.include_router(vad.router, prefix="/api/v1/vad", tags=["VAD"])
 
-# 只放行設定中的來源（預設為開發用的 Vite dev server），不再用 * 搭配 credentials。
-# Docker 模式開發時前端經 Vite proxy 呼叫 /api、免安裝模式由本服務同源提供，
-# 對瀏覽器而言都是同源請求，不靠 CORS；清單只影響真正跨來源的呼叫
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=get_settings().cors_origins,
-    allow_credentials=True,
-    allow_methods=["DELETE", "GET", "POST", "PUT"],
-    allow_headers=["*"],
-)
-# WebSocket 不受 CORS 保護：握手時 Origin 必須同源或在同一份允許清單內
-app.add_middleware(WebSocketOriginMiddleware,
-                   allowed_origins=get_settings().cors_origins)
+# Host 白名單、CORS 與 WebSocket 的 Origin 檢查，依執行模式分開設定（app/core/api_access.py）
+restrict_access(app, get_settings())
 
 
 class _SPAStaticFiles(StaticFiles):

@@ -14,7 +14,8 @@ html, body, #root {
 body {
   background: #1a1a2e;
   color: #e8e8e8;
-  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  /* 系統字型：開頁面不向 Google Fonts 要字型（#16 Q3）。中日文本來就是系統字型 */
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }

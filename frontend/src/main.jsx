@@ -25,8 +25,9 @@ createRoot(document.getElementById('root')).render(
                     colorSuccess: '#2dd480',
                     colorInfo: '#2dd4a8',
                     borderRadius: 8,
-                    fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
-                    fontFamilyCode: "'JetBrains Mono', 'Fira Code', monospace",
+                    // 系統字型，和 index.css 的 body 一樣（#16 Q3）
+                    fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+                    fontFamilyCode: "'Cascadia Mono', Consolas, 'SF Mono', Menlo, monospace",
                 },
                 components: {
                     Layout: {

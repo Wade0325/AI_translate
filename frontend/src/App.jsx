@@ -24,6 +24,8 @@ export default function App() {
                         {/* 側欄沒有入口（#18），網址直接開仍可對帳 Gemini 的費用 */}
                         <Route path="/billing" element={<BillingPage />} />
                         <Route path="/settings" element={<SettingsPage />} />
+                        {/* 沒有的頁面改開轉錄頁，不留空白；免安裝版的 /docs、/redoc 也走到這裡（#16 Q4） */}
+                        <Route path="*" element={<Navigate to="/transcribe" replace />} />
                     </Route>
                 </Routes>
             </TranscriptionProvider>

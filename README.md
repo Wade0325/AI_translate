@@ -293,6 +293,14 @@ cd backend
 .\.venv\Scripts\python.exe -m uvicorn main:app --port 8000
 ```
 
+免安裝模式比 Docker 模式多三項限制（#16）：
+
+- 只接受用 `127.0.0.1` 或 `localhost` 開的頁面與請求，用區網 IP 或其他主機名開會得到 400（`Invalid host header`）。
+- 不接受跨來源的呼叫（沒有 CORS），WebSocket 也只接受同源。
+- 沒有 `/docs` 與 `/redoc`，因為它們會向第三方的 CDN 要資源。要看 API 文件請用 Docker 模式；`/openapi.json` 兩種模式都有。
+
+兩種模式共通的一點：轉錄、批次恢復與 Test Connection 的請求不能帶明文的 API 金鑰，帶了會被拒收。金鑰先在 Settings 存好，請求不帶金鑰即可。
+
 `backend\.venv` 同時是 Docker 模式主機 GPU worker（`local_worker.bat`）的執行環境，
 依賴與免安裝版相同，以 `backend/requirements-standalone.txt` 為準。升級到預設 MOSS
 模型的既有 venv 至少要補裝：

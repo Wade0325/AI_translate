@@ -34,6 +34,8 @@ class TestCorsAllowList:
         origin = _allowed_origin()
         response = client.get("/api/v1/health", headers={"Origin": origin})
         assert response.headers.get("access-control-allow-origin") == origin
+        # 前端沒有用 cookie，跨來源請求不帶憑證（#16 Q8a）
+        assert "access-control-allow-credentials" not in response.headers
 
     def test_preflight_from_allowed_origin_succeeds(self, client: TestClient):
         origin = _allowed_origin()

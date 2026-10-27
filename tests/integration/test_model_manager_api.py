@@ -316,8 +316,11 @@ class TestLocalTestChecksGpuAndWeights:
 
 
 class TestProviderConnectionTest:
-    def test_test_google_provider_success(self, client: TestClient):
+    """按「測試」時請求只帶遮罩值（或不帶），用的是 Settings 存好的金鑰（#16 Q8b）。"""
+
+    def test_test_google_provider_success(self, client: TestClient, stored_keys):
         """Gemini API 測試成功時應回傳 success=True"""
+        stored_keys("Google", ["fake_api_key"])
         mock_status = MagicMock()
         mock_status.success = True
         mock_status.message = "連線成功"
@@ -328,7 +331,7 @@ class TestProviderConnectionTest:
 
             response = client.post("/api/v1/setting/test", json={
                 "provider": "google",
-                "apiKeys": ["fake_api_key"],
+                "apiKeys": [mask_api_key("fake_api_key")],
                 "model": "gemini-2.5-flash",
             })
         assert response.status_code == 200
@@ -336,8 +339,9 @@ class TestProviderConnectionTest:
         assert data["success"] is True
         mock_client_cls.assert_called_once_with(api_key="fake_api_key")
 
-    def test_test_google_provider_failure(self, client: TestClient):
+    def test_test_google_provider_failure(self, client: TestClient, stored_keys):
         """Gemini API 測試失敗時應回傳 success=False"""
+        stored_keys("Google", ["invalid_key"])
         mock_status = MagicMock()
         mock_status.success = False
         mock_status.message = "無效的 API 金鑰"
@@ -348,7 +352,7 @@ class TestProviderConnectionTest:
 
             response = client.post("/api/v1/setting/test", json={
                 "provider": "google",
-                "apiKeys": ["invalid_key"],
+                "apiKeys": [mask_api_key("invalid_key")],
                 "model": "gemini-2.5-flash",
             })
         assert response.status_code == 200
@@ -365,7 +369,7 @@ class TestProviderConnectionTest:
 
     def test_provider_not_on_the_provider_list_is_unsupported(self, client: TestClient):
         # 供應商照供應商清單（registry）找，不再依名稱分支（#145）
-        response = press_test(client, "openai", "gpt-4", ["sk-key"])
+        response = press_test(client, "openai", "gpt-4")
 
         assert response.status_code == 200
         assert response.json() == {"success": False, "message": "不支援的供應商：openai"}

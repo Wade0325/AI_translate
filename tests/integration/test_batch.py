@@ -55,6 +55,10 @@ RESTORED = [0.2, 1.5, 5.4, 6.0, 10.3, 11.0]
 NAMES = ["batch-a.wav", "batch-b.wav", "batch-c.wav"]
 
 
+# 恢復批次的請求不帶金鑰：後端從資料庫取，請求帶明文會被拒收（#16 Q8b）
+pytestmark = pytest.mark.usefixtures("google_key")
+
+
 # ─── fixtures ────────────────────────────────────────────────────────────────
 
 @pytest.fixture
@@ -127,7 +131,7 @@ def _batch_until(api: TestClient, mode, batch_id: str, names: list[str], until: 
 def recover(api: TestClient, batch_id: str) -> list[dict]:
     """從復原入口接著結束批次，收下廣播直到批次結束。"""
     with api.websocket_connect(f"/api/v1/batch/ws/{batch_id}") as ws:
-        response = api.post(f"/api/v1/batch/{batch_id}/recover", json={"api_keys": "test-key"})
+        response = api.post(f"/api/v1/batch/{batch_id}/recover", json={})
         assert response.status_code == 200, response.text
         return receive_until(ws, TaskStatus.BATCH_COMPLETED)
 
@@ -598,7 +602,7 @@ def test_recover_ends_files_on_the_original_timeline(
 
     # 從復原入口接著結束：進度一樣廣播給這個批次
     with api.websocket_connect(f"/api/v1/batch/ws/{batch_id}") as ws:
-        response = api.post(f"/api/v1/batch/{batch_id}/recover", json={"api_keys": "test-key"})
+        response = api.post(f"/api/v1/batch/{batch_id}/recover", json={})
         assert response.status_code == 200, response.text
         recovered = of_file(receive_until(ws, TaskStatus.BATCH_COMPLETED), name)[-1]
     in_process_run_mode.close(wait=True)  # 等復原整個跑完再查 API
@@ -610,7 +614,7 @@ def test_recover_ends_files_on_the_original_timeline(
     assert flat_times(stored_segments(api, recovered["task_uuid"])) == pytest.approx(RESTORED)
     # 之後再取回結果，和完成時廣播的結果相同（從任務紀錄與片段讀出，不再去問供應商）
     polls = batch_fake.polls
-    again = api.post(f"/api/v1/batch/{batch_id}/recover", json={"api_keys": "test-key"}).json()
+    again = api.post(f"/api/v1/batch/{batch_id}/recover", json={}).json()
     assert [(f["file_uid"], f["status"]) for f in again["files"]] == [(name, TaskStatus.COMPLETED)]
     assert again["files"][0]["result"] == recovered["result"]
     assert batch_fake.polls == polls
@@ -708,7 +712,7 @@ def test_two_watchers_end_each_file_once(api, in_process_run_mode, batch_fake):
         ws.send_json(batch_request(api, ["two-watchers.wav"]))
         wait_until(lambda: batch_fake.polls == 1)
         response = api.post("/api/v1/batch/batch-two-watchers/recover",
-                            json={"api_keys": "test-key"})
+                            json={})
         assert response.status_code == 200, response.text
         wait_until(lambda: batch_fake.polls == 2)
 
@@ -734,7 +738,7 @@ def test_a_recovery_queued_behind_the_running_batch_finds_it_completed(
         ws.send_json(batch_request(api, ["queued-recovery.wav"]))
         assert batch_fake.polling.wait(TIMEOUT)
         response = api.post("/api/v1/batch/batch-queued-recovery/recover",
-                            json={"api_keys": "test-key"})
+                            json={})
         assert response.status_code == 200, response.text
         first_poll.set()
         messages = receive_until(ws, TaskStatus.BATCH_COMPLETED)
@@ -762,7 +766,7 @@ def test_a_file_whose_record_was_deleted_does_not_hold_back_the_others(
     assert of_file(recovered, NAMES[1])[-1]["status_code"] == TaskStatus.COMPLETED
     for _ in range(2):  # 第一次取回之後是已取回，再取回一次也一樣
         files = api.post("/api/v1/batch/batch-deleted-record/recover",
-                         json={"api_keys": "test-key"}).json()["files"]
+                         json={}).json()["files"]
         assert [(f["file_uid"], f["status"]) for f in files] == [(NAMES[1], TaskStatus.COMPLETED)]
 
 
@@ -780,7 +784,7 @@ def test_files_whose_result_status_cannot_be_recorded_are_still_retrieved(
     assert [of_file(recovered, name)[-1]["status_code"] for name in NAMES[:2]] == [
         TaskStatus.COMPLETED] * 2
     files = api.post("/api/v1/batch/batch-status-lost/recover",
-                     json={"api_keys": "test-key"}).json()["files"]
+                     json={}).json()["files"]
     assert [f["file_uid"] for f in files] == NAMES[:2]
 
 
@@ -864,7 +868,7 @@ def test_results_of_a_batch_the_previous_release_finished_can_still_be_retrieved
     start_this_version(test_engine)
 
     for _ in range(2):  # 第一次取回之後是已取回
-        response = api.post("/api/v1/batch/batch-older-done/recover", json={"api_keys": "test-key"})
+        response = api.post("/api/v1/batch/batch-older-done/recover", json={})
         assert response.status_code == 200, response.text
         [retrieved] = response.json()["files"]
         assert (retrieved["file_uid"], retrieved["original_filename"], retrieved["status"]) == (
@@ -907,7 +911,7 @@ def test_an_older_batch_whose_file_list_cannot_be_read_is_left_as_it_was(
     unreadable_older_batch(db_session, batch_id, status)
 
     start_this_version(test_engine)
-    response = api.post(f"/api/v1/batch/{batch_id}/recover", json={"api_keys": "test-key"})
+    response = api.post(f"/api/v1/batch/{batch_id}/recover", json={})
 
     assert response.status_code == 400
     assert "舊版送出的" in response.json()["detail"]
@@ -995,7 +999,7 @@ def test_a_batch_id_sent_again_leaves_the_running_batch_alone(api, in_process_ru
     wait_until(lambda: listed(api, "batch-again")["status"] == "COMPLETED")
     assert listed(api, "batch-again")["files"] == [
         {"file_uid": "again-a.wav", "original_filename": "again-a.wav"}]
-    files = api.post("/api/v1/batch/batch-again/recover", json={"api_keys": "test-key"}).json()["files"]
+    files = api.post("/api/v1/batch/batch-again/recover", json={}).json()["files"]
     assert [(f["file_uid"], f["status"]) for f in files] == [("again-a.wav", TaskStatus.COMPLETED)]
 
 
@@ -1084,7 +1088,7 @@ def test_a_batch_left_waiting_by_restarts_is_offered_for_recovery(
     submit_batch(api, in_process_run_mode, "batch-offered", ["offered.wav"])
     assert shown(api, "batch-offered") == ("POLLING", False, True)
 
-    response = api.post("/api/v1/batch/batch-offered/recover", json={"api_keys": "test-key"})
+    response = api.post("/api/v1/batch/batch-offered/recover", json={})
     assert response.status_code == 200, response.text
     wait_until(lambda: listed(api, "batch-offered")["is_alive"] is False)
     assert shown(api, "batch-offered") == ("RECOVERING", False, True)

@@ -149,14 +149,19 @@ const TRANSCRIPTION_SOCKET = /^\/api\/v1\/ws\/[^/]+$/
  *   - transcriptionRequests：從單檔任務的 WebSocket 收到的請求（已解析的 JSON，不含心跳）
  *   - unhandled：沒有設定回應的請求（回 404）與 WebSocket（直接關掉）；測試結束時要是空的，
  *     見 e2e/support/test.js
+ *   - external：畫面向本機以外要的資源（網址）；測試結束時也要是空的
  */
 export async function mockBackend(page, { routes = {}, transcribe = completeTranscription } = {}) {
     const table = { ...DEFAULT_ROUTES, ...routes }
-    const backend = { requests: [], transcriptionRequests: [], unhandled: [] }
+    const backend = { requests: [], transcriptionRequests: [], unhandled: [], external: [] }
 
-    // 對外的連線（Google Fonts 等）一律擋掉：測試不依賴網路
+    // 對外的連線一律擋掉並記下來：app 不收遙測（ADR-0005），開頁面也不該向第三方要資源，
+    // 例如 Google Fonts（#16 Q3）。只有使用者點了才開的外部連結（像 GitHub Releases）不算
     await page.route((url) => url.hostname !== '127.0.0.1' && url.hostname !== 'localhost',
-        (route) => route.abort())
+        (route) => {
+            backend.external.push(route.request().url())
+            return route.abort()
+        })
 
     await page.route('**/api/v1/**', async (route) => {
         const request = route.request()

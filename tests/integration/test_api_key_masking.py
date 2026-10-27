@@ -9,6 +9,9 @@
 
 漏洞重現：設定 API 的 GET 原本回傳明文 api_keys，前端把它存進 localStorage、
 每個任務再經 WebSocket 送回後端；任何能讀到回應的頁面都拿得到金鑰。
+
+明文金鑰只在設定頁存檔時送進來：任務、批次恢復與 Test Connection 的請求帶明文就拒收，
+錯誤訊息與 log 都不帶那把金鑰（#16 Q8b）。
 """
 import json
 import uuid
@@ -22,6 +25,7 @@ from app.database.models import BatchFile, BatchJob, ModelConfiguration
 from app.provider import registry
 from app.provider.base import ProviderInfo
 from tests.support.fake_provider import FAKE_MODEL, FakeProvider
+from tests.support.task_api import receive
 
 REAL_KEY = "AIzaSyTEST-0123456789-abcdefghij-WXYZ"
 REAL_KEY_MASKED = "AIza********WXYZ"
@@ -30,29 +34,7 @@ SECOND_KEY_MASKED = "AIza********LMNO"
 SHORT_KEY = "short_key"  # 太短的金鑰整個遮掉，不露出前後碼
 
 
-# ─── 共用 fixture ────────────────────────────────────────────────────────────
-
-@pytest.fixture
-def stored_keys(db_session):
-    """直接寫入資料庫的設定（模擬使用者先前在 Settings 存好的金鑰），測試結束後刪除。"""
-    providers = []
-
-    def _store(provider: str, keys: list[str], model: str = "gemini-2.5-flash"):
-        row = db_session.query(ModelConfiguration).filter_by(provider=provider).first()
-        if row is None:
-            row = ModelConfiguration(provider=provider)
-            db_session.add(row)
-        row.api_keys = json.dumps(keys)
-        row.model = model
-        db_session.commit()
-        providers.append(provider)
-
-    yield _store
-
-    for provider in providers:
-        db_session.query(ModelConfiguration).filter_by(provider=provider).delete()
-    db_session.commit()
-
+# ─── 共用 helper（stored_keys 在 tests/conftest.py）─────────────────────────
 
 def _keys_in_db(db_session, provider: str) -> list[str]:
     db_session.expire_all()
@@ -173,6 +155,17 @@ class TestConnectionUsesStoredKey:
         assert response.status_code == 400
         assert keyed.checked_keys == []
 
+    @pytest.mark.parametrize("api_keys", [[SECOND_KEY], [REAL_KEY_MASKED, SECOND_KEY]])
+    def test_plain_key_is_refused(self, client, stored_keys, keyed, app_log, api_keys):
+        """帶明文就拒收（#16 Q8b），不能默默改測資料庫裡的那把：測到的不是請求帶的金鑰。"""
+        stored_keys(self.PROVIDER, [REAL_KEY])
+        response = self._post_test(client, api_keys)
+        assert response.status_code == 400
+        assert "Settings" in response.json()["detail"]
+        assert SECOND_KEY not in response.text
+        assert keyed.checked_keys == []
+        assert not any(SECOND_KEY in entry for entry in app_log)
+
 
 # ─── 任務：缺少金鑰或只帶遮罩值時改用資料庫的金鑰 ───────────────────────────
 
@@ -235,13 +228,6 @@ class TestTaskKeyResolution:
             _single_payload(api_keys=SECOND_KEY_MASKED), "uid-key")
         assert task_env[0]["api_keys"] == SECOND_KEY
 
-    def test_single_task_plain_key_still_honoured(self, task_env, stored_keys):
-        """直接呼叫 API（或舊版前端）帶明文金鑰時照用。"""
-        stored_keys("Google", [REAL_KEY])
-        transcription.start_transcription_task_sync(
-            _single_payload(api_keys=SECOND_KEY), "uid-key")
-        assert task_env[0]["api_keys"] == SECOND_KEY
-
     @pytest.mark.parametrize("overrides", [
         {},
         {"api_keys": ""},
@@ -251,6 +237,41 @@ class TestTaskKeyResolution:
         stored_keys("Google", [REAL_KEY])
         batch.start_batch_task_sync(_batch_payload(**overrides), "batch-key")
         assert task_env[0]["api_keys"] == REAL_KEY
+
+
+class TestPlainKeyRefused:
+    """任務的請求帶明文金鑰就拒收（#16 Q8b）：不派發、刪掉上傳檔，錯誤訊息與 log 都不帶金鑰。
+    設定頁存檔照常收明文（上面的 TestSaveKeepsStoredKeys）。"""
+
+    def test_single_task(self, client, task_env, stored_keys, app_log, tmp_path):
+        stored_keys("Google", [REAL_KEY])
+
+        with client.websocket_connect("/api/v1/ws/uid-plain") as ws:
+            ws.send_text(_single_payload(api_keys=SECOND_KEY))
+            message = receive(ws)
+
+        assert message["status_code"] == "FAILED"
+        assert message["file_uid"] == "uid-plain"
+        assert "Settings" in message["status_text"]
+        assert SECOND_KEY not in json.dumps(message)
+        assert task_env == []
+        assert not (tmp_path / "uploads" / "ok.mp3").exists()
+        assert not any(SECOND_KEY in entry for entry in app_log)
+
+    def test_batch_task(self, client, task_env, stored_keys, app_log, tmp_path):
+        stored_keys("Google", [REAL_KEY])
+
+        with client.websocket_connect("/api/v1/batch/ws/batch-plain") as ws:
+            ws.send_text(_batch_payload(api_keys=SECOND_KEY))
+            message = receive(ws)
+
+        assert message["status_code"] == "FAILED"
+        assert message["file_uid"] == "uid-1"
+        assert "Settings" in message["status_text"]
+        assert SECOND_KEY not in json.dumps(message)
+        assert task_env == []
+        assert not (tmp_path / "uploads" / "ok.mp3").exists()
+        assert not any(SECOND_KEY in entry for entry in app_log)
 
 
 class TestRecoverUsesStoredKey:
@@ -285,6 +306,17 @@ class TestRecoverUsesStoredKey:
         response = client.post(f"/api/v1/batch/{self.BATCH_ID}/recover", json=body)
         assert response.status_code == 200
         assert recovered == [(self.BATCH_ID, REAL_KEY)]
+
+    def test_recover_with_plain_key_is_refused(
+            self, client, stored_keys, polling_job, recovered, app_log):
+        stored_keys("Google", [REAL_KEY])
+        response = client.post(f"/api/v1/batch/{self.BATCH_ID}/recover",
+                               json={"api_keys": SECOND_KEY})
+        assert response.status_code == 400
+        assert "Settings" in response.json()["detail"]
+        assert SECOND_KEY not in response.text
+        assert recovered == []
+        assert not any(SECOND_KEY in entry for entry in app_log)
 
     def test_recover_without_any_key_explains_what_to_do(self, client, polling_job, recovered):
         response = client.post(f"/api/v1/batch/{self.BATCH_ID}/recover", json={})

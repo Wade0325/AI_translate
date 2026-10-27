@@ -331,6 +331,7 @@ def test_batch_files_end_like_tasks_in_docker_mode(batch_tasks, uploads, fake, b
     assert list(uploads.iterdir()) == []
 
 
+@pytest.mark.usefixtures("google_key")  # 恢復批次的金鑰從資料庫取，請求不帶明文（#16 Q8b）
 def test_batch_restarted_while_polling_recovers_in_docker_mode(
         batch_tasks, uploads, fake, broadcasts, client, db_session, monkeypatch):
     # worker 在查詢批次時重啟：檔案停在處理中，Celery 還把那次執行當成在跑。看著它的任務 10 分鐘沒有
@@ -356,7 +357,7 @@ def test_batch_restarted_while_polling_recovers_in_docker_mode(
     monkeypatch.setitem(celery_app.conf, "task_always_eager", True)
 
     response = client.post("/api/v1/batch/batch-docker-restart/recover",
-                           json={"api_keys": "test-key"})
+                           json={})
 
     assert response.status_code == 200, response.text
     recovered = file_results(broadcasts())["docker-restart"]
@@ -368,6 +369,7 @@ def test_batch_restarted_while_polling_recovers_in_docker_mode(
     assert list(uploads.iterdir()) == []
 
 
+@pytest.mark.usefixtures("google_key")  # 恢復批次的金鑰從資料庫取，請求不帶明文（#16 Q8b）
 def test_a_batch_whose_polling_broke_off_is_recovered_from_the_task_page_in_docker_mode(
         batch_tasks, uploads, fake, broadcasts, client, monkeypatch):
     # 和免安裝模式一樣：輪詢中斷的批次記成失敗，任務頁給「恢復」；按下去（復原端點）派送的 Celery
@@ -385,7 +387,7 @@ def test_a_batch_whose_polling_broke_off_is_recovered_from_the_task_page_in_dock
     monkeypatch.setitem(celery_app.conf, "task_always_eager", True)
 
     response = client.post("/api/v1/batch/batch-docker-broke-off/recover",
-                           json={"api_keys": "test-key"})
+                           json={})
 
     assert response.status_code == 200, response.text
     recovered = file_results(broadcasts())["docker-broke-off"]
@@ -393,6 +395,7 @@ def test_a_batch_whose_polling_broke_off_is_recovered_from_the_task_page_in_dock
         TaskStatus.COMPLETED, first["task_uuid"])
 
 
+@pytest.mark.usefixtures("google_key")  # 恢復批次的金鑰從資料庫取，請求不帶明文（#16 Q8b）
 def test_a_recovery_still_in_the_queue_keeps_the_batch_recovering_in_docker_mode(
         batch_tasks, uploads, fake, client, db_session, redis_run_mode, monkeypatch):
     # 一小時前建立的批次輪詢中斷了。按「恢復」派出去的 Celery 任務還排在佇列裡，Celery 查不出它
@@ -413,7 +416,7 @@ def test_a_recovery_still_in_the_queue_keeps_the_batch_recovering_in_docker_mode
     monkeypatch.setattr(redis_run_mode, "submit_recover", lambda batch_id, api_key: str(uuid.uuid4()))
 
     response = client.post("/api/v1/batch/batch-docker-queued/recover",
-                           json={"api_keys": "test-key"})
+                           json={})
 
     assert response.status_code == 200, response.text
     assert shown(client, "batch-docker-queued") == ("RECOVERING", None, False)

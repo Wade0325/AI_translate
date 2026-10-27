@@ -10,6 +10,7 @@ from app.database.session import describe_db_error, get_db
 from app.repositories.model_manager_repository import ModelSettingsRepository
 from app.provider import registry
 from app.services.api_keys import (
+    PlaintextApiKeyError,
     mask_api_key,
     merge_api_keys,
     parse_stored_api_keys,
@@ -106,9 +107,13 @@ async def check_provider_ready(
                 "這裡檢查不到它的顯卡與模型權重"))
         api_key = ""
         if info.requires_api_key:
-            # 前端送的是遮罩值（或不送）：從資料庫取回實際金鑰，用第一把測試
-            api_keys = await run_in_threadpool(
-                resolve_api_keys, db, request_data.provider, request_data.api_keys)
+            # 前端送的是遮罩值（或不送）：從資料庫取回實際金鑰，用第一把測試。帶明文就拒收，
+            # 不能默默改測資料庫裡的那把（#16 Q8b）
+            try:
+                api_keys = await run_in_threadpool(
+                    resolve_api_keys, db, request_data.provider, request_data.api_keys)
+            except PlaintextApiKeyError as e:
+                raise HTTPException(status_code=400, detail=str(e)) from e
             if not api_keys:
                 raise HTTPException(status_code=400, detail="未提供 API 金鑰進行測試。")
             api_key = api_keys[0]

@@ -171,6 +171,9 @@ USER_FACING_ERRORS = {
     "UnsupportedInputError": (
         "backend/app/provider/registry.py",
         "UnsupportedModelError 的子類別，訊息一樣是固定句子"),
+    "PlaintextApiKeyError": (
+        "backend/app/services/api_keys.py",
+        "訊息固定是 PLAINTEXT_API_KEY_MESSAGE，不帶金鑰（#16 Q8b）"),
 }
 
 # 刻意把例外的原文放進回應的 except。值是理由

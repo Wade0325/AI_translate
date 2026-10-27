@@ -194,6 +194,41 @@ def data_dir(uploads, monkeypatch):
 
 
 @pytest.fixture
+def stored_keys(db_session):
+    """直接寫入資料庫的設定（模擬使用者先前在 Settings 存好的金鑰），測試結束後刪除。
+
+    請求不能帶明文金鑰（#16 Q8b），要用金鑰的任務、批次恢復與 Test Connection 都從這裡取。
+    """
+    import json
+
+    from app.database.models import ModelConfiguration
+
+    providers = []
+
+    def _store(provider: str, keys: list[str], model: str = "gemini-2.5-flash"):
+        row = db_session.query(ModelConfiguration).filter_by(provider=provider).first()
+        if row is None:
+            row = ModelConfiguration(provider=provider)
+            db_session.add(row)
+        row.api_keys = json.dumps(keys)
+        row.model = model
+        db_session.commit()
+        providers.append(provider)
+
+    yield _store
+
+    for provider in providers:
+        db_session.query(ModelConfiguration).filter_by(provider=provider).delete()
+    db_session.commit()
+
+
+@pytest.fixture
+def google_key(stored_keys):
+    """使用者在 Settings 存好的 Gemini 金鑰 ``test-key``：恢復批次時後端從資料庫取。"""
+    stored_keys("Google", ["test-key"])
+
+
+@pytest.fixture
 def task_db(test_engine):
     """任務（含在 worker 執行緒裡的）用 SessionLocal 寫紀錄；指到測試資料庫。"""
     from app.database.session import SessionLocal, engine
