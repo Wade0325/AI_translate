@@ -10,12 +10,6 @@ MODEL_PRICES: Dict[str, ModelPrice] = {
         input_audio=1.50,
         output_text=9.00
     ),
-    # 依 Gemini 3 Pro 級（<=200k prompt）定價；官方調價時請同步更新
-    "gemini-3.1-pro-preview": ModelPrice(
-        input_text=2.00,
-        input_audio=2.00,
-        output_text=12.00
-    ),
     "gemini-2.5-pro": ModelPrice(
         input_text=1.25,
         input_audio=1.25,

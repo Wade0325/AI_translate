@@ -203,7 +203,7 @@ class ModelPriceInfo(BaseModel):
 
 
 class HistoryUsageResponse(BaseModel):
-    """GET /history/usage 的回應，供 Dashboard / Billing 頁使用"""
+    """GET /history/usage 的回應，供 Billing 頁與轉錄頁的費用估算使用"""
     daily: List[DailyUsage]
     by_model: List[ModelUsage]
     pricing: List[ModelPriceInfo]

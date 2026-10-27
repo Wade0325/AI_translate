@@ -49,10 +49,10 @@ from app.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
 
-# 畫面列出的模型與順序（GET /providers），第一個是預設
+# 畫面列出的模型與順序（GET /providers），第一個是預設。只列正式版：preview 模型隨時可能被
+# 下架或改名（#18 Q5）
 MODELS = (
     "gemini-3.5-flash",
-    "gemini-3.1-pro-preview",
     "gemini-2.5-flash",
     "gemini-2.5-pro",
 )

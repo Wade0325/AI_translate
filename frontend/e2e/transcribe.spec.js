@@ -9,6 +9,32 @@ async function addAudio(page) {
     await expect(page.getByText(AUDIO.name)).toBeVisible()
 }
 
+test('處理模式預設是標準；Gemini 仍可選 Flex 與批次（#18）', async ({ page, mockBackend }) => {
+    await mockBackend()
+    await page.goto('/transcribe')
+
+    await expect(page.getByLabel('供應商')).toHaveValue('google')
+    await expect(page.getByLabel('處理模式')).toHaveValue('standard')
+    await expect(page.getByRole('option', { name: /^Flex/ })).toBeEnabled()
+    await expect(page.getByRole('option', { name: /^批次/ })).toBeEnabled()
+})
+
+test('費用估算只給按 token 計費的模型：選本機時只顯示檔案數與大小（#18）', async ({ page, mockBackend }) => {
+    await mockBackend()
+    await page.goto('/transcribe')
+    await addAudio(page)
+
+    // Gemini 按 token 計費：估算時長、處理時間與費用
+    await expect(page.getByText('est.')).toBeVisible()
+
+    await page.getByLabel('供應商').selectOption('local')
+
+    await expect(page.getByText('est.')).toHaveCount(0)
+    await expect(page.getByText(/~\d+ min/)).toHaveCount(0)
+    await expect(page.getByText(/^1 files$/)).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Start' })).toBeEnabled()
+})
+
 test('選本機送出一個檔案，顯示處理中，完成後到結果頁下載 SRT', async ({ page, mockBackend }) => {
     // 假後端送出處理中之後先停住，等畫面上看到處理中才送完成
     let finish

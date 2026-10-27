@@ -24,7 +24,7 @@ export default function HistoryPage() {
     const [searchKeyword, setSearchKeyword] = useState("")
     const [statusFilter, setStatusFilter] = useState(null)
     const [modeFilter, setModeFilter] = useState(null)
-    const [stats, setStats] = useState({ total_tasks: 0, completed_tasks: 0, failed_tasks: 0, total_cost: 0, total_tokens: 0 })
+    const [stats, setStats] = useState({ total_tasks: 0, completed_tasks: 0, failed_tasks: 0, success_rate: 0, total_cost: 0, total_tokens: 0 })
 
     const fetchHistory = useCallback(async (page = 1, pageSize = 10, overrides = {}) => {
         setLoading(true)
@@ -229,7 +229,8 @@ export default function HistoryPage() {
         },
     ]
 
-    const successRate = stats.total_tasks > 0 ? ((stats.completed_tasks / stats.total_tasks) * 100).toFixed(1) : 0
+    // 成功率照後端算：完成 /（完成＋失敗），處理中與已取消的不算（#18）
+    const successRate = stats.success_rate.toFixed(1)
 
     return (
         <div style={{ display: "flex", flexDirection: "column", gap: 24, padding: 24 }}>

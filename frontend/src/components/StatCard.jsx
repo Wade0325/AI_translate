@@ -1,6 +1,6 @@
 import { Card } from "antd"
 
-/** 統計卡片：Dashboard / History / Billing 共用同一外觀。 */
+/** 統計卡片：History / Billing 共用同一外觀。 */
 export function StatCard({ title, value, subtitle, icon: Icon, iconColor, bgColor, valueColor = "#e8e8e8" }) {
     return (
         <Card size="small" style={{ border: "1px solid #3a3a5c" }} styles={{ body: { padding: 20 } }}>

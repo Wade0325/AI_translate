@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   allowedProcessingMode,
+  billedPerToken,
   missingApiKey,
   modelSupports,
   modelForProvider,
@@ -213,6 +214,16 @@ describe('去靜音依模型能力（#95）', () => {
       modelSupports({ remove_silence: true }).removeSilence,
       modelSupports({ remove_silence: false }).removeSilence,
       modelSupports(null).removeSilence,
+    ]).toEqual([true, false, true]);
+  });
+});
+
+describe('費用估算依模型能力（#18）', () => {
+  it('按 token 計費的模型才估算費用；免費的不估；還沒載入時照樣估算，寧可多提醒可能的費用', () => {
+    expect([
+      billedPerToken({ pricing: 'per_token' }),
+      billedPerToken({ pricing: 'free' }),
+      billedPerToken(null),
     ]).toEqual([true, false, true]);
   });
 });

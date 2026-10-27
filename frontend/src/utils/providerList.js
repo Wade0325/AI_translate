@@ -109,6 +109,12 @@ export function modelSupports(capabilities) {
   };
 }
 
+/**
+ * 這個模型按 token 計費：轉錄頁才估算時長、處理時間與費用；免費的模型（本機）不估（#18）。
+ * 還不知道模型能力時照樣估算，寧可多提醒可能的費用。
+ */
+export const billedPerToken = (capabilities) => (capabilities?.pricing ?? 'per_token') === 'per_token';
+
 /** 停用輸入欄位時顯示的原因（{ prompt, userText }）；支援的那一項是 null。處理模式見 processingModeNote。 */
 export function disabledReasonsFor(supports) {
   return {

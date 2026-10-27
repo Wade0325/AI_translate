@@ -53,6 +53,13 @@ def transcript(result) -> list[tuple]:
     return [(s["start"], s["speaker"], s["text"]) for s in result.segments]
 
 
+def test_lists_no_preview_models():
+    # preview 模型隨時可能被 Google 下架或改名，使用者選了就直接出錯；清單只列正式版（#18 Q5）
+    previews = [model for model in GeminiProvider.capabilities() if "preview" in model]
+
+    assert not previews, f"Gemini 的模型清單有 preview 模型：{previews}"
+
+
 class TestTranscribe:
     def test_returns_transcript_and_usage(self, gemini, genai, audio):
         genai.replies = [Reply(text="[00:01.00]こんにちは", input_tokens=1000, output_tokens=200)]

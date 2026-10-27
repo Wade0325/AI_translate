@@ -173,7 +173,7 @@ class HistoryRepository:
         return lrc
 
     def get_usage(self, db: Session, days: int = 180) -> dict:
-        """彙總最近 days 天內的每日與各模型用量，供 Dashboard / Billing 使用。
+        """彙總最近 days 天內的每日與各模型用量，供 Billing 頁與轉錄頁的費用估算使用。
 
         token 與費用加總每個記了用量的任務，不只完成的：失敗與取消的任務，供應商已經回應的部分
         照樣收費（見 :mod:`app.tasks.lifecycle`）。檔案數只算完成的。沒有完成、也沒記到用量的任務
@@ -256,12 +256,14 @@ class HistoryRepository:
         avg_processing_time = db.query(func.avg(TranscriptionLog.processing_time_seconds)).filter(
             TranscriptionLog.status == TaskStatus.COMPLETED
         ).scalar() or 0.0
+        # 成功率只看已經有成敗的任務：處理中與已取消的不算進分母（#18）
+        finished = completed + failed
 
         return {
             "total_tasks": total,
             "completed_tasks": completed,
             "failed_tasks": failed,
-            "success_rate": round(completed / total * 100, 1) if total > 0 else 0,
+            "success_rate": round(completed / finished * 100, 1) if finished > 0 else 0,
             "total_cost": round(total_cost, 6),
             "total_tokens": total_tokens,
             "total_audio_duration_seconds": round(total_duration, 1),
