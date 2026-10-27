@@ -24,7 +24,7 @@ test('選 Gemini 時說明音檔會上傳到 Google 並連到條款原文；選�
     await page.goto('/transcribe')
 
     await expect(page.getByLabel('供應商')).toHaveValue('google')
-    await expect(page.getByText(/音檔（含檔名）與提示詞會上傳到 Google/)).toBeVisible()
+    await expect(page.getByText(/音檔與提示詞會上傳到 Google/)).toBeVisible()
     await expect(page.getByRole('link', { name: '條款原文' })).toHaveAttribute('href', GEMINI_UPLOAD_NOTICE.terms_url)
 
     await page.getByLabel('供應商').selectOption('local')

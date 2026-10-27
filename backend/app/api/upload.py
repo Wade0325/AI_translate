@@ -1,4 +1,6 @@
+import re
 import shutil
+import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, UploadFile, File, HTTPException
@@ -6,6 +8,7 @@ from fastapi.concurrency import run_in_threadpool
 
 from app.core.config import get_settings
 from app.utils.logger import setup_logger
+from app.utils.paths import resolve_upload_path
 
 logger = setup_logger(__name__)
 
@@ -22,21 +25,17 @@ SUPPORTED_MIME_TYPES = {
 }
 
 
-def _get_unique_filepath(directory: Path, filename: str) -> Path:
-    """若檔名已存在，自動加上編號避免覆蓋，例如 file(1).mp3"""
-    filepath = directory / filename
-    if not filepath.exists():
-        return filepath
+_PLAIN_SUFFIX = re.compile(r"\.[A-Za-z0-9]{1,10}")
 
-    stem = Path(filename).stem
+
+def stored_name(filename: str) -> str:
+    """上傳檔在暫存區的名稱：隨機名稱加上原本的副檔名（#231 Q5）。
+
+    原檔名常有人名、會議名稱，只留在請求與任務紀錄裡：暫存檔、轉成的 wav、切出的段、log，以及送到
+    Gemini 的檔案名稱，都由這個隨機名稱衍生。副檔名照留（ffmpeg 與 MIME 類型要靠它），但只收英數字。
+    """
     suffix = Path(filename).suffix
-    counter = 1
-    while True:
-        new_name = f"{stem}({counter}){suffix}"
-        filepath = directory / new_name
-        if not filepath.exists():
-            return filepath
-        counter += 1
+    return uuid.uuid4().hex + (suffix if _PLAIN_SUFFIX.fullmatch(suffix) else "")
 
 
 @router.post("/upload", tags=["Upload"])
@@ -56,11 +55,11 @@ async def upload_file(
 
     TEMP_UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
-    original_filename = Path(file.filename).name
-    temp_file_path = _get_unique_filepath(TEMP_UPLOADS_DIR, original_filename)
+    temp_file_path = resolve_upload_path(stored_name(Path(file.filename).name), TEMP_UPLOADS_DIR)
 
     def _write_to_disk(src, dst: Path) -> int:
-        with dst.open("wb") as buffer:
+        # "x"：隨機名稱不會撞名；萬一撞了寧可失敗，也不蓋掉別的上傳檔
+        with dst.open("xb") as buffer:
             shutil.copyfileobj(src, buffer)
         return dst.stat().st_size
 

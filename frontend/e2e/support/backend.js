@@ -7,7 +7,7 @@
 
 /** Gemini 的上傳告知（#231 Q6）：選 Gemini 時，設定頁與轉錄頁照這段文字告訴使用者，並連到條款原文。 */
 export const GEMINI_UPLOAD_NOTICE = {
-    text: '音檔（含檔名）與提示詞會上傳到 Google。金鑰所屬的專案沒有啟用計費時（免費層），'
+    text: '音檔與提示詞會上傳到 Google。金鑰所屬的專案沒有啟用計費時（免費層），'
         + 'Google 可能拿這些內容改善產品，也可能由人工審閱；條款要求不要送出敏感或個人資訊。',
     terms_url: 'https://ai.google.dev/gemini-api/terms',
 }

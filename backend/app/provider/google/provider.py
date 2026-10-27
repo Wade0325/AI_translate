@@ -63,7 +63,7 @@ MODELS = (
 # 「Do not submit sensitive, confidential, or personal information to the Unpaid Services.」
 # 付費層不拿去改善產品。層級看金鑰所屬的專案有沒有啟用計費，不看金鑰本身。條款改版時跟著改
 UPLOAD_NOTICE = UploadNotice(
-    text=("音檔（含檔名）與提示詞會上傳到 Google。金鑰所屬的專案沒有啟用計費時（免費層），"
+    text=("音檔與提示詞會上傳到 Google。金鑰所屬的專案沒有啟用計費時（免費層），"
           "Google 可能拿這些內容改善產品，也可能由人工審閱；條款要求不要送出敏感或個人資訊。"),
     terms_url="https://ai.google.dev/gemini-api/terms",
 )

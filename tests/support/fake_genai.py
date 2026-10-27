@@ -9,7 +9,7 @@
   送出時請求引用的檔案不在遠端，那個請求回錯誤。
 
 測試從 ``stored`` 看遠端還留著哪些檔案，從 ``prompts`` 看收到了哪些提示詞，從 ``generated`` 看
-送出了哪些生成請求（Gemini 照次收費）。
+送出了哪些生成請求（Gemini 照次收費），從 ``display_names`` 看上傳的檔案叫什麼名稱。
 """
 
 from __future__ import annotations
@@ -133,6 +133,8 @@ class FakeGenaiClient:
         """批次裡第 i 個請求的結果；沒指定的照提示詞回應。"""
         self.prompts: List[str] = []
         """依序收到的提示詞：generate_content 每次一則，送出的批次每個請求一則。"""
+        self.display_names: List[Optional[str]] = []
+        """依序上傳的檔案的名稱（``display_name``）；遠端檔刪掉之後也留著。"""
         self._ids = itertools.count(1)
         self._polls_left: Dict[str, int] = {}
         self._jobs: Dict[str, List[types.InlinedResponse]] = {}
@@ -149,6 +151,7 @@ class _Files:
 
     def upload(self, *, file: Any, config: Dict[str, Any]) -> types.File:
         self._client._check("files.upload")
+        self._client.display_names.append(config.get("display_name"))
         name = f"files/{next(self._client._ids)}"
         processing = self._client.processing_polls > 0
         uploaded = types.File(

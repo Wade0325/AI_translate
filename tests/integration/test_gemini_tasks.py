@@ -100,6 +100,24 @@ def test_single_file_completes_and_its_remote_file_is_deleted(api, in_process_ru
     assert genai.stored == {}  # 任務結束時刪掉上傳到 Gemini 的檔案
 
 
+def test_gemini_gets_neither_the_original_filename_nor_does_the_log(
+        api, in_process_run_mode, genai, log_file):
+    # 原檔名只留在任務紀錄：上傳到 Gemini 的檔案名稱由磁碟上的隨機名稱衍生，日誌檔也不寫（#231 Q5）
+    genai.replies = [Reply(text="[00:01.00]おはよう。")]
+    filename = upload(api, "王小明的會議.wav")
+    with api.websocket_connect("/api/v1/ws/uid-gemini-name") as ws:
+        ws.send_json({"filename": filename, "original_filename": "王小明的會議.wav",
+                      "provider": "Google", "model": MODEL, "source_lang": "ja"})
+        end = receive_until(ws, TaskStatus.COMPLETED, TaskStatus.FAILED)[-1]
+    wait_until(lambda: not in_process_run_mode.is_alive(end["task_uuid"]))
+
+    assert end["status_code"] == TaskStatus.COMPLETED
+    assert genai.display_names
+    assert not any("王小明" in (name or "") for name in genai.display_names)
+    assert "王小明" not in log_file()
+    assert history(api, "王小明")["original_filename"] == "王小明的會議.wav"
+
+
 def test_single_file_stores_segments_labelled_like_the_local_provider(api, in_process_run_mode, genai):
     # Gemini 的 LRC 在轉接器裡解析一次就變成片段：任務存下片段，字幕的說話者標記和本機一樣
     genai.replies = [Reply(text="[00:00.50]Speaker 1: おはよう。\n[00:03.00]Speaker 2: こんにちは。")]

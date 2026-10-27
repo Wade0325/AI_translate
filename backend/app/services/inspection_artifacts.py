@@ -113,10 +113,10 @@ def persist_speech_extraction(
             "used_for_transcription": used_for_transcription,
         })
         _save_manifest(run_dir, manifest)
-        logger.info(f"去靜音的檢查用音訊已保存: {run_dir.resolve()}")
+        logger.info(f"去靜音的檢查用音訊已保存 (task={task_id})")
         return run_dir
     except Exception as e:
-        logger.warning(f"保存去靜音產物失敗 ({original_filename}): {e}")
+        logger.warning(f"保存去靜音產物失敗 (task={task_id}): {e}")
         return None
 
 
@@ -148,8 +148,8 @@ def persist_split(
             "split_point_seconds": round(split_point, 2),
         })
         _save_manifest(run_dir, manifest)
-        logger.info(f"VAD 分割檢查用音訊已保存: {run_dir.resolve()}")
+        logger.info(f"VAD 分割檢查用音訊已保存 (task={task_id})")
         return run_dir
     except Exception as e:
-        logger.warning(f"保存 VAD 分割產物失敗 ({original_filename}): {e}")
+        logger.warning(f"保存 VAD 分割產物失敗 (task={task_id}): {e}")
         return None

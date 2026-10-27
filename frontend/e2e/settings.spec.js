@@ -223,7 +223,7 @@ test('資料與隱私：取消確認就不刪；有刪不掉的照實說', async
     await expect(page.getByText('已刪除 2 個保留音檔；1 個正在使用中，沒刪掉，請稍後再試')).toBeVisible()
 })
 
-test('資料與隱私：免安裝版說明 data 資料夾裡哪些是個人資料（#231 Q7）', async ({ page, mockBackend }) => {
+test('資料與隱私：免安裝版說明 data 資料夾裡哪些是個人資料，以及日誌檔（#231 Q5、Q7）', async ({ page, mockBackend }) => {
     await mockBackend({
         routes: {
             'GET /local-data': localData({ retention_days: 0, folder: 'D:\\AI_Translate\\data\\audio_store' },
@@ -236,6 +236,7 @@ test('資料與隱私：免安裝版說明 data 資料夾裡哪些是個人資�
     await expect(card.getByText(/不會自動刪除/)).toBeVisible()
     await expect(card.getByText('D:\\AI_Translate\\data', { exact: true })).toBeVisible()
     await expect(card.getByText(/任務紀錄、轉錄結果與 API 金鑰/)).toBeVisible()
+    await expect(card.getByText(/日誌檔，回報問題時附上；不含原檔名、提示詞與轉錄內容/)).toBeVisible()
     await expect(card.getByText(/先關掉 app，再刪掉 models 以外的項目/)).toBeVisible()
 })
 
@@ -244,7 +245,7 @@ test('Gemini 的卡片說明音檔會上傳到 Google，並連到條款原文；
     await page.goto('/settings')
 
     const gemini = providerCard(page, 'Gemini')
-    await expect(gemini.getByText(/音檔（含檔名）與提示詞會上傳到 Google/)).toBeVisible()
+    await expect(gemini.getByText(/音檔與提示詞會上傳到 Google/)).toBeVisible()
     const terms = gemini.getByRole('link', { name: '條款原文' })
     await expect(terms).toHaveAttribute('href', GEMINI_UPLOAD_NOTICE.terms_url)
     await expect(terms).toHaveAttribute('rel', 'noopener noreferrer')

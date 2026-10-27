@@ -21,6 +21,17 @@ def api(test_engine, data_dir, task_db, in_process_run_mode):
 
 
 @pytest.fixture
+def log_file(tmp_path):
+    """像免安裝模式啟動時一樣把 log 寫進日誌檔（#231 Q5），放在暫存資料夾的 logs；回傳讀出全部內容的函式。"""
+    from app.utils.logger import start_log_file, stop_log_file
+
+    folder = tmp_path / "logs"
+    start_log_file(folder)
+    yield lambda: "".join(path.read_text(encoding="utf-8") for path in sorted(folder.iterdir()))
+    stop_log_file()
+
+
+@pytest.fixture
 def saved_prompt_template(db_session):
     """設定頁存的提示詞範本：``saved_prompt_template(供應商, 範本)`` 直接寫進資料庫，像使用者先前在
     設定頁存好的；測試結束後還原（原本沒有這個供應商的設定列就刪掉）。"""

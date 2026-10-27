@@ -65,9 +65,9 @@ class ConnectionManager:
         async with aclosing(run_mode.get().subscribe()) as messages:
             async for data in messages:
                 try:
-                    # 完成訊息帶著整份字幕，只記摘要避免灌爆 log
-                    logger.info(f"收到狀態訊息: {str(data)[:200]}")
                     client_id = data.get("client_id")
+                    # 只記狀態碼：訊息的文字與結果帶著檔名與轉錄內容，不寫進 log（#231 Q5）
+                    logger.info(f"收到狀態訊息: {data.get('status_code')} (client_id={client_id})")
                     if client_id:
                         await self.send_personal_message(data, client_id)
                 except Exception as e:

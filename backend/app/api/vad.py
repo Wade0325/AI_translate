@@ -52,7 +52,8 @@ async def vad_test(body: VadTestRequest):
         raise HTTPException(status_code=404, detail=f"找不到檔案: {body.filename}")
 
     original_name = body.original_filename or body.filename
-    logger.info(f"去靜音與切點預覽開始: {original_name}")
+    # log 寫磁碟上的隨機名稱，不寫原檔名（#231 Q5）
+    logger.info(f"去靜音與切點預覽開始: {body.filename}")
 
     result = await run_in_threadpool(
         run_vad_test,
