@@ -12,20 +12,25 @@ const FALLBACK_RATE_PER_M = 1.45
 // 轉錄以音訊輸入為主、文字輸出為輔，粗估「70% 音訊輸入 + 30% 輸出」的每百萬 token 混合單價
 const blendedRatePerM = (price) => price.input_audio * 0.7 + price.output_text * 0.3
 
+// estimatesCost：所選的模型按 token 計費時才估算時長、處理時間與費用；免費的模型（本機）
+// 只顯示檔案數與大小（#18）
 export function CostEstimator({
     fileCount,
     totalSizeMB,
     model,
+    estimatesCost,
     isSubmitting,
     onSubmit,
 }) {
-    // 價格以後端 MODEL_PRICES 為準（經 /history/usage 的 pricing 取得），避免前端寫死過時價格
+    // 價格以後端 MODEL_PRICES 為準（經 /history/usage 的 pricing 取得），避免前端寫死過時價格；
+    // 要估算時才取
     const [pricing, setPricing] = useState(null)
     useEffect(() => {
+        if (!estimatesCost || pricing) return
         api.history.usage({ days: 1 })
             .then((res) => setPricing(res.pricing))
             .catch(() => { }) // 拿不到計費表時使用後備單價
-    }, [])
+    }, [estimatesCost, pricing])
 
     const estimatedMinutes = totalSizeMB * 1
     const estimatedTokens = Math.round(estimatedMinutes * 800)
@@ -60,42 +65,44 @@ export function CostEstimator({
                     </span>
                 </Tooltip>
 
-                {/* Duration pill */}
-                <Tooltip title={`Estimated ${estimatedTokens.toLocaleString()} tokens`}>
-                    <span style={{
-                        display: 'inline-flex', alignItems: 'center', gap: 5,
-                        background: 'rgba(71, 184, 212, 0.08)',
-                        border: '1px solid rgba(71, 184, 212, 0.15)',
-                        borderRadius: 6, padding: '3px 10px',
-                    }}>
-                        <Clock size={13} color="#47b8d4" />
-                        <Text style={{ fontSize: 12, color: '#c8c8d8' }}>~{estimatedMinutes.toFixed(0)} min</Text>
-                    </span>
-                </Tooltip>
+                {estimatesCost && (<>
+                    {/* Duration pill */}
+                    <Tooltip title={`Estimated ${estimatedTokens.toLocaleString()} tokens`}>
+                        <span style={{
+                            display: 'inline-flex', alignItems: 'center', gap: 5,
+                            background: 'rgba(71, 184, 212, 0.08)',
+                            border: '1px solid rgba(71, 184, 212, 0.15)',
+                            borderRadius: 6, padding: '3px 10px',
+                        }}>
+                            <Clock size={13} color="#47b8d4" />
+                            <Text style={{ fontSize: 12, color: '#c8c8d8' }}>~{estimatedMinutes.toFixed(0)} min</Text>
+                        </span>
+                    </Tooltip>
 
-                {/* Processing pill */}
-                <Tooltip title={`Estimated processing time`}>
-                    <span style={{
-                        display: 'inline-flex', alignItems: 'center', gap: 5,
-                        background: 'rgba(139, 92, 246, 0.08)',
-                        border: '1px solid rgba(139, 92, 246, 0.15)',
-                        borderRadius: 6, padding: '3px 10px',
-                    }}>
-                        <Zap size={13} color="#8b5cf6" />
-                        <Text style={{ fontSize: 12, color: '#c8c8d8' }}>~{estimatedProcessingTime} min</Text>
-                    </span>
-                </Tooltip>
+                    {/* Processing pill */}
+                    <Tooltip title={`Estimated processing time`}>
+                        <span style={{
+                            display: 'inline-flex', alignItems: 'center', gap: 5,
+                            background: 'rgba(139, 92, 246, 0.08)',
+                            border: '1px solid rgba(139, 92, 246, 0.15)',
+                            borderRadius: 6, padding: '3px 10px',
+                        }}>
+                            <Zap size={13} color="#8b5cf6" />
+                            <Text style={{ fontSize: 12, color: '#c8c8d8' }}>~{estimatedProcessingTime} min</Text>
+                        </span>
+                    </Tooltip>
 
-                {/* Cost highlight */}
-                <span style={{
-                    display: 'inline-flex', alignItems: 'center', gap: 4,
-                    marginLeft: 4,
-                }}>
-                    <Text style={{ fontSize: 15, fontWeight: 600, color: '#2dd4a8' }}>
-                        ${estimatedCost.toFixed(4)}
-                    </Text>
-                    <Text style={{ fontSize: 11, color: '#686888' }}>est.</Text>
-                </span>
+                    {/* Cost highlight */}
+                    <span style={{
+                        display: 'inline-flex', alignItems: 'center', gap: 4,
+                        marginLeft: 4,
+                    }}>
+                        <Text style={{ fontSize: 15, fontWeight: 600, color: '#2dd4a8' }}>
+                            ${estimatedCost.toFixed(4)}
+                        </Text>
+                        <Text style={{ fontSize: 11, color: '#686888' }}>est.</Text>
+                    </span>
+                </>)}
             </div>
 
             {/* Right: Action */}

@@ -77,7 +77,7 @@ def get_history_usage(
     db: Session = Depends(get_db),
 ):
     """
-    Dashboard / Billing 頁的用量彙總：每日與各模型的 tokens / 費用 / 檔案數，
+    Billing 頁與轉錄頁費用估算的用量彙總：每日與各模型的 tokens / 費用 / 檔案數，
     並附上模型計費表（來源為後端 MODEL_PRICES，避免前端寫死過時價格）。
     """
     usage = history_repo.get_usage(db, days=days)

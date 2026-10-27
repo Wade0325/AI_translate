@@ -11,7 +11,7 @@ export const TASK_STATUS = Object.freeze({
   BATCH_COMPLETED: 'BATCH_COMPLETED',
 });
 
-/** TranscriptionLog 狀態 → antd Tag 顏色與顯示文字（History、Dashboard 共用）。 */
+/** TranscriptionLog 狀態 → antd Tag 顏色與顯示文字（History 用）。 */
 export const STATUS_META = {
   [TASK_STATUS.COMPLETED]: { color: 'green', label: '完成' },
   [TASK_STATUS.FAILED]: { color: 'red', label: '失敗' },

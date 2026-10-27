@@ -1,5 +1,5 @@
 // @ts-nocheck
-/** Dashboard / Billing 用量圖共用的 Tooltip：Tokens · Files 與 Cost 兩行。 */
+/** Billing 用量圖的 Tooltip：Tokens · Files 與 Cost 兩行。 */
 export function UsageTooltip({ active, payload, label }) {
   if (!active || !payload?.length) return null;
   const row = payload[0].payload;

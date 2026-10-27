@@ -8,6 +8,7 @@ import { useDownloadBundle } from '../hooks/useDownloadBundle';
 import { PROVIDER_LIST_FAILED, useProviderList } from '../hooks/useProviderList';
 import {
   allowedProcessingMode,
+  billedPerToken,
   disabledReasonsFor,
   findModelCapabilities,
   missingApiKey,
@@ -36,8 +37,9 @@ export const TranscriptionProvider = ({ children }) => {
   const [fileList, setFileList] = useState([]);
   const [sourceLang, setSourceLang] = useState('zh-TW');
   const [isProcessing, setIsProcessing] = useState(false);
-  // 使用者選的處理模式：'standard' | 'flex' | 'batch'。實際用的是下面的 processingMode
-  const [chosenProcessingMode, setChosenProcessingMode] = useState('batch');
+  // 使用者選的處理模式：'standard' | 'flex' | 'batch'。實際用的是下面的 processingMode。
+  // 預設標準：結果直接回到這一頁，批次要到 Tasks 頁取回（#18）
+  const [chosenProcessingMode, setChosenProcessingMode] = useState('standard');
   const [multiSpeaker, setMultiSpeaker] = useState(false);
   // 轉錄頁的全域提示詞：補充說明，送給沒有每檔設定提示詞的檔案（不必先按 Apply to All），
   // 後端接在提示詞範本後面
@@ -70,6 +72,8 @@ export const TranscriptionProvider = ({ children }) => {
   const capabilities = findModelCapabilities(providerList, provider, model);
   const supports = useMemo(() => modelSupports(capabilities), [capabilities]);
   const reasons = useMemo(() => disabledReasonsFor(supports), [supports]);
+  // 按 token 計費的模型才估算費用，本機不估（#18）
+  const estimatesCost = billedPerToken(capabilities);
 
   // 換到不支援所選處理模式的模型時退回標準，之後換回來也維持標準（#162）
   const processingMode = allowedProcessingMode(chosenProcessingMode, supports);
@@ -262,6 +266,7 @@ export const TranscriptionProvider = ({ children }) => {
     model,
     setModel,
     supports,
+    estimatesCost,
     disabledReasons: reasons,
     isProcessing,
     processingMode,

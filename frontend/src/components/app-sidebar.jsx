@@ -1,16 +1,14 @@
 import { useRef, useCallback, useEffect } from "react"
 import { Link, useLocation } from "react-router-dom"
 import {
-    LayoutDashboard,
     Upload,
     FileText,
     History,
-    CreditCard,
     Settings,
     AudioWaveform,
     ListTodo,
 } from "lucide-react"
-import { Layout, Menu, Avatar, Typography } from "antd"
+import { Layout, Menu, Typography } from "antd"
 import {
     MenuFoldOutlined,
     MenuUnfoldOutlined,
@@ -19,8 +17,8 @@ import {
 const { Sider } = Layout
 const { Text } = Typography
 
+// 沒有 Dashboard 與 Usage & Billing：這兩頁的數字只對 Gemini 有意義，本機下一直是 0（#18）
 const mainNav = [
-    { title: "Dashboard", icon: LayoutDashboard, href: "/" },
     { title: "New Transcription", icon: Upload, href: "/transcribe" },
     { title: "Result Viewer", icon: FileText, href: "/result" },
     { title: "Tasks", icon: ListTodo, href: "/tasks" },
@@ -28,7 +26,6 @@ const mainNav = [
 ]
 
 const systemNav = [
-    { title: "Usage & Billing", icon: CreditCard, href: "/billing" },
     { title: "Settings", icon: Settings, href: "/settings" },
 ]
 
@@ -165,28 +162,7 @@ export function AppSidebar({ collapsed, onCollapse, sidebarWidth = 240, onSideba
                 />
             </div>
 
-            {/* Footer - user info */}
-            <div style={{
-                borderTop: '1px solid #2a2a48',
-                padding: collapsed ? '12px 16px' : '12px 20px',
-                display: 'flex',
-                alignItems: 'center',
-                gap: 10,
-            }}>
-                <Avatar
-                    size={32}
-                    style={{ background: 'rgba(45, 212, 168, 0.2)', color: '#2dd4a8', fontSize: 12, flexShrink: 0 }}
-                >
-                    US
-                </Avatar>
-                {!collapsed && (
-                    <div style={{ display: 'flex', flexDirection: 'column', lineHeight: 1.2 }}>
-                        <Text style={{ color: '#e8e8e8', fontSize: 13, fontWeight: 500 }}>User</Text>
-                        <Text style={{ color: '#8888a8', fontSize: 11 }}>Free Plan</Text>
-                    </div>
-                )}
-            </div>
-
+            {/* 沒有帳號與付費方案（單機 app），底部不放使用者資訊（#18） */}
             {/* Collapse trigger */}
             <div
                 style={{

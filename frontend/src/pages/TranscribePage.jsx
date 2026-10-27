@@ -45,6 +45,7 @@ export default function TranscribePage() {
         model,
         setModel,
         supports,
+        estimatesCost,
         disabledReasons,
         isProcessing,
         processingMode,
@@ -451,6 +452,7 @@ export default function TranscribePage() {
                         fileCount={fileList.filter((f) => ["waiting", "error", "cancelled"].includes(f.status)).length}
                         totalSizeMB={totalSizeMB}
                         model={model}
+                        estimatesCost={estimatesCost}
                         isSubmitting={isProcessing}
                         onSubmit={handleStartTranscription}
                     />

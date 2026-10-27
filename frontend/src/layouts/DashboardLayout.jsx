@@ -7,10 +7,6 @@ const { Content, Header } = Layout
 const { Title, Text } = Typography
 
 const pageConfig = {
-    "/": {
-        title: "Dashboard",
-        description: "Overview of your transcription activity and usage",
-    },
     "/transcribe": {
         title: "New Transcription",
         description: "Configure global settings, upload files, and start transcription",
@@ -29,11 +25,11 @@ const pageConfig = {
     },
     "/billing": {
         title: "Usage & Billing",
-        description: "Track your token consumption, costs, and manage your subscription",
+        description: "Track the token consumption and costs of Gemini transcriptions",
     },
     "/settings": {
         title: "Settings",
-        description: "Manage your account and application preferences",
+        description: "Manage providers, models and application preferences",
     },
 }
 

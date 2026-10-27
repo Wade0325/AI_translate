@@ -90,7 +90,7 @@ export const api = {
     stats() {
       return request('/history/stats');
     },
-    /** Dashboard / Billing 用量彙總：每日、各模型、計費表 */
+    /** Billing 頁與轉錄頁費用估算的用量彙總：每日、各模型、計費表 */
     usage({ days = 180 } = {}) {
       return request(`/history/usage?days=${days}`);
     },

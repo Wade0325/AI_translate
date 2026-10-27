@@ -7,6 +7,8 @@
 """
 import uuid
 from datetime import datetime, timedelta
+
+import pytest
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.database.models import TranscriptionLog
@@ -36,6 +38,19 @@ def _create_transcription_log(db: Session, **kwargs) -> TranscriptionLog:
     db.commit()
     db.refresh(log)
     return log
+
+
+@pytest.fixture
+def empty_db(tmp_path):
+    """只給一個測試用的空資料庫：共用的測試資料庫留著別的測試 commit 的紀錄，算不出確切的統計。"""
+    from app.database.models import Base
+    from app.database.session import _create_engine
+
+    engine = _create_engine(f"sqlite:///{(tmp_path / 'stats.db').as_posix()}")
+    Base.metadata.create_all(bind=engine)
+    with sessionmaker(bind=engine)() as session:
+        yield session
+    engine.dispose()
 
 
 # ─── ModelSettingsRepository ─────────────────────────────────────────────────
@@ -228,18 +243,20 @@ class TestHistoryRepository:
         assert stats["failed_tasks"] >= 1
         assert stats["total_cost"] >= 0.001
 
-    def test_get_stats_success_rate_calculation(self, db_session: Session):
-        """成功率計算邏輯：completed / total * 100"""
-        for _ in range(3):
-            _create_transcription_log(db_session, status="COMPLETED",
-                                      original_filename=f"sr_{uuid.uuid4()}.mp3")
-        for _ in range(1):
-            _create_transcription_log(db_session, status="FAILED",
-                                      original_filename=f"sf_{uuid.uuid4()}.mp3")
-        stats = self.repo.get_stats(db_session)
-        # 至少有 3 成功 1 失敗，成功率至少 75%
-        assert stats["success_rate"] >= 0
-        assert stats["success_rate"] <= 100
+    def test_success_rate_counts_only_finished_tasks(self, empty_db: Session):
+        """成功率 = 完成 /（完成＋失敗）：處理中與已取消的任務沒有成敗，不算進分母（#18）"""
+        for status in ["COMPLETED"] * 3 + ["FAILED", "PROCESSING", "CANCELLED", "CANCELLED"]:
+            _create_transcription_log(empty_db, status=status)
+
+        stats = self.repo.get_stats(empty_db)
+
+        assert stats["total_tasks"] == 7
+        assert stats["success_rate"] == 75.0
+
+    def test_success_rate_is_zero_before_any_task_finishes(self, empty_db: Session):
+        _create_transcription_log(empty_db, status="PROCESSING")
+
+        assert self.repo.get_stats(empty_db)["success_rate"] == 0
 
     def test_get_logs_ordered_by_timestamp_desc(self, db_session: Session):
         """結果應依 request_timestamp 降序排列"""

@@ -52,6 +52,20 @@ test('列出任務紀錄，從已完成的那一列下載 SRT', async ({ page, m
         .toEqual({ filename: 'meeting.srt', text: TRANSCRIPTS.srt })
 })
 
+test('成功率照後端算的數字顯示：處理中與已取消的任務不算進分母', async ({ page, mockBackend }) => {
+    await mockBackend({
+        routes: {
+            ...HISTORY_ROUTES,
+            // 4 筆裡 1 完成、1 失敗，另外 2 筆處理中或已取消：成功率是 1 /（1＋1）
+            'GET /history/stats': { ...HISTORY_ROUTES['GET /history/stats'], total_tasks: 4, success_rate: 50.0 },
+        },
+    })
+    await page.goto('/history')
+
+    await expect(page.getByText('50.0%')).toBeVisible()
+    await expect(page.getByText('1 完成 / 1 失敗')).toBeVisible()
+})
+
 test('下載失敗時顯示後端的原因', async ({ page, mockBackend }) => {
     await mockBackend({
         routes: {
