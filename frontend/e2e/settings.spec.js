@@ -134,3 +134,32 @@ test('設定頁沒有 Default Model 與 Notifications；本機的 Test Connectio
     expect(backend.requests.filter((r) => r.path === '/setting/test').map((r) => r.body))
         .toEqual([{ provider: 'local', apiKeys: [], model: 'moss-align' }])
 })
+
+test('About 顯示版本號與新版本的下載頁連結，app 自己不連到 GitHub', async ({ page, mockBackend }) => {
+    const external = []
+    page.on('request', (request) => {
+        const { hostname } = new URL(request.url())
+        if (hostname !== '127.0.0.1' && hostname !== 'localhost') external.push(request.url())
+    })
+    await mockBackend({ routes: { 'GET /version': { version: 'v0.1.0-beta.1' } } })
+    await page.goto('/settings')
+
+    const about = providerCard(page, 'About')
+    await expect(about.getByText('v0.1.0-beta.1')).toBeVisible()
+    const releases = about.getByRole('link', { name: 'GitHub Releases' })
+    await expect(releases).toHaveAttribute('href', 'https://github.com/Wade0325/AI_translate/releases')
+    // 在新分頁開，不帶 referrer；點了才連外
+    await expect(releases).toHaveAttribute('target', '_blank')
+    await expect(releases).toHaveAttribute('rel', 'noopener noreferrer')
+    // 只有 Google Fonts（#16 待決定）會連外，沒有任何對 GitHub 的請求
+    expect(external.filter((url) => new URL(url).hostname.endsWith('github.com'))).toEqual([])
+})
+
+test('讀不到版本號時照樣顯示下載頁連結', async ({ page, mockBackend }) => {
+    await mockBackend({ routes: { 'GET /version': reply(500, { detail: '壞掉了' }) } })
+    await page.goto('/settings')
+
+    const about = providerCard(page, 'About')
+    await expect(about.getByText('讀不到')).toBeVisible()
+    await expect(about.getByRole('link', { name: 'GitHub Releases' })).toBeVisible()
+})

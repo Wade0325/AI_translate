@@ -127,6 +127,9 @@ Copy-Tree (Join-Path $Root "backend") (Join-Path $StageDir "backend") @(
     "/XF", ".env", "*.pyc", "*.db"
 )
 Copy-Tree (Join-Path $Root "frontend\dist") (Join-Path $StageDir "frontend\dist") @()
+# 版本號只在建置時注入（#85）：寫進發布包的 backend\VERSION，後端讀它（backend/app/core/version.py）。
+# PowerShell 5.1 的 utf8 會加 BOM；版本號只有 ASCII，所以用 ascii
+Set-Content -Path (Join-Path $StageDir "backend\VERSION") -Value $Version -Encoding ascii
 
 # ── 5. 編譯 C# launcher ───────────────────────────────────────────────────
 Step "編譯 AI_Translate.exe（內建 csc）"
@@ -161,6 +164,11 @@ AI_Translate $Version — Windows 免安裝版
 所有資料（資料庫、上傳暫存、模型權重）都在本資料夾的 data\ 之下；
 升級新版時把舊版 data\ 複製過來即可保留紀錄。
 
+更新
+----
+程式不會自己檢查或下載更新。目前的版本號在 Settings 頁的 About；
+新版本請到 https://github.com/Wade0325/AI_translate/releases 下載。
+
 疑難排解
 --------
 - 若防毒軟體攔截 AI_Translate.exe，可改用手動啟動：
@@ -181,6 +189,7 @@ $required = @(
     "bin\ffmpeg.exe",
     "bin\ffprobe.exe",
     "backend\main.py",
+    "backend\VERSION",
     "backend\requirements-standalone.txt",
     "frontend\dist\index.html"
 )

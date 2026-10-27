@@ -70,6 +70,8 @@
    Local Models 卡片下載模型權重（預設模型約 3.7 GB；選用模型另需約 21 GB）
 
 > 所有資料（資料庫、模型權重）都在解壓資料夾的 `data\` 內；升級新版時把舊版 `data\` 複製過來即可保留紀錄。
+>
+> 程式不會自己檢查或下載更新。目前的版本號在 Settings 頁的 About 卡片，新版本請到 [Releases](https://github.com/Wade0325/AI_translate/releases) 下載；想在新版發布時收到通知，可以在 GitHub 上對這個專案按 **Watch**，選 **Custom** 裡的 **Releases**。
 
 ### 方式 B — Docker 部署（開發者）
 

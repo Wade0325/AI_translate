@@ -71,6 +71,10 @@ export const api = {
   providers() {
     return request('/providers');
   },
+  /** app 的版本號：{ version }；免安裝版是發布的 tag，從原始碼執行時是 dev */
+  version() {
+    return request('/version');
+  },
   history: {
     list({ page = 1, pageSize = 10, keyword, status, mode } = {}) {
       const params = new URLSearchParams({

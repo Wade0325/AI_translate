@@ -69,6 +69,7 @@ const EMPTY_STATS = {
  */
 const DEFAULT_ROUTES = {
     'GET /providers': PROVIDERS,
+    'GET /version': { version: 'v0.1.0-test' },
     'GET /setting/models/google': GOOGLE_CONFIG,
     'GET /setting/models/local': { provider: 'Local', apiKeys: [], model: null, prompt: null },
     // Docker 模式的回應：設定頁不顯示本機模型權重的卡片

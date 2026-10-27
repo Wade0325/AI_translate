@@ -18,6 +18,7 @@ from app.websocket.origin import WebSocketOriginMiddleware
 
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import get_settings
+from app.core.version import APP_VERSION
 from app.runtime import run_mode
 from app.database.session import (
     init_db, SessionLocal, traceback_without_db_details, without_db_details)
@@ -109,7 +110,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="AI Voice Transcription API",
-              version="1.0.0", lifespan=lifespan)
+              version=APP_VERSION, lifespan=lifespan)
 
 
 @app.exception_handler(SQLAlchemyError)
@@ -132,6 +133,12 @@ async def database_error(request: Request, error: SQLAlchemyError) -> JSONRespon
 def health():
     """launcher / 監控探活用。"""
     return {"status": "ok"}
+
+
+@app.get("/api/v1/version", tags=["Health"])
+def app_version():
+    """設定頁顯示的版本號：免安裝版是發布的 tag，從原始碼執行時是 dev（app/core/version.py）。"""
+    return {"version": APP_VERSION}
 
 
 app.include_router(transcription.router, prefix="/api/v1",
