@@ -1,5 +1,5 @@
 import { test, expect } from './support/test.js'
-import { GOOGLE_CONFIG, MASKED_KEY, reply } from './support/backend.js'
+import { GOOGLE_CONFIG, MASKED_KEY, PROVIDERS, reply } from './support/backend.js'
 
 /** 設定頁上某個供應商的卡片。 */
 const providerCard = (page, label) => page.locator('.ant-card').filter({ hasText: label })
@@ -14,9 +14,9 @@ test('金鑰欄位只顯示遮罩值；沒改金鑰就儲存時，送回的是�
     await page.goto('/settings')
 
     const gemini = providerCard(page, 'Gemini')
-    await expect(gemini.getByPlaceholder('API Key 1')).toHaveValue(MASKED_KEY)
+    await expect(gemini.getByPlaceholder('API Key')).toHaveValue(MASKED_KEY)
     // 本機不用金鑰，沒有金鑰欄位
-    await expect(providerCard(page, '本機').getByPlaceholder('API Key 1')).toHaveCount(0)
+    await expect(providerCard(page, '本機').getByPlaceholder('API Key')).toHaveCount(0)
 
     await gemini.getByRole('textbox').last().fill('請保留說話者標記')
     await gemini.getByRole('button', { name: 'Save' }).click()
@@ -45,7 +45,7 @@ test('輸入新金鑰儲存後，欄位換成後端回的遮罩值，明文不�
     })
     await page.goto('/settings')
 
-    const keyField = providerCard(page, 'Gemini').getByPlaceholder('API Key 1')
+    const keyField = providerCard(page, 'Gemini').getByPlaceholder('API Key')
     await keyField.fill(newKey)
     await providerCard(page, 'Gemini').getByRole('button', { name: 'Save' }).click()
 
@@ -69,4 +69,68 @@ test('儲存失敗時顯示後端的原因，修改還留著', async ({ page, mo
     await expect(page.getByText('後端保存失敗: 資料庫被鎖住，請稍後再試')).toBeVisible()
     await expect(gemini.getByText('Unsaved changes')).toBeVisible()
     await expect(gemini.getByRole('textbox').last()).toHaveValue('請保留說話者標記')
+})
+
+test('金鑰只有一個欄位：舊版存了多把時只顯示第一把，儲存時只送第一把', async ({ page, mockBackend }) => {
+    const secondKey = 'AIza********9999'
+    const backend = await mockBackend({
+        routes: {
+            'GET /setting/models/google': { ...GOOGLE_CONFIG, apiKeys: [MASKED_KEY, secondKey] },
+            'POST /setting/models': { success: true },
+        },
+    })
+    await page.goto('/settings')
+
+    const gemini = providerCard(page, 'Gemini')
+    await expect(gemini.getByPlaceholder('API Key')).toHaveCount(1)
+    await expect(gemini.getByPlaceholder('API Key')).toHaveValue(MASKED_KEY)
+    await expect(gemini.getByRole('button', { name: /Add API Key/ })).toHaveCount(0)
+
+    await gemini.getByRole('textbox').last().fill('請保留說話者標記')
+    await gemini.getByRole('button', { name: 'Save' }).click()
+
+    await expect(page.getByText('設定保存成功！')).toBeVisible()
+    // 後端只用第一把（#19）；第二把以後從來沒被用過，存檔時拿掉
+    expect(saveRequests(backend).map((r) => r.body.apiKeys)).toEqual([[MASKED_KEY]])
+})
+
+test('清空金鑰欄位後儲存，送出空清單，後端就刪掉金鑰', async ({ page, mockBackend }) => {
+    const backend = await mockBackend({
+        routes: { 'POST /setting/models': { success: true } },
+    })
+    await page.goto('/settings')
+
+    const gemini = providerCard(page, 'Gemini')
+    await gemini.getByPlaceholder('API Key').fill('')
+    await gemini.getByRole('button', { name: 'Save' }).click()
+
+    await expect(page.getByText('設定保存成功！')).toBeVisible()
+    expect(saveRequests(backend).map((r) => r.body.apiKeys)).toEqual([[]])
+})
+
+test('設定頁沒有 Default Model 與 Notifications；本機的 Test Connection 測預設模型', async ({ page, mockBackend }) => {
+    // 本機有兩個模型，資料庫裡舊版設定頁存的是第二個：測試照樣測預設的第一個
+    const model = (id) => ({ ...PROVIDERS[1].models[0], model: id, label: id })
+    const twoLocalModels = PROVIDERS.map((p) => p.provider !== 'local' ? p : {
+        ...p, models: [model('moss-align'), model('vibevoice-qwen3-asr')],
+    })
+    const backend = await mockBackend({
+        routes: {
+            'GET /providers': twoLocalModels,
+            'GET /setting/models/local': { provider: 'Local', apiKeys: [], model: 'vibevoice-qwen3-asr', prompt: null },
+            'POST /setting/test': { success: true, message: '本機已就緒：顯卡 測試用顯卡，moss-align 的模型權重都已下載' },
+        },
+    })
+    await page.goto('/settings')
+
+    await expect(providerCard(page, '本機')).toBeVisible()
+    await expect(page.getByText('Default Model')).toHaveCount(0)
+    await expect(page.getByText('Notifications')).toHaveCount(0)
+    await expect(page.getByText('Weekly Usage Report')).toHaveCount(0)
+
+    await providerCard(page, '本機').getByRole('button', { name: 'Test Connection' }).click()
+
+    await expect(page.getByText('本機已就緒')).toBeVisible()
+    expect(backend.requests.filter((r) => r.path === '/setting/test').map((r) => r.body))
+        .toEqual([{ provider: 'local', apiKeys: [], model: 'moss-align' }])
 })

@@ -329,7 +329,7 @@ export default function TranscribePage() {
                                 編輯參數
                             </Button>
                         </ReasonTooltip>
-                        {/* 測模型選單上選的模型，不是設定頁存的預設模型：本機要查的是這個模型的權重 */}
+                        {/* 測模型選單上選的模型：本機要查的是這個模型的權重 */}
                         <Button size="small" disabled={!provider} onClick={() => handleTestProvider(provider, model)}>
                             測試 API
                         </Button>

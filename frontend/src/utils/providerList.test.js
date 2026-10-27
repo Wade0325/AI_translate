@@ -37,7 +37,7 @@ const PROVIDERS = [
 ];
 
 describe('modelForProvider：選了供應商之後用哪個模型', () => {
-  it('想用的模型（設定頁存的預設模型）屬於這個供應商就用它', () => {
+  it('想用的模型（例如轉錄頁上次選的模型）屬於這個供應商就用它', () => {
     expect(modelForProvider(PROVIDERS, 'google', 'gemini-2.5-pro')).toBe('gemini-2.5-pro');
   });
 
@@ -90,11 +90,17 @@ describe('providerTestRequest：按「測試」送出的請求', () => {
     });
   });
 
-  it('測畫面上選的模型（設定頁卡片上的、轉錄頁模型選單上的，還沒儲存也算），不測設定頁存的預設模型', () => {
+  it('測轉錄頁模型選單上選的模型，不測資料庫裡舊版存的模型', () => {
     const saved = { apiKeys: [], model: 'moss-align' };
 
     expect(providerTestRequest(PROVIDERS, 'local', saved, 'vibevoice-qwen3-asr').model)
       .toBe('vibevoice-qwen3-asr');
+  });
+
+  it('沒指定模型時（設定頁的 Test Connection）測這個供應商的預設模型，也不看資料庫裡存的模型', () => {
+    const saved = { apiKeys: [], model: 'vibevoice-qwen3-asr' };
+
+    expect(providerTestRequest(PROVIDERS, 'local', saved, null).model).toBe('moss-align');
   });
 });
 
@@ -131,6 +137,16 @@ describe('轉錄頁選的供應商與模型', () => {
 
   it('清單還沒載入時什麼都沒選', () => {
     expect(resolveSelection(null, NOTHING_CHOSEN)).toEqual({ provider: null, model: null });
+  });
+
+  it('上次選的供應商已經不在清單上時，和還沒選一樣用第一個供應商與它的預設模型', () => {
+    expect(resolveSelection(PROVIDERS, { provider: 'openai', model: 'whisper-1' }))
+      .toEqual({ provider: 'google', model: 'gemini-3.5-flash' });
+  });
+
+  it('清單還沒載入時，上次選的供應商也先不算，載入後才照清單確認', () => {
+    expect(resolveSelection(null, { provider: 'local', model: 'moss-align' }))
+      .toEqual({ provider: null, model: null });
   });
 });
 

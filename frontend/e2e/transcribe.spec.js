@@ -168,3 +168,57 @@ test('預覽依所選的模型說明正式轉錄：本機的模型不去靜音�
         .toBeVisible()
     await expect(dialog.getByText('正式轉錄會使用 speech_only.wav')).toHaveCount(0)
 })
+
+test('轉錄頁記住上次選的供應商與模型：重新開頁還是同一組，存的只有名稱', async ({ page, mockBackend }) => {
+    await mockBackend()
+    await page.goto('/transcribe')
+
+    // 第一次開頁照供應商清單的順序，用第一個供應商的預設模型
+    await expect(page.getByLabel('供應商')).toHaveValue('google')
+    await expect(page.getByLabel('模型')).toHaveValue('gemini-3.5-flash')
+
+    await page.getByLabel('供應商').selectOption('local')
+    await expect(page.getByLabel('模型')).toHaveValue('moss-align')
+    await page.reload()
+
+    await expect(page.getByLabel('供應商')).toHaveValue('local')
+    await expect(page.getByLabel('模型')).toHaveValue('moss-align')
+    expect(await page.evaluate(() => ({ ...localStorage })))
+        .toEqual({ ai_translate_last_selection: JSON.stringify({ provider: 'local', model: null }) })
+})
+
+test('上次選的供應商已經不在清單上時，退回清單上的第一個', async ({ page, mockBackend }) => {
+    await mockBackend()
+    await page.addInitScript(() => {
+        // eslint-disable-next-line no-restricted-syntax -- 測試先放一組已經不在清單上的供應商與模型名稱，不是金鑰
+        localStorage.setItem('ai_translate_last_selection', JSON.stringify({ provider: 'openai', model: 'whisper-1' }))
+    })
+    await page.goto('/transcribe')
+
+    await expect(page.getByLabel('供應商')).toHaveValue('google')
+    await expect(page.getByLabel('模型')).toHaveValue('gemini-3.5-flash')
+})
+
+test('「編輯 API」只有一個金鑰欄位，保存時只送這一把', async ({ page, mockBackend }) => {
+    const newKey = 'AIzaSyNEWKEY000000abcd'
+    const backend = await mockBackend({
+        routes: {
+            'GET /setting/models/google': { provider: 'Google', apiKeys: ['AIza********wxyz', 'AIza********9999'], model: 'gemini-3.5-flash', prompt: null },
+            'POST /setting/models': { success: true },
+        },
+    })
+    await page.goto('/transcribe')
+
+    await page.getByRole('button', { name: '編輯 API' }).click()
+    const dialog = page.getByRole('dialog')
+    await expect(dialog.getByPlaceholder('API Key')).toHaveCount(1)
+    await expect(dialog.getByPlaceholder('API Key')).toHaveValue('AIza********wxyz')
+
+    await dialog.getByPlaceholder('API Key').fill(newKey)
+    // antd 會在兩個字的中文按鈕中間加空白：「保 存」
+    await dialog.getByRole('button', { name: '保 存' }).click()
+
+    await expect(page.getByText('設定保存成功！')).toBeVisible()
+    expect(backend.requests.filter((r) => r.method === 'POST' && r.path === '/setting/models').map((r) => r.body.apiKeys))
+        .toEqual([[newKey]])
+})

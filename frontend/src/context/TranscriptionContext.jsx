@@ -17,6 +17,7 @@ import {
   withModel,
   withProvider,
 } from '../utils/providerList';
+import { loadLastSelection, saveLastSelection } from '../utils/lastSelection';
 import { forRetranscription, requestDefaults } from '../utils/transcribeRequest';
 import { cancelFile } from '../utils/cancelOutcome';
 import { api } from '../services/api';
@@ -45,14 +46,18 @@ export const TranscriptionProvider = ({ children }) => {
   const { getProviderConfig } = useModelManager();
 
   // 先選供應商、再選它的模型；兩者都照供應商清單的值送出，後端會驗證模型屬於這個供應商。
-  // 選擇的規則（預設、換供應商）見 utils/providerList.js 的 resolveSelection
+  // 選擇的規則（預設、換供應商）見 utils/providerList.js 的 resolveSelection。
+  // 開頁時沿用上次的選擇，換了就記下來（utils/lastSelection.js）
   const {
     providerList,
     failed: providerListFailed,
     reload: reloadProviderList,
   } = useProviderList();
-  const [selection, setSelection] = useState({ provider: null, model: null });
+  const [selection, setSelection] = useState(loadLastSelection);
   const { provider, model } = resolveSelection(providerList, selection);
+  useEffect(() => {
+    saveLastSelection(selection);
+  }, [selection]);
 
   const selectProvider = useCallback((nextProvider) => {
     setSelection((current) => withProvider(current, nextProvider));

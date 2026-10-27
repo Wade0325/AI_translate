@@ -34,7 +34,7 @@ export const modelOptions = (providerList, provider) =>
   providerModels(providerList, provider).map((m) => ({ value: m.model, label: m.label }));
 
 /**
- * 選了這個供應商之後用哪個模型：想用的模型（例如設定頁存的預設模型）屬於這個供應商就用它，
+ * 選了這個供應商之後用哪個模型：想用的模型（例如轉錄頁上次選的模型）屬於這個供應商就用它，
  * 否則用這個供應商的預設模型。存的是別的供應商的模型、或已經不在清單上的舊模型，都退回預設，
  * 不會送出供應商與模型對不上的請求。查不到供應商（清單還沒載入）時是 null。
  */
@@ -44,11 +44,13 @@ export function modelForProvider(providerList, provider, preferredModel) {
 }
 
 /**
- * 轉錄頁選的供應商與模型。selection 是使用者選過的 { provider, model }，沒選過的是 null：
- * 還沒選供應商時用清單上的第一個；選的模型不屬於這個供應商（或還沒選）時用它的預設模型。
+ * 轉錄頁選的供應商與模型。selection 是使用者選過的 { provider, model }（包括上次開頁時選的，
+ * 見 utils/lastSelection.js），沒選過的是 null：還沒選供應商、或選的供應商已經不在清單上時，
+ * 用清單上的第一個；選的模型不屬於這個供應商（或還沒選）時用它的預設模型。
  */
 export function resolveSelection(providerList, selection) {
-  const provider = selection.provider ?? providerList?.[0]?.provider ?? null;
+  const chosen = findProvider(providerList, selection.provider)?.provider;
+  const provider = chosen ?? providerList?.[0]?.provider ?? null;
   return { provider, model: modelForProvider(providerList, provider, selection.model) };
 }
 
@@ -76,8 +78,9 @@ export const missingApiKey = (providerList, provider, providerConfig) =>
  * 按「測試」送給後端（POST /setting/test）的請求。要金鑰的供應商帶設定頁存的金鑰：那是
  * 遮罩值，後端從資料庫換回實際金鑰；不用金鑰的不帶。
  *
- * 測的是畫面上選的模型 model（設定頁卡片上的、轉錄頁模型選單上的，還沒儲存也算），不是設定頁
- * 存的預設模型。不屬於這個供應商時改測它的預設模型，見 modelForProvider。
+ * 測的是 model：轉錄頁傳模型選單上選的模型；設定頁沒有模型選單，傳 null，測這個供應商的
+ * 預設模型。不看資料庫裡舊版設定頁存的模型（#19 拿掉了那個欄位）。model 不屬於這個供應商時
+ * 也改測它的預設模型，見 modelForProvider。
  */
 export function providerTestRequest(providerList, provider, providerConfig, model) {
   const apiKeys = requiresApiKey(providerList, provider)

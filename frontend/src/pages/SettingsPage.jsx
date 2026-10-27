@@ -1,11 +1,11 @@
 // @ts-nocheck
 import { useState, useEffect, useCallback } from "react"
-import { Card, Button, Input, Select, Switch, Typography, Row, Col, Spin, Divider, Progress, Alert } from "antd"
-import { Key, Bell, Save, Trash2, Cpu, Download, CheckCircle2 } from "lucide-react"
+import { Card, Button, Input, Typography, Row, Col, Spin, Divider, Progress, Alert } from "antd"
+import { Key, Save, Cpu, Download, CheckCircle2 } from "lucide-react"
 import { useModelManager } from "../components/ModelManager"
 import { ReasonText } from "../components/disabled-reason"
 import { PROVIDER_LIST_FAILED, useProviderList } from "../hooks/useProviderList"
-import { modelForProvider, modelOptions, providerOptions, providerPromptDisabledReason, requiresApiKey } from "../utils/providerList"
+import { providerOptions, providerPromptDisabledReason, requiresApiKey } from "../utils/providerList"
 import { api } from "../services/api"
 
 const { Text } = Typography
@@ -27,17 +27,15 @@ export default function SettingsPage() {
                     try {
                         const config = await getProviderConfig(provider)
                         return [provider, {
-                            apiKeys: config?.apiKeys?.length > 0 ? config.apiKeys : [""],
-                            // 存的模型不屬於這個供應商（或已經不在清單上）時顯示預設模型
-                            model: modelForProvider(providerList, provider, config?.model),
+                            // 金鑰只有一個欄位（#19）：舊版存了多把時只顯示第一把，後端也只用第一把
+                            apiKey: config?.apiKeys?.[0] ?? "",
                             prompt: config?.prompt || "",
                             isDirty: false
                         }]
                     } catch (err) {
                         console.error(`Failed to load config for ${provider}:`, err)
                         return [provider, {
-                            apiKeys: [""],
-                            model: modelForProvider(providerList, provider, null),
+                            apiKey: "",
                             prompt: "",
                             isDirty: false
                         }]
@@ -63,20 +61,17 @@ export default function SettingsPage() {
 
     const handleSave = async (provider) => {
         const form = providerForms[provider]
-        const validApiKeys = form.apiKeys.filter(k => k.trim() !== "")
 
         const saved = await saveProviderConfig(provider, {
-            apiKeys: validApiKeys,
-            model: form.model,
+            apiKey: form.apiKey,
             prompt: form.prompt
         })
 
         if (saved) {
             // 表單改顯示後端回傳的遮罩值，剛輸入的明文金鑰不留在畫面狀態裡
-            const savedKeys = saved.apiKeys ?? []
             setProviderForms(prev => ({
                 ...prev,
-                [provider]: { ...form, isDirty: false, apiKeys: savedKeys.length > 0 ? savedKeys : [""] }
+                [provider]: { ...form, isDirty: false, apiKey: saved.apiKeys?.[0] ?? "" }
             }))
         }
     }
@@ -120,51 +115,17 @@ export default function SettingsPage() {
                             }}
                         >
                             <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-                                {/* 只有要使用者金鑰的供應商才有金鑰欄位（照供應商清單，本機不用） */}
+                                {/* 只有要使用者金鑰的供應商才有金鑰欄位（照供應商清單，本機不用）。
+                                    只有一個欄位（#19）：清空後儲存就是刪掉金鑰 */}
                                 {requiresApiKey(providerList, provider) && <div>
-                                    <Text style={{ color: '#e8e8e8', fontSize: 13, display: 'block', marginBottom: 6 }}>API Keys (Try from top to bottom)</Text>
-                                    {providerForms[provider].apiKeys.map((key, idx) => (
-                                        <div key={idx} style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
-                                            <Input.Password
-                                                value={key}
-                                                onChange={(e) => {
-                                                    const newKeys = [...providerForms[provider].apiKeys]
-                                                    newKeys[idx] = e.target.value
-                                                    updateForm(provider, 'apiKeys', newKeys)
-                                                }}
-                                                placeholder={`API Key ${idx + 1}`}
-                                                style={{ flex: 1, fontFamily: 'monospace' }}
-                                            />
-                                            {providerForms[provider].apiKeys.length > 1 && (
-                                                <Button
-                                                    danger
-                                                    icon={<Trash2 size={14} />}
-                                                    onClick={() => {
-                                                        const newKeys = providerForms[provider].apiKeys.filter((_, i) => i !== idx)
-                                                        updateForm(provider, 'apiKeys', newKeys)
-                                                    }}
-                                                />
-                                            )}
-                                        </div>
-                                    ))}
-                                    <Button
-                                        type="dashed"
-                                        onClick={() => updateForm(provider, 'apiKeys', [...providerForms[provider].apiKeys, ""])}
-                                        style={{ width: '100%', marginTop: 4 }}
-                                    >
-                                        + Add API Key
-                                    </Button>
-                                </div>}
-
-                                <div>
-                                    <Text style={{ color: '#e8e8e8', fontSize: 13, display: 'block', marginBottom: 6 }}>Default Model</Text>
-                                    <Select
-                                        value={providerForms[provider].model}
-                                        onChange={(v) => updateForm(provider, 'model', v)}
-                                        style={{ width: '100%' }}
-                                        options={modelOptions(providerList, provider)}
+                                    <Text style={{ color: '#e8e8e8', fontSize: 13, display: 'block', marginBottom: 6 }}>API Key</Text>
+                                    <Input.Password
+                                        value={providerForms[provider].apiKey}
+                                        onChange={(e) => updateForm(provider, 'apiKey', e.target.value)}
+                                        placeholder="API Key"
+                                        style={{ fontFamily: 'monospace' }}
                                     />
-                                </div>
+                                </div>}
 
                                 <PromptTemplateField
                                     value={providerForms[provider].prompt}
@@ -175,8 +136,9 @@ export default function SettingsPage() {
                                 <Divider style={{ borderColor: '#3a3a5c', margin: '4px 0' }} />
 
                                 <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-                                    {/* 測畫面上選的模型：本機要查的是這個模型的權重 */}
-                                    <Button onClick={() => handleTestProvider(provider, providerForms[provider].model)}>
+                                    {/* 設定頁沒有模型選單（#19），測這個供應商的預設模型；本機查的是它的權重。
+                                        要測別的模型，在轉錄頁選好再按「測試 API」 */}
+                                    <Button onClick={() => handleTestProvider(provider, null)}>
                                         Test Connection
                                     </Button>
                                     <Button
@@ -194,26 +156,6 @@ export default function SettingsPage() {
                 ))}
 
                 <LocalModelsCard />
-
-                <Col xs={24} lg={12}>
-                    <Card
-                        title={
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                                <Bell size={16} color="#2dd4a8" />
-                                <span style={{ color: '#e8e8e8' }}>Notifications (Coming Soon)</span>
-                            </div>
-                        }
-                        style={{ border: '1px solid #3a3a5c', height: '100%' }}
-                    >
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: 16, opacity: 0.5, pointerEvents: 'none' }}>
-                            <SettingToggle label="Transcription Complete" desc="Notify when a job finishes" defaultChecked />
-                            <SettingToggle label="Transcription Failed" desc="Alert on job failures" defaultChecked />
-                            <SettingToggle label="Quota Warning" desc="Alert when nearing usage limits" defaultChecked />
-                            <SettingToggle label="Weekly Usage Report" desc="Weekly summary via email" />
-                        </div>
-                    </Card>
-                </Col>
-
             </Row>
         </div>
     )
@@ -369,18 +311,6 @@ function PromptTemplateField({ value, onChange, disabledReason }) {
                 Leave it empty to use the built-in template. To add a line such as speaker names or terms to keep as written, use the prompt on New Transcription instead.
             </Text>
             <ReasonText reason={disabledReason} style={{ display: 'block', fontSize: 12, marginTop: 4 }} />
-        </div>
-    )
-}
-
-function SettingToggle({ label, desc, defaultChecked }) {
-    return (
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <div>
-                <Text style={{ color: '#e8e8e8', fontSize: 13 }}>{label}</Text>
-                <Text style={{ display: 'block', color: '#8888a8', fontSize: 12 }}>{desc}</Text>
-            </div>
-            <Switch defaultChecked={defaultChecked} />
         </div>
     )
 }

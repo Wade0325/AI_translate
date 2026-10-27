@@ -21,6 +21,17 @@ function purgeLegacyStoredConfigs() {
     }
 }
 
+/**
+ * 存檔時送出的金鑰清單。金鑰只有一個欄位（#19）：field 是欄位上的值，清空代表刪掉金鑰；
+ * 沒帶（undefined，轉錄頁「編輯參數」只存提示詞範本）就照舊送回存的金鑰。沒改到的金鑰是
+ * 遮罩值，後端換回資料庫中原有的金鑰。資料庫裡舊版存的第二把以後的金鑰從來沒被用過，從有
+ * 金鑰欄位的地方（設定頁的 Save、「編輯 API」的保存）存檔時一併拿掉。
+ */
+function apiKeysToSave(field, storedKeys) {
+    if (field === undefined) return storedKeys || [''];
+    return field.trim() ? [field] : [];
+}
+
 export const useModelManager = () => {
     const context = useContext(ModelManagerContext);
     if (!context) {
@@ -32,8 +43,7 @@ export const useModelManager = () => {
 const ModelManagerProvider = ({ children }) => {
     const [isModalOpen, setIsModalOpen] = useState(false);
     const [editingProvider, setEditingProvider] = useState('');
-    const [apiKeys, setApiKeys] = useState(['']);
-    const [selectedModel, setSelectedModel] = useState(undefined);
+    const [apiKey, setApiKey] = useState('');
     const [providerConfigs, setProviderConfigs] = useState({});
 
     const [isParamsModalOpen, setIsParamsModalOpen] = useState(false);
@@ -43,8 +53,9 @@ const ModelManagerProvider = ({ children }) => {
     // provider 是供應商清單（GET /providers）的名稱；畫面上顯示它的 label
     const { providerList } = useProviderList();
     const labelOf = useCallback((provider) => providerLabel(providerList, provider), [providerList]);
-    // 存回設定的模型：存的模型屬於這個供應商就照舊，對不上（舊版的值、已經不在清單上）就改存
-    // 預設模型；清單還沒載入時照舊
+    // 存回設定的模型：畫面上已經沒有 Default Model（#19），這個值沒有功能讀它，只因為
+    // 後端的設定 API 要這個欄位而照舊存回，資料庫欄位保留、不遷移。存的模型屬於這個供應商就
+    // 照舊，對不上（舊版的值、已經不在清單上）就改存預設模型；清單還沒載入時照舊
     const modelToStore = useCallback(
         (provider, storedModel) => modelForProvider(providerList, provider, storedModel) ?? storedModel ?? '',
         [providerList],
@@ -81,13 +92,13 @@ const ModelManagerProvider = ({ children }) => {
 
         const latestConfig = await getProviderConfig(provider) || {};
 
-        // 沒改到的金鑰會以遮罩值送回，後端會保留資料庫中原有的金鑰
+        const { apiKey: keyField, ...rest } = partialConfig;
         const payload = {
             ...latestConfig,
-            ...partialConfig,
+            ...rest,
             provider: provider,
-            apiKeys: partialConfig.apiKeys || latestConfig.apiKeys || [''],
-            model: partialConfig.model || modelToStore(provider, latestConfig.model),
+            apiKeys: apiKeysToSave(keyField, latestConfig.apiKeys),
+            model: modelToStore(provider, latestConfig.model),
         };
 
         try {
@@ -125,18 +136,13 @@ const ModelManagerProvider = ({ children }) => {
         setEditingProvider(provider);
         const config = await getProviderConfig(provider);
 
-        setApiKeys(config?.apiKeys?.length > 0 ? config.apiKeys : ['']);
-        setSelectedModel(modelToStore(provider, config?.model));
+        setApiKey(config?.apiKeys?.[0] ?? '');
 
         setIsModalOpen(true);
-    }, [getProviderConfig, modelToStore]);
+    }, [getProviderConfig]);
 
     const handleOk = async () => {
-        const validApiKeys = apiKeys.filter(key => key.trim() !== '');
-        const success = await saveProviderConfig(editingProvider, {
-            apiKeys: validApiKeys,
-            model: selectedModel,
-        });
+        const success = await saveProviderConfig(editingProvider, { apiKey });
         if (success) {
             setIsModalOpen(false);
         }
@@ -176,8 +182,8 @@ const ModelManagerProvider = ({ children }) => {
         setIsParamsModalOpen(false);
     };
 
-    // 按「測試」：要不要金鑰照供應商清單（本機不用，測的是顯卡與模型權重）。model 是畫面上
-    // 選的模型，還沒儲存也算
+    // 按「測試」：要不要金鑰照供應商清單（本機不用，測的是顯卡與模型權重）。model 是轉錄頁
+    // 模型選單上選的模型；設定頁沒有模型選單，傳 null 測這個供應商的預設模型
     const handleTestProvider = useCallback(async (provider, model) => {
         message.loading({ content: `正在測試 ${labelOf(provider)}...`, key: 'testInterface' });
 
@@ -224,8 +230,8 @@ const ModelManagerProvider = ({ children }) => {
             <ApiKeyModal
                 open={isModalOpen}
                 providerLabel={labelOf(editingProvider)}
-                apiKeys={apiKeys}
-                onApiKeysChange={setApiKeys}
+                apiKey={apiKey}
+                onApiKeyChange={setApiKey}
                 onOk={handleOk}
                 onCancel={handleCancel}
             />
