@@ -11,6 +11,7 @@ import {
   providerTestRequest,
   requiresApiKey,
   resolveSelection,
+  uploadNotice,
   withModel,
   withProvider,
 } from './providerList.js';
@@ -21,6 +22,7 @@ const PROVIDERS = [
     provider: 'google',
     label: 'Gemini',
     requires_api_key: true,
+    upload_notice: { text: '音檔會上傳到 Google。', terms_url: 'https://ai.google.dev/gemini-api/terms' },
     models: [
       { model: 'gemini-3.5-flash', label: 'gemini-3.5-flash', capabilities: {} },
       { model: 'gemini-2.5-pro', label: 'gemini-2.5-pro', capabilities: {} },
@@ -30,6 +32,7 @@ const PROVIDERS = [
     provider: 'local',
     label: '本機',
     requires_api_key: false,
+    upload_notice: null,
     models: [
       { model: 'moss-align', label: 'MOSS-Transcribe-Diarize', capabilities: {} },
       { model: 'vibevoice-qwen3-asr', label: 'VibeVoice + Qwen3-ASR（舊版）', capabilities: {} },
@@ -63,6 +66,19 @@ describe('requiresApiKey：要不要使用者的 API 金鑰（送出前檢查金
   it('照端點說的：Gemini 要，本機不用', () => {
     expect([requiresApiKey(PROVIDERS, 'google'), requiresApiKey(PROVIDERS, 'local')])
       .toEqual([true, false]);
+  });
+});
+
+describe('uploadNotice：選了會把音檔送出本機的供應商時，告訴使用者的事（#231 Q6）', () => {
+  it('照端點說的：Gemini 有告知與條款連結，本機沒有', () => {
+    expect([uploadNotice(PROVIDERS, 'google'), uploadNotice(PROVIDERS, 'local')]).toEqual([
+      { text: '音檔會上傳到 Google。', termsUrl: 'https://ai.google.dev/gemini-api/terms' },
+      null,
+    ]);
+  });
+
+  it('清單還沒載入或查不到供應商時不顯示', () => {
+    expect([uploadNotice(null, 'google'), uploadNotice(PROVIDERS, 'nope')]).toEqual([null, null]);
   });
 });
 

@@ -1,5 +1,5 @@
 import { test, expect, download } from './support/test.js'
-import { PROVIDERS, TRANSCRIPTS, transcriptionMessages } from './support/backend.js'
+import { GEMINI_UPLOAD_NOTICE, PROVIDERS, TRANSCRIPTS, transcriptionMessages } from './support/backend.js'
 
 // 內容不重要：音檔只經過假後端，不會被解碼
 const AUDIO = { name: 'meeting.wav', mimeType: 'audio/wav', buffer: Buffer.from('RIFF0000WAVE') }
@@ -17,6 +17,20 @@ test('處理模式預設是標準；Gemini 仍可選 Flex 與批次（#18）', a
     await expect(page.getByLabel('處理模式')).toHaveValue('standard')
     await expect(page.getByRole('option', { name: /^Flex/ })).toBeEnabled()
     await expect(page.getByRole('option', { name: /^批次/ })).toBeEnabled()
+})
+
+test('選 Gemini 時說明音檔會上傳到 Google 並連到條款原文；選本機時不顯示（#231 Q6）', async ({ page, mockBackend }) => {
+    await mockBackend()
+    await page.goto('/transcribe')
+
+    await expect(page.getByLabel('供應商')).toHaveValue('google')
+    await expect(page.getByText(/音檔（含檔名）與提示詞會上傳到 Google/)).toBeVisible()
+    await expect(page.getByRole('link', { name: '條款原文' })).toHaveAttribute('href', GEMINI_UPLOAD_NOTICE.terms_url)
+
+    await page.getByLabel('供應商').selectOption('local')
+
+    await expect(page.getByText(/會上傳到 Google/)).toHaveCount(0)
+    await expect(page.getByRole('link', { name: '條款原文' })).toHaveCount(0)
 })
 
 test('費用估算只給按 token 計費的模型：選本機時只顯示檔案數與大小（#18）', async ({ page, mockBackend }) => {

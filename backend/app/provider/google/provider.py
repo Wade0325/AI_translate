@@ -41,6 +41,7 @@ from app.provider.base import (
     ProgressAndCancel,
     ProviderInfo,
     TranscribeRequest,
+    UploadNotice,
 )
 from app.provider.google.gemini import GeminiClient
 from app.services.transcription.models import TranscriptionTaskResult
@@ -55,6 +56,16 @@ MODELS = (
     "gemini-3.5-flash",
     "gemini-2.5-flash",
     "gemini-2.5-pro",
+)
+
+# 選 Gemini 時告訴使用者的事（#231 Q6）。重點照 #81 對 Gemini API Additional Terms of Service
+# （Effective March 23, 2026）的整理：免費層的內容會用來改善產品、可能有人工審閱，條款寫明
+# 「Do not submit sensitive, confidential, or personal information to the Unpaid Services.」
+# 付費層不拿去改善產品。層級看金鑰所屬的專案有沒有啟用計費，不看金鑰本身。條款改版時跟著改
+UPLOAD_NOTICE = UploadNotice(
+    text=("音檔（含檔名）與提示詞會上傳到 Google。金鑰所屬的專案沒有啟用計費時（免費層），"
+          "Google 可能拿這些內容改善產品，也可能由人工審閱；條款要求不要送出敏感或個人資訊。"),
+    terms_url="https://ai.google.dev/gemini-api/terms",
 )
 
 UPLOAD_POLL_SECONDS = 2
@@ -415,7 +426,7 @@ def _batch_item_result(inline: Any) -> TranscriptionTaskResult:
 
 class GeminiProvider:
     # 畫面直接顯示模型名稱；轉錄用的是使用者自備的 Gemini API 金鑰
-    info = ProviderInfo(label="Gemini", requires_api_key=True)
+    info = ProviderInfo(label="Gemini", requires_api_key=True, upload_notice=UPLOAD_NOTICE)
 
     def __init__(
         self,

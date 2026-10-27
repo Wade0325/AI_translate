@@ -240,3 +240,26 @@ class TranscriptResponse(BaseModel):
     audio_available: bool = False
     segment_count: int = 0
     segments: List[TranscriptSegmentResponse] = []
+
+
+class RetainedAudioResponse(BaseModel):
+    """保留音檔的設定與目前的用量（#231 Q1）。天數與開關只能用環境變數改。"""
+    enabled: bool
+    retention_days: int
+    """超過這個天數的在下次啟動時刪除；0 是不自動刪除。"""
+    folder: str
+    file_count: int
+    total_bytes: int
+
+
+class LocalDataResponse(BaseModel):
+    """GET /local-data：設定頁「資料與隱私」顯示的內容（#231 Q1、Q7）"""
+    data_folder: Optional[str] = None
+    """免安裝版放所有資料的資料夾；Docker 模式沒有單一的資料夾，是 None。"""
+    retained_audio: RetainedAudioResponse
+
+
+class DeleteRetainedAudioResponse(BaseModel):
+    """DELETE /local-data/retained-audio：刪掉與刪不掉（例如正被開著）的保留音檔數量。"""
+    deleted: int
+    failed: int

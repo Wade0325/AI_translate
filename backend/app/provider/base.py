@@ -55,9 +55,20 @@ class ModelCapabilities:
 
 
 @dataclass(frozen=True)
+class UploadNotice:
+    """選這個供應商時，畫面告訴使用者音檔會送到哪裡、對方怎麼使用（#231 Q6）。
+
+    條款常改，``text`` 只寫一句重點，細節連到 ``terms_url`` 的原文，不抄條文。
+    """
+
+    text: str
+    terms_url: str
+
+
+@dataclass(frozen=True)
 class ProviderInfo:
     """畫面怎麼列出一個供應商：名稱、模型的名稱，以及轉錄要不要使用者的 API 金鑰；
-    還有設定頁的「測試」查的是什麼。"""
+    還有設定頁的「測試」查的是什麼，以及音檔會不會送出本機。"""
 
     label: str
     requires_api_key: bool
@@ -65,6 +76,8 @@ class ProviderInfo:
     """畫面上的模型名稱；沒列的模型直接顯示模型名稱。"""
     checks_transcribing_machine: bool = False
     """設定頁的「測試」查的是執行轉錄的那台機器（例如顯卡與模型權重），不是只連一次 API。"""
+    upload_notice: Optional[UploadNotice] = None
+    """音檔會送出本機時要告訴使用者的事；本機轉錄不送出，是 None。"""
 
 
 @dataclass

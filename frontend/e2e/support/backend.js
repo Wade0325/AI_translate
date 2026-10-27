@@ -5,15 +5,23 @@
  * 欄位一改名，這裡要跟著改；畫面讀哪些欄位見 src/services/api.js 與 src/utils/providerList.js。
  */
 
+/** Gemini 的上傳告知（#231 Q6）：選 Gemini 時，設定頁與轉錄頁照這段文字告訴使用者，並連到條款原文。 */
+export const GEMINI_UPLOAD_NOTICE = {
+    text: '音檔（含檔名）與提示詞會上傳到 Google。金鑰所屬的專案沒有啟用計費時（免費層），'
+        + 'Google 可能拿這些內容改善產品，也可能由人工審閱；條款要求不要送出敏感或個人資訊。',
+    terms_url: 'https://ai.google.dev/gemini-api/terms',
+}
+
 /**
- * GET /providers：Gemini 要金鑰、支援提示詞與三種處理模式；本機不要金鑰，只有標準，也不去靜音（#95）。
- * 兩邊都不吃使用者文稿（#66 修好之前 Gemini 也不吃）。
+ * GET /providers：Gemini 要金鑰、支援提示詞與三種處理模式，音檔會上傳；本機不要金鑰，只有標準，
+ * 也不去靜音（#95），音檔不送出。兩邊都不吃使用者文稿（#66 修好之前 Gemini 也不吃）。
  */
 export const PROVIDERS = [
     {
         provider: 'google',
         label: 'Gemini',
         requires_api_key: true,
+        upload_notice: GEMINI_UPLOAD_NOTICE,
         models: [
             {
                 model: 'gemini-3.5-flash',
@@ -30,6 +38,7 @@ export const PROVIDERS = [
         provider: 'local',
         label: '本機',
         requires_api_key: false,
+        upload_notice: null,
         models: [
             {
                 model: 'moss-align',
@@ -58,6 +67,15 @@ export const TRANSCRIPTS = {
     txt: '[S0]測試的第一句\n[S0]測試的第二句\n',
 }
 
+/**
+ * GET /local-data：Docker 模式的回應（沒有單一的資料夾），保留區裡還沒有音檔。免安裝模式另外有
+ * data_folder，見 e2e/settings.spec.js。
+ */
+export const LOCAL_DATA = {
+    data_folder: null,
+    retained_audio: { enabled: true, retention_days: 30, folder: '/app/audio_store', file_count: 0, total_bytes: 0 },
+}
+
 const EMPTY_STATS = {
     total_tasks: 0, completed_tasks: 0, failed_tasks: 0, success_rate: 0.0, total_cost: 0.0,
     total_tokens: 0, total_audio_duration_seconds: 0.0, avg_processing_time_seconds: 0.0,
@@ -74,6 +92,7 @@ const DEFAULT_ROUTES = {
     'GET /setting/models/local': { provider: 'Local', apiKeys: [], model: null, prompt: null },
     // Docker 模式的回應：設定頁不顯示本機模型權重的卡片
     'GET /setting/local-models/status': { standalone: false },
+    'GET /local-data': LOCAL_DATA,
     'GET /history/usage': { daily: [], by_model: [], pricing: [] },
     'GET /history/stats': EMPTY_STATS,
     'GET /history': { items: [], total: 0, page: 1, page_size: 10, total_pages: 1 },

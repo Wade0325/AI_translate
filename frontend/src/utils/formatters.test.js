@@ -3,6 +3,7 @@ import {
   formatDateTime,
   formatDuration,
   formatElapsed,
+  formatFileSize,
   formatTokensTick,
   localDateKey,
 } from './formatters';
@@ -115,5 +116,20 @@ describe('formatTokensTick：用量圖 Y 軸的 token 數刻度', () => {
     [1_950_000, '2.0M'],
   ])('剛好一半時照四捨五入進位：%s 顯示成 %s', (tokens, expected) => {
     expect(formatTokensTick(tokens)).toBe(expected);
+  });
+});
+
+describe('formatFileSize：檔案大小（設定頁的保留音檔用量）', () => {
+  it('不到 1 GB 用 MB，小數一位', () => {
+    expect([formatFileSize(0), formatFileSize(1024 * 1024), formatFileSize(1.25 * 1024 * 1024)])
+      .toEqual(['0 MB', '1.0 MB', '1.3 MB']);
+  });
+
+  it('很小但不是 0 的不顯示成 0', () => {
+    expect(formatFileSize(10)).toBe('0.1 MB');
+  });
+
+  it('1 GB 以上用 GB，小數一位', () => {
+    expect(formatFileSize(3.5 * 1024 ** 3)).toBe('3.5 GB');
   });
 });

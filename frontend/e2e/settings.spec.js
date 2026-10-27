@@ -1,5 +1,5 @@
 import { test, expect } from './support/test.js'
-import { GOOGLE_CONFIG, MASKED_KEY, PROVIDERS, reply } from './support/backend.js'
+import { GEMINI_UPLOAD_NOTICE, GOOGLE_CONFIG, LOCAL_DATA, MASKED_KEY, PROVIDERS, reply } from './support/backend.js'
 
 /** 設定頁上某個供應商的卡片。 */
 const providerCard = (page, label) => page.locator('.ant-card').filter({ hasText: label })
@@ -151,7 +151,7 @@ test('About 顯示版本號與新版本的下載頁連結，app 自己不連到 
     // 在新分頁開，不帶 referrer；點了才連外
     await expect(releases).toHaveAttribute('target', '_blank')
     await expect(releases).toHaveAttribute('rel', 'noopener noreferrer')
-    // 只有 Google Fonts（#16 待決定）會連外，沒有任何對 GitHub 的請求
+    // 沒有任何對 GitHub 的請求
     expect(external.filter((url) => new URL(url).hostname.endsWith('github.com'))).toEqual([])
 })
 
@@ -162,4 +162,91 @@ test('讀不到版本號時照樣顯示下載頁連結', async ({ page, mockBack
     const about = providerCard(page, 'About')
     await expect(about.getByText('讀不到')).toBeVisible()
     await expect(about.getByRole('link', { name: 'GitHub Releases' })).toBeVisible()
+})
+
+/** 「資料與隱私」卡片上的保留音檔：retained 蓋過假後端預設的那一份。 */
+const localData = (retained, extra = {}) => ({
+    ...LOCAL_DATA, ...extra, retained_audio: { ...LOCAL_DATA.retained_audio, ...retained },
+})
+
+/** 畫面送出的「刪除全部保留音檔」請求。 */
+const deleteRequests = (backend) => backend.requests.filter((r) => r.method === 'DELETE')
+
+test('資料與隱私：說明保留音檔留多久、放在哪，確認後立即刪除全部（#231 Q1）', async ({ page, mockBackend }) => {
+    let current = localData({ file_count: 2, total_bytes: 3 * 1024 * 1024 })
+    const backend = await mockBackend({
+        routes: {
+            'GET /local-data': () => current,
+            'DELETE /local-data/retained-audio': () => {
+                current = localData({ file_count: 0, total_bytes: 0 })
+                return { deleted: 2, failed: 0 }
+            },
+        },
+    })
+    await page.goto('/settings')
+
+    const card = providerCard(page, '資料與隱私')
+    await expect(card.getByText(/上傳超過 30 天的，在下次開啟 app 時刪除/)).toBeVisible()
+    await expect(card.getByText('/app/audio_store')).toBeVisible()
+    await expect(card.getByText('目前保留 2 個音檔，共 3.0 MB')).toBeVisible()
+    // Docker 模式沒有單一的資料夾，不說明 data 資料夾
+    await expect(card.getByText('資料放在哪')).toHaveCount(0)
+
+    // 刪除不可逆：先確認才送出
+    await card.getByRole('button', { name: '立即刪除全部保留音檔' }).click()
+    await expect(page.getByText('刪除全部保留音檔？')).toBeVisible()
+    expect(deleteRequests(backend)).toEqual([])
+    await page.getByRole('button', { name: /^刪\s*除$/ }).click()
+
+    await expect(page.getByText('已刪除 2 個保留音檔')).toBeVisible()
+    await expect(card.getByText('目前保留 0 個音檔，共 0 MB')).toBeVisible()
+    await expect(card.getByRole('button', { name: '立即刪除全部保留音檔' })).toBeDisabled()
+    expect(deleteRequests(backend).map((r) => r.path)).toEqual(['/local-data/retained-audio'])
+})
+
+test('資料與隱私：取消確認就不刪；有刪不掉的照實說', async ({ page, mockBackend }) => {
+    const backend = await mockBackend({
+        routes: {
+            'GET /local-data': localData({ file_count: 3, total_bytes: 10 }),
+            'DELETE /local-data/retained-audio': { deleted: 2, failed: 1 },
+        },
+    })
+    await page.goto('/settings')
+
+    const card = providerCard(page, '資料與隱私')
+    await card.getByRole('button', { name: '立即刪除全部保留音檔' }).click()
+    await page.getByRole('button', { name: /^取\s*消$/ }).click()
+    expect(deleteRequests(backend)).toEqual([])
+
+    await card.getByRole('button', { name: '立即刪除全部保留音檔' }).click()
+    await page.getByRole('button', { name: /^刪\s*除$/ }).click()
+    await expect(page.getByText('已刪除 2 個保留音檔；1 個正在使用中，沒刪掉，請稍後再試')).toBeVisible()
+})
+
+test('資料與隱私：免安裝版說明 data 資料夾裡哪些是個人資料（#231 Q7）', async ({ page, mockBackend }) => {
+    await mockBackend({
+        routes: {
+            'GET /local-data': localData({ retention_days: 0, folder: 'D:\\AI_Translate\\data\\audio_store' },
+                { data_folder: 'D:\\AI_Translate\\data' }),
+        },
+    })
+    await page.goto('/settings')
+
+    const card = providerCard(page, '資料與隱私')
+    await expect(card.getByText(/不會自動刪除/)).toBeVisible()
+    await expect(card.getByText('D:\\AI_Translate\\data', { exact: true })).toBeVisible()
+    await expect(card.getByText(/任務紀錄、轉錄結果與 API 金鑰/)).toBeVisible()
+    await expect(card.getByText(/先關掉 app，再刪掉 models 以外的項目/)).toBeVisible()
+})
+
+test('Gemini 的卡片說明音檔會上傳到 Google，並連到條款原文；本機沒有（#231 Q6）', async ({ page, mockBackend }) => {
+    await mockBackend()
+    await page.goto('/settings')
+
+    const gemini = providerCard(page, 'Gemini')
+    await expect(gemini.getByText(/音檔（含檔名）與提示詞會上傳到 Google/)).toBeVisible()
+    const terms = gemini.getByRole('link', { name: '條款原文' })
+    await expect(terms).toHaveAttribute('href', GEMINI_UPLOAD_NOTICE.terms_url)
+    await expect(terms).toHaveAttribute('rel', 'noopener noreferrer')
+    await expect(providerCard(page, '本機').getByRole('link', { name: '條款原文' })).toHaveCount(0)
 })
