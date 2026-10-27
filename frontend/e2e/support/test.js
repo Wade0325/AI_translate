@@ -5,9 +5,10 @@ import { mockBackend } from './backend.js'
 /**
  * 瀏覽器測試共用的 test：多一個 mockBackend(options) 換上假後端（見 ./backend.js）。
  *
- * 每個測試結束時檢查兩件事，任一項不成立就算失敗：
+ * 每個測試結束時檢查三件事，任一項不成立就算失敗：
  *   - 畫面沒有打假後端沒設定的端點或 WebSocket：新端點要在 backend.js 或測試裡給回應，
  *     不會默默拿到 404
+ *   - 畫面沒有向本機以外要資源（ADR-0005）
  *   - 頁面沒有丟出未處理的例外
  */
 export const test = base.extend({
@@ -24,6 +25,7 @@ export const test = base.extend({
 
         for (const backend of backends) {
             expect(backend.unhandled, '畫面打了假後端沒有設定回應的端點或 WebSocket').toEqual([])
+            expect(backend.external, '畫面向本機以外要了資源').toEqual([])
         }
         expect(pageErrors, '頁面丟出未處理的例外').toEqual([])
     },

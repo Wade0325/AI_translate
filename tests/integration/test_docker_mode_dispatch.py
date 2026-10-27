@@ -213,6 +213,7 @@ def test_cancelling_a_queued_task_revokes_it_and_the_worker_discards_it(
 
 # ─── 批次 ────────────────────────────────────────────────────────────────────
 
+@pytest.mark.usefixtures("google_key")  # 恢復批次的金鑰從資料庫取，請求不帶明文（#16 Q8b）
 def test_a_batch_runs_on_the_container_worker_and_a_queued_recovery_finds_it_completed(
         api, fake, container_worker, docker_run_mode, db_session):
     fake.model_capabilities = replace(fake.model_capabilities, supports_batch=True)
@@ -231,7 +232,7 @@ def test_a_batch_runs_on_the_container_worker_and_a_queued_recovery_finds_it_com
         assert listed(api, "batch-dispatched")["is_alive"] is True
         assert listed(api, "batch-dispatched")["recoverable"] is False
         # 這時按恢復：復原入口派送出去，排在同一個 worker 的佇列裡
-        response = api.post("/api/v1/batch/batch-dispatched/recover", json={"api_keys": "test-key"})
+        response = api.post("/api/v1/batch/batch-dispatched/recover", json={})
         assert response.status_code == 200, response.text
         poll.set()
         messages = receive_until(ws, TaskStatus.BATCH_COMPLETED)

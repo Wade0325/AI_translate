@@ -4,7 +4,7 @@ import { defineConfig, devices } from '@playwright/test'
  * 瀏覽器測試（#51）：用 Playwright 的 Chromium 開 Vite dev server，跑主要頁面。
  *
  * 後端整個不啟動：/api 的請求與 WebSocket 都由 e2e/support/backend.js 在瀏覽器裡 mock，
- * 對外的連線（例如 Google Fonts）一律擋掉，所以不需要網路、資料庫或任何供應商。
+ * 對外的連線一律擋掉、算測試失敗，所以不需要網路、資料庫或任何供應商。
  *
  * 執行：npx playwright install chromium（第一次）之後 npm run test:browser；
  * 或從 repo 根目錄 python tools/check.py playwright。

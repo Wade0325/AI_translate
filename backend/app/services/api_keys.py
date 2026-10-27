@@ -4,6 +4,9 @@
 回給前端的一律是遮罩值；前端不保存、也不隨任務送出明文。需要金鑰的地方
 （單檔／批次 WS 派發、批次恢復、Test Connection）在後端從資料庫取。
 
+明文只在設定頁存檔時送進來，其他請求帶明文就拒收（#16 Q8b）。不改成忽略明文：那樣會默默
+改用資料庫裡的那把，例如 Test Connection 測到的就不是請求帶的金鑰。
+
 遮罩格式：前 4 碼 + ``********`` + 後 4 碼；長度不足 16 的金鑰整個遮掉。
 ``*`` 不會出現在真正的金鑰裡，所以前端送回的遮罩值認得出來，不會被當成新金鑰存進去。
 """
@@ -23,6 +26,19 @@ logger = setup_logger(__name__)
 MASK_FILL = "********"
 _MIN_LENGTH_TO_SHOW_EDGES = 16
 
+PLAINTEXT_API_KEY_MESSAGE = ("請求不能帶明文的 API 金鑰：請先到 Settings 存好金鑰，"
+                             "請求不帶金鑰（或只帶設定頁顯示的遮罩值）即可")
+
+
+class PlaintextApiKeyError(Exception):
+    """請求帶了明文金鑰；訊息固定、不含金鑰，可直接顯示給使用者、寫進 log。
+
+    不繼承 ValueError：Test Connection 會把 ValueError 的原文給使用者看，這個例外要另外接。
+    """
+
+    def __init__(self) -> None:
+        super().__init__(PLAINTEXT_API_KEY_MESSAGE)
+
 
 def mask_api_key(key: str) -> str:
     if len(key) < _MIN_LENGTH_TO_SHOW_EDGES:
@@ -32,6 +48,13 @@ def mask_api_key(key: str) -> str:
 
 def is_masked_api_key(value) -> bool:
     return isinstance(value, str) and MASK_FILL in value
+
+
+def refuse_plaintext_api_keys(*values: Optional[str]) -> None:
+    """請求帶的金鑰只能是空白或遮罩值，有明文就丟 :class:`PlaintextApiKeyError`。"""
+    for value in values:
+        if isinstance(value, str) and value.strip() and not is_masked_api_key(value):
+            raise PlaintextApiKeyError()
 
 
 def parse_stored_api_keys(raw: Optional[str]) -> list[str]:
@@ -83,7 +106,12 @@ def merge_api_keys(incoming: list[str], stored: list[str]) -> list[str]:
 
 
 def resolve_api_keys(db: Session, provider: str, incoming: list[str]) -> list[str]:
-    """Test Connection 用：遮罩值換回原金鑰、明文照用；沒帶任何金鑰就用資料庫裡的。"""
+    """Test Connection 用：遮罩值換回原金鑰；沒帶任何金鑰就用資料庫裡的。
+
+    Raises:
+        PlaintextApiKeyError: 請求帶了明文金鑰。
+    """
+    refuse_plaintext_api_keys(*incoming)
     stored = load_stored_api_keys(db, provider)
     return merge_api_keys(incoming, stored) or stored
 
@@ -91,11 +119,13 @@ def resolve_api_keys(db: Session, provider: str, incoming: list[str]) -> list[st
 def resolve_api_key(db: Session, provider: str, provided: Optional[str]) -> str:
     """任務派發／批次恢復要用的單一金鑰。
 
-    請求帶明文金鑰（直接呼叫 API 或舊版前端）→ 照用；缺少或只帶遮罩值 → 改用
-    資料庫裡的金鑰（遮罩值對得上哪把就用哪把，否則用第一把）。都沒有時回傳空字串。
+    缺少或只帶遮罩值 → 用資料庫裡的金鑰（遮罩值對得上哪把就用哪把，否則用第一把）。
+    都沒有時回傳空字串。
+
+    Raises:
+        PlaintextApiKeyError: 請求帶了明文金鑰。
     """
-    if provided and provided.strip() and not is_masked_api_key(provided):
-        return provided
+    refuse_plaintext_api_keys(provided)
     stored = load_stored_api_keys(db, provider)
     if is_masked_api_key(provided):
         for key in stored:

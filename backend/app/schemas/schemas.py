@@ -20,7 +20,7 @@ class ProviderConfigResponse(BaseModel):
 
 
 class ProviderTestRequest(BaseModel):
-    """用於測試模型介面連接的請求體。"""
+    """用於測試模型介面連接的請求體。api_keys 只能是設定頁顯示的遮罩值，明文會被拒收（#16 Q8b）。"""
     provider: str
     api_keys: List[str] = Field(..., alias="apiKeys")
     model: str = Field(..., alias="model")
@@ -58,7 +58,7 @@ class WebSocketTranscriptionRequest(BaseModel):
     original_filename: str
     provider: str
     model: str
-    api_keys: str = ""  # 可省略：前端不送明文金鑰，後端改用資料庫裡的金鑰
+    api_keys: str = ""  # 可省略或只帶遮罩值，後端用資料庫裡的金鑰；明文會被拒收（#16 Q8b）
     source_lang: str
     target_lang: Optional[str] = None
     prompt: Optional[str] = None  # 補充說明：接在設定頁存的提示詞範本後面送出（#144）
@@ -84,7 +84,7 @@ class WebSocketBatchRequest(BaseModel):
     files: List[BatchFileItem]
     provider: str
     model: str
-    api_keys: str = ""  # 可省略：前端不送明文金鑰，後端改用資料庫裡的金鑰
+    api_keys: str = ""  # 可省略或只帶遮罩值，後端用資料庫裡的金鑰；明文會被拒收（#16 Q8b）
     source_lang: str
     target_lang: Optional[str] = None
     prompt: Optional[str] = None  # 補充說明：補給沒帶自己的檔案，一樣接在提示詞範本後面
@@ -95,7 +95,7 @@ class WebSocketBatchRequest(BaseModel):
 # ==================== Batch Recovery ====================
 
 class RecoverBatchRequest(BaseModel):
-    """POST /batch/{batch_id}/recover 的請求；api_keys 省略時後端改用資料庫裡的金鑰"""
+    """POST /batch/{batch_id}/recover 的請求；api_keys 省略或只帶遮罩值時用資料庫裡的金鑰，明文會被拒收"""
     api_keys: Optional[str] = None
 
 

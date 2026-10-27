@@ -70,7 +70,6 @@ def _single_payload(filename: str) -> dict:
         "original_filename": "a.mp3",
         "provider": "Google",
         "model": "gemini-2.5-flash",
-        "api_keys": "plain-key-for-test",
         "source_lang": "ja-JP",
     }
 
@@ -80,7 +79,6 @@ def _batch_payload(files: list[dict]) -> dict:
         "files": files,
         "provider": "Google",
         "model": "gemini-2.5-flash",
-        "api_keys": "plain-key-for-test",
         "source_lang": "ja-JP",
     }
 
