@@ -51,29 +51,44 @@ class TestUploadSuccess:
             )
         assert response.status_code == 200
 
-    def test_upload_returns_saved_filename(self, client: TestClient, tmp_path):
-        """回傳的 filename 應與上傳的相同（無衝突時）"""
+    def test_saved_under_a_random_name_without_the_original_one(self, client: TestClient, tmp_path):
+        """磁碟上是隨機名稱：原檔名只留在請求與任務紀錄，log、暫存檔與送到 Gemini 的檔案都看不到（#231 Q5）"""
+        content = b"\xff\xfb" + b"\x00" * 512
         with patch("app.api.upload.TEMP_UPLOADS_DIR", tmp_path):
             response = client.post(
                 "/api/v1/upload",
-                files={"file": ("unique_audio.mp3", b"\x00" * 512, "audio/mpeg")},
+                files={"file": ("王小明的會議.mp3", content, "audio/mpeg")},
             )
         assert response.status_code == 200
-        assert response.json()["filename"] == "unique_audio.mp3"
+        saved = response.json()["filename"]
+        assert "王小明" not in saved
+        assert saved.endswith(".mp3")
+        assert [p.name for p in tmp_path.iterdir()] == [saved]
+        assert (tmp_path / saved).read_bytes() == content
 
-    def test_upload_duplicate_filename_gets_counter(self, client: TestClient, tmp_path):
-        """同名檔案重複上傳，第二次應得到 (1) 後綴"""
+    def test_same_name_uploaded_twice_is_kept_twice(self, client: TestClient, tmp_path):
+        """同名檔案重複上傳，兩個都留著、名稱不同"""
         with patch("app.api.upload.TEMP_UPLOADS_DIR", tmp_path):
-            client.post(
+            first = client.post(
                 "/api/v1/upload",
-                files={"file": ("dup.mp3", b"\x00" * 512, "audio/mpeg")},
-            )
-            response2 = client.post(
+                files={"file": ("dup.mp3", b"\x01" * 512, "audio/mpeg")},
+            ).json()["filename"]
+            second = client.post(
                 "/api/v1/upload",
-                files={"file": ("dup.mp3", b"\x00" * 512, "audio/mpeg")},
-            )
-        assert response2.status_code == 200
-        assert response2.json()["filename"] == "dup(1).mp3"
+                files={"file": ("dup.mp3", b"\x02" * 512, "audio/mpeg")},
+            ).json()["filename"]
+        assert first != second
+        assert (tmp_path / first).read_bytes() == b"\x01" * 512
+        assert (tmp_path / second).read_bytes() == b"\x02" * 512
+
+    def test_log_names_the_saved_file_not_the_original(self, client: TestClient, tmp_path, app_log):
+        with patch("app.api.upload.TEMP_UPLOADS_DIR", tmp_path):
+            saved = client.post(
+                "/api/v1/upload",
+                files={"file": ("王小明的會議.mp3", b"\x00" * 512, "audio/mpeg")},
+            ).json()["filename"]
+        assert any(saved in entry for entry in app_log)
+        assert not any("王小明" in entry for entry in app_log)
 
 
 # ─── 上傳失敗 ────────────────────────────────────────────────────────────────

@@ -166,11 +166,12 @@ def receive_until_terminal(ws) -> list[dict]:
             return messages
 
 
-def submit(ws, filename: str, provider: str = "fake", model: str = FAKE_MODEL, **fields):
-    """送出單檔任務；fields 是請求的其他欄位，例如提示詞與使用者文稿。"""
+def submit(ws, filename: str, provider: str = "fake", model: str = FAKE_MODEL,
+           original_filename: str | None = None, **fields):
+    """送出單檔任務；沒給原檔名時用上傳後的檔名。fields 是請求的其他欄位，例如提示詞與使用者文稿。"""
     ws.send_json({
         "filename": filename,
-        "original_filename": filename,
+        "original_filename": original_filename or filename,
         "provider": provider,
         "model": model,
         "source_lang": "ja",
@@ -183,7 +184,7 @@ def transcribe(api, file_uid: str, name: str = "voice.wav", voiced=VOICED,
     """上傳（音檔的有聲段見 synthetic_audio）、送出，收下這個任務的所有廣播直到結束。"""
     filename = upload(api, name, voiced)
     with api.websocket_connect(f"/api/v1/ws/{file_uid}") as ws:
-        submit(ws, filename, **fields)
+        submit(ws, filename, original_filename=name, **fields)
         return receive_until_terminal(ws)
 
 
@@ -1891,11 +1892,30 @@ def download_filename(response) -> str:
 
 
 class TestNonAsciiFilename:
-    """日文、中文檔名的音檔走完上傳 → ffmpeg → 下載。
+    """日文、中文檔名的音檔，放在中文的資料夾裡，走完上傳 → ffmpeg → 下載。
 
+    磁碟上的暫存檔是隨機名稱（#231 Q5），原檔名經過請求、任務紀錄與下載；資料夾的路徑本身也可能有
+    中文（例如 Windows 帳號是中文名，解壓在桌面），暫存路徑、ffmpeg 的參數與輸出都帶著它。
     CI 的 Windows job 刻意不開 UTF-8 模式（PYTHONUTF8），和使用者的電腦一樣用系統碼頁：
-    檔名經過暫存路徑、ffmpeg 的參數與輸出、任務紀錄與下載，哪一處用了系統碼頁就會在那裡出錯。
+    哪一處用了系統碼頁就會在那裡出錯。
     """
+
+    @pytest.fixture
+    def data_dir(self, data_dir, monkeypatch):
+        """上傳檔、保留音檔與去靜音產物改放在中文名稱的資料夾裡；回傳那個資料夾。"""
+        from app.api import batch, transcription, upload, vad
+        from app.core.config import get_settings
+
+        root = data_dir / "王小明的桌面"
+        uploads = root / "temp_uploads"
+        uploads.mkdir(parents=True)
+        settings = get_settings()
+        monkeypatch.setattr(settings, "temp_uploads_dir", str(uploads))
+        monkeypatch.setattr(settings, "audio_store_dir", str(root / "audio_store"))
+        monkeypatch.setattr(settings, "vad_artifacts_dir", str(root / "vad_artifacts"))
+        for module in (transcription, upload, batch, vad):
+            monkeypatch.setattr(module, "TEMP_UPLOADS_DIR", uploads)
+        return root
 
     @pytest.mark.parametrize("name, srt_name", [
         ("おはようの録音.flac", "おはようの録音.srt"),

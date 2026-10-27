@@ -24,7 +24,7 @@ from app.database.session import (
     init_db, SessionLocal, traceback_without_db_details, without_db_details)
 from app.repositories.transcription_log_repository import TranscriptionLogRepository
 from app.tasks import batch_core, older_batches
-from app.utils.logger import setup_logger
+from app.utils.logger import setup_logger, start_log_file, stop_log_file
 
 logger = setup_logger(__name__)
 
@@ -47,8 +47,16 @@ def end_stale_processing() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("正在啟動 AI Voice Transcription API...")
     settings = get_settings()
+    if settings.is_standalone:
+        # 免安裝模式把 log 也寫進 data\logs（#231 Q5）：排查問題只能靠使用者附上的日誌檔（ADR-0005）
+        logs = settings.data_path / "logs"
+        try:
+            start_log_file(logs)
+            logger.info(f"日誌檔寫在 {logs.resolve()}")
+        except OSError as e:
+            logger.warning(f"無法建立日誌檔，log 只輸出到主控台: {e}")
+    logger.info(f"正在啟動 AI Voice Transcription API（版本 {APP_VERSION}）...")
 
     init_db()
 
@@ -107,6 +115,7 @@ async def lifespan(app: FastAPI):
         logger.info("應用程式正在關閉...")
         await websocket_manager.shutdown()
         run_mode.close()
+        stop_log_file()
 
 
 app = FastAPI(title="AI Voice Transcription API",

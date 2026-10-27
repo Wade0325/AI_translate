@@ -538,7 +538,7 @@ def transient() -> TransientError:
 
 
 @pytest.mark.parametrize("step, notice", [
-    ("upload_errors", "上傳 transient.wav 遇到暫時錯誤（503 UNAVAILABLE），0.01 秒後第 1 次重試"),
+    ("upload_errors", "上傳 (1/1) 遇到暫時錯誤（503 UNAVAILABLE），0.01 秒後第 1 次重試"),
     ("submit_errors", "送出批次遇到暫時錯誤（503 UNAVAILABLE），0.01 秒後第 1 次重試"),
     ("batch_polls", "查詢批次狀態遇到暫時錯誤（503 UNAVAILABLE），0.01 秒後第 1 次重試"),
 ])

@@ -486,10 +486,12 @@ class _Run:
                     task_id=file.lifecycle.task_uuid,
                     original_filename=name,
                 )
-                file.handle = _retrying(self._publish, f"上傳 {name} ", adapter.upload,
-                                        file.view.audio)
+                # 重試的通知也寫進 log：用第幾個檔案，不用檔名（#231 Q5）
+                file.handle = _retrying(self._publish, f"上傳 ({number}/{len(self._files)}) ",
+                                        adapter.upload, file.view.audio)
             except Exception as e:
-                logger.error(f"上傳檔案失敗 {name}: {e}", exc_info=True)
+                logger.error(f"上傳第 {number} 個檔案失敗 (task={file.lifecycle.task_uuid}): {e}",
+                             exc_info=True)
                 self._end(file, _BatchError(f"檔案上傳失敗: {e}"))
                 continue
             finally:
