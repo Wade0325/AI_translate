@@ -1,7 +1,7 @@
 // @ts-nocheck
 import { useState, useEffect, useCallback } from "react"
 import { Card, Button, Input, Typography, Row, Col, Spin, Divider, Progress, Alert } from "antd"
-import { Key, Save, Cpu, Download, CheckCircle2 } from "lucide-react"
+import { Key, Save, Cpu, Download, CheckCircle2, Info } from "lucide-react"
 import { useModelManager } from "../components/ModelManager"
 import { ReasonText } from "../components/disabled-reason"
 import { PROVIDER_LIST_FAILED, useProviderList } from "../hooks/useProviderList"
@@ -156,8 +156,52 @@ export default function SettingsPage() {
                 ))}
 
                 <LocalModelsCard />
+                <AboutCard />
             </Row>
         </div>
+    )
+}
+
+/** 新版本的下載頁。app 不會自己檢查更新（#85），使用者點了才開。 */
+const RELEASES_URL = "https://github.com/Wade0325/AI_translate/releases"
+
+/**
+ * 版本號與新版本的下載頁連結（#85）。app 不會自己連到 GitHub 檢查更新：
+ * 版本號問的是本機的後端，下載頁要使用者自己點。
+ */
+function AboutCard() {
+    const [version, setVersion] = useState(null)
+    const [failed, setFailed] = useState(false)
+
+    useEffect(() => {
+        api.version()
+            .then((data) => setVersion(data.version))
+            .catch(() => setFailed(true))
+    }, [])
+
+    return (
+        <Col xs={24} lg={12}>
+            <Card
+                title={
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <Info size={16} color="#2dd4a8" />
+                        <span style={{ color: '#e8e8e8' }}>About</span>
+                    </div>
+                }
+                style={{ border: '1px solid #3a3a5c', height: '100%' }}
+            >
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    <Text style={{ color: '#e8e8e8', fontSize: 13 }}>
+                        版本：<span style={{ fontFamily: 'monospace' }}>{failed ? '讀不到' : (version ?? '…')}</span>
+                    </Text>
+                    <Text style={{ color: '#8888a8', fontSize: 12 }}>
+                        程式不會自己檢查或下載更新。新版本請到{' '}
+                        <a href={RELEASES_URL} target="_blank" rel="noopener noreferrer">GitHub Releases</a>
+                        {' '}下載，把舊版的 data 資料夾複製過去就能保留紀錄。想在新版發布時收到通知，可以在 GitHub 上對這個專案按 Watch，選 Custom 裡的 Releases。
+                    </Text>
+                </div>
+            </Card>
+        </Col>
     )
 }
 
