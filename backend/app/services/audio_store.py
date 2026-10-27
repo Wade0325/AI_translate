@@ -8,7 +8,8 @@
 暫時性錯誤的重試會回來找同一個檔案。
 
 搬移而非複製：同一份音檔不會同時存在兩個地方。
-保留期限由 ``audio_retention_days`` 控制，啟動時清掃一次。
+保留期限由 ``audio_retention_days`` 控制，啟動時清掃一次。使用者也能在設定頁看到留了多少，
+一次刪掉全部（:func:`usage`、:func:`delete_all`，#231 Q1）。
 
 沒有任務可以收尾的上傳檔也不留在暫存區：請求被拒絕時直接刪掉（:func:`discard_upload`）；
 沒機會收尾的任務（例如應用程式被直接關掉時還在排隊）留下的，啟動時清掉超過
@@ -22,6 +23,7 @@ from __future__ import annotations
 
 import shutil
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
@@ -111,6 +113,57 @@ def discard_upload(filename: str, base_dir: Optional[Path] = None) -> None:
         return
     except OSError as e:
         logger.warning(f"刪除上傳檔失敗 ({filename}): {e}")
+
+
+@dataclass(frozen=True)
+class Usage:
+    file_count: int
+    total_bytes: int
+
+
+@dataclass(frozen=True)
+class Deleted:
+    deleted: int
+    failed: int
+    """刪不掉的數量，例如 Windows 上正被開著的檔案。"""
+
+
+def _stored_files() -> list[Path]:
+    """保留區裡的音檔；保留區還沒建立時是空的。"""
+    directory = store_path()
+    if not directory.is_dir():
+        return []
+    return [path for path in directory.iterdir() if path.is_file()]
+
+
+def usage() -> Usage:
+    """保留區裡目前有幾個音檔、共多少位元組。"""
+    count = total = 0
+    for path in _stored_files():
+        try:
+            total += path.stat().st_size
+        except OSError:
+            continue  # 數的同時被刪掉了
+        count += 1
+    return Usage(file_count=count, total_bytes=total)
+
+
+def delete_all() -> Deleted:
+    """立即刪除全部保留音檔（設定頁的按鈕，#231 Q1）。
+
+    和過期清掃一樣不動資料庫：``audio_filename`` 指向已刪除的檔案時，端點回 404。
+    刪不掉的只記 log，其他照刪。
+    """
+    deleted = failed = 0
+    for path in _stored_files():
+        try:
+            path.unlink()
+            deleted += 1
+        except OSError as e:
+            failed += 1
+            logger.warning(f"刪除保留音檔失敗 ({path.name}): {e}")
+    logger.info(f"使用者刪除全部保留音檔：刪掉 {deleted} 個，{failed} 個刪不掉")
+    return Deleted(deleted=deleted, failed=failed)
 
 
 def purge_expired() -> int:

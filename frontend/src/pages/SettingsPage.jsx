@@ -4,8 +4,10 @@ import { Card, Button, Input, Typography, Row, Col, Spin, Divider, Progress, Ale
 import { Key, Save, Cpu, Download, CheckCircle2, Info } from "lucide-react"
 import { useModelManager } from "../components/ModelManager"
 import { ReasonText } from "../components/disabled-reason"
+import { LocalDataCard } from "../components/LocalDataCard"
+import { UploadNotice } from "../components/UploadNotice"
 import { PROVIDER_LIST_FAILED, useProviderList } from "../hooks/useProviderList"
-import { providerOptions, providerPromptDisabledReason, requiresApiKey } from "../utils/providerList"
+import { providerOptions, providerPromptDisabledReason, requiresApiKey, uploadNotice } from "../utils/providerList"
 import { api } from "../services/api"
 
 const { Text } = Typography
@@ -115,6 +117,8 @@ export default function SettingsPage() {
                             }}
                         >
                             <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                                {/* 音檔會送出本機的供應商（Gemini）先說會送到哪裡、對方怎麼用（#231 Q6） */}
+                                <UploadNotice notice={uploadNotice(providerList, provider)} />
                                 {/* 只有要使用者金鑰的供應商才有金鑰欄位（照供應商清單，本機不用）。
                                     只有一個欄位（#19）：清空後儲存就是刪掉金鑰 */}
                                 {requiresApiKey(providerList, provider) && <div>
@@ -156,6 +160,7 @@ export default function SettingsPage() {
                 ))}
 
                 <LocalModelsCard />
+                <LocalDataCard />
                 <AboutCard />
             </Row>
         </div>

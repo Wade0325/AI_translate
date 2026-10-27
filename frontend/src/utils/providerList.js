@@ -68,6 +68,16 @@ export const requiresApiKey = (providerList, provider) =>
   findProvider(providerList, provider)?.requires_api_key === true;
 
 /**
+ * 選了這個供應商時要告訴使用者的事（#231 Q6）：{ text, termsUrl }，text 說明音檔會送到哪裡、
+ * 對方怎麼使用，termsUrl 是條款原文。音檔會送出本機的供應商才有（例如 Gemini）；本機、
+ * 清單還沒載入或查不到供應商時是 null。
+ */
+export function uploadNotice(providerList, provider) {
+  const notice = findProvider(providerList, provider)?.upload_notice;
+  return notice ? { text: notice.text, termsUrl: notice.terms_url } : null;
+}
+
+/**
  * 按 Start 時缺不缺金鑰：只有要金鑰的供應商才檢查。providerConfig 是設定頁存的設定，
  * 裡面只有遮罩後的金鑰，這裡只確認有存，實際金鑰由後端從資料庫取用。
  */

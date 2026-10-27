@@ -1044,10 +1044,12 @@ def listed_providers(api) -> dict:
 
 
 def listed_fields(api) -> set:
-    """GET /providers 回的所有欄位名稱：供應商、模型與模型能力三層。"""
+    """GET /providers 回的所有欄位名稱：供應商（含上傳告知）、模型與模型能力。"""
     fields = set()
     for entry in api.get("/api/v1/providers").json():
         fields |= entry.keys()
+        if entry["upload_notice"]:
+            fields |= entry["upload_notice"].keys()
         for item in entry["models"]:
             fields |= item.keys() | item["capabilities"].keys()
     return fields
@@ -1116,6 +1118,17 @@ class TestModelCapabilitiesEndpoint:
         assert listed["google"]["requires_api_key"] is True
         assert listed["local"]["requires_api_key"] is False
 
+    def test_tells_where_the_audio_goes_and_links_the_terms(self, api):
+        # 選 Gemini 時，設定頁與轉錄頁照這一項告訴使用者音檔會上傳、Google 怎麼使用，
+        # 並連到條款原文（#231 Q6）；本機不送出音檔，沒有告知
+        listed = listed_providers(api)
+
+        notice = listed["google"]["upload_notice"]
+        assert notice["terms_url"] == "https://ai.google.dev/gemini-api/terms"
+        assert "上傳到 Google" in notice["text"]
+        assert "免費層" in notice["text"]
+        assert listed["local"]["upload_notice"] is None
+
     def test_names_providers_and_models_for_the_screen_default_model_first(self, api):
         # 轉錄頁先選供應商、再選它的模型，名稱與預設（清單上的第一個）都從這裡來（#97）
         listed = listed_providers(api)
@@ -1170,7 +1183,7 @@ class TestModelCapabilitiesEndpoint:
         read = set(re.findall(r"\.([a-z]+(?:_[a-z]+)+)\b", source))
 
         assert {"accepts_prompt", "accepts_user_text", "supports_batch", "supports_flex",
-                "remove_silence", "requires_api_key"} <= read
+                "remove_silence", "requires_api_key", "upload_notice", "terms_url"} <= read
         assert read <= listed_fields(api)
 
 

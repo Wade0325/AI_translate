@@ -22,6 +22,14 @@ export function formatDuration(seconds) {
   return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${ss}` : `${m}:${ss}`;
 }
 
+/** 位元組 → 「12.3 MB」或「1.5 GB」（小數一位）；不是 0 的至少顯示 0.1 MB。 */
+export function formatFileSize(bytes) {
+  if (bytes <= 0) return '0 MB';
+  const mb = bytes / (1024 * 1024);
+  if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
+  return `${Math.max(mb, 0.1).toFixed(1)} MB`;
+}
+
 /**
  * ISO/timestamp → zh-TW 的「MM/DD 上午/下午hh:mm」（12 小時制），例如 01/05 上午12:30、
  * 10/20 下午01:05；解析失敗時原樣回傳。

@@ -12,7 +12,13 @@ import threading
 from dataclasses import dataclass
 from typing import List, Mapping, NamedTuple, Optional, Protocol, Tuple, cast
 
-from app.provider.base import BatchProvider, ModelCapabilities, Provider, ProviderInfo
+from app.provider.base import (
+    BatchProvider,
+    ModelCapabilities,
+    Provider,
+    ProviderInfo,
+    UploadNotice,
+)
 from app.provider.google.provider import GeminiProvider
 from app.provider.local.provider import local_provider
 
@@ -89,6 +95,7 @@ class ListedProvider:
     provider: str
     label: str
     requires_api_key: bool
+    upload_notice: Optional[UploadNotice]
     models: Tuple[ListedModel, ...]
 
 
@@ -105,6 +112,7 @@ def _listed(name: str, info: ProviderInfo,
         provider=name,
         label=info.label,
         requires_api_key=info.requires_api_key,
+        upload_notice=info.upload_notice,
         models=tuple(ListedModel(model=model, label=info.model_labels.get(model, model),
                                  capabilities=capabilities)
                      for model, capabilities in models.items()),

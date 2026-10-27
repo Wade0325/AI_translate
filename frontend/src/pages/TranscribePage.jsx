@@ -2,6 +2,7 @@
 import { useEffect, useState, useRef } from "react"
 import { Card, Typography, Button, Input, Modal, Pagination, Space, Dropdown, Popconfirm, message } from "antd"
 import { ReasonText, ReasonTooltip } from "@/components/disabled-reason"
+import { UploadNotice } from "@/components/UploadNotice"
 import { UploadZone } from "@/components/transcribe/upload-zone"
 import { GlobalDefaults } from "@/components/transcribe/global-defaults"
 import { FileConfigCard } from "@/components/transcribe/file-config-card"
@@ -10,7 +11,7 @@ import VadTestModal from "@/components/transcribe/VadTestModal"
 import { useTranscription } from "@/context/TranscriptionContext"
 import { useModelManager } from "@/components/ModelManager"
 import { PROVIDER_LIST_FAILED } from "@/hooks/useProviderList"
-import { modelOptions, processingModeNote, providerOptions, providerPromptDisabledReason, requiresApiKey } from "@/utils/providerList"
+import { modelOptions, processingModeNote, providerOptions, providerPromptDisabledReason, requiresApiKey, uploadNotice } from "@/utils/providerList"
 import { filePrompt, followsGlobalPrompt, globalSettingsPatch, promptToSend } from "@/utils/transcribeRequest"
 import { api } from "@/services/api"
 import { DownloadOutlined } from "@ant-design/icons"
@@ -336,6 +337,12 @@ export default function TranscribePage() {
                         </Button>
                     </Space>
                 </div>
+                {/* 選了會把音檔送出本機的供應商（Gemini）時，送出前就看得到（#231 Q6） */}
+                {uploadNotice(providerList, provider) && (
+                    <div style={{ marginTop: 8 }}>
+                        <UploadNotice notice={uploadNotice(providerList, provider)} />
+                    </div>
+                )}
             </Card>
 
             <GlobalDefaults

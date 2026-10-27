@@ -158,6 +158,16 @@ export const api = {
       return request(`/setting/local-models/download${query}`, { method: 'POST' });
     },
   },
+  /** 設定頁「資料與隱私」：資料放在哪、保留音檔的設定與用量（#231 Q1、Q7） */
+  localData: {
+    get() {
+      return request('/local-data');
+    },
+    /** 立即刪除全部保留音檔：{ deleted, failed } */
+    deleteRetainedAudio() {
+      return request('/local-data/retained-audio', { method: 'DELETE' });
+    },
+  },
   settings: {
     getProvider(provider) {
       return request(`/setting/models/${provider}`);
