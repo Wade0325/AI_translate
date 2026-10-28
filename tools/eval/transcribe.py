@@ -1,7 +1,8 @@
 """``python -m tools.eval transcribe``：跑正式的轉錄路徑，輸出轉錄結果（LRC）與 manifest。
 
 和 eval、selftest 不同，這條指令會讀音檔、用顯卡：直接呼叫轉錄任務用的
-``app.tasks.transcribe_core.transcribe_audio``（去靜音、分段轉錄、所選的供應商轉接器），
+``app.tasks.transcribe_core.transcribe_audio``（去靜音、分段轉錄、所選的供應商轉接器），再和任務
+完成時一樣轉成繁體輸出（``app.services.traditional_output``），寫出的 LRC 和應用程式下載的相同；
 不經 API、任務佇列與資料庫，所以不必啟動 Docker 或前端。設定和應用程式讀同一份。
 
 只跑不需要 API 金鑰的供應商（本機），音檔不離開這台電腦。manifest 只記數字與環境
@@ -132,7 +133,7 @@ def _run(audio: Path, provider: str, model: str, language: str, transcript: Path
     算 RTF 用。"""
     from app.celery.models import TranscriptionTaskParams
     from app.provider.base import ProgressAndCancel
-    from app.services import output_format
+    from app.services import output_format, traditional_output
     from app.tasks.transcribe_core import transcribe_audio
 
     task_id = f"eval-{uuid.uuid4().hex[:12]}"
@@ -155,6 +156,9 @@ def _run(audio: Path, provider: str, model: str, language: str, transcript: Path
     else:
         if result.success and result.segments:
             segments = len(result.segments)
+            # 和應用程式完成任務時一樣轉成繁體輸出（任務生命週期的那一步），寫出的就是下載的 LRC
+            result = result.model_copy(update={"segments": traditional_output.convert(
+                result.segments, source_lang=language)})
             # newline=""：和應用程式下載的 LRC 一樣只用 LF，Windows 上也不換成 CRLF
             transcript.write_text(output_format.for_result(result).lrc, encoding="utf-8",
                                   newline="")

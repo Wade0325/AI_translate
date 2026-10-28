@@ -12,4 +12,5 @@ gevent==25.4.2 # Docker 的 celery worker 用 gevent pool（docker-compose.yml�
 soundfile==0.12.1 # 去靜音與找切點讀寫音檔（app/services/silence_removal/intervals.py、app/services/vad/flows.py 在模組頂層匯入）
 numpy==2.3.5 # 同上；原本經 silero-vad → onnxruntime 間接裝進來，拆出 ml 之後要自己列
 SQLAlchemy==2.0.31
+opencc-python-reimplemented==0.1.7 # 中文轉成繁體輸出（app/services/traditional_output.py）；版本和 requirements-dev.txt 的評測工具相同
 psycopg2-binary==2.9.9

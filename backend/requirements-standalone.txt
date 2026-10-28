@@ -15,6 +15,8 @@ pydantic==2.11.4
 pydantic-settings==2.12.0
 python-multipart==0.0.20
 SQLAlchemy==2.0.31
+# 中文轉成繁體輸出（app/services/traditional_output.py）；版本和 requirements-dev.txt 的評測工具相同
+opencc-python-reimplemented==0.1.7
 
 # Gemini API
 google-genai==2.6.0

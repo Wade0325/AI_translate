@@ -16,6 +16,8 @@
   執行模式不重試整個任務。萬一有暫時錯誤漏到這裡，一律照失敗處理，任務不會停在處理中。
 - 完成和片段一起寫：任務紀錄記成完成（連同凍結的原始轉錄副本）和片段在同一個交易，片段
   寫不進去就照失敗處理。同一個任務再完成一次時，使用者動過的片段不刪、不覆寫（ADR-0007）。
+- 中文一律輸出繁體：完成時先把片段轉成繁體輸出（:mod:`app.services.traditional_output`），
+  輸出格式、凍結的原始轉錄副本與片段都從轉換後的片段產生（ADR-0002）。
 - 計價照模型能力的計價方式；實際以 Flex 或批次完成的照設定打折。供應商已經回應的用量，
   不論任務完成、失敗或取消都記下用量與費用（供應商照樣收費）：例如取消之前已經轉完的段、
   回應解析不出任何一行、分段轉錄的某一段失敗、片段寫不進去。失敗與取消時 token 數是 0
@@ -57,7 +59,7 @@ from app.repositories.transcript_segment_repository import TranscriptSegmentRepo
 from app.repositories.transcription_log_repository import TranscriptionLogRepository
 from app.runtime import run_mode
 from app.runtime.run_mode import publish_status
-from app.services import audio_store, output_format
+from app.services import audio_store, output_format, traditional_output
 from app.services.calculator.models import CalculationItem
 from app.services.calculator.service import CalculatorService
 from app.services.transcription.models import TranscriptionResponse, TranscriptionTaskResult
@@ -336,10 +338,15 @@ class TaskLifecycle:
             logger.warning(f"Could not read audio duration for {self._input.name}.")
 
     def _complete(self, db: Session, result: TranscriptionTaskResult) -> _Outcome:
-        """完成：產生輸出格式、計價、存任務紀錄與片段。"""
+        """完成：中文轉成繁體輸出，產生輸出格式、計價、存任務紀錄與片段。"""
         logger.info(
             f"Transcription complete. Task ID: {self._task_uuid}. "
             f"Tokens used: {result.total_tokens:,}")
+
+        # 輸出格式、凍結的原始轉錄副本與片段都從轉換後的片段產生（ADR-0002、ADR-0007）
+        result = result.model_copy(update={"segments": traditional_output.convert(
+            result.segments, source_lang=self._task.source_lang,
+            target_lang=self._task.target_lang)})
 
         self._progress.report("正在轉換字幕格式...")
         transcripts = _output_formats(result)
