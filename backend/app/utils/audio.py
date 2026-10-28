@@ -78,6 +78,12 @@ def get_mime_type(file_path: Path) -> Optional[str]:
     return mime
 
 
+FFMPEG_ERRORS_ONLY = ("-hide_banner", "-loglevel", "error")
+"""ffmpeg 的 stderr 只輸出錯誤：失敗時 stderr 會寫進 log 與任務的錯誤訊息，預設還會列出音檔的標籤
+（標題、作者等，常有人名或地點），日誌檔不能有這些（#231 Q5、#234）。只影響 ffmpeg 輸出的訊息，
+不影響轉出的音訊。每個呼叫 ffmpeg 的地方都要加（本機的 asr._to_mono 也用）。"""
+
+
 def slice_audio(
     file_path: Path,
     output_path: Path,
@@ -89,7 +95,7 @@ def slice_audio(
     重新編碼為 PCM 以取得取樣點級精度（stream copy 只能切在封包邊界），
     end=None 表示切到檔尾。
     """
-    cmd = [ffmpeg_bin(), "-y", "-i", str(file_path), "-ss", f"{start:.3f}"]
+    cmd = [ffmpeg_bin(), *FFMPEG_ERRORS_ONLY, "-y", "-i", str(file_path), "-ss", f"{start:.3f}"]
     if end is not None:
         cmd += ["-t", f"{end - start:.3f}"]
     cmd.append(str(output_path))
@@ -130,7 +136,7 @@ def convert_to_wav(file_path: Path, output_dir: Path) -> Optional[Path]:
     try:
         result = subprocess.run(
             [
-                ffmpeg_bin(), "-y",
+                ffmpeg_bin(), *FFMPEG_ERRORS_ONLY, "-y",
                 "-i", str(file_path),
                 "-ar", "16000",
                 "-ac", "1",
