@@ -76,12 +76,12 @@ class TestLineBreaksInsideSegmentText:
         assert formats(segment).lrc == "[00:05.08][S0] おはよう ございます。"
 
     def test_blank_line_does_not_break_any_format(self):
-        segment = {"start": 5.0, "end": 9.0, "speaker": "S1", "text": "おはよう。\n\nこんにちは。"}
+        segment = {"start": 5.0, "end": 9.0, "speaker": "S0", "text": "おはよう。\n\nこんにちは。"}
         result = formats(segment)
-        assert result.lrc == "[00:05.00][S1] おはよう。 こんにちは。"
-        assert result.srt == "1\n00:00:05,000 --> 00:00:09,000\n[S1] おはよう。 こんにちは。\n"
-        assert result.vtt == "WEBVTT\n\n00:00:05.000 --> 00:00:09.000\n[S1] おはよう。 こんにちは。\n"
-        assert result.txt == "[S1] おはよう。 こんにちは。"
+        assert result.lrc == "[00:05.00][S0] おはよう。 こんにちは。"
+        assert result.srt == "1\n00:00:05,000 --> 00:00:09,000\n[S0] おはよう。 こんにちは。\n"
+        assert result.vtt == "WEBVTT\n\n00:00:05.000 --> 00:00:09.000\n[S0] おはよう。 こんにちは。\n"
+        assert result.txt == "[S0] おはよう。 こんにちは。"
 
     def test_sentences_around_a_blank_line_still_break_by_word_timings(self):
         segment = {"start": 5.0, "end": 9.0, "speaker": "S1", "text": "おはよう。\n\nこんにちは。",
@@ -341,8 +341,9 @@ class TestSrtVttAndTxt:
     def test_vtt_has_a_header_and_dot_milliseconds(self):
         # 「こんにちは。」只有 0.75 秒，顯示最短的 0.8 秒
         assert formats(*GREETINGS).vtt == (
-            "WEBVTT\n\n00:00:01.500 --> 00:00:02.800\n[S0] おはよう。\n\n"
-            "00:00:03.250 --> 00:00:04.050\n[S1] こんにちは。\n\n"
+            "WEBVTT\n\nSTYLE\n::cue(.color1) { color: #FFDD55; }\n\n"
+            "00:00:01.500 --> 00:00:02.800\n[S0] おはよう。\n\n"
+            "00:00:03.250 --> 00:00:04.050\n<c.color1>[S1] こんにちは。</c>\n\n"
             "01:02:05.500 --> 01:02:07.000\n[S0] またね。\n")
 
     def test_txt_keeps_the_labelled_text_of_each_line(self):
@@ -356,8 +357,8 @@ class TestSrtVttAndTxt:
         assert formats(*SENTENCES).srt == (
             "1\n00:00:10,080 --> 00:00:11,200\n[S0] おはようございます。\n\n"
             "2\n00:00:11,599 --> 00:00:13,600\n[S0] 今日は、いい天気ですね！\n\n"
-            "3\n00:00:14,080 --> 00:00:15,360\n[S1] ラーメン食べた？\n\n"
-            "4\n00:00:15,839 --> 00:00:16,800\n[S1] 人々も来た。\n")
+            "3\n00:00:14,080 --> 00:00:15,360\n<font color=\"#FFDD55\">[S1] ラーメン食べた？</font>\n\n"
+            "4\n00:00:15,839 --> 00:00:16,800\n<font color=\"#FFDD55\">[S1] 人々も来た。</font>\n")
 
 
 # ─── SRT／VTT 的結束時間（#96） ──────────────────────────────────────────────
@@ -415,7 +416,7 @@ class TestSubtitleEndTimes:
         without_end = [{**segment, "end": None} for segment in GREETINGS]
         assert formats(*without_end).srt == (
             "1\n00:00:01,500 --> 00:00:03,250\n[S0] おはよう。\n\n"
-            "2\n00:00:03,250 --> 01:02:05,500\n[S1] こんにちは。\n\n"
+            "2\n00:00:03,250 --> 01:02:05,500\n<font color=\"#FFDD55\">[S1] こんにちは。</font>\n\n"
             "3\n01:02:05,500 --> 01:02:10,500\n[S0] またね。\n")
 
     def test_interjection_by_another_speaker_does_not_cut_the_line(self):
@@ -477,23 +478,24 @@ class TestSubtitleEndTimes:
                                   ("是", 253.0, 255.5))}
         interjection = {"start": 251.0, "end": 251.0, "speaker": "S0", "text": "对"}
         result = formats(talking, interjection)
-        assert result.srt == ("1\n00:04:07,500 --> 00:04:10,500\n[S1] 你拉不拉货。\n\n"
+        s1 = '<font color="#FFDD55">[S1] {}</font>'
+        assert result.srt == (f"1\n00:04:07,500 --> 00:04:10,500\n{s1.format('你拉不拉货。')}\n\n"
                               "2\n00:04:11,000 --> 00:04:11,800\n[S0] 对\n\n"
-                              "3\n00:04:12,000 --> 00:04:15,500\n[S1] 但是。\n")
+                              f"3\n00:04:12,000 --> 00:04:15,500\n{s1.format('但是。')}\n")
         assert result.txt == "[S1] 你拉不拉货。\n[S1] 但是。\n[S0] 对"
 
-    @pytest.mark.parametrize("first, second", [
-        ("[S0] ", "[S1] "),
-        # 批次與 #110 之前的 Gemini 任務：Gemini 自己寫的說話者標記
-        ("Speaker 1: ", "Speaker 2: "),
+    @pytest.mark.parametrize("first, second, color", [
+        ("[S0] ", "[S1] ", '<font color="#FFDD55">{}</font>'),
+        # 批次與 #110 之前的 Gemini 任務：Gemini 自己寫的說話者標記，不上色（#12）
+        ("Speaker 1: ", "Speaker 2: ", "{}"),
     ], ids=["app-labels", "gemini-labels"])
-    def test_stored_lrc_follows_the_same_rules_by_its_speaker_labels(self, first, second):
+    def test_stored_lrc_follows_the_same_rules_by_its_speaker_labels(self, first, second, color):
         # 沒有片段的任務從存下來的 LRC 轉換。LRC 沒有結束時間：顯示到下一行開始，最後一行加 5 秒；
         # 第一位說話者講了 0.3 秒就換人，這一行仍顯示 0.8 秒，和下一位的行重疊
         lrc = f"[00:01.00]{first}はい\n[00:01.30]{second}そうですね\n[00:04.00]{first}じゃあ"
         assert output_format.convert_from_lrc(lrc).srt == (
             f"1\n00:00:01,000 --> 00:00:01,800\n{first}はい\n\n"
-            f"2\n00:00:01,300 --> 00:00:04,000\n{second}そうですね\n\n"
+            f"2\n00:00:01,300 --> 00:00:04,000\n{color.format(second + 'そうですね')}\n\n"
             f"3\n00:00:04,000 --> 00:00:09,000\n{first}じゃあ\n")
 
     def test_stored_lrc_with_backward_or_repeated_times_is_sorted_and_visible(self):
@@ -567,3 +569,198 @@ class TestResultWithoutSegments:
         result = output_format.for_result(TranscriptionTaskResult(
             success=True, text="[00:00.50]Speaker A: こんにちは"))
         assert result == output_format.OutputFiles(lrc="", srt="", vtt="", txt="")
+
+
+# ─── SRT／VTT 的說話者顏色（#12） ────────────────────────────────────────────
+
+def one_line_each(*speakers):
+    """每位說話者各講一句「はい。」，從 1 秒起每 2 秒一句，各講 1 秒。"""
+    return [{"start": 1.0 + 2 * i, "end": 2.0 + 2 * i, "speaker": speaker, "text": "はい。"}
+            for i, speaker in enumerate(speakers)]
+
+
+class TestSpeakerColors:
+    """SRT／VTT 依說話者上色（#12）：S0 白色（播放器的預設，不加標籤），S1 黃、S2 青、S3 綠，
+    第 5 位說話者起從白色重新輪。顏色只看行首的 [Sn]；LRC、TXT 不能上色。"""
+
+    def test_srt_wraps_each_line_in_its_speakers_color(self):
+        assert formats(*one_line_each("S0", "S1", "S2", "S3", "S4", "S5")).srt == (
+            "1\n00:00:01,000 --> 00:00:02,000\n[S0] はい。\n\n"
+            '2\n00:00:03,000 --> 00:00:04,000\n<font color="#FFDD55">[S1] はい。</font>\n\n'
+            '3\n00:00:05,000 --> 00:00:06,000\n<font color="#66CCFF">[S2] はい。</font>\n\n'
+            '4\n00:00:07,000 --> 00:00:08,000\n<font color="#7FE0A0">[S3] はい。</font>\n\n'
+            "5\n00:00:09,000 --> 00:00:10,000\n[S4] はい。\n\n"
+            '6\n00:00:11,000 --> 00:00:12,000\n<font color="#FFDD55">[S5] はい。</font>\n')
+
+    def test_vtt_defines_the_colors_it_uses_in_a_style_block(self):
+        # 顏色跟著說話者編號，不是出場順序：先講話的 S2 是青色
+        assert formats(*one_line_each("S2", "S0", "S1")).vtt == (
+            "WEBVTT\n\nSTYLE\n::cue(.color1) { color: #FFDD55; }\n"
+            "::cue(.color2) { color: #66CCFF; }\n\n"
+            "00:00:01.000 --> 00:00:02.000\n<c.color2>[S2] はい。</c>\n\n"
+            "00:00:03.000 --> 00:00:04.000\n[S0] はい。\n\n"
+            "00:00:05.000 --> 00:00:06.000\n<c.color1>[S1] はい。</c>\n")
+
+    @pytest.mark.parametrize("speakers", [("S0", "S4"), (None, None)],
+                             ids=["white-only", "no-labels"])
+    def test_vtt_without_colored_lines_has_no_style_block(self, speakers):
+        # ffmpeg 7.0 之前遇到 STYLE 區塊整個檔案都讀不出來：只有要上色時才寫
+        vtt = formats(*one_line_each(*speakers)).vtt
+        assert "STYLE" not in vtt
+        assert "<c." not in vtt
+
+    def test_lrc_and_txt_have_no_colors(self):
+        result = formats(*one_line_each("S0", "S1"))
+        assert result.lrc == "[00:01.00][S0] はい。\n[00:03.00][S1] はい。"
+        assert result.txt == "[S0] はい。\n[S1] はい。"
+
+    def test_stored_lrc_is_colored_by_the_app_labels_only(self):
+        # 沒有片段的任務從存下來的 LRC 轉換，照同一套顏色；Gemini 舊 LRC 的「Speaker 2:」不上色
+        app = output_format.convert_from_lrc("[00:01.00][S0] はい\n[00:03.00][S1] ええ")
+        assert '\n<font color="#FFDD55">[S1] ええ</font>\n' in app.srt
+        assert "\n<c.color1>[S1] ええ</c>\n" in app.vtt
+        gemini = output_format.convert_from_lrc("[00:01.00]Speaker 1: はい\n[00:03.00]Speaker 2: ええ")
+        assert "<font" not in gemini.srt
+        assert "STYLE" not in gemini.vtt
+
+
+# ─── SRT／VTT 拆開長字幕（#12） ──────────────────────────────────────────────
+
+def srt_cues(*segments) -> list[tuple[str, str]]:
+    """SRT 每一則的（開始 --> 結束, 文字）。"""
+    blocks = formats(*segments).srt.strip().split("\n\n")
+    return [(lines[1], lines[2]) for lines in (block.split("\n") for block in blocks)]
+
+
+def han_per_word(text: str, start: float, step: float = 0.25):
+    """中文的逐字時間：一個漢字一個詞，從 start 起每個詞 step 秒，標點不算詞。"""
+    hans = [char for char in text if "一" <= char <= "鿿"]
+    return words(*[(han, start + i * step, start + (i + 1) * step) for i, han in enumerate(hans)])
+
+
+LONG_JAPANESE = {
+    "start": 10.0, "end": 17.0, "speaker": "S0",
+    "text": "今日はゆっくり休んでくださいね、ずっと頑張ってきたんだから、少しくらい甘えてもいいんですよ。",
+    "words": words(("今", 10.0, 10.25), ("日", 10.25, 10.5), ("はゆっくり", 10.5, 11.0),
+                   ("休", 11.0, 11.25), ("んでくださいね", 11.25, 12.0), ("ずっと", 12.5, 12.75),
+                   ("頑", 12.75, 13.0), ("張", 13.0, 13.25), ("ってきたんだから", 13.25, 14.0),
+                   ("少", 14.5, 14.75), ("しくらい", 14.75, 15.0), ("甘", 15.0, 15.25),
+                   ("えてもいいんですよ", 15.25, 16.5)),
+}
+
+
+class TestLongSubtitles:
+    """SRT／VTT 的一則字幕超過兩行的量（日文 26、其他 32 個全形字寬，連同說話者標記；全形字算 1，
+    半形字算 0.5）時，用逐字時間拆成數則（#12）。LRC、TXT 不拆；沒有逐字時間的行不拆。"""
+
+    def test_japanese_line_breaks_at_reading_marks_into_pieces_within_26(self):
+        # 48.5 個字寬。兩個讀點離中間一樣近，先切前面的；後半還有 32.5，再切一次
+        assert srt_cues(LONG_JAPANESE) == [
+            ("00:00:10,000 --> 00:00:12,000", "[S0] 今日はゆっくり休んでくださいね、"),
+            ("00:00:12,500 --> 00:00:14,000", "[S0] ずっと頑張ってきたんだから、"),
+            ("00:00:14,500 --> 00:00:16,500", "[S0] 少しくらい甘えてもいいんですよ。"),
+        ]
+
+    def test_lrc_and_txt_keep_the_long_line(self):
+        result = formats(LONG_JAPANESE)
+        assert result.lrc == f"[00:10.00][S0] {LONG_JAPANESE['text']}"
+        assert result.txt == f"[S0] {LONG_JAPANESE['text']}"
+
+    def test_chinese_line_breaks_at_the_reading_mark_nearest_the_middle(self):
+        text = "我們先看一下上一季的營收，其實跟預期差不多，但是成本這邊因為原物料漲價。"
+        segment = {"start": 100.0, "end": 109.0, "speaker": "S0", "text": text,
+                   "words": han_per_word(text, 100.0)}
+        assert srt_cues(segment) == [
+            ("00:01:40,000 --> 00:01:45,000", "[S0] 我們先看一下上一季的營收，其實跟預期差不多，"),
+            ("00:01:45,000 --> 00:01:48,250", "[S0] 但是成本這邊因為原物料漲價。"),
+        ]
+
+    @pytest.mark.parametrize("tail, pieces", [
+        # 「[S0] 」2.5 + 假名 22 + 讀點 1 + 半形 0.5 或 1：剛好 26 不拆，26.5 拆
+        ("A", ["[S0] あいうえおかきくけこ、さしすせそたちつてとなにA"]),
+        ("AB", ["[S0] あいうえおかきくけこ、", "[S0] さしすせそたちつてとなにAB"]),
+    ])
+    def test_japanese_limit_is_26_wide_with_half_width_counting_half(self, tail, pieces):
+        segment = {"start": 1.0, "end": 4.0, "speaker": "S0",
+                   "text": f"あいうえおかきくけこ、さしすせそたちつてとなに{tail}",
+                   "words": words(("あいうえおかきくけこ", 1.0, 2.0),
+                                  (f"さしすせそたちつてとなに{tail}", 2.5, 3.5))}
+        assert [text for _, text in srt_cues(segment)] == pieces
+
+    @pytest.mark.parametrize("tail, count", [("A", 1), ("AB", 2)])
+    def test_line_without_kana_has_a_limit_of_32(self, tail, count):
+        # 沒有假名就不算日文：「[S0] 」2.5 + 漢字 28 + 讀點 1 + 半形，32 不拆、32.5 拆
+        text = f"一二三四五六七八九十一二三四，五六七八九十一二三四五六七八{tail}"
+        segment = {"start": 1.0, "end": 12.0, "speaker": "S0", "text": text,
+                   "words": han_per_word(text[:-len(tail)], 1.0) + words((tail, 8.0, 8.5))}
+        assert len(srt_cues(segment)) == count
+
+    def test_japanese_without_reading_marks_breaks_where_hiragana_meets_kanji(self):
+        # 對齊器的詞也在「休|んで」「頑|張」斷開；切在平假名後面接漢字的地方，不切開一個詞的字
+        segment = {
+            "start": 1.0, "end": 9.0, "speaker": "S0",
+            "text": "ゆっくり休んでくださいねずっと頑張ってきたんだから少しくらい甘えて",
+            "words": words(("ゆっくり", 1.0, 1.5), ("休", 1.5, 1.75),
+                           ("んでくださいねずっと", 1.75, 3.0), ("頑", 3.0, 3.25),
+                           ("張", 3.25, 3.5), ("ってきたんだから", 3.5, 4.5), ("少", 4.5, 4.75),
+                           ("しくらい", 4.75, 5.25), ("甘", 5.25, 5.5), ("えて", 5.5, 6.0)),
+        }
+        assert srt_cues(segment) == [
+            ("00:00:01,000 --> 00:00:03,000", "[S0] ゆっくり休んでくださいねずっと"),
+            ("00:00:03,000 --> 00:00:06,000", "[S0] 頑張ってきたんだから少しくらい甘えて"),
+        ]
+
+    def test_words_separated_by_spaces_break_at_the_space_nearest_the_middle(self):
+        text = "So we looked at the revenue for last quarter and it was about what we expected."
+        times = [(word, 20.0 + i * 0.25, 20.25 + i * 0.25)
+                 for i, word in enumerate(text.rstrip(".").split())]
+        segment = {"start": 20.0, "end": 25.0, "speaker": "S0", "text": text,
+                   "words": words(*times)}
+        assert srt_cues(segment) == [
+            ("00:00:20,000 --> 00:00:22,000", "[S0] So we looked at the revenue for last"),
+            ("00:00:22,000 --> 00:00:24,000", "[S0] quarter and it was about what we expected."),
+        ]
+
+    def test_splits_between_two_quotes(self):
+        # 讀點太靠邊（切完不到全長三分之一）。最接近中間的詞界在「一」與「二」之間，但開頭的括號
+        # 之前和讀點一樣優先，所以切在「」「」中間
+        text = "あ、「一二三四五六七八九十一二」「一二三四五六七八九十一二」"
+        segment = {"start": 1.0, "end": 8.0, "speaker": "S0", "text": text,
+                   "words": words(("あ", 1.0, 1.25)) + han_per_word(text, 1.25)}
+        assert srt_cues(segment) == [
+            ("00:00:01,000 --> 00:00:04,250", "[S0] あ、「一二三四五六七八九十一二」"),
+            ("00:00:04,250 --> 00:00:07,250", "[S0] 「一二三四五六七八九十一二」"),
+        ]
+
+    def test_next_piece_does_not_start_with_a_symbol(self):
+        # 沒有讀點、空白或假名，取最接近中間的詞界：「～」前後一樣近，但「～」不能開頭，
+        # 所以它跟著前面的字
+        left, right = "一二三四五六七八九十一二三四五六", "七八九十一二三四五六七八九十一"
+        text = f"{left}～{right}。"
+        segment = {"start": 1.0, "end": 9.0, "speaker": "S0", "text": text,
+                   "words": han_per_word(text, 1.0)}
+        assert srt_cues(segment) == [
+            ("00:00:01,000 --> 00:00:05,000", f"[S0] {left}～"),
+            ("00:00:05,000 --> 00:00:08,750", f"[S0] {right}。"),
+        ]
+
+    def test_a_single_word_longer_than_the_limit_stays_whole(self):
+        segment = {"start": 1.0, "end": 4.0, "speaker": "S0", "text": "あ" * 30 + "。",
+                   "words": words(("あ" * 30, 1.0, 3.5))}
+        assert srt_cues(segment) == [("00:00:01,000 --> 00:00:03,500", "[S0] " + "あ" * 30 + "。")]
+
+    def test_line_without_word_timings_is_not_split(self):
+        # Gemini 的片段沒有逐字時間：拆了只能猜時間
+        segment = {"start": 10.0, "end": 17.0, "speaker": "S0", "text": LONG_JAPANESE["text"]}
+        assert srt_cues(segment) == [("00:00:10,000 --> 00:00:17,000",
+                                      f"[S0] {LONG_JAPANESE['text']}")]
+
+    def test_pieces_keep_the_speakers_color_and_label(self):
+        result = formats({**LONG_JAPANESE, "speaker": "S1"})
+        assert result.srt.count('<font color="#FFDD55">[S1] ') == 3
+        assert result.vtt.count("<c.color1>[S1] ") == 3
+
+    def test_line_without_a_speaker_label_is_split_without_one(self):
+        assert [text for _, text in srt_cues({**LONG_JAPANESE, "speaker": None})] == [
+            "今日はゆっくり休んでくださいね、", "ずっと頑張ってきたんだから、",
+            "少しくらい甘えてもいいんですよ。"]
