@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   allowedProcessingMode,
+  alternativeProvider,
   billedPerToken,
+  checksTranscribingMachine,
   missingApiKey,
   modelSupports,
   modelForProvider,
@@ -22,6 +24,7 @@ const PROVIDERS = [
     provider: 'google',
     label: 'Gemini',
     requires_api_key: true,
+    checks_transcribing_machine: false,
     upload_notice: { text: '音檔會上傳到 Google。', terms_url: 'https://ai.google.dev/gemini-api/terms' },
     models: [
       { model: 'gemini-3.5-flash', label: 'gemini-3.5-flash', capabilities: {} },
@@ -32,6 +35,7 @@ const PROVIDERS = [
     provider: 'local',
     label: '本機',
     requires_api_key: false,
+    checks_transcribing_machine: true,
     upload_notice: null,
     models: [
       { model: 'moss-align', label: 'MOSS-Transcribe-Diarize', capabilities: {} },
@@ -79,6 +83,27 @@ describe('uploadNotice：選了會把音檔送出本機的供應商時，告訴�
 
   it('清單還沒載入或查不到供應商時不顯示', () => {
     expect([uploadNotice(null, 'google'), uploadNotice(PROVIDERS, 'nope')]).toEqual([null, null]);
+  });
+});
+
+describe('在這台電腦上轉錄的供應商（#11）', () => {
+  it('照端點說的：本機要先問這台電腦能不能轉錄，Gemini 不用', () => {
+    expect([checksTranscribingMachine(PROVIDERS, 'local'), checksTranscribingMachine(PROVIDERS, 'google')])
+      .toEqual([true, false]);
+  });
+
+  it('清單還沒載入或查不到供應商時不問', () => {
+    expect([checksTranscribingMachine(null, 'local'), checksTranscribingMachine(PROVIDERS, 'nope')])
+      .toEqual([false, false]);
+  });
+
+  it('跑不了本機時，建議改用清單上第一個不在這台電腦上轉錄的供應商', () => {
+    const localFirst = [PROVIDERS[1], PROVIDERS[0]];
+    expect(alternativeProvider(localFirst)).toEqual({ value: 'google', label: 'Gemini' });
+  });
+
+  it('沒有別的供應商可以改用時是 null', () => {
+    expect([alternativeProvider([PROVIDERS[1]]), alternativeProvider(null)]).toEqual([null, null]);
   });
 });
 

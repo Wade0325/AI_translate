@@ -251,3 +251,48 @@ test('Gemini 的卡片說明音檔會上傳到 Google，並連到條款原文；
     await expect(terms).toHaveAttribute('rel', 'noopener noreferrer')
     await expect(providerCard(page, '本機').getByRole('link', { name: '條款原文' })).toHaveCount(0)
 })
+
+/**
+ * 免安裝模式的本機模型權重狀態（GET /setting/local-models/status）：8 GB 的顯卡，預設模型的權重都
+ * 已下載。fields 蓋過其中的欄位。
+ */
+const localStatus = (fields) => ({
+    standalone: true, gpu_available: true, gpu_name: 'NVIDIA GeForce RTX 4060', gpu_vram_gb: 8.0,
+    gpu_problem: null, vram_notice: null, hf_home: 'data/models/hf_cache', default_model: 'moss-align',
+    required_size_gb: 3.7, optional_size_gb: 20.8,
+    models: [
+        { repo_id: 'OpenMOSS-Team/MOSS-Transcribe-Diarize', downloaded: true, required: true, used_by: ['moss-align', 'moss-qwen3-asr'] },
+        { repo_id: 'Qwen/Qwen3-ForcedAligner-0.6B-hf', downloaded: true, required: true, used_by: ['moss-align', 'moss-qwen3-asr', 'vibevoice-qwen3-asr'] },
+    ],
+    all_downloaded: true, optional_downloaded: true,
+    download: { state: 'idle', target: null, repo_index: 0, repo_count: 2, current_repo: null, progress_pct: null, error: null },
+    ...fields,
+})
+
+test('本機卡片顯示顯卡與記憶體；低於最低需求時提示（#11 Q2）', async ({ page, mockBackend }) => {
+    const notice = '顯卡記憶體 8 GB 沒有測過（建議 16 GB、至少 12 GB）。長音檔會切成約 26 分鐘一段，各段的說話者編號比較容易對不上'
+    await mockBackend({ routes: { 'GET /setting/local-models/status': localStatus({ vram_notice: notice }) } })
+    await page.goto('/settings')
+
+    const local = providerCard(page, 'Local Models')
+    await expect(local.getByText('GPU: NVIDIA GeForce RTX 4060（8 GB）')).toBeVisible()
+    await expect(local.getByText(notice)).toBeVisible()
+})
+
+test('本機卡片說明顯卡太舊、本機轉錄不支援，也不能下載模型權重（#11 Q4）', async ({ page, mockBackend }) => {
+    const problem = '這張顯卡（NVIDIA GeForce GTX 1080）太舊，本機轉錄不支援：GTX 10 系列以前的 NVIDIA 顯卡都用不了，可以改用 Gemini'
+    await mockBackend({
+        routes: {
+            'GET /setting/local-models/status': localStatus({
+                gpu_available: false, gpu_name: 'NVIDIA GeForce GTX 1080', gpu_problem: problem,
+                models: localStatus({}).models.map((m) => ({ ...m, downloaded: false })),
+                all_downloaded: false,
+            }),
+        },
+    })
+    await page.goto('/settings')
+
+    const local = providerCard(page, 'Local Models')
+    await expect(local.getByText(problem)).toBeVisible()
+    await expect(local.getByRole('button', { name: /下載模型權重/ })).toBeDisabled()
+})

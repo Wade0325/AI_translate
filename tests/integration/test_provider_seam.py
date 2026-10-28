@@ -1119,6 +1119,20 @@ class TestModelCapabilitiesEndpoint:
         assert listed["google"]["requires_api_key"] is True
         assert listed["local"]["requires_api_key"] is False
 
+    def test_local_is_the_default_even_without_a_gpu(self, api):
+        # 預設本機（ADR-0003）；沒有 GPU 的電腦也一樣，由轉錄頁說明原因、讓使用者自己改用
+        # 會上傳音檔的 Gemini（#11 Q1）。清單不碰顯卡，所以和這台電腦有沒有顯卡無關
+        response = api.get("/api/v1/providers")
+
+        assert [entry["provider"] for entry in response.json()][:2] == ["local", "google"]
+
+    def test_says_which_providers_transcribe_on_the_users_machine(self, api):
+        # 轉錄頁選了這種供應商，先問那台機器能不能轉錄，不能就說明原因並停用 Start（#11）
+        listed = listed_providers(api)
+
+        assert listed["local"]["checks_transcribing_machine"] is True
+        assert listed["google"]["checks_transcribing_machine"] is False
+
     def test_tells_where_the_audio_goes_and_links_the_terms(self, api):
         # 選 Gemini 時，設定頁與轉錄頁照這一項告訴使用者音檔會上傳、Google 怎麼使用，
         # 並連到條款原文（#231 Q6）；本機不送出音檔，沒有告知
@@ -1184,7 +1198,8 @@ class TestModelCapabilitiesEndpoint:
         read = set(re.findall(r"\.([a-z]+(?:_[a-z]+)+)\b", source))
 
         assert {"accepts_prompt", "accepts_user_text", "supports_batch", "supports_flex",
-                "remove_silence", "requires_api_key", "upload_notice", "terms_url"} <= read
+                "remove_silence", "requires_api_key", "checks_transcribing_machine",
+                "upload_notice", "terms_url"} <= read
         assert read <= listed_fields(api)
 
 

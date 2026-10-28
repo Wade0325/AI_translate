@@ -53,9 +53,10 @@ class UnsupportedInputError(UnsupportedModelError):
     """請求填了模型不吃的輸入（提示詞、使用者文稿）。"""
 
 
-# 順序就是畫面的順序，第一個是轉錄頁預設的供應商。沿用改版前的預設（Gemini）：和 ADR-0003
-# 「預設本機」不一致，沒有 GPU 時預設什麼還在 #11 待決定，決定後改這裡的順序
-_factories: dict[str, ProviderFactory] = {"google": GeminiProvider, "local": local_provider}
+# 順序就是畫面的順序，第一個是轉錄頁預設的供應商：本機（ADR-0003）。沒有 GPU 的電腦也一樣
+# 預設本機，轉錄頁說明原因、讓使用者自己改用 Gemini，不自動改選會上傳音檔的供應商（#11 Q1）
+_factories: dict[str, ProviderFactory] = {"local": local_provider,
+                                          "google": GeminiProvider}
 _lock = threading.Lock()
 
 
@@ -95,6 +96,8 @@ class ListedProvider:
     provider: str
     label: str
     requires_api_key: bool
+    checks_transcribing_machine: bool
+    """在執行轉錄的那台機器上轉錄（本機）：轉錄頁選它時先問那台機器能不能轉錄（#11）。"""
     upload_notice: Optional[UploadNotice]
     models: Tuple[ListedModel, ...]
 
@@ -112,6 +115,7 @@ def _listed(name: str, info: ProviderInfo,
         provider=name,
         label=info.label,
         requires_api_key=info.requires_api_key,
+        checks_transcribing_machine=info.checks_transcribing_machine,
         upload_notice=info.upload_notice,
         models=tuple(ListedModel(model=model, label=info.model_labels.get(model, model),
                                  capabilities=capabilities)

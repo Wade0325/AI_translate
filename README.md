@@ -63,11 +63,13 @@
 1. 到 [**Releases**](https://github.com/Wade0325/AI_translate/releases) 下載最新的 `AI_Translate-vX.Y.Z-win64.zip`
 2. 解壓到任意位置（建議路徑不含中文與空白）
 3. 雙擊 **`AI_Translate.exe`**
-   - 首次啟動會自動下載執行環境（約 3.5 GB，含 PyTorch），中斷可續傳
+   - 首次啟動會自動下載執行環境（約 3.5 GB，含 PyTorch），中斷可續傳。沒有 NVIDIA 顯卡的電腦也一樣會下載這些，只用 Gemini 時其中大部分用不到
    - 就緒後自動開啟瀏覽器；關閉黑色視窗即停止程式
-4. 在 **⚙️ Settings** 頁填入 [Gemini API Key](https://aistudio.google.com/apikey) 即可轉錄
-5. 要用 **Local 本機 GPU 轉錄**（零 API 費用，需 NVIDIA GPU）：在 Settings 頁的
+4. 轉錄頁預設用 **本機**：在自己的顯卡上轉錄，零 API 費用，音檔不離開這台電腦。先在 **⚙️ Settings** 頁的
    Local Models 卡片下載模型權重（預設模型約 3.7 GB；選用模型另需約 21 GB）
+   - 需要 NVIDIA 顯卡，顯卡記憶體 12 GB 以上，建議 16 GB。8–12 GB 沒有測過；低於 8 GB 可能很慢，長音檔的說話者編號也比較容易對不上，畫面會提示，但照樣能用
+   - GTX 10 系列以前的顯卡不支援
+5. 沒有合適的顯卡時，轉錄頁會寫出原因，可以按「改用 Gemini」：在 Settings 頁填入 [Gemini API Key](https://aistudio.google.com/apikey) 即可轉錄。Gemini 會把音檔上傳到 Google
 
 > 所有資料（資料庫、模型權重）都在解壓資料夾的 `data\` 內；升級新版時把舊版 `data\` 複製過來即可保留紀錄。哪些是個人資料、怎麼清掉，見[資料與隱私](#-資料與隱私)。
 >

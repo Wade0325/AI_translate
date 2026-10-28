@@ -13,31 +13,16 @@ export const GEMINI_UPLOAD_NOTICE = {
 }
 
 /**
- * GET /providers：Gemini 要金鑰、支援提示詞與三種處理模式，音檔會上傳；本機不要金鑰，只有標準，
- * 也不去靜音（#95），音檔不送出。兩邊都不吃使用者文稿（#66 修好之前 Gemini 也不吃）。
+ * GET /providers：本機在第一個，是預設（#11 Q1）。本機在使用者的電腦上轉錄，不要金鑰，只有標準，
+ * 也不去靜音（#95），音檔不送出；Gemini 要金鑰、支援提示詞與三種處理模式，音檔會上傳。兩邊都
+ * 不吃使用者文稿（#66 修好之前 Gemini 也不吃）。
  */
 export const PROVIDERS = [
-    {
-        provider: 'google',
-        label: 'Gemini',
-        requires_api_key: true,
-        upload_notice: GEMINI_UPLOAD_NOTICE,
-        models: [
-            {
-                model: 'gemini-3.5-flash',
-                label: 'gemini-3.5-flash',
-                capabilities: {
-                    single_pass_seconds: 900.0, queue: 'celery', can_terminate: true,
-                    split_retry_on_failure: true, accepts_prompt: true, accepts_user_text: false,
-                    supports_batch: true, supports_flex: true, pricing: 'per_token', remove_silence: true,
-                },
-            },
-        ],
-    },
     {
         provider: 'local',
         label: '本機',
         requires_api_key: false,
+        checks_transcribing_machine: true,
         upload_notice: null,
         models: [
             {
@@ -51,7 +36,33 @@ export const PROVIDERS = [
             },
         ],
     },
+    {
+        provider: 'google',
+        label: 'Gemini',
+        requires_api_key: true,
+        checks_transcribing_machine: false,
+        upload_notice: GEMINI_UPLOAD_NOTICE,
+        models: [
+            {
+                model: 'gemini-3.5-flash',
+                label: 'gemini-3.5-flash',
+                capabilities: {
+                    single_pass_seconds: 900.0, queue: 'celery', can_terminate: true,
+                    split_retry_on_failure: true, accepts_prompt: true, accepts_user_text: false,
+                    supports_batch: true, supports_flex: true, pricing: 'per_token', remove_silence: true,
+                },
+            },
+        ],
+    },
 ]
+
+/**
+ * GET /setting/local-models/readiness：免安裝模式的回應（checked: true）。預設的路由用的是
+ * Docker 模式的回應（沒有查），轉錄頁不提示也不擋；要模擬這台電腦的狀況時用這個組。
+ */
+export const readiness = (fields) => ({
+    checked: true, ready: true, reason: null, message: null, vram_notice: null, ...fields,
+})
 
 /** 後端回給畫面的金鑰只有遮罩值（前後 4 碼），明文不會出現在任何回應裡。 */
 export const MASKED_KEY = 'AIza********wxyz'
@@ -90,8 +101,11 @@ const DEFAULT_ROUTES = {
     'GET /version': { version: 'v0.1.0-test' },
     'GET /setting/models/google': GOOGLE_CONFIG,
     'GET /setting/models/local': { provider: 'Local', apiKeys: [], model: null, prompt: null },
-    // Docker 模式的回應：設定頁不顯示本機模型權重的卡片
+    // Docker 模式的回應：設定頁不顯示本機模型權重的卡片，轉錄頁不問這台電腦能不能轉錄（#11）
     'GET /setting/local-models/status': { standalone: false },
+    'GET /setting/local-models/readiness': {
+        checked: false, ready: null, reason: null, message: null, vram_notice: null,
+    },
     'GET /local-data': LOCAL_DATA,
     'GET /history/usage': { daily: [], by_model: [], pricing: [] },
     'GET /history/stats': EMPTY_STATS,

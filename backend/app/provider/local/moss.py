@@ -177,16 +177,24 @@ def single_pass_limit_seconds() -> float:
 def max_single_pass_seconds() -> float:
     """這台機器上 MOSS 單次推論能處理的最長音檔（秒）；更長的檔分段轉錄。
 
+    依這張顯卡的容量算（:func:`single_pass_seconds_for_vram`）。會 import torch，只在真的要
+    轉錄的行程呼叫。
+    """
+    return single_pass_seconds_for_vram(_total_vram_gib())
+
+
+def single_pass_seconds_for_vram(total_gib: Optional[float]) -> float:
+    """顯卡記憶體共 ``total_gib`` GiB 時，MOSS 單次推論能處理的最長音檔（秒）。
+
     :func:`single_pass_limit_seconds` 再依顯卡容量收斂（16 GB 約 79 分、12 GB 約 52 分、
     8 GB 約 26 分；估算值至少 300 秒——實測 275 秒峰值 2.32 GiB，4 GB 卡即可容納）。
-    會 import torch，只在真的要轉錄的行程呼叫。
+    查不到容量（None）時不收斂。
     """
     limit = single_pass_limit_seconds()
     if limit <= 0:
         return limit
-    total = _total_vram_gib()
-    if total is not None:
-        usable_k_tokens = (total - _VRAM_HEADROOM_GIB - _WEIGHTS_GIB) / _GIB_PER_K_TOKENS
+    if total_gib is not None:
+        usable_k_tokens = (total_gib - _VRAM_HEADROOM_GIB - _WEIGHTS_GIB) / _GIB_PER_K_TOKENS
         by_vram = usable_k_tokens * 1000 / _PASS_TOKENS_PER_SECOND
         limit = min(limit, max(_MIN_VRAM_SINGLE_PASS_SECONDS, by_vram))
     return limit

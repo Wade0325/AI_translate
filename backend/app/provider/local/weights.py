@@ -1,4 +1,4 @@
-"""Local ASR 模型權重的單一事實來源：repo 清單、就緒檢查、CUDA 偵測。
+"""Local ASR 模型權重的單一事實來源：repo 清單、就緒檢查、顯卡偵測。
 
 asr.py（推論）與 api/local_models.py（下載管理）都從此模組取常數與檢查，
 避免兩處清單漂移。
@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, TypeVar
 
@@ -179,25 +180,109 @@ def download_targets(model: str | None) -> tuple[str, ...]:
     raise ValueError(f"不支援的本機模型: {model}")
 
 
-def cuda_status() -> tuple[bool, str | None]:
-    """回傳 (CUDA 可用, GPU 名稱)；torch 缺失或無 GPU 時 (False, None)。"""
+# 顯卡記憶體的門檻（ADR 0003：12 GB 以上，建議 16 GB）。低於最低需求只提示、不擋（#11 Q2）：
+# 8–12 GB 沒有測過；8 GB 以下另外警告可能很慢
+VRAM_MINIMUM_GB = 12
+VRAM_UNVERIFIED_GB = 8
+
+
+@dataclass(frozen=True)
+class Gpu:
+    """這個行程看得到的第一張顯卡（本機轉錄只用它）。"""
+    name: str
+    vram_gb: float
+    """顯卡記憶體（GiB，取到小數一位）：標示 16 GB 的卡約 16.0，12 GB 的卡約 12.0。"""
+    supported: bool
+    """這版 torch 跑得動這張卡；架構太舊時是 False（#11 Q4）。"""
+
+
+class LocalNotReady(ValueError):
+    """本機現在不能轉錄；訊息可直接顯示給使用者。``reason`` 讓轉錄頁決定下一步（#11 Q1）：
+    ``no_gpu``、``unsupported_gpu`` 是這台電腦跑不了，建議改用別的供應商；``missing_weights``
+    到設定頁下載模型權重就能用。"""
+
+    def __init__(self, reason: str, message: str):
+        super().__init__(message)
+        self.reason = reason
+
+
+def detect_gpu() -> Gpu | None:
+    """這個行程看得到的第一張顯卡；沒有 torch、沒有可用的 CUDA 裝置時是 None。"""
     try:
         import torch
-        if torch.cuda.is_available():
-            return True, torch.cuda.get_device_name(0)
+        if not torch.cuda.is_available():
+            return None
+        card = torch.cuda.get_device_properties(0)
+        return Gpu(name=str(card.name), vram_gb=round(card.total_memory / 2**30, 1),
+                   supported=arch_supported(torch.cuda.get_device_capability(0),
+                                            torch.cuda.get_arch_list()))
     except Exception:
-        pass
-    return False, None
+        return None
 
 
-def ensure_local_ready(model: str | None = None) -> None:
-    """本機轉錄前的前置檢查（由本機轉接器呼叫）；不符合直接拋明確錯誤。"""
-    cuda_ok, _ = cuda_status()
-    if not cuda_ok:
-        raise ValueError("本機轉錄需要 NVIDIA GPU，未偵測到可用的 CUDA 裝置")
+def arch_supported(capability: tuple[int, int], arch_list: list[str]) -> bool:
+    """torch 帶的 CUDA 程式碼（``arch_list``，例如 ``sm_86``、``compute_120``）跑不跑得動這個
+    運算能力（``capability``，例如 RTX 3060 是 (8, 6)）的顯卡。
+
+    同一代（主版號相同）、次版號不高於它的 ``sm_XY`` 可以直接跑；版號不高於它的 ``compute_XY``
+    （PTX）可以在較新的卡上即時編譯。PyTorch 2.8 的 CUDA 12.8 版不含 Maxwell 與 Pascal，GTX 10
+    系列以前的卡兩種都對不上。清單是空的時看不出來，當成跑得動，交給轉錄時的錯誤。
+    """
+    if not arch_list:
+        return True
+    major, minor = capability
+    for arch in arch_list:
+        kind, _, digits = arch.partition("_")
+        if not digits.isdigit():
+            continue  # sm_90a 之類只給特定一代的變體，同一代的 sm_90 也會在清單裡
+        arch_major, arch_minor = divmod(int(digits), 10)
+        if kind == "sm" and arch_major == major and arch_minor <= minor:
+            return True
+        if kind == "compute" and (arch_major, arch_minor) <= (major, minor):
+            return True
+    return False
+
+
+def _unusable_gpu(gpu: Gpu | None) -> LocalNotReady:
+    if gpu is None:
+        return LocalNotReady("no_gpu", "這台電腦沒有可用的 NVIDIA 顯卡，本機轉錄不能用，可以改用 Gemini")
+    return LocalNotReady("unsupported_gpu", f"這張顯卡（{gpu.name}）太舊，本機轉錄不支援："
+                         "GTX 10 系列以前的 NVIDIA 顯卡都用不了，可以改用 Gemini")
+
+
+def gpu_problem(gpu: Gpu | None) -> str | None:
+    """這張顯卡（:func:`detect_gpu` 的結果）跑不了本機轉錄的原因；跑得了時是 None。"""
+    return None if gpu is not None and gpu.supported else str(_unusable_gpu(gpu))
+
+
+def vram_notice(vram_gb: float, single_pass_seconds: float) -> str | None:
+    """顯卡記憶體低於最低需求時給使用者的提示，只提示、不擋（#11 Q2）；夠的時候是 None。
+
+    ``single_pass_seconds`` 是這張顯卡上單次能轉錄的長度（0 是不分段）：記憶體越小切得越短，
+    長音檔切成越多段，各段各自分離說話者，說話者編號越容易對不上（跨段對齊是 #93）。
+    """
+    nominal = round(vram_gb)  # 標示 12 GB 的卡回報約 11.99 GiB
+    if nominal >= VRAM_MINIMUM_GB:
+        return None
+    chunks = (f"長音檔會切成約 {single_pass_seconds / 60:.0f} 分鐘一段，"
+              if single_pass_seconds > 0 else "")
+    if nominal >= VRAM_UNVERIFIED_GB:
+        return (f"顯卡記憶體 {nominal} GB 沒有測過（建議 16 GB、至少 12 GB）。"
+                f"{chunks}各段的說話者編號比較容易對不上")
+    return (f"顯卡記憶體 {nominal} GB，低於 8 GB，沒有測過，可能很慢。"
+            f"{chunks}各段的說話者編號容易對不上；多人或很長的音檔建議改用 Gemini")
+
+
+def ensure_local_ready(model: str | None = None) -> Gpu:
+    """本機轉錄前的前置檢查（由本機轉接器呼叫）；不符合直接拋 :class:`LocalNotReady`，
+    符合時回傳要用的顯卡。顯卡記憶體不足不在這裡擋（#11 Q2）。"""
+    gpu = detect_gpu()
+    if gpu is None or not gpu.supported:
+        raise _unusable_gpu(gpu)
     missing = missing_repos(model)
     if missing:
-        raise ValueError(_missing_weights_message(model, missing))
+        raise LocalNotReady("missing_weights", _missing_weights_message(model, missing))
+    return gpu
 
 
 def _missing_weights_message(model: str | None, missing: list[str]) -> str:
