@@ -509,7 +509,7 @@ class TestSpeechView:
         assert download(api, task_uuid, "lrc") == "[00:01.00][S0] 前半。\n[00:13.70][S1] 後半。"
         srt = download(api, task_uuid, "srt")
         assert "00:00:01,000 --> 00:00:06,300\n[S0] 前半。" in srt
-        assert "--> 00:00:15,400\n[S1] 後半。" in srt
+        assert '--> 00:00:15,400\n<font color="#FFDD55">[S1] 後半。</font>' in srt
 
     def test_times_just_outside_the_tolerance_are_restored_as_they_are(self, api, fake):
         # 離交界 1e-5 秒，超過容許的 1e-6 秒，就不算落在交界上：交界前 1e-5 秒開始的一句屬於前一段，
@@ -850,12 +850,12 @@ class TestOutputFormatsFromSegments:
             "2\n00:00:14,400 --> 00:00:15,400\n[S0] ありがとう。\n")
 
     @pytest.mark.parametrize("fmt, expected", [
-        ("srt", "1\n00:00:00,500 --> 00:00:03,500\n[S1] 你拉不拉货。\n\n"
+        ("srt", "1\n00:00:00,500 --> 00:00:03,500\n<font color=\"#FFDD55\">[S1] 你拉不拉货。</font>\n\n"
                 "2\n00:00:03,000 --> 00:00:03,800\n[S0] 对\n\n"
-                "3\n00:00:04,000 --> 00:00:06,500\n[S1] 但是。\n"),
-        ("vtt", "WEBVTT\n\n00:00:00.500 --> 00:00:03.500\n[S1] 你拉不拉货。\n\n"
+                "3\n00:00:04,000 --> 00:00:06,500\n<font color=\"#FFDD55\">[S1] 但是。</font>\n"),
+        ("vtt", "WEBVTT\n\nSTYLE\n::cue(.color1) { color: #FFDD55; }\n\n00:00:00.500 --> 00:00:03.500\n<c.color1>[S1] 你拉不拉货。</c>\n\n"
                 "00:00:03.000 --> 00:00:03.800\n[S0] 对\n\n"
-                "00:00:04.000 --> 00:00:06.500\n[S1] 但是。\n"),
+                "00:00:04.000 --> 00:00:06.500\n<c.color1>[S1] 但是。</c>\n"),
     ])
     def test_interjection_overlaps_and_subtitles_follow_start_times(
             self, api, fake, fmt, expected):
@@ -874,9 +874,9 @@ class TestOutputFormatsFromSegments:
 
     @pytest.mark.parametrize("fmt, expected", [
         ("srt", "1\n00:00:00,250 --> 00:00:02,500\n[S0] おはよう。\n\n"
-                "2\n00:00:02,500 --> 00:00:07,500\n[S1] こんにちは。\n"),
-        ("vtt", "WEBVTT\n\n00:00:00.250 --> 00:00:02.500\n[S0] おはよう。\n\n"
-                "00:00:02.500 --> 00:00:07.500\n[S1] こんにちは。\n"),
+                "2\n00:00:02,500 --> 00:00:07,500\n<font color=\"#FFDD55\">[S1] こんにちは。</font>\n"),
+        ("vtt", "WEBVTT\n\nSTYLE\n::cue(.color1) { color: #FFDD55; }\n\n00:00:00.250 --> 00:00:02.500\n[S0] おはよう。\n\n"
+                "00:00:02.500 --> 00:00:07.500\n<c.color1>[S1] こんにちは。</c>\n"),
     ])
     def test_segments_without_an_end_keep_the_old_subtitle_end_times(
             self, api, fake, fmt, expected):
