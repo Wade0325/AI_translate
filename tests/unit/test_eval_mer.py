@@ -7,7 +7,7 @@
 import pytest
 
 from tools.eval import selftest
-from tools.eval.mer import score_text
+from tools.eval.mer import score_text, tokenize
 
 
 @pytest.mark.parametrize("case", selftest.MER_CASES, ids=lambda case: case.description)
@@ -17,3 +17,13 @@ def test_sentence_errors_and_bucket(case):
     assert score.errors == case.errors
     if case.bucket is not None:
         assert case.bucket in score.buckets
+
+
+@pytest.mark.parametrize(("text", "tokens"), [
+    ("看着", ["看", "著"]),
+    ("看著", ["看", "著"]),
+    ("著作", ["著", "作"]),   # 本來就是「著」的詞不受影響
+])
+def test_zhe_is_merged_into_the_traditional_form(text, tokens):
+    # 錯誤範例印的是正規化後的 token，所以合併的方向看得到：一律印「著」
+    assert tokenize(text) == tokens

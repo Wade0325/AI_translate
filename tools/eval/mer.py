@@ -5,14 +5,20 @@
 混合錯誤率，一個術語錯就是一個錯。
 
 **正規化兩邊同時做**，避免把聽打規範的差異算成模型的錯：
-  NFKC（全形→半形）→ [聽不清] 轉 wildcard → 去草稿標記 → 繁簡統一（t2s）→
-  小寫 → 只保留中文字與英數 token → 去語助詞 → 逐字母縮寫合併（S Q L → sql）
+  NFKC（全形→半形）→ [聽不清] 轉 wildcard → 去草稿標記 → 繁簡統一（t2s，再把「着」併成
+  「著」）→ 小寫 → 只保留中文字與英數 token → 去語助詞 → 逐字母縮寫合併（S Q L → sql）
   → 個位數字轉中文（9 ↔ 九）
 
 繁簡統一用 ``t2s`` 而非 ``tw2sp``：前者只合併字形（檔/档、裡/里），後者會做詞彙替換
 （程式→程序），那會把真正的辨識錯誤洗掉。``opencc`` 來自 ``opencc-python-reimplemented``
 （純 Python），不是 PyPI 上叫 ``opencc`` 的官方原生綁定；兩者的字典不同，換掉要另外驗證
 錯字率不變。
+
+``t2s`` 之後要另外把「着」併成「著」（#243）：「著」在簡體裡也是合法的字（著作、显著），
+``t2s`` 不會把繁體的「看著」換成「看着」。不併的話，標準答案寫繁體、轉錄結果寫簡體時，
+每個「着」都算一個錯，錯字率就看標準答案用繁體還是簡體而定。併向「著」，所以著作、显著
+這類兩邊都寫「著」的詞不受影響。其他 ``t2s`` 換不回去的字（揹/背、簷/檐、暱/昵）在 #242
+量到的書面句子裡各只有 1～5 處，沒有處理；要處理時用同樣的辦法加。
 
 **[聽不清] 的處理有近似**：該位置的替換／刪除不計分，緊鄰的插入也不計分，但若
 不清楚的區間對應到轉錄結果的多個 token，較遠的那幾個仍會被算成插入。報告會印出 unk
@@ -55,7 +61,7 @@ def tokenize(text: str, drop_fillers: bool = True) -> list[str]:
     s = unicodedata.normalize("NFKC", text)
     s = s.replace(UNCLEAR, UNK)
     s = DOUBT_RE.sub("", s).replace("(?)", "")
-    s = _T2S.convert(s).lower()
+    s = _T2S.convert(s).replace("着", "著").lower()
     toks = TOKEN_RE.findall(s)
     if drop_fillers:
         toks = [t for t in toks if t not in FILLERS]
