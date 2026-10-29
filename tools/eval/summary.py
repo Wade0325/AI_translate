@@ -19,7 +19,7 @@ from . import lrc
 from .cli import UsageError
 
 VERDICT = "待回歸判定"
-"""回歸的判定規則還沒定（#15），先一律這樣寫。"""
+"""判定規則（docs/adr/0009）還沒做進來，先一律這樣寫。"""
 
 
 @dataclass

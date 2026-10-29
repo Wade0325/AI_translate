@@ -135,7 +135,7 @@ backend\.venv\Scripts\python.exe -m tools.eval summary <研究區>\runs\<名稱>
 - 讀 `eval --json` 的檔案，以及每份轉錄結果旁邊的 manifest（`transcribe` 寫的 `<音檔名稱>.manifest.json`）。轉錄結果的路徑是相對路徑時，先照目前的資料夾找，再照 JSON 所在的資料夾找。
 - 印出：commit、模型與語言、錯字率與 cpMER（全域對應）、RTF 與峰值顯存、結尾核對，兩份轉錄結果時再加上 ΔMER 與 95% CI；另外列出音檔的 SHA-256、標準答案的名稱與草稿標記、用的指令，以及判定。
 - **結尾核對**：LRC 最後一行開始的時間和音檔長度比，看結尾有沒有掉尾。只讀時間戳。
-- **判定**：回歸的判定規則還沒定（#15），一律寫「待回歸判定」。
+- **判定**：判定規則見 `docs/adr/0009`，還沒做進這個指令，一律寫「待回歸判定」。
 - 只輸出數字、雜湊與檔名，不輸出錯誤範例或任何轉錄文字，可以直接貼進 PR。找不到 manifest 的欄位寫「—」，摘要最後會列出找不到的是哪一份。
 - `eval --json` 為此多寫了兩項：每份轉錄結果的 `cp_mer_global`（全域對應的 cpMER）與 `global_mapping`，以及兩份轉錄結果時的 `paired`（`delta_mer`、`ci`、`significant`）。
 
