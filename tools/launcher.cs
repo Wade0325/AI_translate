@@ -116,6 +116,7 @@ static class Launcher
         Console.WriteLine("═══════════════════════════════════════════════════════");
         Console.WriteLine(" 首次啟動：正在下載執行環境（約 3.5 GB，含 PyTorch）");
         Console.WriteLine(" 過程視網速需要數分鐘到數十分鐘；中斷後重開會續傳。");
+        Console.WriteLine(" 沒有 NVIDIA 顯卡的電腦也會下載這些，只用 Gemini 時大部分用不到。");
         Console.WriteLine("═══════════════════════════════════════════════════════");
 
         var psi = new ProcessStartInfo();

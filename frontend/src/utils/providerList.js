@@ -68,6 +68,22 @@ export const requiresApiKey = (providerList, provider) =>
   findProvider(providerList, provider)?.requires_api_key === true;
 
 /**
+ * 這個供應商在使用者自己的電腦上轉錄（本機）：轉錄頁選它時，先問那台電腦能不能轉錄（#11），
+ * 見 utils/localReadiness.js。
+ */
+export const checksTranscribingMachine = (providerList, provider) =>
+  findProvider(providerList, provider)?.checks_transcribing_machine === true;
+
+/**
+ * 這台電腦跑不了本機轉錄時建議改用的供應商 { value, label }：清單上第一個不在這台電腦上轉錄的
+ * （例如 Gemini）。只是建議，要使用者自己按（#11 Q1）。沒有這種供應商時是 null。
+ */
+export function alternativeProvider(providerList) {
+  const found = (providerList ?? []).find((p) => p.checks_transcribing_machine !== true);
+  return found ? { value: found.provider, label: found.label } : null;
+}
+
+/**
  * 選了這個供應商時要告訴使用者的事（#231 Q6）：{ text, termsUrl }，text 說明音檔會送到哪裡、
  * 對方怎麼使用，termsUrl 是條款原文。音檔會送出本機的供應商才有（例如 Gemini）；本機、
  * 清單還沒載入或查不到供應商時是 null。

@@ -13,7 +13,7 @@ from app.core.config import get_settings
 from app.exceptions import TranscriptionCancelledError
 from app.provider.base import ProgressAndCancel
 from app.provider.local import asr, moss, weights
-from app.provider.local.provider import LocalProvider, local_provider
+from app.provider.local.provider import LocalProvider, local_provider, vram_notice
 
 
 # ─── 輸出解析 ────────────────────────────────────────────────────────────
@@ -195,7 +195,7 @@ class TestWeights:
         assert weights.is_moss_model(model)
 
     def test_ensure_local_ready_reports_missing_for_selected_model(self, monkeypatch):
-        monkeypatch.setattr(weights, "cuda_status", lambda: (True, "GPU"))
+        monkeypatch.setattr(weights, "detect_gpu", lambda: weights.Gpu("GPU", 16.0, True))
         monkeypatch.setattr(weights, "repo_is_ready",
                             lambda repo: repo != weights.ASR_MODEL_ID)
         weights.ensure_local_ready(weights.MOSS_ALIGN)  # 預設模型不需要 Qwen3-ASR
@@ -318,9 +318,94 @@ class TestWeights:
         assert weights.repo_is_ready(weights.ALIGNER_MODEL_ID)
 
     def test_ensure_local_ready_requires_gpu(self, monkeypatch):
-        monkeypatch.setattr(weights, "cuda_status", lambda: (False, None))
-        with pytest.raises(ValueError, match="NVIDIA GPU"):
+        monkeypatch.setattr(weights, "detect_gpu", lambda: None)
+        with pytest.raises(ValueError, match="NVIDIA 顯卡"):
             weights.ensure_local_ready()
+
+    def test_ensure_local_ready_rejects_a_card_torch_does_not_support(self, monkeypatch):
+        monkeypatch.setattr(weights, "detect_gpu",
+                            lambda: weights.Gpu("NVIDIA GeForce GTX 980", 4.0, False))
+        monkeypatch.setattr(weights, "repo_is_ready", lambda repo: True)
+        with pytest.raises(ValueError, match="PyTorch 不支援這張顯卡（NVIDIA GeForce GTX 980）"):
+            weights.ensure_local_ready()
+
+
+
+class TestVramNotice:
+    """顯卡記憶體低於最低需求（12 GB）只提示、不擋（#11 Q2）。"""
+
+    @pytest.mark.parametrize("vram_gb", [16.0, 24.0, 12.0, 11.99])
+    def test_minimum_or_more_has_no_notice(self, vram_gb):
+        assert weights.vram_notice(vram_gb, 3135.0) is None
+
+    @pytest.mark.parametrize("vram_gb", [8.0, 10.0, 10.8])
+    def test_8_to_12_gb_is_unverified(self, vram_gb):
+        notice = weights.vram_notice(vram_gb, 1533.0)
+        assert f"{round(vram_gb)} GB 沒有測過" in notice
+        assert "約 26 分鐘一段" in notice
+        assert "改用 Gemini" not in notice
+
+    def test_below_8_gb_warns_it_may_be_slow(self):
+        notice = weights.vram_notice(6.0, 733.0)
+        assert "低於 8 GB" in notice and "可能很慢" in notice
+        assert "約 12 分鐘一段" in notice
+        assert "建議改用 Gemini" in notice
+
+    def test_no_chunk_length_when_splitting_is_off(self):
+        assert "分鐘一段" not in weights.vram_notice(8.0, 0.0)
+
+    def test_local_provider_uses_the_chunk_length_of_this_card(self, monkeypatch):
+        # 和轉錄時一樣依這張顯卡收斂：8 GB 的卡約 26 分鐘一段（設定的上限是 70 分鐘）
+        monkeypatch.setattr(moss, "get_settings",
+                            lambda: SimpleNamespace(local_moss_single_pass_max_seconds=4200.0))
+        monkeypatch.setattr(weights, "detect_gpu", lambda: weights.Gpu("GPU", 8.0, True))
+        assert "約 26 分鐘一段" in vram_notice("moss-align")
+
+    @pytest.mark.parametrize("gpu", [None, weights.Gpu("NVIDIA GeForce GTX 980", 4.0, False)])
+    def test_no_notice_without_a_usable_card(self, monkeypatch, gpu):
+        # 不能用的原因另外說（沒有顯卡、顯卡不支援），不再疊一段記憶體提示
+        monkeypatch.setattr(weights, "detect_gpu", lambda: gpu)
+        assert vram_notice("moss-align") is None
+
+# 免安裝版的 torch 2.8.0+cu128（Windows）實際回報的 torch.cuda.get_arch_list()：在 Wade 的電腦上
+# 量的（2026-10-30，#240）。沒有 PTX（compute_XY）
+CU128_ARCHES = ["sm_61", "sm_70", "sm_75", "sm_80", "sm_86", "sm_90", "sm_100", "sm_120"]
+
+
+class TestArchSupported:
+    @pytest.mark.parametrize("capability", [
+        (6, 1),   # GTX 10 系列（Pascal）
+        (7, 5),   # RTX 20 系列、GTX 16 系列（Turing）
+        (8, 6),   # RTX 30 系列（Ampere）
+        (8, 9),   # RTX 40 系列（Ada）：沒有 sm_89，跑同一代的 sm_86；RTX 4080 SUPER 實測支援
+        (12, 0),  # RTX 50 系列（Blackwell）
+    ])
+    def test_cards_the_cu128_build_runs(self, capability):
+        assert weights.arch_supported(capability, CU128_ARCHES)
+
+    @pytest.mark.parametrize("capability", [
+        (5, 2),   # GTX 900 系列（Maxwell）
+        (6, 0),   # Tesla P100：同一代，但次版號比 sm_61 低
+        (13, 0),  # 比清單新一代的卡：清單沒有 PTX 可以即時編譯
+    ])
+    def test_cards_the_cu128_build_does_not_run(self, capability):
+        assert not weights.arch_supported(capability, CU128_ARCHES)
+
+    def test_ptx_runs_on_newer_cards(self):
+        # compute_120 的 PTX 可以在 12.0 以上的卡即時編譯，比它舊的卡不行
+        assert weights.arch_supported((13, 0), ["sm_120", "compute_120"])
+        assert not weights.arch_supported((8, 6), ["compute_120"])
+
+    def test_newer_minor_version_needs_the_same_generation(self):
+        # sm_86 跑不了 8.0 的卡：同一代只往次版號高的卡相容
+        assert not weights.arch_supported((8, 0), ["sm_86"])
+
+    def test_family_specific_variants_are_skipped(self):
+        assert weights.arch_supported((9, 0), ["sm_90a", "sm_90"])
+        assert not weights.arch_supported((9, 0), ["sm_90a"])
+
+    def test_unknown_arch_list_does_not_block(self):
+        assert weights.arch_supported((6, 1), [])
 
 
 # ─── MOSS 執行 ────────────────────────────────────────────────────────────
@@ -399,12 +484,12 @@ class TestLocalCapabilities:
 
 class TestLocalReadiness:
     def test_missing_gpu_fails_before_any_transcription(self, monkeypatch):
-        monkeypatch.setattr(weights, "cuda_status", lambda: (False, None))
-        with pytest.raises(ValueError, match="NVIDIA GPU"):
+        monkeypatch.setattr(weights, "detect_gpu", lambda: None)
+        with pytest.raises(ValueError, match="NVIDIA 顯卡"):
             LocalProvider("moss-align")
 
     def test_missing_weights_of_selected_model_fail(self, monkeypatch):
-        monkeypatch.setattr(weights, "cuda_status", lambda: (True, "GPU"))
+        monkeypatch.setattr(weights, "detect_gpu", lambda: weights.Gpu("GPU", 16.0, True))
         monkeypatch.setattr(weights, "repo_is_ready", lambda repo: repo != weights.ASR_MODEL_ID)
         LocalProvider("moss-align")  # 不需要 Qwen3-ASR
         with pytest.raises(ValueError, match=weights.ASR_MODEL_ID):
