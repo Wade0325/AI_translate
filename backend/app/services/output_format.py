@@ -34,6 +34,10 @@ SRT／VTT 另有結束時間，照實際說話的時間顯示（ADR-0008，規�
 的字幕可以重疊，同一位說話者的不疊，每一行至少 0.8 秒，字幕依開始時間排序。有片段的任務和沒有
 片段的任務（從存下來的 LRC 轉換）用同一套規則。SRT／VTT 的開始時間取 LRC 時間戳讀回來的值，和
 以前從 LRC 轉換時一樣；結束時間取到毫秒。斷行的規則見 :func:`_segment_lines`。
+
+SRT／VTT 和其他兩種格式不同的地方只有兩點（#12）：超過兩行的量的行用逐字時間拆成數則字幕
+（見 :func:`_subtitle_pieces`），以及依說話者上色（見 :data:`SPEAKER_COLORS`）。LRC、TXT 不能
+上色，也不拆。
 """
 
 from __future__ import annotations
@@ -164,6 +168,10 @@ class _Line:
     """帶說話者標記的文字。"""
     end: Optional[float]
     """真實結束時間（原音檔時間軸上的秒數），不知道時是 None。"""
+    speaker: Optional[str] = None
+    """說話者編號，例如 S0；沒有時是 None，text 也就沒有說話者標記。"""
+    words: Optional[Tuple[Mapping[str, Any], ...]] = None
+    """這一行的逐字時間，依序對應 text 斷出來的詞；整段一行（沒有逐字時間）時是 None。"""
 
 
 def _lines(segments: Sequence[Mapping[str, Any]]) -> List[_Line]:
@@ -232,6 +240,7 @@ def _segment_lines(
 
     每一行另外帶真實結束時間，給 SRT／VTT 用（見 :func:`_subtitles`）：有逐字時間時是這一行
     最後一個詞的結束，併進來的標點不改變它；整段一行時是片段的結束，片段沒有結束時間時是 None。
+    有逐字時間時也帶著這一行的詞，SRT／VTT 拆長字幕時用（見 :func:`_subtitle_pieces`）。
 
     逐字時間怎麼對到句子：詞是對齊器斷的，標點不算詞、直接丟掉，所以從詞裡看不出句子在哪裡
     結束。本機先在斷行標點後面補空白再斷詞，詞就不會跨過任何斷行處；斷句以後，每一句各自斷詞
@@ -243,7 +252,7 @@ def _segment_lines(
     絕對時間相減會多出浮點誤差）。去靜音剪掉的靜音若落在一句中間，量到的長度包含那段靜音，
     本機當時量的是剪掉之後的長度。
     """
-    whole = [_Line(segment_start, _labelled(speaker, text), segment_end)]
+    whole = [_Line(segment_start, _labelled(speaker, text), segment_end, speaker)]
     if not words:
         return whole
 
@@ -266,7 +275,7 @@ def _segment_lines(
         lasts = [first - 1 for _, first in pieces[1:]] + [offset + count - 1]
         for (piece, first), last in zip(pieces, lasts, strict=True):
             lines.append(_Line(words[first]["start"], _labelled(speaker, piece.strip()),
-                               words[last]["end"]))
+                               words[last]["end"], speaker, tuple(words[first:last + 1])))
         offset += count
     if pending and lines:
         lines[-1] = replace(lines[-1], text=lines[-1].text + pending)
@@ -344,14 +353,129 @@ def _is_cjk_ideograph(char: str) -> bool:
             or 0xF900 <= code <= 0xFAFF or 0x2F800 <= code <= 0x2FA1F)
 
 
+# ─── 行 → 字幕：拆開長字幕（SRT／VTT） ───────────────────────────────────────
+
+MAX_SUBTITLE_WIDTH = 32.0
+MAX_SUBTITLE_WIDTH_JAPANESE = 26.0
+"""一則字幕最多幾個全形字寬（#12）：Netflix Timed Text Style Guide 的每行上限（繁中 16、日文 13）
+乘上最多兩行。行裡有假名就算日文，其他語言（含中文）都用 32。換行交給播放器：播放器依畫面寬度
+自動換行，字級也跟著畫面縮放（WebVTT 規格 §1.1），手動斷行在窄畫面上會被再斷一次。"""
+
+_READING_MARKS = "、，,"
+
+
+def _subtitle_pieces(line: _Line) -> List[_Line]:
+    """一行在 SRT／VTT 裡拆成的字幕（#12）：字寬（見 :func:`_width`，連同行首的說話者標記）超過
+    上限時，用逐字時間拆成數則，每則都帶說話者標記，時間是它第一個詞的開始到最後一個詞的結束；
+    之後的結束時間照 :func:`_subtitles` 的規則。切點見 :func:`_cut`，拆完還超過上限的段再拆，
+    直到不超過或沒有切點。
+
+    沒有逐字時間的行（Gemini、整段一行、沒有片段的任務）不拆：拆了只能猜時間。
+    """
+    limit = MAX_SUBTITLE_WIDTH_JAPANESE if _has_kana(line.text) else MAX_SUBTITLE_WIDTH
+    if line.words is None or _width(line.text) <= limit:
+        return [line]
+    label = _labelled(line.speaker, "") if line.speaker else ""
+    pieces = _split_to_width(line.text[len(label):], limit - _width(label))
+    counts = [_count_words(piece) for piece in pieces]
+    if len(pieces) == 1 or sum(counts) != len(line.words):
+        return [line]
+    subtitles: List[_Line] = []
+    first = 0
+    for piece, count in zip(pieces, counts, strict=True):
+        words = line.words[first:first + count]
+        subtitles.append(_Line(words[0]["start"], label + piece, words[-1]["end"],
+                               line.speaker, words))
+        first += count
+    return subtitles
+
+
+def _split_to_width(text: str, limit: float) -> List[str]:
+    if _width(text) <= limit:
+        return [text]
+    cut = _cut(text)
+    if cut is None:
+        return [text]
+    return _split_to_width(text[:cut].strip(), limit) + _split_to_width(text[cut:].strip(), limit)
+
+
+def _cut(text: str) -> Optional[int]:
+    """在哪裡拆開一則字幕。切點只在詞與詞之間（切開後兩邊斷出來的詞數加起來不變），標點跟著
+    前面的字（下一則不以「，」「」」開頭），開頭的括號跟著後面的字。依序找
+
+    1. 讀點（、，,）之後，或開頭的括號之前（「…」「…」從兩個引號中間切），
+    2. 空白處，
+    3. 平假名之後接著漢字、片假名或英數字的地方（「ゆっくり|休んで」；對齊器的詞在漢字與後面
+       的假名之間也斷開，切在那裡會變成「休|んで」），
+
+    每一類只考慮切完兩邊都有全長三分之一以上的切點，取最接近中間的（一樣近時取前面的）；三類
+    都沒有時，取所有切點中最接近中間的。沒有切點（整則只有一個詞）時是 None。
+    """
+    total_words = _count_words(text)
+    cuts = [cut for cut in range(1, len(text))
+            if _may_start(text[cut]) and not _is_opening(text[cut - 1])
+            and _count_words(text[:cut]) and _count_words(text[cut:])
+            and _count_words(text[:cut]) + _count_words(text[cut:]) == total_words]
+    if not cuts:
+        return None
+    total = _width(text)
+
+    def off_middle(cut: int) -> float:
+        return abs(_width(text[:cut]) - total / 2)
+
+    def balanced(cut: int) -> bool:
+        return min(_width(text[:cut]), total - _width(text[:cut])) >= total / 3
+
+    preferences = (
+        lambda cut: text[cut - 1] in _READING_MARKS or _is_opening(text[cut]),
+        lambda cut: text[cut - 1].isspace() or text[cut].isspace(),
+        lambda cut: _is_hiragana(text[cut - 1]) and not _is_hiragana(text[cut])
+        and _count_words(text[cut]) == 1,
+    )
+    for preferred in preferences:
+        candidates = [cut for cut in cuts if preferred(cut) and balanced(cut)]
+        if candidates:
+            return min(candidates, key=off_middle)
+    return min(cuts, key=off_middle)
+
+
+def _width(text: str) -> float:
+    """字寬：全形字（East Asian Width 是 F 或 W）算 1，其他（半形字、空白）算 0.5，
+    照 Netflix 日文規範的算法。"""
+    return sum(1.0 if unicodedata.east_asian_width(char) in "FW" else 0.5 for char in text)
+
+
+def _may_start(char: str) -> bool:
+    """一則字幕可以用這個字開頭：詞的字、空白或開頭的括號，不是「，」「。」「」」這類標點。"""
+    return _count_words(char) == 1 or char.isspace() or _is_opening(char)
+
+
+def _is_opening(char: str) -> bool:
+    return unicodedata.category(char) in ("Ps", "Pi")
+
+
+def _has_kana(text: str) -> bool:
+    return any(_is_hiragana(char) or "゠" <= char <= "ヿ" or "ｦ" <= char <= "ﾟ"
+               for char in text)
+
+
+def _is_hiragana(char: str) -> bool:
+    return "ぁ" <= char <= "ゟ"
+
+
 # ─── 行 → 檔案內容 ───────────────────────────────────────────────────────────
 
 def _render(lines: Sequence[_Line], fmt: OutputFormat) -> str:
     if fmt == OutputFormat.LRC:
         return "\n".join(_lrc_timestamp(line.start) + line.text for line in lines)
-    cues = [Cue(_lrc_seconds(line.start), line.text.strip(), line.end) for line in lines]
-    renderers = {OutputFormat.SRT: _srt, OutputFormat.VTT: _vtt, OutputFormat.TXT: _txt}
-    return renderers[OutputFormat(fmt)](cues)
+    if fmt == OutputFormat.TXT:
+        return _txt(_cues(lines))
+    subtitles = _cues([piece for line in lines for piece in _subtitle_pieces(line)])
+    return _srt(subtitles) if fmt == OutputFormat.SRT else _vtt(subtitles)
+
+
+def _cues(lines: Sequence[_Line]) -> List[Cue]:
+    return [Cue(_lrc_seconds(line.start), line.text.strip(), line.end) for line in lines]
 
 
 def _lrc_timestamp(seconds: float) -> str:
@@ -463,17 +587,50 @@ def _speaker(cue: Cue) -> Optional[str]:
     return re.sub(r"[\s:：]", "", match.group(0)) if match else None
 
 
+SPEAKER_COLORS: Tuple[Optional[str], ...] = (None, "#FFDD55", "#66CCFF", "#7FE0A0")
+"""SRT／VTT 的說話者顏色（#12），依說話者編號輪流：S0、S4… 白色（播放器的預設，不加標籤），
+S1、S5… 黃，S2、S6… 青，S3、S7… 綠。照 BBC Subtitle Guidelines §8.3 的順序（白、黃、青、綠）
+把純色調柔：對黑色的對比 11.6:1 以上，兩色之間的色差（CIEDE2000）一般視覺 25 以上、紅綠色弱
+13 以上，純色在紅色弱的眼裡黃和綠只差 4。顏色只看行首的 [Sn]：Gemini 舊 LRC 的「Speaker 1:」
+與沒有標記的行都不上色。"""
+
+_APP_LABEL_RE = re.compile(r"\[S(\d+)\]")
+
+
+def _color_index(text: str) -> int:
+    """這一行在 :data:`SPEAKER_COLORS` 裡的位置；0 是白色，不上色。"""
+    match = _APP_LABEL_RE.match(text)
+    return int(match.group(1)) % len(SPEAKER_COLORS) if match else 0
+
+
 def _srt(cues: Sequence[Cue]) -> str:
+    """SRT 用 ``<font color>`` 上色：VLC 與 ffmpeg（mpv 用它解碼）都認得。"""
     blocks: List[str] = []
     for number, (text, start, end) in enumerate(_subtitles(cues), start=1):
-        blocks += [str(number), f"{_timestamp(start, ',')} --> {_timestamp(end, ',')}", text, ""]
+        color = SPEAKER_COLORS[_color_index(text)]
+        colored = f'<font color="{color}">{text}</font>' if color else text
+        blocks += [str(number), f"{_timestamp(start, ',')} --> {_timestamp(end, ',')}", colored, ""]
     return "\n".join(blocks)
 
 
 def _vtt(cues: Sequence[Cue]) -> str:
+    """VTT 用檔頭的 STYLE 區塊定義顏色，字幕用 ``<c.colorN>`` 包起來。
+
+    ffmpeg 7.0 之前的版本遇到 STYLE 區塊，整個檔案都讀不出來（7.0 起跳過它），所以只在有要上色
+    的行時才寫，只有白色或沒有標記的 VTT 和以前逐字相同。類別名稱不用 WebVTT 的預設顏色名
+    （yellow、cyan、lime）：不讀 CSS 的 VLC 會照那些名字套上純色。
+    """
+    subtitles = _subtitles(cues)
+    indexes = [_color_index(text) for text, _, _ in subtitles]
     blocks = ["WEBVTT", ""]
-    for text, start, end in _subtitles(cues):
-        blocks += [f"{_timestamp(start, '.')} --> {_timestamp(end, '.')}", text, ""]
+    used = sorted(set(indexes) - {0})
+    if used:
+        blocks += ["STYLE",
+                   *(f"::cue(.color{index}) {{ color: {SPEAKER_COLORS[index]}; }}" for index in used),
+                   ""]
+    for (text, start, end), index in zip(subtitles, indexes, strict=True):
+        colored = f"<c.color{index}>{text}</c>" if index else text
+        blocks += [f"{_timestamp(start, '.')} --> {_timestamp(end, '.')}", colored, ""]
     return "\n".join(blocks)
 
 
