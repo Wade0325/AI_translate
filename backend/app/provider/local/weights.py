@@ -193,7 +193,7 @@ class Gpu:
     vram_gb: float
     """顯卡記憶體（GiB，取到小數一位）：標示 16 GB 的卡約 16.0，12 GB 的卡約 12.0。"""
     supported: bool
-    """這版 torch 跑得動這張卡；架構太舊時是 False（#11 Q4）。"""
+    """這版 torch 跑得動這張卡；它的架構不在 torch 支援的清單裡時是 False（#11 Q4）。"""
 
 
 class LocalNotReady(ValueError):
@@ -225,8 +225,10 @@ def arch_supported(capability: tuple[int, int], arch_list: list[str]) -> bool:
     運算能力（``capability``，例如 RTX 3060 是 (8, 6)）的顯卡。
 
     同一代（主版號相同）、次版號不高於它的 ``sm_XY`` 可以直接跑；版號不高於它的 ``compute_XY``
-    （PTX）可以在較新的卡上即時編譯。PyTorch 2.8 的 CUDA 12.8 版不含 Maxwell 與 Pascal，GTX 10
-    系列以前的卡兩種都對不上。清單是空的時看不出來，當成跑得動，交給轉錄時的錯誤。
+    （PTX）可以在較新的卡上即時編譯。免安裝版的 torch 2.8.0+cu128（Windows）列出 ``sm_61`` 到
+    ``sm_120``、沒有 PTX：GTX 900 系列（Maxwell）以前的卡、比 ``sm_120`` 新一代的卡都對不上。
+    各版 torch 的清單不同（Docker 模式用的是另一版），所以照清單判斷，不寫死型號。清單是空的時
+    看不出來，當成跑得動，交給轉錄時的錯誤。
     """
     if not arch_list:
         return True
@@ -246,8 +248,9 @@ def arch_supported(capability: tuple[int, int], arch_list: list[str]) -> bool:
 def _unusable_gpu(gpu: Gpu | None) -> LocalNotReady:
     if gpu is None:
         return LocalNotReady("no_gpu", "這台電腦沒有可用的 NVIDIA 顯卡，本機轉錄不能用，可以改用 Gemini")
-    return LocalNotReady("unsupported_gpu", f"這張顯卡（{gpu.name}）太舊，本機轉錄不支援："
-                         "GTX 10 系列以前的 NVIDIA 顯卡都用不了，可以改用 Gemini")
+    # 不在清單裡的通常是太舊的卡，也可能是比這版 torch 新一代的卡，所以不說「太舊」
+    return LocalNotReady("unsupported_gpu", f"目前的 PyTorch 不支援這張顯卡（{gpu.name}），"
+                         "本機轉錄不能用，可以改用 Gemini")
 
 
 def gpu_problem(gpu: Gpu | None) -> str | None:

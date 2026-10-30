@@ -279,12 +279,12 @@ test('本機卡片顯示顯卡與記憶體；低於最低需求時提示（#11 Q
     await expect(local.getByText(notice)).toBeVisible()
 })
 
-test('本機卡片說明顯卡太舊、本機轉錄不支援，也不能下載模型權重（#11 Q4）', async ({ page, mockBackend }) => {
-    const problem = '這張顯卡（NVIDIA GeForce GTX 1080）太舊，本機轉錄不支援：GTX 10 系列以前的 NVIDIA 顯卡都用不了，可以改用 Gemini'
+test('本機卡片說明 PyTorch 不支援這張顯卡，也不能下載模型權重（#11 Q4）', async ({ page, mockBackend }) => {
+    const problem = '目前的 PyTorch 不支援這張顯卡（NVIDIA GeForce GTX 980），本機轉錄不能用，可以改用 Gemini'
     await mockBackend({
         routes: {
             'GET /setting/local-models/status': localStatus({
-                gpu_available: false, gpu_name: 'NVIDIA GeForce GTX 1080', gpu_problem: problem,
+                gpu_available: false, gpu_name: 'NVIDIA GeForce GTX 980', gpu_problem: problem,
                 models: localStatus({}).models.map((m) => ({ ...m, downloaded: false })),
                 all_downloaded: false,
             }),

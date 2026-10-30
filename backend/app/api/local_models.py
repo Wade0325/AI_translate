@@ -85,7 +85,7 @@ def local_models_status():
     """GPU 與權重狀態；下載進行中時同時回報進度。
 
     ``all_downloaded`` 只看預設模型所需的權重；選用權重以 ``required: false`` 標示。
-    ``gpu_problem`` 是顯卡跑不了本機轉錄的原因（沒有顯卡、顯卡太舊），``vram_notice`` 是預設模型
+    ``gpu_problem`` 是顯卡跑不了本機轉錄的原因（沒有顯卡、顯卡不支援），``vram_notice`` 是預設模型
     在這張顯卡上的記憶體提示（#11），都可以直接顯示給使用者。
     """
     gpu = weights.detect_gpu()

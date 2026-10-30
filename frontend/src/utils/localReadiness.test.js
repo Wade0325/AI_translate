@@ -20,8 +20,8 @@ describe('轉錄頁選本機時，這台電腦能不能轉錄（#11）', () => {
     });
   });
 
-  it('顯卡太舊也一樣改用別的供應商', () => {
-    expect(readinessView(answer({ ready: false, reason: 'unsupported_gpu', message: '太舊' })).nextStep)
+  it('PyTorch 不支援這張顯卡時也一樣改用別的供應商', () => {
+    expect(readinessView(answer({ ready: false, reason: 'unsupported_gpu', message: '不支援' })).nextStep)
       .toBe('switch');
   });
 

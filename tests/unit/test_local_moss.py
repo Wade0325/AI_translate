@@ -322,11 +322,11 @@ class TestWeights:
         with pytest.raises(ValueError, match="NVIDIA 顯卡"):
             weights.ensure_local_ready()
 
-    def test_ensure_local_ready_rejects_a_card_too_old_for_torch(self, monkeypatch):
+    def test_ensure_local_ready_rejects_a_card_torch_does_not_support(self, monkeypatch):
         monkeypatch.setattr(weights, "detect_gpu",
-                            lambda: weights.Gpu("NVIDIA GeForce GTX 1080", 8.0, False))
+                            lambda: weights.Gpu("NVIDIA GeForce GTX 980", 4.0, False))
         monkeypatch.setattr(weights, "repo_is_ready", lambda repo: True)
-        with pytest.raises(ValueError, match="GTX 1080.*太舊"):
+        with pytest.raises(ValueError, match="PyTorch 不支援這張顯卡（NVIDIA GeForce GTX 980）"):
             weights.ensure_local_ready()
 
 
@@ -361,33 +361,40 @@ class TestVramNotice:
         monkeypatch.setattr(weights, "detect_gpu", lambda: weights.Gpu("GPU", 8.0, True))
         assert "約 26 分鐘一段" in vram_notice("moss-align")
 
-    @pytest.mark.parametrize("gpu", [None, weights.Gpu("NVIDIA GeForce GTX 1060", 6.0, False)])
+    @pytest.mark.parametrize("gpu", [None, weights.Gpu("NVIDIA GeForce GTX 980", 4.0, False)])
     def test_no_notice_without_a_usable_card(self, monkeypatch, gpu):
-        # 不能用的原因另外說（沒有顯卡、顯卡太舊），不再疊一段記憶體提示
+        # 不能用的原因另外說（沒有顯卡、顯卡不支援），不再疊一段記憶體提示
         monkeypatch.setattr(weights, "detect_gpu", lambda: gpu)
         assert vram_notice("moss-align") is None
 
-# 照 PyTorch 2.8 的 CUDA 12.8 版的架構清單（pytorch/pytorch#157517）寫的 torch.cuda.get_arch_list()
-CU128_ARCHES = ["sm_70", "sm_75", "sm_80", "sm_86", "sm_90", "sm_100", "sm_120", "compute_120"]
+# 免安裝版的 torch 2.8.0+cu128（Windows）實際回報的 torch.cuda.get_arch_list()：在 Wade 的電腦上
+# 量的（2026-10-30，#240）。沒有 PTX（compute_XY）
+CU128_ARCHES = ["sm_61", "sm_70", "sm_75", "sm_80", "sm_86", "sm_90", "sm_100", "sm_120"]
 
 
 class TestArchSupported:
     @pytest.mark.parametrize("capability", [
+        (6, 1),   # GTX 10 系列（Pascal）
         (7, 5),   # RTX 20 系列、GTX 16 系列（Turing）
         (8, 6),   # RTX 30 系列（Ampere）
-        (8, 9),   # RTX 40 系列（Ada）：沒有 sm_89，跑同一代的 sm_86
+        (8, 9),   # RTX 40 系列（Ada）：沒有 sm_89，跑同一代的 sm_86；RTX 4080 SUPER 實測支援
         (12, 0),  # RTX 50 系列（Blackwell）
-        (13, 0),  # 比清單新的卡：compute_120 的 PTX 即時編譯
     ])
     def test_cards_the_cu128_build_runs(self, capability):
         assert weights.arch_supported(capability, CU128_ARCHES)
 
     @pytest.mark.parametrize("capability", [
-        (6, 1),   # GTX 10 系列（Pascal）
         (5, 2),   # GTX 900 系列（Maxwell）
+        (6, 0),   # Tesla P100：同一代，但次版號比 sm_61 低
+        (13, 0),  # 比清單新一代的卡：清單沒有 PTX 可以即時編譯
     ])
-    def test_cards_too_old_for_the_cu128_build(self, capability):
+    def test_cards_the_cu128_build_does_not_run(self, capability):
         assert not weights.arch_supported(capability, CU128_ARCHES)
+
+    def test_ptx_runs_on_newer_cards(self):
+        # compute_120 的 PTX 可以在 12.0 以上的卡即時編譯，比它舊的卡不行
+        assert weights.arch_supported((13, 0), ["sm_120", "compute_120"])
+        assert not weights.arch_supported((8, 6), ["compute_120"])
 
     def test_newer_minor_version_needs_the_same_generation(self):
         # sm_86 跑不了 8.0 的卡：同一代只往次版號高的卡相容

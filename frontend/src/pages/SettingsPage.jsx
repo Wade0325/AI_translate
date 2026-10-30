@@ -266,7 +266,7 @@ function LocalModelsCard() {
                 style={{ border: '1px solid #3a3a5c', height: '100%' }}
             >
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                    {/* 顯卡跑不了時照後端給的原因（沒有顯卡、顯卡太舊）；記憶體低於最低需求只提示（#11） */}
+                    {/* 顯卡跑不了時照後端給的原因（沒有顯卡、顯卡不支援）；記憶體低於最低需求只提示（#11） */}
                     <Text style={{ color: status.gpu_available ? '#2dd4a8' : '#d46a2d', fontSize: 13 }}>
                         {status.gpu_available
                             ? `GPU: ${status.gpu_name}${status.gpu_vram_gb ? `（${Math.round(status.gpu_vram_gb)} GB）` : ''}`

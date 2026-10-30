@@ -118,12 +118,12 @@ def test_status_reports_the_gpu_and_its_memory(client, fake_env):
     assert body["vram_notice"] is None
 
 
-def test_status_says_why_a_card_too_old_cannot_be_used(client, fake_env, monkeypatch):
-    # 顯卡太舊（#11 Q4）：不算可用，設定頁照 gpu_problem 說明原因
-    use_gpu(monkeypatch, weights.Gpu("NVIDIA GeForce GTX 1080", 8.0, False))
+def test_status_says_why_an_unsupported_card_cannot_be_used(client, fake_env, monkeypatch):
+    # torch 不支援這張顯卡（#11 Q4）：不算可用，設定頁照 gpu_problem 說明原因
+    use_gpu(monkeypatch, weights.Gpu("NVIDIA GeForce GTX 980", 4.0, False))
     body = client.get(STATUS_URL).json()
     assert body["gpu_available"] is False
-    assert "GTX 1080" in body["gpu_problem"] and "太舊" in body["gpu_problem"]
+    assert "PyTorch 不支援這張顯卡（NVIDIA GeForce GTX 980）" in body["gpu_problem"]
     assert body["vram_notice"] is None
 
 
@@ -152,11 +152,11 @@ class TestReadiness:
         assert (body["checked"], body["ready"], body["reason"]) == (True, False, "no_gpu")
         assert "沒有可用的 NVIDIA 顯卡" in body["message"]
 
-    def test_card_too_old_is_not_ready(self, client, fake_env, monkeypatch):
-        use_gpu(monkeypatch, weights.Gpu("NVIDIA GeForce GTX 1080", 8.0, False))
+    def test_unsupported_card_is_not_ready(self, client, fake_env, monkeypatch):
+        use_gpu(monkeypatch, weights.Gpu("NVIDIA GeForce GTX 980", 4.0, False))
         body = client.get(READINESS_URL).json()
         assert (body["ready"], body["reason"]) == (False, "unsupported_gpu")
-        assert "GTX 1080" in body["message"]
+        assert "GTX 980" in body["message"]
 
     def test_missing_weights_of_the_chosen_model(self, client, fake_env):
         # 預設模型的權重都在，「MOSS + Qwen3-ASR」另外要 Qwen3-ASR
