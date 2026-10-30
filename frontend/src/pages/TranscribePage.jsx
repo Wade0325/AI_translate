@@ -3,6 +3,7 @@ import { useEffect, useState, useRef } from "react"
 import { Card, Typography, Button, Input, Modal, Pagination, Space, Dropdown, Popconfirm, message } from "antd"
 import { ReasonText, ReasonTooltip } from "@/components/disabled-reason"
 import { UploadNotice } from "@/components/UploadNotice"
+import { LocalReadinessNotice } from "@/components/transcribe/local-readiness-notice"
 import { UploadZone } from "@/components/transcribe/upload-zone"
 import { GlobalDefaults } from "@/components/transcribe/global-defaults"
 import { FileConfigCard } from "@/components/transcribe/file-config-card"
@@ -11,7 +12,9 @@ import VadTestModal from "@/components/transcribe/VadTestModal"
 import { useTranscription } from "@/context/TranscriptionContext"
 import { useModelManager } from "@/components/ModelManager"
 import { PROVIDER_LIST_FAILED } from "@/hooks/useProviderList"
-import { modelOptions, processingModeNote, providerOptions, providerPromptDisabledReason, requiresApiKey, uploadNotice } from "@/utils/providerList"
+import { useLocalReadiness } from "@/hooks/useLocalReadiness"
+import { alternativeProvider, checksTranscribingMachine, modelOptions, processingModeNote, providerOptions, providerPromptDisabledReason, requiresApiKey, uploadNotice } from "@/utils/providerList"
+import { readinessView } from "@/utils/localReadiness"
 import { filePrompt, followsGlobalPrompt, globalSettingsPatch, promptToSend } from "@/utils/transcribeRequest"
 import { api } from "@/services/api"
 import { DownloadOutlined } from "@ant-design/icons"
@@ -70,6 +73,9 @@ export default function TranscribePage() {
 
     const { handleEditProvider, handleEditProviderParams, handleTestProvider } = useModelManager()
     const modeNote = processingModeNote(supports)
+    // 選本機時先問這台電腦能不能轉錄：不能就寫出原因、停用 Start，由使用者自己改用 Gemini（#11）
+    const localReadiness = useLocalReadiness(checksTranscribingMachine(providerList, provider) ? model : null)
+    const readiness = readinessView(localReadiness)
 
     const [currentPage, setCurrentPage] = useState(1)
     const [isTextModalVisible, setIsTextModalVisible] = useState(false)
@@ -337,6 +343,15 @@ export default function TranscribePage() {
                         </Button>
                     </Space>
                 </div>
+                {(readiness.blockedReason || readiness.warning) && (
+                    <div style={{ marginTop: 8 }}>
+                        <LocalReadinessNotice
+                            view={readiness}
+                            alternative={alternativeProvider(providerList)}
+                            onSwitch={selectProvider}
+                        />
+                    </div>
+                )}
                 {/* 選了會把音檔送出本機的供應商（Gemini）時，送出前就看得到（#231 Q6） */}
                 {uploadNotice(providerList, provider) && (
                     <div style={{ marginTop: 8 }}>
@@ -461,6 +476,7 @@ export default function TranscribePage() {
                         model={model}
                         estimatesCost={estimatesCost}
                         isSubmitting={isProcessing}
+                        blockedReason={readiness.blockedReason}
                         onSubmit={handleStartTranscription}
                     />
                 </Card>

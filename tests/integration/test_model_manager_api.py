@@ -270,7 +270,8 @@ def local_machine(monkeypatch):
     machine = SimpleNamespace(
         gpu="Test GPU", downloaded={weights.MOSS_MODEL_ID, weights.ALIGNER_MODEL_ID})
     monkeypatch.setattr(get_settings(), "app_mode", "standalone")
-    monkeypatch.setattr(weights, "cuda_status", lambda: (machine.gpu is not None, machine.gpu))
+    monkeypatch.setattr(weights, "detect_gpu",
+                        lambda: weights.Gpu(machine.gpu, 16.0, True) if machine.gpu else None)
     monkeypatch.setattr(weights, "repo_is_ready", lambda repo: repo in machine.downloaded)
     return machine
 
@@ -301,7 +302,7 @@ class TestLocalTestChecksGpuAndWeights:
         data = press_test(client, "local", "moss-align").json()
 
         assert data["success"] is False
-        assert "NVIDIA GPU" in data["message"]
+        assert "NVIDIA 顯卡" in data["message"]
 
     def test_docker_mode_says_it_cannot_check_the_gpu_worker(
             self, client: TestClient, local_machine, monkeypatch):

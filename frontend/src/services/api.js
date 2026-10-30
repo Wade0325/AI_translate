@@ -152,6 +152,13 @@ export const api = {
     status() {
       return request('/setting/local-models/status');
     },
+    /**
+     * 轉錄頁選本機時先問的事（#11）：現在能不能用這個模型轉錄，不能時的原因與 reason，以及顯卡
+     * 記憶體的提示；Docker 模式回 checked: false。內容怎麼呈現見 utils/localReadiness.js
+     */
+    readiness(model) {
+      return request(`/setting/local-models/readiness?model=${encodeURIComponent(model)}`);
+    },
     /** 啟動（或續傳）權重下載；model 省略＝預設模型所需，'all'＝含選用模型 */
     download(model) {
       const query = model ? `?model=${encodeURIComponent(model)}` : '';
