@@ -73,7 +73,8 @@ class DailyLogFile(logging.Handler):
     每個 app 的 logger 都接著同一個實例（:data:`LOG_FILE`），:meth:`start` 之前什麼都不寫，所以
     Docker 模式與測試不會留下日誌檔。寫進去的 log 先去識別：使用者家目錄寫成 ``~``。原檔名與轉錄
     內容不在這裡過濾，而是一開始就不寫進 log：上傳檔在磁碟上是隨機名稱（app/api/upload.py），
-    狀態廣播只記狀態碼（app/websocket/manager.py）。
+    狀態廣播只記狀態碼（app/websocket/manager.py），ffmpeg 只輸出錯誤、不列音檔的標籤
+    （app/utils/audio.py 的 FFMPEG_ERRORS_ONLY）。
     """
 
     PREFIX = "app-"

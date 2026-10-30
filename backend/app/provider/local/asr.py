@@ -57,6 +57,7 @@ import soundfile as sf
 
 from app.exceptions import TranscriptionCancelledError
 from app.provider.base import ProgressAndCancel
+from app.utils.audio import FFMPEG_ERRORS_ONLY
 from app.utils.binaries import ffmpeg_bin
 from app.utils.logger import setup_logger
 
@@ -136,7 +137,7 @@ def _to_mono(audio_path: Path, sample_rate: int) -> Path:
     """轉成分離模型要求取樣率的 mono wav 暫存檔（VibeVoice 24 kHz、MOSS 16 kHz）。"""
     output = audio_path.parent / f"{audio_path.stem}_mono{sample_rate // 1000}k.wav"
     result = subprocess.run(
-        [ffmpeg_bin(), "-y", "-i", str(audio_path),
+        [ffmpeg_bin(), *FFMPEG_ERRORS_ONLY, "-y", "-i", str(audio_path),
          "-ac", "1", "-ar", str(sample_rate), str(output)],
         capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300,
     )
