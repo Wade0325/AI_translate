@@ -217,6 +217,21 @@ def test_a_file_ends_like_a_single_file_task(api, in_process_run_mode, batch_fak
         pytest.approx(0.30), pytest.approx(0.15))
 
 
+def test_a_chinese_file_is_stored_in_traditional_like_a_single_file_task(
+        api, in_process_run_mode, batch_fake):
+    # 批次的檔案和單檔任務一樣在完成時轉成繁體輸出（#14）；語言看每個檔案自己的
+    batch_fake.script = [[(0.2, 1.5, 0, "我们开会。")], [(0.2, 1.5, 0, "我们开会。")]]
+    names = ["batch-zh.wav", "batch-ja.wav"]
+
+    messages = run_batch(api, in_process_run_mode, "batch-traditional", names,
+                         fields_per_file={"batch-zh.wav": {"source_lang": "zh-TW"}})
+
+    zh, ja = ends(messages, names)
+    assert [s["text"] for s in stored_segments(api, zh["task_uuid"])] == ["我們開會。"]
+    assert "我們開會。" in download(api, zh["task_uuid"], "lrc")
+    assert [s["text"] for s in stored_segments(api, ja["task_uuid"])] == ["我们开会。"]
+
+
 def test_a_failed_file_does_not_stop_the_others(api, in_process_run_mode, batch_fake):
     batch_fake.script = [[(0.2, 1.5, 0, "一つ目。")], Fail("音檔無法解碼"), [(0.2, 1.5, 0, "三つ目。")]]
 

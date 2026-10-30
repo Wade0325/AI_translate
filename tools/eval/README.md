@@ -75,7 +75,8 @@ backend\.venv\Scripts\python.exe -m tools.eval eval --reference rec17_A.draft --
 - `transcribe` 只要應用程式的依賴；拿它的結果計分的 `eval` 要先裝 `requirements-dev.txt`（見[安裝](#安裝)）。
 - `--provider` 預設 `local`；`--model` 預設是供應商的預設模型（`local` 是 `moss-align`）。
 - 一次只用一張顯卡：沒設 `CUDA_VISIBLE_DEVICES` 時設成 `0`，設了不只一張時拒絕。本機的 ASR 模型用 `device_map="auto"`，看得到幾張顯卡就攤到幾張。
-- 輸出資料夾寫 `<音檔名稱>.lrc` 與 `<音檔名稱>.manifest.json`；LRC 和應用程式下載的逐位元組相同（只用 LF）。已經有同名的檔案時拒絕，不覆寫上一次的結果；也不能寫進標準答案的資料夾。
+- 輸出資料夾寫 `<音檔名稱>.lrc` 與 `<音檔名稱>.manifest.json`；LRC 的格式和應用程式下載的相同（只用 LF）。已經有同名的檔案時拒絕，不覆寫上一次的結果；也不能寫進標準答案的資料夾。
+- 不做簡轉繁與台灣用詞替換（#242）：錯字率量的是轉換前的結果，本機的中文照模型寫的簡體與講者說的詞。應用程式下載的中文是繁體輸出（`backend/app/services/traditional_output.py`），由單元測試與 `regression/` 的輸出比對把關，不靠錯字率。
 - 轉錄失敗時只寫 manifest（`run.success` 是 `false`，`run.error` 是原因），結束代碼是 1。
 - 要轉整個音檔：`eval` 依原音檔的時間軸裁切轉錄結果，cpMER 的全域對應也要整個音檔才量得到。
 

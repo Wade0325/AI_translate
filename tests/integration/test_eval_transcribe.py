@@ -76,6 +76,18 @@ def test_writes_the_transcript_on_the_original_timeline(fake, uploads, audio, tm
     assert fake.released == 1
 
 
+def test_chinese_transcript_is_written_before_the_traditional_output(
+        fake, uploads, audio, tmp_path, no_prompt):
+    # 錯字率量轉換前的結果（#242）：本機的模型寫的簡體與講者說的詞照寫，不做應用程式完成任務時
+    # 的繁體輸出（#14，下載的會是「我們開會」「台灣的軟體」）
+    fake.script = [[(0.0, 1.5, 0, "我们开会"), (3.0, 4.0, 1, "台湾的软件")]]
+    out = tmp_path / "out"
+
+    assert _run(audio, out, "--yes") == 0
+
+    assert [line.text for line in lrc.read(out / "meeting.lrc").lines] == ["我们开会", "台湾的软件"]
+
+
 def test_removes_silence_from_other_formats_in_a_fresh_data_folder(fake, tmp_path, monkeypatch,
                                                                    no_prompt):
     # 應用程式的暫存上傳區在 API 模組 import 時建立；這個指令不經 API，全新的資料夾裡還沒有它。

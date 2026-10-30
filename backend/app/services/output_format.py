@@ -212,9 +212,9 @@ def _one_line(text: str) -> str:
 
 
 def _words_match(text: str, words: Sequence[Mapping[str, Any]]) -> bool:
-    """逐字時間的詞和整段文字斷出來的詞（:func:`_aligner_words`）一個一個相同，每個詞也都有
+    """逐字時間的詞和整段文字斷出來的詞（:func:`aligner_words`）一個一個相同，每個詞也都有
     起訖時間。不同時（例如對齊器的規則改了）就不知道哪個時間屬於哪一句。"""
-    return ([w.get("text") for w in words] == _aligner_words(text)
+    return ([w.get("text") for w in words] == aligner_words(text)
             and all(w.get("start") is not None and w.get("end") is not None for w in words))
 
 
@@ -244,7 +244,7 @@ def _segment_lines(
 
     逐字時間怎麼對到句子：詞是對齊器斷的，標點不算詞、直接丟掉，所以從詞裡看不出句子在哪裡
     結束。本機先在斷行標點後面補空白再斷詞，詞就不會跨過任何斷行處；斷句以後，每一句各自斷詞
-    數出有幾個詞，再依序從逐字時間取那麼多個。這裡用同樣的規則斷詞與計數（:func:`_aligner_words`），
+    數出有幾個詞，再依序從逐字時間取那麼多個。這裡用同樣的規則斷詞與計數（:func:`aligner_words`），
     呼叫端也先確認過整段文字斷出來的詞和存下來的詞一個一個相同。
 
     一句有多長，用對齊器給的相對時間判斷：存下來的是加上片段開頭、再換回原音檔時間軸的時間，
@@ -315,10 +315,10 @@ def _split_keep(text: str, pattern: re.Pattern) -> List[str]:
 
 
 def _count_words(text: str) -> int:
-    return len(_aligner_words(text))
+    return len(aligner_words(text))
 
 
-def _aligner_words(text: str) -> List[str]:
+def aligner_words(text: str) -> List[str]:
     """對齊器（Qwen3-ForcedAligner，不指定語言）把文字斷成的詞，和本機一樣先在斷行標點後補空白。
 
     照抄 transformers 5.13 ``Qwen3ASRProcessor.split_words_for_alignment`` 的預設規則：

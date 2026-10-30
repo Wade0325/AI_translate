@@ -1347,6 +1347,35 @@ class TestPromptIsTemplatePlusSupplement:
         assert fake.prompts == ["請把日文音檔轉成 LRC。"]
 
 
+# ─── 中文一律輸出繁體（#14） ─────────────────────────────────────────────────
+
+class TestTraditionalOutput:
+    def test_chinese_task_is_stored_and_downloaded_in_traditional(self, api, fake, test_engine):
+        # 本機的模型寫簡體：存下的片段、四種下載、完成時的廣播與凍結的原始轉錄副本都是繁體，
+        # 字形與用詞都換成台灣的（「软件的信息」→「軟體的資訊」），「台」不寫成「臺」
+        fake.script = [[(0.2, 1.5, 0, "我们在台湾开会。"), (3.0, 3.6, 1, "软件的信息。")]]
+        end = transcribe(api, "uid-traditional", source_lang="zh-TW")[-1]
+
+        assert end["status_code"] == TaskStatus.COMPLETED
+        task_uuid = end["task_uuid"]
+        assert [s["text"] for s in stored_segments(api, task_uuid)] == [
+            "我們在台灣開會。", "軟體的資訊。"]
+        for fmt in ("srt", "vtt", "lrc", "txt"):
+            content = download(api, task_uuid, fmt)
+            assert "我們在台灣開會。" in content and "軟體的資訊。" in content
+            assert content == end["result"]["transcripts"][fmt]
+        assert frozen_original(test_engine, task_uuid) == download(api, task_uuid, "lrc")
+
+    @pytest.mark.parametrize("source_lang", ["ja", "zh-TW", "auto"])
+    def test_japanese_kanji_are_kept(self, api, fake, source_lang):
+        # 轉錄頁預設是中文：選錯成中文或 Auto 時，假名多到看得出是日文，一樣不轉
+        fake.script = [[(0.2, 1.5, 0, "会社で会議があります。"), (3.0, 3.6, 0, "気温が高い。")]]
+        end = transcribe(api, f"uid-ja-{source_lang}", source_lang=source_lang)[-1]
+
+        assert [s["text"] for s in stored_segments(api, end["task_uuid"])] == [
+            "会社で会議があります。", "気温が高い。"]
+
+
 # ─── 取消 ────────────────────────────────────────────────────────────────────
 
 # 前端只在這裡讀取消端點的回應，並依沒有取消的原因顯示不同的提示（#161）

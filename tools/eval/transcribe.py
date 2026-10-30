@@ -4,6 +4,9 @@
 ``app.tasks.transcribe_core.transcribe_audio``（去靜音、分段轉錄、所選的供應商轉接器），
 不經 API、任務佇列與資料庫，所以不必啟動 Docker 或前端。設定和應用程式讀同一份。
 
+不做簡轉繁與台灣用詞替換（#242）：寫出的是轉換前的轉錄結果，錯字率只量辨識。任務完成時的
+繁體輸出（``app.services.traditional_output``）是固定的後處理，由單元測試把關。
+
 只跑不需要 API 金鑰的供應商（本機），音檔不離開這台電腦。manifest 只記數字與環境
 （commit、套件版本、顯卡、模型權重的 revision、設定、耗時），不記任何轉錄文字，可以貼進 PR；
 轉錄結果的 LRC 交給 ``python -m tools.eval eval`` 計分。

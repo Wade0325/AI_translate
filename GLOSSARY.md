@@ -26,7 +26,7 @@ _不要說成_：會議紀錄
 
 **未驗證語言**（unverified language）：可以選、但沒有評測集把關品質的語言。
 
-**繁體輸出**（Traditional Chinese output）：以繁體字呈現的中文轉錄結果。
+**繁體輸出**（Traditional Chinese output）：以台灣繁體的字形與用詞呈現的中文轉錄結果（软件→軟體）。
 
 ### 說話者
 
