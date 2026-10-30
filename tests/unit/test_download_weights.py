@@ -23,7 +23,7 @@ def hub(monkeypatch):
         ready.add(repo_id)
         return f"/cache/{repo_id}"
 
-    monkeypatch.setattr(weights, "cuda_status", lambda: (True, "Test GPU"))
+    monkeypatch.setattr(weights, "detect_gpu", lambda: weights.Gpu("Test GPU", 16.0, True))
     monkeypatch.setattr(weights, "repo_is_ready", lambda repo: repo in ready)
     monkeypatch.setattr(weights, "download_snapshot", fake_download)
     return ready, downloaded

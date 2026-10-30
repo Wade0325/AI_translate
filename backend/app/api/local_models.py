@@ -18,6 +18,7 @@ from fastapi import APIRouter, HTTPException, Query
 
 from app.core.config import get_settings
 from app.provider.local import weights
+from app.provider.local.provider import vram_notice
 from app.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -84,8 +85,10 @@ def local_models_status():
     """GPU 與權重狀態；下載進行中時同時回報進度。
 
     ``all_downloaded`` 只看預設模型所需的權重；選用權重以 ``required: false`` 標示。
+    ``gpu_problem`` 是顯卡跑不了本機轉錄的原因（沒有顯卡、顯卡不支援），``vram_notice`` 是預設模型
+    在這張顯卡上的記憶體提示（#11），都可以直接顯示給使用者。
     """
-    cuda_ok, gpu_name = weights.cuda_status()
+    gpu = weights.detect_gpu()
     models = [
         {
             "repo_id": repo,
@@ -99,8 +102,11 @@ def local_models_status():
         download = dict(_state)
     return {
         "standalone": get_settings().is_standalone,
-        "gpu_available": cuda_ok,
-        "gpu_name": gpu_name,
+        "gpu_available": gpu is not None and gpu.supported,
+        "gpu_name": gpu.name if gpu else None,
+        "gpu_vram_gb": gpu.vram_gb if gpu else None,
+        "gpu_problem": weights.gpu_problem(gpu),
+        "vram_notice": vram_notice(None),
         "hf_home": get_settings().hf_home,
         "default_model": weights.DEFAULT_LOCAL_MODEL,
         "required_size_gb": weights.size_gb(weights.REQUIRED_REPOS),
@@ -111,6 +117,30 @@ def local_models_status():
         "optional_downloaded": all(m["downloaded"] for m in models if not m["required"]),
         "download": download,
     }
+
+
+@router.get("/local-models/readiness")
+def local_readiness(
+    model: Optional[str] = Query(None, description="轉錄頁選的本機模型；省略＝預設模型"),
+):
+    """轉錄頁選本機時先問的事（#11）：現在能不能用這個模型轉錄，不能時的原因與 ``reason``
+    （見 :class:`weights.LocalNotReady`），以及顯卡記憶體的提示（只提示、不擋）。
+
+    和轉錄前的檢查是同一套判斷，不載入模型。只在免安裝模式查：Docker 模式的本機轉錄在主機的
+    GPU worker，API 容器看到的不是它的顯卡與模型權重（和設定頁的「測試」相同），回
+    ``checked: false``，轉錄頁不提示也不擋，由任務時的檢查把關。
+    """
+    if not get_settings().is_standalone:
+        return {"checked": False, "ready": None, "reason": None, "message": None,
+                "vram_notice": None}
+    try:
+        weights.ensure_local_ready(model)
+    except weights.LocalNotReady as e:
+        reason, message = e.reason, str(e)
+    else:
+        reason = message = None
+    return {"checked": True, "ready": reason is None, "reason": reason, "message": message,
+            "vram_notice": vram_notice(model)}
 
 
 @router.post("/local-models/download")

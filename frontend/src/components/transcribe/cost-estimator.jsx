@@ -3,6 +3,7 @@ import { FileAudio, Clock, Zap, Sparkles, ArrowRight } from "lucide-react"
 import { Typography, Button, Tooltip } from "antd"
 import { LoadingOutlined } from "@ant-design/icons"
 import { api } from "@/services/api"
+import { ReasonTooltip } from "@/components/disabled-reason"
 
 const { Text } = Typography
 
@@ -13,13 +14,15 @@ const FALLBACK_RATE_PER_M = 1.45
 const blendedRatePerM = (price) => price.input_audio * 0.7 + price.output_text * 0.3
 
 // estimatesCost：所選的模型按 token 計費時才估算時長、處理時間與費用；免費的模型（本機）
-// 只顯示檔案數與大小（#18）
+// 只顯示檔案數與大小（#18）。blockedReason：現在不能轉錄的原因（例如這台電腦沒有可用的顯卡，
+// #11），有的話停用 Start，滑過去看得到原因
 export function CostEstimator({
     fileCount,
     totalSizeMB,
     model,
     estimatesCost,
     isSubmitting,
+    blockedReason,
     onSubmit,
 }) {
     // 價格以後端 MODEL_PRICES 為準（經 /history/usage 的 pricing 取得），避免前端寫死過時價格；
@@ -106,17 +109,19 @@ export function CostEstimator({
             </div>
 
             {/* Right: Action */}
-            <Button
-                type="primary"
-                size="middle"
-                onClick={onSubmit}
-                disabled={fileCount === 0 || isSubmitting}
-                icon={isSubmitting ? <LoadingOutlined /> : <Sparkles size={14} />}
-                style={{ flexShrink: 0 }}
-            >
-                {isSubmitting ? "Processing..." : "Start"}
-                {!isSubmitting && <ArrowRight size={14} />}
-            </Button>
+            <ReasonTooltip title={isSubmitting ? null : blockedReason}>
+                <Button
+                    type="primary"
+                    size="middle"
+                    onClick={onSubmit}
+                    disabled={fileCount === 0 || isSubmitting || Boolean(blockedReason)}
+                    icon={isSubmitting ? <LoadingOutlined /> : <Sparkles size={14} />}
+                    style={{ flexShrink: 0 }}
+                >
+                    {isSubmitting ? "Processing..." : "Start"}
+                    {!isSubmitting && <ArrowRight size={14} />}
+                </Button>
+            </ReasonTooltip>
         </div>
     )
 }

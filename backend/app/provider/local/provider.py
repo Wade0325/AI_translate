@@ -51,6 +51,23 @@ def _single_pass_seconds_on_this_gpu(model: str) -> float:
     return _single_pass_limit_seconds(model)
 
 
+def vram_notice(model: str | None) -> str | None:
+    """用這張顯卡轉錄這個模型時，顯卡記憶體低於最低需求的提示（#11 Q2，見
+    :func:`weights.vram_notice`）；沒有顯卡、顯卡不支援或記憶體夠時是 None。
+
+    單次長度和轉錄時一樣依這張顯卡收斂。查顯卡會 import torch，只在轉錄那台機器的行程呼叫。
+    """
+    gpu = weights.detect_gpu()
+    if gpu is None or not gpu.supported:
+        return None
+    if weights.is_moss_model(model):
+        from app.provider.local import moss
+        seconds = moss.single_pass_seconds_for_vram(gpu.vram_gb)
+    else:
+        seconds = _single_pass_limit_seconds(weights.normalize_model(model))
+    return weights.vram_notice(gpu.vram_gb, seconds)
+
+
 def _capabilities(model: str) -> ModelCapabilities:
     return ModelCapabilities(
         single_pass_seconds=_single_pass_limit_seconds(model),
@@ -122,9 +139,8 @@ class _LocalProviderFactory:
         """設定頁的「測試」：和轉錄前的檢查相同，查這個行程看得到的顯卡與這個模型的模型權重，
         不載入模型。查的是轉錄那台機器（``checks_transcribing_machine``），哪個行程能問由
         呼叫端依執行模式決定。"""
-        weights.ensure_local_ready(model)
-        _, gpu_name = weights.cuda_status()
-        return f"本機已就緒：顯卡 {gpu_name}，{MODEL_LABELS.get(model, model)} 的模型權重都已下載"
+        gpu = weights.ensure_local_ready(model)
+        return f"本機已就緒：顯卡 {gpu.name}，{MODEL_LABELS.get(model, model)} 的模型權重都已下載"
 
 
 local_provider = _LocalProviderFactory()

@@ -1,5 +1,5 @@
 import { test, expect, download } from './support/test.js'
-import { GEMINI_UPLOAD_NOTICE, PROVIDERS, TRANSCRIPTS, transcriptionMessages } from './support/backend.js'
+import { GEMINI_UPLOAD_NOTICE, PROVIDERS, TRANSCRIPTS, readiness, transcriptionMessages } from './support/backend.js'
 
 // 內容不重要：音檔只經過假後端，不會被解碼
 const AUDIO = { name: 'meeting.wav', mimeType: 'audio/wav', buffer: Buffer.from('RIFF0000WAVE') }
@@ -9,11 +9,12 @@ async function addAudio(page) {
     await expect(page.getByText(AUDIO.name)).toBeVisible()
 }
 
-test('處理模式預設是標準；Gemini 仍可選 Flex 與批次（#18）', async ({ page, mockBackend }) => {
+test('處理模式預設是標準；選 Gemini 時仍可選 Flex 與批次（#18）', async ({ page, mockBackend }) => {
     await mockBackend()
     await page.goto('/transcribe')
 
-    await expect(page.getByLabel('供應商')).toHaveValue('google')
+    await expect(page.getByLabel('處理模式')).toHaveValue('standard')
+    await page.getByLabel('供應商').selectOption('google')
     await expect(page.getByLabel('處理模式')).toHaveValue('standard')
     await expect(page.getByRole('option', { name: /^Flex/ })).toBeEnabled()
     await expect(page.getByRole('option', { name: /^批次/ })).toBeEnabled()
@@ -23,14 +24,14 @@ test('選 Gemini 時說明音檔會上傳到 Google 並連到條款原文；選�
     await mockBackend()
     await page.goto('/transcribe')
 
-    await expect(page.getByLabel('供應商')).toHaveValue('google')
-    await expect(page.getByText(/音檔與提示詞會上傳到 Google/)).toBeVisible()
-    await expect(page.getByRole('link', { name: '條款原文' })).toHaveAttribute('href', GEMINI_UPLOAD_NOTICE.terms_url)
-
-    await page.getByLabel('供應商').selectOption('local')
-
+    await expect(page.getByLabel('供應商')).toHaveValue('local')
     await expect(page.getByText(/會上傳到 Google/)).toHaveCount(0)
     await expect(page.getByRole('link', { name: '條款原文' })).toHaveCount(0)
+
+    await page.getByLabel('供應商').selectOption('google')
+
+    await expect(page.getByText(/音檔與提示詞會上傳到 Google/)).toBeVisible()
+    await expect(page.getByRole('link', { name: '條款原文' })).toHaveAttribute('href', GEMINI_UPLOAD_NOTICE.terms_url)
 })
 
 test('費用估算只給按 token 計費的模型：選本機時只顯示檔案數與大小（#18）', async ({ page, mockBackend }) => {
@@ -39,6 +40,7 @@ test('費用估算只給按 token 計費的模型：選本機時只顯示檔案�
     await addAudio(page)
 
     // Gemini 按 token 計費：估算時長、處理時間與費用
+    await page.getByLabel('供應商').selectOption('google')
     await expect(page.getByText('est.')).toBeVisible()
 
     await page.getByLabel('供應商').selectOption('local')
@@ -115,6 +117,61 @@ test('任務失敗時，檔案卡顯示後端的失敗原因', async ({ page, mo
     await expect(page.getByRole('button', { name: 'Start' })).toBeEnabled()
 })
 
+const NO_GPU = '這台電腦沒有可用的 NVIDIA 顯卡，本機轉錄不能用，可以改用 Gemini'
+
+test('沒有可用的顯卡時仍預設本機：說明原因、停用 Start，按「改用 Gemini」才切換並記住（#11 Q1）', async ({ page, mockBackend }) => {
+    const backend = await mockBackend({
+        routes: { 'GET /setting/local-models/readiness': readiness({ ready: false, reason: 'no_gpu', message: NO_GPU }) },
+    })
+    await page.goto('/transcribe')
+    await addAudio(page)
+
+    await expect(page.getByLabel('供應商')).toHaveValue('local')
+    await expect(page.getByText(NO_GPU)).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Start' })).toBeDisabled()
+    expect(backend.requests.find((r) => r.path === '/setting/local-models/readiness').query)
+        .toEqual({ model: 'moss-align' })
+
+    // 會上傳音檔的供應商要使用者自己選，不自動切換
+    await page.getByRole('button', { name: '改用 Gemini' }).click()
+
+    await expect(page.getByLabel('供應商')).toHaveValue('google')
+    await expect(page.getByText(NO_GPU)).toHaveCount(0)
+    await expect(page.getByText(/音檔與提示詞會上傳到 Google/)).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Start' })).toBeEnabled()
+
+    await page.reload()
+    await expect(page.getByLabel('供應商')).toHaveValue('google')
+})
+
+test('選的本機模型缺模型權重時，停用 Start 並指向設定頁', async ({ page, mockBackend }) => {
+    const message = '本機模型權重尚未下載完成，請至 Settings 頁面下載（缺少: OpenMOSS-Team/MOSS-Transcribe-Diarize）'
+    await mockBackend({
+        routes: { 'GET /setting/local-models/readiness': readiness({ ready: false, reason: 'missing_weights', message }) },
+    })
+    await page.goto('/transcribe')
+    await addAudio(page)
+
+    await expect(page.getByText(message)).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Start' })).toBeDisabled()
+    await expect(page.getByRole('button', { name: '改用 Gemini' })).toHaveCount(0)
+
+    await page.getByRole('link', { name: '到設定頁下載' }).click()
+    await expect(page).toHaveURL(/\/settings$/)
+})
+
+test('顯卡記憶體低於最低需求只提示，照樣可以按 Start（#11 Q2）', async ({ page, mockBackend }) => {
+    const notice = '顯卡記憶體 8 GB 沒有測過（建議 16 GB、至少 12 GB）。長音檔會切成約 26 分鐘一段，各段的說話者編號比較容易對不上'
+    await mockBackend({
+        routes: { 'GET /setting/local-models/readiness': readiness({ vram_notice: notice }) },
+    })
+    await page.goto('/transcribe')
+    await addAudio(page)
+
+    await expect(page.getByText(notice)).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Start' })).toBeEnabled()
+})
+
 /** 供應商清單，但 Gemini 的模型吃使用者文稿（#66 修好之後的樣子）。 */
 const GEMINI_TAKES_USER_TEXT = PROVIDERS.map((p) => p.provider !== 'google' ? p : {
     ...p,
@@ -182,6 +239,8 @@ const VAD_PREVIEW_ROUTES = {
 test('開了開發者工具時，預覽一個檔案並顯示找到的切點', async ({ page, mockBackend }) => {
     const backend = await mockBackend({ routes: VAD_PREVIEW_ROUTES })
     await page.goto('/transcribe')
+    // Gemini 的模型去靜音
+    await page.getByLabel('供應商').selectOption('google')
     await addAudio(page)
 
     await page.getByRole('button', { name: '去靜音與切點預覽' }).click()
@@ -189,7 +248,6 @@ test('開了開發者工具時，預覽一個檔案並顯示找到的切點', as
     const dialog = page.getByRole('dialog', { name: '去靜音與切點預覽' })
     await expect(dialog.getByText('去靜音（speech_only）')).toBeVisible()
     await expect(dialog.getByText('2.5s').first()).toBeVisible()
-    // 預設的供應商是 Gemini，它的模型去靜音
     await expect(dialog.getByText('正式轉錄會使用 speech_only.wav')).toBeVisible()
     expect(backend.requests.find((r) => r.path === '/vad/test').body)
         .toEqual({ filename: 'meeting_1.wav', original_filename: AUDIO.name, include_split: true })
@@ -213,18 +271,18 @@ test('轉錄頁記住上次選的供應商與模型：重新開頁還是同一�
     await mockBackend()
     await page.goto('/transcribe')
 
-    // 第一次開頁照供應商清單的順序，用第一個供應商的預設模型
-    await expect(page.getByLabel('供應商')).toHaveValue('google')
-    await expect(page.getByLabel('模型')).toHaveValue('gemini-3.5-flash')
-
-    await page.getByLabel('供應商').selectOption('local')
-    await expect(page.getByLabel('模型')).toHaveValue('moss-align')
-    await page.reload()
-
+    // 第一次開頁照供應商清單的順序，用第一個供應商（本機）的預設模型
     await expect(page.getByLabel('供應商')).toHaveValue('local')
     await expect(page.getByLabel('模型')).toHaveValue('moss-align')
+
+    await page.getByLabel('供應商').selectOption('google')
+    await expect(page.getByLabel('模型')).toHaveValue('gemini-3.5-flash')
+    await page.reload()
+
+    await expect(page.getByLabel('供應商')).toHaveValue('google')
+    await expect(page.getByLabel('模型')).toHaveValue('gemini-3.5-flash')
     expect(await page.evaluate(() => ({ ...localStorage })))
-        .toEqual({ ai_translate_last_selection: JSON.stringify({ provider: 'local', model: null }) })
+        .toEqual({ ai_translate_last_selection: JSON.stringify({ provider: 'google', model: null }) })
 })
 
 test('上次選的供應商已經不在清單上時，退回清單上的第一個', async ({ page, mockBackend }) => {
@@ -235,8 +293,8 @@ test('上次選的供應商已經不在清單上時，退回清單上的第一�
     })
     await page.goto('/transcribe')
 
-    await expect(page.getByLabel('供應商')).toHaveValue('google')
-    await expect(page.getByLabel('模型')).toHaveValue('gemini-3.5-flash')
+    await expect(page.getByLabel('供應商')).toHaveValue('local')
+    await expect(page.getByLabel('模型')).toHaveValue('moss-align')
 })
 
 test('「編輯 API」只有一個金鑰欄位，保存時只送這一把', async ({ page, mockBackend }) => {
@@ -248,6 +306,7 @@ test('「編輯 API」只有一個金鑰欄位，保存時只送這一把', asyn
         },
     })
     await page.goto('/transcribe')
+    await page.getByLabel('供應商').selectOption('google')
 
     await page.getByRole('button', { name: '編輯 API' }).click()
     const dialog = page.getByRole('dialog')
