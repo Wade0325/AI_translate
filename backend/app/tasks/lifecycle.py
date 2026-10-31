@@ -16,6 +16,8 @@
   執行模式不重試整個任務。萬一有暫時錯誤漏到這裡，一律照失敗處理，任務不會停在處理中。
 - 完成和片段一起寫：任務紀錄記成完成（連同凍結的原始轉錄副本）和片段在同一個交易，片段
   寫不進去就照失敗處理。同一個任務再完成一次時，使用者動過的片段不刪、不覆寫（ADR-0007）。
+- 說話者標記跟著 Multi-Speaker 開關：任務紀錄記下開關，完成時送給畫面的輸出格式照它帶或不帶
+  說話者標記，和之後下載的相同；片段與凍結的原始轉錄副本不論開關都有說話者編號（#13 Q1、ADR-0007）。
 - 中文一律輸出繁體：完成時先把片段轉成繁體輸出（:mod:`app.services.traditional_output`），
   輸出格式、凍結的原始轉錄副本與片段都從轉換後的片段產生（ADR-0002）。
 - 計價照模型能力的計價方式；實際以 Flex 或批次完成的照設定打折。供應商已經回應的用量，
@@ -46,7 +48,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterator, List, Optional, Union
+from typing import Any, Callable, Dict, Iterator, List, Optional, Union, cast
 
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -91,6 +93,9 @@ class Task:
     provider: str
     model: str
     source_lang: str
+    multi_speaker: Optional[bool]
+    """Multi-Speaker 開關：輸出格式帶不帶說話者標記（見 :func:`app.services.output_format.shows_speaker_labels`）。
+    只有接回開關做出來之前開始的任務（:meth:`TaskLifecycle.resume`）時是 None。"""
     target_lang: Optional[str] = None
     session_id: Optional[str] = None
     batch_id: Optional[str] = None
@@ -167,6 +172,7 @@ class TaskLifecycle:
             provider=record.provider or "",
             model=record.model_used or "",
             source_lang=record.source_language or "",
+            multi_speaker=cast(Optional[bool], record.multi_speaker),
             target_lang=record.target_language,
             session_id=record.session_id,
             batch_id=record.batch_id,
@@ -350,7 +356,9 @@ class TaskLifecycle:
             target_lang=self._task.target_lang)})
 
         self._progress.report("正在轉換字幕格式...")
-        transcripts = _output_formats(result)
+        transcripts = output_format.for_result(
+            result, speaker_labels=output_format.shows_speaker_labels(self._task.multi_speaker),
+        ).model_dump()
 
         self._progress.report("正在計算費用...")
         elapsed = self._elapsed()
@@ -364,8 +372,8 @@ class TaskLifecycle:
             "total_tokens": tokens,
             "cost": cost,
             "completed_at": datetime.now(),
-            # 凍結的原始轉錄副本（ADR-0007）：和下載的 LRC 一樣由輸出格式模組從轉錄結果產生
-            "lrc_content": transcripts["lrc"] or None,
+            # 凍結的原始轉錄副本（ADR-0007）：不論 Multi-Speaker 開關都帶說話者標記
+            "lrc_content": output_format.frozen_copy(result) or None,
             "service_tier_used": result.service_tier_used or "standard",
         }, commit=False)
         # 只有取消不蓋掉；其他狀態照實記成完成（例如啟動清掃把還在跑的任務記成了失敗）
@@ -515,6 +523,7 @@ class TaskLifecycle:
             "original_filename": task.original_filename,
             "model_used": task.model,
             "source_language": task.source_lang,
+            "multi_speaker": task.multi_speaker,
             "task_uuid": self._task_uuid,
             "provider": task.provider,
             "target_language": task.target_lang,
@@ -642,12 +651,6 @@ def _discount(service_tier: Optional[str]) -> Optional[float]:
     settings = get_settings()
     return {"flex": settings.flex_cost_discount,
             "batch": settings.batch_cost_discount}.get(service_tier or "")
-
-
-def _output_formats(result: TranscriptionTaskResult) -> dict:
-    """完成時送給畫面的四種輸出格式，由輸出格式模組產生：和之後下載的內容相同；
-    凍結的原始轉錄副本也是這裡的 LRC。"""
-    return output_format.for_result(result).model_dump()
 
 
 def _resolve_input(file_path: Optional[str], task_uuid: str) -> Optional[Path]:
