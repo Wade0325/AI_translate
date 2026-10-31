@@ -301,7 +301,11 @@ jobs:
         run: python tools/portable_zip.py plant
       - name: 建置免安裝版
         shell: powershell # 和 release.yml 一樣用 Windows PowerShell 5.1，不是 pwsh
-        run: .\build_release.ps1 -Version ci -SkipFrontend
+        run: |
+          # Windows PowerShell 5.1 的 Invoke-WebRequest 畫進度條時下載很慢：ffmpeg 的 zip 要 4 分鐘，
+          # 關掉之後和 curl 差不多。腳本沿用呼叫端的這個設定，build_release.ps1 本身不用改
+          $ProgressPreference = 'SilentlyContinue'
+          .\build_release.ps1 -Version ci -SkipFrontend
       - name: 檢查 zip
         run: python tools/portable_zip.py check build/AI_Translate-ci-win64.zip
 
