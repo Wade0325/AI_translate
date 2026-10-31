@@ -154,7 +154,9 @@ docker compose --env-file .env down
 到 **📄 結果 (Result)** 頁面：
 
 - 預覽逐字稿與時間戳。
-- 下載 `.lrc` / `.srt` / `.vtt` / `.txt`（批次可一鍵 ZIP 下載全部）。
+- 下載 `.lrc` / `.srt` / `.vtt` / `.txt`；多個檔案可以用「Download All」一次打包成 ZIP 下載。
+  - 檔名沿用音檔的檔名：`interview.mp3` 的 SRT 是 `interview.srt`。ZIP 裡主檔名相同的音檔保留原本的副檔名來區分（`a.mp3.srt`、`a.wav.srt`），同一個檔名上傳兩次時加編號（`a.srt`、`a (2).srt`），解壓縮時不會互相覆蓋。
+  - 以批次模式完成的檔案，結果存在 **🕘 歷史 (History)** 頁面，要從那裡下載；在結果頁按下載會提示到 History 頁面，打包時也不放進 ZIP，訊息會列出沒打包的檔案。
 - SRT／VTT 的字幕照實際說話的時間顯示：另一位說話者插話時，兩行字幕會同時出現，靠行首的說話者標記分辨；同一位說話者的字幕不重疊。每一行至少顯示 0.8 秒，同一位說話者緊接著說下一句時例外。部分字幕編輯器會把重疊的字幕標成錯誤，原因見 [ADR-0008](docs/adr/0008-subtitles-follow-speech-and-may-overlap.md)。
 - SRT／VTT 的字幕依說話者上色：S0 白色、S1 黃、S2 青、S3 綠，第 5 位說話者起從白色重新輪；沒有說話者標記的行不上色。SRT 的顏色在 VLC 與 mpv 看得到；VTT 的顏色寫在檔頭的 STYLE 區塊，Chrome 看得到，Firefox 不支援，照樣顯示白字。ffmpeg 7.0 之前的版本讀不了帶 STYLE 區塊的 VTT，用這類工具時請改下載 SRT。LRC、TXT 不上色。
 - 一則字幕超過兩行的量（日文 26 個、其他語言 32 個全形字寬，半形字算半個）時，SRT／VTT 照逐字時間拆成數則，優先切在「、」「，」之後；只有本機的轉錄有逐字時間，Gemini 的結果不拆。LRC、TXT 保持一句一行。
