@@ -207,6 +207,35 @@ def test_words_both_models_dropped_fall_back_to_the_model_time_without_timestamp
     assert (spot.seconds, spot.end_seconds) == pytest.approx((10 + 7 * 0.4, 10 + 7 * 0.4))
 
 
+def test_a_model_without_words_there_does_not_move_the_time(tmp_path):
+    # 第一個模型漏掉第二句：它前一個字在 13 秒左右，不能把這一處拉到那裡
+    source = """
+        # demo_G  00:00.00-01:00.00
+        A: 我們下週二去爬山
+        B: 大家早安
+    """
+    first = "[00:10.00][S0] 我們下週二去爬山\n"
+    second = "[00:10.00][S0] 我們下週二去爬山\n[00:40.00][S1] 大家晚安\n"
+    result = _compare(tmp_path, source, first, second)
+
+    [spot] = result.spots
+    assert (spot.line, spot.category) == (1, "all_differ")
+    assert (spot.seconds, spot.end_seconds) == pytest.approx((40, 41.6))
+
+
+def test_spot_time_runs_forward_when_lrc_lines_share_a_start(tmp_path):
+    # 重疊說話時 LRC 兩行可以同一個開始時間，第二行的字不一定比第一行晚
+    source = """
+        # demo_H  00:00.00-01:00.00
+        A: 我們下週二去爬山
+    """
+    lrc = "[00:10.00][S0] 我們下週二去走\n[00:10.00][S1] 路山\n"
+    result = _compare(tmp_path, source, lrc, lrc)
+
+    [spot] = result.spots
+    assert (spot.seconds, spot.end_seconds) == pytest.approx((10.4, 10 + 6 / 7 * 2.8))
+
+
 def test_lines_outside_the_source_window_are_ignored(tmp_path):
     source = """
         # demo_D  00:10.00-00:20.00
@@ -370,6 +399,20 @@ def test_apply_refuses_decisions_made_on_another_list(tmp_path, compared, capsys
     assert cli.main(["three-way", "apply", "--spots", str(spots), "--decisions", str(stale),
                      "--out", str(tmp_path / "final")]) == 2
     assert "digest 不同" in capsys.readouterr().err
+
+
+def test_only_moving_the_times_keeps_the_digest(tmp_path, compared, monkeypatch):
+    # 之後只改了時間的算法（這裡改每字上限）重跑：同一個編號還是同一處，試聽頁裡的決定照樣能用
+    spots, payload = compared
+    monkeypatch.setattr(three_way, "SECONDS_PER_CHAR_CAP", 0.3)
+    out = tmp_path / "three-way-again"
+    assert cli.main(["three-way", "compare", "--source", payload["source"]["path"],
+                     "--transcript", payload["systems"][0]["path"],
+                     "--second-hypothesis", payload["systems"][1]["path"], "--out", str(out)]) == 0
+    again = json.loads((out / "demo_A.three-way.json").read_text(encoding="utf-8"))
+
+    assert [s["seconds"] for s in again["spots"]] != [s["seconds"] for s in payload["spots"]]
+    assert again["digest"] == payload["digest"]
 
 
 def test_apply_refuses_a_source_edited_after_compare(tmp_path, compared, capsys):

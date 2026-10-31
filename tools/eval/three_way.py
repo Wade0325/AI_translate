@@ -18,8 +18,9 @@
 * ``source_with_one``：底稿和其中一個模型一致，另一個模型不同。
 
 時間點：轉錄結果的 LRC 只有每行的開始時間，行內的位置照字數在這一行和下一行的開始時間之間
-內插（每字最多算 0.4 秒），只拿來定位播放。兩個模型在那一處都沒有字（一起漏掉）時，改用底稿
-那一句的時間戳同樣內插；底稿沒有時間戳才用模型前一個字的時間（模型漏掉一長段時會不準）。
+內插（每字最多算 0.4 秒），只拿來定位播放。只看在那一處有字的模型；兩個模型都沒有字（一起
+漏掉）時，改用底稿那一句的時間戳同樣內插，底稿沒有時間戳才用模型前一個字的時間（模型漏掉一長段
+時會不準）。時間點不算進清單的指紋，之後只改了時間的算法時，已經下的決定照樣能用。
 
 只輸出數字到終端機；底稿與轉錄結果的文字只寫進 ``--out`` 的 JSON 與試聽頁，不寫進標準答案的
 資料夾（``data/eval``）。標準答案由使用者確認後，自己從 ``--out`` 複製過去。
@@ -564,8 +565,8 @@ def compare(source: SourceText, first: Transcript, second: Transcript) -> Compar
         # 兩個模型都沒有字時，前一個字可能在很久以前（模型漏掉一長段）：底稿有時間戳就用底稿的
         from_source = None if heard else _source_time_span(source, line, s0, s1)
         times = heard or ([from_source] if from_source is not None else anchors)
-        if times:
-            seconds, end_seconds = min(t[0] for t in times), max(t[1] for t in times)
+        if times:  # LRC 的行不一定照時間排（重疊說話、同一個開始時間），起訖取全部端點的最小與最大
+            seconds, end_seconds = min(min(t) for t in times), max(max(t) for t in times)
         else:
             seconds = end_seconds = source.lines[line].seconds
         spots.append(Spot(id=len(spots) + 1, line=line, category=category, seconds=seconds,
@@ -596,8 +597,10 @@ def audio_src(audio: Path, page_dir: Path) -> str:
 def _digest(spots: list[dict[str, Any]], source_sha: str, system_shas: list[str]) -> str:
     """這份清單的指紋：試聽頁下載的決定帶著它，apply 拿來確認決定是對這份清單做的。
 
-    決定以每一處的編號記錄，重跑 compare（例如換了轉錄結果）編號就會對到別處。"""
-    blob = json.dumps({"spots": spots, "source": source_sha, "systems": system_shas},
+    決定以每一處的編號記錄，重跑 compare（例如換了轉錄結果）編號就會對到別處。時間點只拿來
+    定位播放，不算進指紋：只改了時間的算法時，同一個編號還是同一處，已經下的決定照樣能用。"""
+    placed = [{k: v for k, v in spot.items() if k not in ("seconds", "end_seconds")} for spot in spots]
+    blob = json.dumps({"spots": placed, "source": source_sha, "systems": system_shas},
                       ensure_ascii=False, sort_keys=True)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
