@@ -55,7 +55,8 @@ export function useTranscriptionSocket() {
    *   - onOpen(event, socket): 連線成功（可在此送出 payload）
    *   - onMessage(event):       收到伺服器訊息
    *   - onError(event):         連線錯誤
-   *   - onClose(event):         連線關閉（不論正常或異常）
+   *   - onClose(event, { byClient }): 連線關閉（不論正常或異常）。byClient 是這一端自己關的：
+   *                             closeSocket、closeAll、同一個 id 再開一條，或 hook 卸載
    *   - autoReconnect:          非正常關閉時是否自動重連，預設 false
    */
   const openSocket = useCallback((id, url, handlers = {}) => {
@@ -108,7 +109,8 @@ export function useTranscriptionSocket() {
 
       ws.onclose = (event) => {
         _clearTimers(slot);
-        onClose?.(event);
+        // 這一端關的連線先從登記移除了（closeSocket、卸載），伺服器關的還在
+        onClose?.(event, { byClient: slotsRef.current[id] !== slot });
 
         const stillRegistered = slotsRef.current[id] === slot;
         const shouldReconnect =

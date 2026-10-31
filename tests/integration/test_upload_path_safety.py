@@ -143,7 +143,7 @@ class TestSingleTranscription:
     def test_plain_filename_is_dispatched(self, uploads, dispatched):
         root, _ = uploads
         transcription.start_transcription_task_sync(
-            json.dumps(_single_payload("ok.mp3")), "uid-ok")
+            json.dumps(_single_payload("ok.mp3")), "uid-ok", announce_queued=lambda _: None)
         assert len(dispatched) == 1
         assert dispatched[0]["file_path"] == str(root / "ok.mp3")
 

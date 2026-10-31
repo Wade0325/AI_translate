@@ -36,6 +36,7 @@ from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 import main
+from app.api.transcription import SUBMISSION_FAILED_TEXT
 from app.core.task_status import TaskStatus
 from app.database import session
 from app.database.models import BatchJob, ModelConfiguration, TranscriptionLog
@@ -434,10 +435,14 @@ def test_websocket_logs_the_reason_but_not_the_sql(api, fake, test_engine, app_l
     with table_missing(test_engine, "model_configurations"):
         with api.websocket_connect(path) as ws:
             ws.send_json(payload)
-            # 端點記下錯誤之後關掉這條連線
+            # 端點記下錯誤，告訴畫面任務沒有送出，再關掉這條連線
+            message = ws.receive_json()
             with pytest.raises(WebSocketDisconnect):
                 ws.receive_json()
 
+    # 畫面只看到固定的訊息，原因只在 log
+    assert message["status_code"] == TaskStatus.FAILED
+    assert message["status_text"] == SUBMISSION_FAILED_TEXT
     log = "\n".join(app_log)
     assert "OperationalError" in log
     assert "no such table" in log
