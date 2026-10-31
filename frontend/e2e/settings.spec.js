@@ -155,6 +155,19 @@ test('About 顯示版本號與新版本的下載頁連結，app 自己不連到 
     expect(external.filter((url) => new URL(url).hostname.endsWith('github.com'))).toEqual([])
 })
 
+test('About 有回報問題的入口：連到 Issue 範本選單，提醒 Issues 是公開的（#24）', async ({ page, mockBackend }) => {
+    await mockBackend({ routes: { 'GET /version': { version: 'v0.1.0-beta.1' } } })
+    await page.goto('/settings')
+
+    const about = providerCard(page, 'About')
+    const issues = about.getByRole('link', { name: 'GitHub Issues' })
+    // 範本選單，不是空白 Issue：每份範本開頭都有隱私提醒（.github/ISSUE_TEMPLATE）
+    await expect(issues).toHaveAttribute('href', 'https://github.com/Wade0325/AI_translate/issues/new/choose')
+    await expect(issues).toHaveAttribute('target', '_blank')
+    await expect(issues).toHaveAttribute('rel', 'noopener noreferrer')
+    await expect(about.getByText(/Issues 是公開的/)).toContainText('不要貼轉錄結果的內容，也不要附私人錄音或 API 金鑰')
+})
+
 test('讀不到版本號時照樣顯示下載頁連結', async ({ page, mockBackend }) => {
     await mockBackend({ routes: { 'GET /version': reply(500, { detail: '壞掉了' }) } })
     await page.goto('/settings')

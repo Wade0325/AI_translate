@@ -1,0 +1,53 @@
+# 功能建議（#24 的「Issue 範本與回報入口」）。開頭的隱私提醒與結尾的確認見 1-bug.yml 的說明。
+name: 功能建議
+description: 想要新功能，或希望現有的功能改得更好用
+labels: [enhancement, needs-triage]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **這裡的 Issue 是公開的**：任何人都看得到，送出後再修改，原本的內容仍可能留在編輯紀錄裡。
+
+        - 不要貼轉錄結果的內容（字幕、逐字稿），也不要附私人錄音，或看得到轉錄內容與檔名的截圖。
+        - 不要貼 API 金鑰。
+
+        建議之前，可以先看一下 [README](https://github.com/Wade0325/AI_translate#readme)，確認是不是已經有這個功能。
+  - type: textarea
+    id: problem
+    attributes:
+      label: 想解決什麼問題
+      description: 你在做什麼的時候覺得不方便？
+      placeholder: 例如：每次轉錄完都要自己把說話者編號換成人名。
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 希望怎麼做
+      description: 你想像中的做法。不確定的話，寫出你希望得到的結果就好。
+    validations:
+      required: true
+  - type: textarea
+    id: workaround
+    attributes:
+      label: 現在怎麼應付
+      description: 目前用什麼方法繞過，或改用其他工具。
+  - type: dropdown
+    id: area
+    attributes:
+      label: 和哪個部分有關
+      options:
+        - 轉錄
+        - 字幕與輸出格式
+        - 說話者
+        - 長音檔
+        - 安裝與啟動
+        - 設定
+        - 其他
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: 送出前確認
+      options:
+        - label: 這份回報沒有轉錄結果的內容、私人錄音與 API 金鑰。
+          required: true

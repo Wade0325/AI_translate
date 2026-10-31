@@ -1,0 +1,101 @@
+# Bug 回報（#24 的「Issue 範本與回報入口」）。檔名前的數字決定範本選單的順序。
+#
+# 這個 repo 的 Issue 是公開的，回饋又只走 Issues（ADR-0005）：每份範本開頭都提醒不要附轉錄結果、
+# 私人錄音與 API 金鑰（#27），結尾要勾選確認。tests/unit/test_issue_templates.py 檢查這兩點。
+# 範本只在合併進 main 之後生效，屬於單向門（docs/agents/merging.md）。
+name: Bug 回報
+description: 當機、錯誤訊息、按了沒反應、下載的檔案打不開
+labels: [bug, needs-triage]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **這裡的 Issue 是公開的**：任何人都看得到，送出後再修改，原本的內容仍可能留在編輯紀錄裡。
+
+        - 不要貼轉錄結果的內容（字幕、逐字稿），也不要附私人錄音，或看得到轉錄內容與檔名的截圖。
+        - 不要貼 API 金鑰。
+
+        轉錄結果有錯字、少了一段或說話者分錯，請改用「轉錄品質」範本。
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: 發生了什麼事
+      description: 你看到了什麼？有錯誤訊息的話照抄；訊息裡有檔名時先改掉。
+      placeholder: 例如：按 Start 之後一直沒有進度，也沒有任何錯誤訊息。
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 怎麼重現
+      description: 從開啟 app 開始，一步一步寫你做了什麼。
+      placeholder: |
+        1. 在 New Transcription 頁選「本機」
+        2. 上傳一個約 2 小時的 m4a 檔
+        3. 按 Start
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 你預期的結果
+  - type: input
+    id: version
+    attributes:
+      label: 版本
+      description: Settings 頁 About 卡片上的版本號。
+      placeholder: 例如 v0.1.0-beta.1
+    validations:
+      required: true
+  - type: dropdown
+    id: run-mode
+    attributes:
+      label: 執行模式
+      options:
+        - 免安裝版（解壓縮 zip 後執行）
+        - Docker 模式（開發用）
+    validations:
+      required: true
+  - type: dropdown
+    id: provider
+    attributes:
+      label: 供應商
+      description: 轉錄頁（New Transcription）選的供應商。問題和轉錄無關（例如啟動失敗、設定頁）時選最後一項。
+      options:
+        - 本機
+        - Gemini
+        - 和轉錄無關
+    validations:
+      required: true
+  - type: input
+    id: model
+    attributes:
+      label: 模型
+      description: 轉錄頁模型選單上顯示的名稱。
+      placeholder: 例如 MOSS-Transcribe-Diarize、gemini-3.5-flash
+  - type: input
+    id: environment
+    attributes:
+      label: 作業系統與顯示卡
+      description: 用本機轉錄時，寫上顯示卡的型號與 VRAM。
+      placeholder: 例如 Windows 11 24H2、RTX 4070 Ti SUPER 16 GB
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: 診斷資訊
+      description: Settings 頁 About 卡片按「複製診斷資訊」後貼上；較舊的版本沒有這個按鈕，可以略過。
+      render: text
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日誌檔
+      description: >-
+        免安裝版的日誌檔在解壓縮資料夾的 data\logs，每天一個檔（app-年-月-日.log）。
+        把出問題那天的檔案拖進這個框。日誌檔不寫原檔名、提示詞與轉錄內容，附上之前也可以先打開看一遍。
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: 送出前確認
+      options:
+        - label: 這份回報沒有轉錄結果的內容、私人錄音與 API 金鑰。
+          required: true

@@ -172,8 +172,14 @@ export default function SettingsPage() {
 const RELEASES_URL = "https://github.com/Wade0325/AI_translate/releases"
 
 /**
- * 版本號與新版本的下載頁連結（#85），以及回報問題用的「複製診斷資訊」（#24）。app 不會自己連到
- * GitHub 檢查更新：版本號問的是本機的後端，下載頁要使用者自己點。
+ * 回報問題的入口：GitHub 的 Issue 範本選單（.github/ISSUE_TEMPLATE，#24）。app 不自動回報錯誤，
+ * 回饋只走 Issues（ADR-0005）；Issues 是公開的，所以連結旁邊提醒不要附上哪些東西。
+ */
+const ISSUES_URL = "https://github.com/Wade0325/AI_translate/issues/new/choose"
+
+/**
+ * 版本號與新版本的下載頁連結（#85），以及回報問題的連結與「複製診斷資訊」（#24）。app 不會自己連到
+ * GitHub 檢查更新：版本號問的是本機的後端，兩個連結都要使用者自己點。
  */
 function AboutCard() {
     const [version, setVersion] = useState(null)
@@ -204,6 +210,11 @@ function AboutCard() {
                         程式不會自己檢查或下載更新。新版本請到{' '}
                         <a href={RELEASES_URL} target="_blank" rel="noopener noreferrer">GitHub Releases</a>
                         {' '}下載，把舊版的 data 資料夾複製過去就能保留紀錄。想在新版發布時收到通知，可以在 GitHub 上對這個專案按 Watch，選 Custom 裡的 Releases。
+                    </Text>
+                    <Text style={{ color: '#8888a8', fontSize: 12 }}>
+                        遇到問題或有建議，請到{' '}
+                        <a href={ISSUES_URL} target="_blank" rel="noopener noreferrer">GitHub Issues</a>
+                        {' '}選一個範本回報。Issues 是公開的，任何人都看得到：不要貼轉錄結果的內容，也不要附私人錄音或 API 金鑰。
                     </Text>
                     <DiagnosticsCopy />
                 </div>

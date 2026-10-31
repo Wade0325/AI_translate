@@ -8,6 +8,9 @@ basedpyright==1.40.2
 huggingface_hub==1.23.0
 # tests/unit/test_run_mode_contract.py 用假的 Redis 跑執行模式的 Celery＋Redis 轉接器（#104）
 fakeredis==2.39.0
+# tests/unit/test_issue_templates.py 讀 .github/ISSUE_TEMPLATE 的 YAML。huggingface_hub 也會帶進來，
+# 但測試直接用到，所以自己列
+PyYAML==6.0.3
 # tools/eval（評測工具）的依賴，版本和研究區 vendor/ 裡的相同（#36）。import opencc 來自
 # opencc-python-reimplemented（純 Python），不是 PyPI 上叫 opencc 的官方原生綁定：兩者的字典不同，
 # 繁簡正規化的結果可能不一樣，換掉要另外驗證錯字率不變。應用程式的繁體輸出也用它（requirements-base.txt、
