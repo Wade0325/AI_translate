@@ -416,11 +416,19 @@ Python embeddable、`uv` 與 ffmpeg 都釘版並驗 SHA-256，下載快取在 `b
 推 `v*` tag 時 GitHub Actions（`.github/workflows/release.yml`）會先跑一次完整的 CI，通過後自動建置並發布 Release。
 CI 的 `portable` job 在每個 PR 上也用 Windows 建置一次（不上傳、不發布），並用 `tools/portable_zip.py` 檢查 zip：第 7 步清單裡的檔案都在、`backend\` 只有白名單裡的檔案，而且沒有使用者的音檔、資料庫、`.env` 等執行期資料；日誌裡會列出 zip 的完整內容。
 
+發布包附上授權文件（#274）：Mimiji 的 `LICENSE.txt` 與 `NOTICE.txt`，以及第三方元件的 `THIRD_PARTY_NOTICES.txt` 與 `licenses\`（原稿在 [`tools/portable/`](tools/portable/THIRD_PARTY_NOTICES.txt)）。元件換版時一起更新：
+- Python、`uv` 或 ffmpeg 升版：改 `THIRD_PARTY_NOTICES.txt` 寫的版本與來源，以及 `tools/portable/licenses/` 裡它們的授權全文；ffmpeg 另外改 `build_release.ps1` 的 `$FfmpegCommit` 與 `$BtbnCommit`。建置時會核對 Python 與 ffmpeg 自己附的授權檔，和 `licenses/` 裡的不同就停下來。
+- 新增、移除或升級前端依賴：`npm ci --prefix frontend` 之後執行 `python tools/npm_licenses.py`，重新產生 `tools/portable/licenses/frontend/npm-packages.txt`；沒有重新產生時測試會紅燈。
+
+FFmpeg 的原始碼要附在發布包所在的同一個 GitHub Release。`python tools/ffmpeg_sources.py fetch build\release-assets` 準備這些附件並驗證：BtbN 的 build zip、對應 commit 的 FFmpeg 原始碼、BtbN 的建置腳本與 `SHA256SUMS`；CI 的 `portable` job 每個 PR 都跑一次。`release.yml` 還沒有上傳這些附件，接上它是 #278 的範圍。
+
 ---
 
 ## 📝 授權
 
 本專案採用 [Apache License 2.0](LICENSE)，理由見 [ADR 0006](docs/adr/0006-license-apache-2.md)。
+
+免安裝版附帶的第三方元件（FFmpeg、Python、`uv` 與介面打包的 npm 套件）各依自己的授權散布，見發布包裡的 `THIRD_PARTY_NOTICES.txt` 與 `licenses\`（原稿在 [`tools/portable/`](tools/portable/THIRD_PARTY_NOTICES.txt)）。FFmpeg 的原始碼附在每一版的 GitHub Release。
 
 ---
 

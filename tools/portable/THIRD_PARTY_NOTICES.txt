@@ -1,0 +1,114 @@
+Mimiji {VERSION} 第三方元件授權聲明（Third-party notices）
+==========================================================
+
+Mimiji 本身以 Apache License 2.0 授權，見同一個資料夾的 LICENSE.txt 與 NOTICE.txt。
+這個免安裝版另外附帶下列第三方元件，各自依它們自己的授權散布；授權全文在 licenses\ 資料夾。
+
+不在這個 zip 裡的：首次啟動時下載的 Python 套件（PyTorch 等），以及本機轉錄的模型權重。
+它們由你的電腦直接從上游（PyPI、Hugging Face 等）下載，依各自的授權使用。
+
+
+1. FFmpeg（bin\ffmpeg.exe、bin\ffprobe.exe）
+--------------------------------------------
+
+This software uses code of FFmpeg (https://ffmpeg.org) licensed under the GNU Lesser
+General Public License version 3 or later (LGPLv3), and its source can be downloaded
+as described below.
+
+- 版本：n9.0.2-17-g2a571b6068，也就是 FFmpeg 的 git commit
+  2a571b606854520cf89804d8030c8b328e621689。Mimiji 沒有修改 FFmpeg。
+- 建置：BtbN/FFmpeg-Builds（https://github.com/BtbN/FFmpeg-Builds）的 win64 LGPL 靜態 build，
+  release autobuild-2026-09-30-13-08，建置腳本的 commit 是
+  6c9aec5fc9a72ec3abedd1fa84db141fa18cf52b。兩個 exe 原封不動取自 BtbN 發布的
+  ffmpeg-n9.0.2-17-g2a571b6068-win64-lgpl-9.0.zip
+  （SHA-256：6b264b9e6019103f601d98c292bd332fd87acf1c5e941ddff4fb71760fe63432）。
+- 授權：GNU LGPL 第 3 版或更新的版本。LGPL 是在 GNU GPL 第 3 版之上加的額外許可，
+  所以兩份全文都附上：
+    licenses\ffmpeg\COPYING.LGPLv3.txt
+    licenses\ffmpeg\COPYING.GPLv3.txt
+- Mimiji 以獨立的程式（子行程）執行 ffmpeg.exe 與 ffprobe.exe，沒有連結 FFmpeg 的函式庫。
+  你依 FFmpeg 的授權享有的權利，不受 Mimiji 的授權條款限制。
+
+原始碼的取得方式（Corresponding Source）
+
+  下列檔案附在這一版 Mimiji 的 GitHub Release，和這個 zip 放在同一個地方：
+    https://github.com/Wade0325/AI_translate/releases/tag/{VERSION}
+
+    ffmpeg-n9.0.2-17-g2a571b6068-win64-lgpl-9.0.zip
+        BtbN 發布的 build 原檔，上面兩個 exe 就取自其中
+    FFmpeg-2a571b606854520cf89804d8030c8b328e621689.tar.gz
+        上面那個 commit 的 FFmpeg 完整原始碼
+    FFmpeg-Builds-6c9aec5fc9a72ec3abedd1fa84db141fa18cf52b.tar.gz
+        產生這個 build 的建置腳本：configure 的參數，以及每個外部函式庫釘住的
+        上游版本與修補（scripts.d\、patches\）
+    SHA256SUMS
+        以上檔案的 SHA-256
+
+  這一版在 GitHub Release 提供下載的期間，這些檔案會一直附在同一個 Release。
+  上游也拿得到同樣的原始碼：FFmpeg 在 https://git.ffmpeg.org/ffmpeg.git 與
+  https://github.com/FFmpeg/FFmpeg，建置腳本在 https://github.com/BtbN/FFmpeg-Builds
+  （commit 都同上）。
+
+  這個 build 的 configure 參數（執行 bin\ffmpeg.exe -buildconf 也看得到）：
+
+    --prefix=/ffbuild/prefix --pkg-config-flags=--static --pkg-config=pkg-config
+    --cross-prefix=x86_64-w64-mingw32- --arch=x86_64 --target-os=mingw32 --enable-version3
+    --disable-debug --disable-w32threads --enable-pthreads --enable-iconv --enable-zlib
+    --enable-libxml2 --enable-libvmaf --enable-fontconfig --enable-libharfbuzz
+    --enable-libfreetype --enable-libfribidi --enable-vulkan --enable-libdav1d
+    --enable-libvorbis --enable-librav1e --enable-librsvg --disable-libxcb --disable-xlib
+    --disable-libpulse --enable-gmp --enable-lzma --enable-liblcevc-dec --enable-opencl
+    --enable-amf --enable-libaom --disable-avisynth --enable-chromaprint --disable-libdavs2
+    --disable-libdvdread --disable-libdvdnav --disable-libfdk-aac --enable-ffnvcodec
+    --enable-cuda-llvm --disable-frei0r --enable-libgme --enable-libkvazaar
+    --enable-libaribb24 --enable-libaribcaption --enable-libass --enable-libbluray
+    --enable-libjxl --enable-libmp3lame --enable-libopus --enable-libplacebo
+    --enable-librist --enable-libssh --enable-libtheora --enable-libvpx --enable-libwebp
+    --enable-libzmq --enable-lv2 --enable-libvpl --enable-openal --enable-liboapv
+    --enable-libopencore-amrnb --enable-libopencore-amrwb --enable-libopenh264
+    --enable-libopenjpeg --enable-libopenmpt --disable-librubberband --enable-schannel
+    --enable-sdl2 --enable-libsnappy --enable-libsoxr --enable-libsrt --enable-libsvtav1
+    --enable-libtwolame --enable-libuavs3d --disable-libdrm --enable-vaapi
+    --disable-libvidstab --enable-libvvenc --disable-whisper --disable-libx264
+    --disable-libx265 --disable-libxavs2 --disable-libxvid --enable-libzimg --enable-libzvbi
+    --extra-cflags=-DLIBTWOLAME_STATIC --extra-cxxflags= --extra-libs=-lgomp
+    --extra-ldflags=-pthread --extra-ldexeflags= --cc=x86_64-w64-mingw32-gcc
+    --cxx=x86_64-w64-mingw32-g++ --ar=x86_64-w64-mingw32-gcc-ar
+    --ranlib=x86_64-w64-mingw32-gcc-ranlib --nm=x86_64-w64-mingw32-gcc-nm
+    --extra-version=20260930
+
+  其中 --enable-lib… 等項目是靜態連入 ffmpeg.exe 的外部函式庫；每個函式庫的上游位置與
+  版本，記在上面建置腳本的 scripts.d\ 裡。
+
+This software is based in part on the work of the Independent JPEG Group.
+（FFmpeg 的 libavcodec 有部分程式碼來自 IJG 的 libjpeg，依它的條款在這裡致謝。）
+
+FFmpeg is a trademark of Fabrice Bellard, originator of the FFmpeg project.
+
+
+2. Python 3.11.9 embeddable package（runtime\）
+-----------------------------------------------
+
+- 來源：https://www.python.org/ftp/python/3.11.9/python-3.11.9-embed-amd64.zip，原封不動解開。
+- 授權：Python Software Foundation License Version 2。Python 的 Windows build 附帶的元件
+  （例如 bzip2、libffi、OpenSSL）的授權，以及其中 Microsoft 可散布程式碼的散布條件，
+  都寫在 Python 自己的授權檔：
+    licenses\python\LICENSE.txt（和 runtime\LICENSE.txt 相同）
+
+
+3. uv 0.12.23（bin\uv.exe）
+---------------------------
+
+- 來源：https://github.com/astral-sh/uv/releases/tag/0.12.23 的
+  uv-x86_64-pc-windows-msvc.zip 裡的 uv.exe。首次啟動時用它下載並安裝 Python 套件。
+- 授權：MIT License 或 Apache License 2.0，擇一適用（Copyright (c) 2025 Astral Software Inc.）：
+    licenses\uv\LICENSE-MIT.txt
+    licenses\uv\LICENSE-APACHE.txt
+
+
+4. 介面（frontend\dist）打包的 npm 套件
+---------------------------------------
+
+介面用到的 React、Ant Design、Recharts、JSZip 等 npm 套件，連同它們的依賴，打包在
+frontend\dist 的 JavaScript 檔裡。每個套件的名稱、版本、授權與授權全文：
+    licenses\frontend\npm-packages.txt

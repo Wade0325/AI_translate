@@ -1,0 +1,11 @@
+Mimiji
+Copyright 2026 Wade (https://github.com/Wade0325)
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+Source code: https://github.com/Wade0325/AI_translate
+
+The Windows portable build also contains third-party software (FFmpeg, the
+Python embeddable package, uv, and the npm packages bundled into the web
+interface), each distributed under its own license. See THIRD_PARTY_NOTICES.txt
+and the licenses folder in the portable build (tools/portable/ in this
+repository).
