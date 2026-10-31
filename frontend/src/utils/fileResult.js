@@ -1,14 +1,17 @@
 import { TASK_STATUS } from '../constants/taskStatus';
 import { failureOf } from './failure';
+import { connectionRestored } from './connectionLoss';
 
 /**
  * 依任務的狀態訊息（WebSocket 廣播的形狀：status_code、status_text、task_uuid，完成時再帶 result，失敗時
  * 再帶錯誤碼與細節 error_code、error_message），算出檔案卡的下一個 state。WebSocket 收到的訊息、按取消時
  * 照任務紀錄補上的結果（utils/cancelOutcome.js）都經過這裡，檔案卡完成、失敗、已取消時的欄位只在這裡寫。
+ *
+ * 收到任務的狀態就代表又和任務接上了：連線中斷的記號（utils/connectionLoss.js）一律清掉。
  */
 export function applyFileResult(file, data) {
   const next = {
-    ...file,
+    ...connectionRestored(file),
     statusText: data.status_text,
     task_uuid: data.task_uuid,
   };

@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import platform
 import shutil
-import subprocess
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -25,14 +24,12 @@ from app.provider.local import weights
 from app.provider.local.provider import vram_notice
 from app.services.environment_manifest import PACKAGES, package
 from app.utils.binaries import ffmpeg_bin
+from app.utils.commands import command_output
 
 TITLE = "診斷資訊"
 
 DIAGNOSED_PACKAGES = (*PACKAGES, "google-genai")
 """轉錄結果會隨版本改變的套件，加上 Gemini 的用戶端。"""
-
-COMMAND_TIMEOUT_SECONDS = 10
-"""問 nvidia-smi 與 ffmpeg 版本的上限；卡住時照樣回得了這段文字。"""
 
 Line = tuple[str, str]
 
@@ -94,12 +91,15 @@ def release(system: str, reported: str, version: str) -> str:
 def local_transcription() -> Iterator[Line]:
     """本機轉錄要的東西：驅動、顯卡、顯卡記憶體的提示與模型權重（只在免安裝模式問）。
 
-    驅動和顯卡分開問：驅動太舊時 nvidia-smi 找得到卡，PyTorch 卻用不了，兩行一起看才分得出來。
+    驅動和顯卡分開問：PyTorch 用不了顯卡時，nvidia-smi 可能照樣找得到卡。用不了的原因和轉錄頁、
+    設定頁是同一份判斷（:func:`weights.detect_gpu`，#262），另外附上 PyTorch 的原始錯誤。
     """
-    yield "NVIDIA 驅動", nvidia_driver_version() or "找不到 nvidia-smi"
+    yield "NVIDIA 驅動", weights.nvidia_driver_version() or "找不到 nvidia-smi"
     gpu = weights.detect_gpu()
-    if gpu is None:
-        yield "顯卡", "PyTorch 看不到可用的 NVIDIA 顯卡"
+    if isinstance(gpu, weights.GpuUnavailable):
+        yield "顯卡", gpu.problem
+        if gpu.detail:
+            yield "PyTorch 的錯誤", gpu.detail
     else:
         unsupported = "" if gpu.supported else "，目前的 PyTorch 不支援這張顯卡"
         yield "顯卡", f"{gpu.name}（{round(gpu.vram_gb)} GB{unsupported}）"
@@ -114,30 +114,13 @@ def local_transcription() -> Iterator[Line]:
         yield label, "已下載" if not missing else "缺少 " + "、".join(missing)
 
 
-def nvidia_driver_version() -> str | None:
-    """nvidia-smi 回報的驅動版本（例如 ``576.02``）；沒裝 NVIDIA 驅動或問不到時是 None。"""
-    output = _run("nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader")
-    first = output.strip().splitlines()[0].strip() if output and output.strip() else ""
-    return first or None
-
-
 def ffmpeg_version() -> str | None:
     """``ffmpeg -version`` 第一行的版本（``ffmpeg version <版本> Copyright …``）；找不到時是 None。
 
     只取版本那一段：後面幾行是編譯設定，用不到。
     """
-    output = _run(ffmpeg_bin(), "-version")
+    output = command_output(ffmpeg_bin(), "-version")
     words = output.split(maxsplit=3) if output else []
     if words[:2] != ["ffmpeg", "version"] or len(words) < 3:
         return None
     return words[2]
-
-
-def _run(*command: str) -> str | None:
-    """執行指令，回傳標準輸出；找不到、失敗或逾時時是 None（診斷資訊照樣產生）。"""
-    try:
-        result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8",
-                                errors="replace", timeout=COMMAND_TIMEOUT_SECONDS, check=False)
-    except (OSError, subprocess.SubprocessError):
-        return None
-    return result.stdout if result.returncode == 0 else None

@@ -51,6 +51,19 @@ export const ERROR_CODES = Object.freeze({
     reason: '這台電腦沒有可用的 NVIDIA 顯卡',
     nextStep: '本機的模型需要 NVIDIA 顯卡，請改用 Gemini 轉錄。',
   },
+  LOCAL_DRIVER_TOO_OLD: {
+    reason: 'NVIDIA 顯卡驅動太舊',
+    nextStep: '目前與需要的驅動版本寫在下面的細節。更新驅動後重新開啟 Mimiji，再重新轉錄；或改用 Gemini 轉錄。',
+  },
+  LOCAL_CUDA_INIT_FAILED: {
+    reason: '顯卡的 CUDA 初始化失敗',
+    nextStep: '重新開機後再重新轉錄；還是失敗的話，重新安裝最新的 NVIDIA 驅動，或改用 Gemini 轉錄。',
+  },
+  LOCAL_TORCH_LOAD_FAILED: {
+    reason: 'PyTorch 載入失敗',
+    nextStep: '原因寫在下面的細節。重新開機後再重新轉錄；一直失敗的話，請回報問題並附上錯誤碼，或改用 Gemini 轉錄。',
+    action: 'report',
+  },
   LOCAL_UNSUPPORTED_GPU: {
     reason: '目前的版本不支援這張顯卡',
     nextStep: '本機的模型在這張顯卡上跑不了，請改用 Gemini 轉錄。',
