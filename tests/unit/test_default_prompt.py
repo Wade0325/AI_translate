@@ -2,12 +2,19 @@
 單元測試：送給模型的提示詞怎麼組（提示詞範本代入變數，接上補充說明）
 測試範圍：core/default_prompt.py
 """
+import re
+from pathlib import Path
+
 import pytest
 
 from app.core.default_prompt import (
     build_prompt,
     DEFAULT_PROMPT_TEMPLATE,
     LANG_MAP,
+)
+
+FRONTEND_LANGUAGES = (
+    Path(__file__).resolve().parents[2] / "frontend" / "src" / "constants" / "languages.js"
 )
 
 
@@ -122,6 +129,62 @@ class TestBuildPrompt:
         assert "繁體中文" in prompt
         assert "Speaker" in prompt
         assert "7." in prompt
+
+
+# ─── 提示詞寫語言名稱，Auto Detect 時不寫語言（#261） ─────────────────────────
+
+def _menu_languages(source: str) -> set[str]:
+    """轉錄頁語言選單上的語言代碼，不含 Auto Detect（它不是一種語言）。
+
+    每個寫了 ``value:`` 的地方都要讀得出代碼：改了寫法（引號、換行）讀不出來時測試失敗，
+    不會少比對幾種語言還是綠燈。
+    """
+    codes = re.findall(r"""\bvalue:\s*(['"])([^'"]+)\1""", source)
+    assert codes, "languages.js 找不到語言選項"
+    assert len(codes) == len(re.findall(r"\bvalue:", source)), "languages.js 有讀不出代碼的語言選項"
+    return {code for _, code in codes} - {"auto"}
+
+
+class TestSourceLanguageInPrompt:
+    """提示詞寫語言名稱，不寫語言代碼；選 Auto Detect 時不寫語言，由模型自己判斷（#261）。"""
+
+    @pytest.mark.parametrize("source_lang", ["auto", "AUTO", " auto ", ""],
+                             ids=["auto", "upper-case", "spaces", "empty"])
+    def test_auto_detect_writes_no_language(self, source_lang):
+        prompt = build_prompt(source_lang=source_lang)
+
+        assert prompt.startswith("你是一位專業的逐字稿專家。請將以下音檔精確轉錄為 LRC 格式。\n")
+        assert "auto" not in prompt.lower()
+
+    @pytest.mark.parametrize("source_lang, name", [
+        pytest.param("ja", "日文", id="japanese"),
+        pytest.param("zh-TW", "繁體中文", id="chinese"),
+        # 舊紀錄與直接呼叫 API 帶的代碼；重新轉錄沿用任務當初的語言
+        pytest.param("ja-JP", "日文", id="japanese-with-region"),
+        pytest.param("zh-CN", "中文", id="simplified-chinese-on-old-records"),
+    ])
+    def test_language_is_written_by_name(self, source_lang, name):
+        prompt = build_prompt(source_lang=source_lang)
+
+        assert prompt.startswith(f"你是一位專業的逐字稿專家。請將以下{name}音檔精確轉錄為 LRC 格式。\n")
+        assert source_lang not in prompt
+
+    def test_every_language_on_the_menu_has_a_name(self):
+        # 後端映像的 build context 只有 backend/，兩邊各自宣告一份，由這個測試對齊
+        menu = _menu_languages(FRONTEND_LANGUAGES.read_text(encoding="utf-8"))
+
+        assert menu - LANG_MAP.keys() == set()
+
+    def test_auto_detect_writes_no_language_in_the_template_saved_in_settings(self):
+        template = "請把{source_lang}音檔轉成 LRC。\n{speaker_instruction}"
+
+        assert build_prompt(source_lang="auto", template=template) == "請把音檔轉成 LRC。"
+        assert build_prompt(source_lang="ja", template=template) == "請把日文音檔轉成 LRC。"
+
+    def test_auto_detect_keeps_the_translation_instruction(self):
+        prompt = build_prompt(source_lang="auto", target_lang="zh-TW")
+
+        assert prompt.endswith("6. 請將所有轉錄內容翻譯為繁體中文輸出。")
 
 
 # ─── 提示詞範本裡的大括號（#143） ────────────────────────────────────────────
