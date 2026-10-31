@@ -1,14 +1,15 @@
 """上傳格式與大小：轉錄頁收哪些檔案、最大多大，只寫在這裡（#258）。
 
-前端從 ``GET /api/v1/upload/limits``（:func:`listed`）讀這份清單，不另寫一份；上傳端點用
+前端從 ``GET /api/v1/upload/limits``（:func:`limits`）讀這份清單，不另寫一份；上傳端點用
 :func:`check_upload` 檢查每個上傳檔。
 
 - 格式只看副檔名，不看瀏覽器給的 MIME 類型：Windows 上的瀏覽器照登錄檔給 MIME，常常是空的或對不上
   （同一個 .m4a 有 audio/x-m4a、audio/mp4，沒登錄的格式是空字串）；後面的 ffmpeg 與送到 Gemini 的
   MIME 類型也都照副檔名。
 - 影片（``kind == "video"``）在上傳時就在本機抽出音訊，影片本身刪掉，之後的任務、保留音檔與供應商
-  都只碰得到音訊（#76 的決定，見 :mod:`app.api.upload`）。WebM 列在影片：瀏覽器錄的純音訊 WebM
-  一樣抽成 FLAC，沒有壞處。
+  都只碰得到音訊（#76 的決定，見 :mod:`app.api.upload`）。音檔的副檔名、裡面卻有影像的檔案（例如
+  改了副檔名的 MP4）上傳端點也照樣抽。WebM 與 3GP 列在影片：瀏覽器錄的純音訊 WebM、手機錄音的
+  3GP 一樣抽成 FLAC，沒有壞處。
 - 大小上限容得下 2 小時的 WAV：48 kHz 立體聲 16-bit 約 1.38 GB，24-bit 約 2.07 GB，都在 2 GiB 之內。
   畫面寫「2 GB」：以 1024 進位，和 Windows 檔案總管顯示檔案大小的算法相同。
 """
@@ -44,7 +45,7 @@ def _formats(kind: Kind, *labels: str) -> Tuple[UploadFormat, ...]:
 
 UPLOAD_FORMATS: Tuple[UploadFormat, ...] = (
     *_formats("audio", "MP3", "WAV", "M4A", "FLAC"),
-    *_formats("video", "MP4", "MOV", "MKV", "WebM", "AVI", "WMV", "M4V", "MPG", "MPEG"),
+    *_formats("video", "MP4", "MOV", "MKV", "WebM", "AVI", "WMV", "M4V", "3GP", "MPG", "MPEG"),
 )
 """收的格式，依畫面列出的順序：先音檔，再影片，各自從常見的排起。"""
 
@@ -77,7 +78,7 @@ def check_upload(filename: str, size: int) -> Union[UploadFormat, Rejected]:
     return upload_format
 
 
-def listed() -> dict:
+def limits() -> dict:
     """``GET /api/v1/upload/limits`` 的內容：收的格式（依畫面列出的順序）與大小上限。"""
     return {
         "formats": [{"extension": f.extension, "label": f.label, "kind": f.kind}

@@ -12,7 +12,7 @@ from app.core.upload_formats import (
     Rejected,
     UploadFormat,
     check_upload,
-    listed,
+    limits,
 )
 
 MB = 1024 ** 2
@@ -69,7 +69,7 @@ class TestFormats:
     def test_other_files_are_rejected_with_what_can_be_uploaded(self, filename, shown):
         assert rejection(filename) == (
             f"不支援這種檔案格式（{shown}）。可以上傳的音檔：MP3、WAV、M4A、FLAC；"
-            "影片：MP4、MOV、MKV、WebM、AVI、WMV、M4V、MPG、MPEG")
+            "影片：MP4、MOV、MKV、WebM、AVI、WMV、M4V、3GP、MPG、MPEG")
 
     def test_extensions_are_listed_once_lowercase_with_a_dot(self):
         extensions = [f.extension for f in UPLOAD_FORMATS]
@@ -102,10 +102,10 @@ class TestSize:
         assert rejection("photo.jpg", 0).startswith("不支援這種檔案格式")
 
 
-def test_listed_for_the_screen_in_order_with_the_limit():
-    assert listed() == {
+def test_limits_for_the_screen_in_order_with_the_limit():
+    assert limits() == {
         "formats": [{"extension": f.extension, "label": f.label, "kind": f.kind}
                     for f in UPLOAD_FORMATS],
         "max_bytes": MAX_UPLOAD_BYTES,
     }
-    assert [f["label"] for f in listed()["formats"]][:5] == ["MP3", "WAV", "M4A", "FLAC", "MP4"]
+    assert [f["label"] for f in limits()["formats"]][:5] == ["MP3", "WAV", "M4A", "FLAC", "MP4"]

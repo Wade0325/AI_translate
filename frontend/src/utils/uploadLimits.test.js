@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { acceptAttribute, formatLabels, maxSizeLabel, rejectionOf } from './uploadLimits.js';
+import { acceptAttribute, formatLabels, maxSizeLabel, rejectionOf, sizeLabel } from './uploadLimits.js';
 
 // 形狀照後端 GET /upload/limits（backend/app/core/upload_formats.py）
 const LIMITS = {
@@ -27,6 +27,14 @@ describe('上傳格式與大小（#258）', () => {
     expect(maxSizeLabel({ ...LIMITS, max_bytes: 1.5 * 1024 ** 3 })).toBe('1.5 GB');
   });
 
+  it('大小無條件進位到一位小數：剛超過上限的檔案不會寫成和上限一樣大', () => {
+    expect(sizeLabel(2 * 1024 ** 3)).toBe('2 GB');
+    expect(sizeLabel(2 * 1024 ** 3 + 1)).toBe('2.1 GB');
+    expect(sizeLabel(2.5 * 1024 ** 3)).toBe('2.5 GB');
+    expect(sizeLabel(1.5 * 1024 ** 2)).toBe('1.5 MB');
+    expect(sizeLabel(1)).toBe('0.1 MB');
+  });
+
   it('清單上的格式收，不分大小寫，也不看瀏覽器給的 MIME 類型', () => {
     expect(rejectionOf(file('meeting.mp3', 1024, 'audio/mpeg'), LIMITS)).toBeNull();
     expect(rejectionOf(file('IMG_0001.MP4', 1024, ''), LIMITS)).toBeNull();
@@ -46,6 +54,7 @@ describe('上傳格式與大小（#258）', () => {
     expect(rejectionOf(file('long.wav', 7200 * 48000 * 2 * 3 + 44), LIMITS)).toBeNull();
     expect(rejectionOf(file('long.wav', LIMITS.max_bytes), LIMITS)).toBeNull();
     expect(rejectionOf(file('long.wav', 2.5 * 1024 ** 3), LIMITS)).toBe('檔案太大：long.wav（2.5 GB，上限 2 GB）');
+    expect(rejectionOf(file('long.wav', LIMITS.max_bytes + 1), LIMITS)).toBe('檔案太大：long.wav（2.1 GB，上限 2 GB）');
     expect(rejectionOf(file('empty.mp3', 0), LIMITS)).toBe('檔案是空的：empty.mp3');
   });
 });

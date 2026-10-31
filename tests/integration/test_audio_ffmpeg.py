@@ -19,11 +19,12 @@ from app.utils.audio import (
     convert_to_wav,
     extract_audio,
     get_audio_duration,
+    has_video,
     slice_audio,
 )
 from app.utils.binaries import ffmpeg_bin, ffprobe_bin
 from tests.support.synthetic_audio import VOICED
-from tests.support.synthetic_video import CODECS, stream_types, synthetic_video
+from tests.support.synthetic_video import CODECS, audio_with_cover, stream_types, synthetic_video
 
 SAMPLE_RATE = 44100
 DURATION = 3.0
@@ -176,3 +177,26 @@ def test_unreadable_video_fails_and_leaves_nothing(tmp_path, content, app_log):
     assert extract_audio(video, audio) is AudioExtraction.FAILED
     assert not audio.exists()
     assert any("broken.mp4" in entry for entry in app_log)
+
+
+def test_video_renamed_as_audio_has_video(tmp_path):
+    video = synthetic_video(tmp_path / "clip.mp4")
+    renamed = video.rename(tmp_path / "clip.m4a")
+
+    assert has_video(renamed)
+
+
+@pytest.mark.parametrize("name", ["song.mp3", "song.m4a"])
+def test_album_cover_is_not_video(tmp_path, name):
+    audio = audio_with_cover(tmp_path / name)
+
+    assert stream_types(audio) == ["audio", "video"]
+    assert not has_video(audio)
+
+
+def test_plain_and_unreadable_audio_have_no_video(stereo_flac, tmp_path):
+    broken = tmp_path / "broken.m4a"
+    broken.write_bytes(b"\x00" * 512)
+
+    assert not has_video(stereo_flac)
+    assert not has_video(broken)

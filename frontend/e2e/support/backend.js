@@ -94,7 +94,7 @@ export const LOCAL_DATA = {
 export const UPLOAD_LIMITS = {
     formats: [
         ...['MP3', 'WAV', 'M4A', 'FLAC'].map((label) => ({ extension: `.${label.toLowerCase()}`, label, kind: 'audio' })),
-        ...['MP4', 'MOV', 'MKV', 'WebM', 'AVI', 'WMV', 'M4V', 'MPG', 'MPEG']
+        ...['MP4', 'MOV', 'MKV', 'WebM', 'AVI', 'WMV', 'M4V', '3GP', 'MPG', 'MPEG']
             .map((label) => ({ extension: `.${label.toLowerCase()}`, label, kind: 'video' })),
     ],
     max_bytes: 2 * 1024 ** 3,

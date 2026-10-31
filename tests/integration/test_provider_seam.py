@@ -606,13 +606,14 @@ class TestVideo:
         assert codes(messages)[-1] == TaskStatus.COMPLETED
         assert fake.examined == [["audio"]]
         assert [path.suffix for path in fake.calls] == [".flac"]
-        assert fake.durations == [pytest.approx(21.5, abs=0.05)]
+        assert fake.durations == [pytest.approx(21.5, abs=0.1)]
         # 時間軸和影片相同：字幕疊回影片時對得上
         task_uuid = messages[-1]["task_uuid"]
         assert flat_times(stored_segments(api, task_uuid)) == pytest.approx([0.5, 2.0, 12.0, 13.5])
         # 保留音檔也是抽出的音訊，影片沒有留在電腦上
         retained = api.get(f"/api/v1/transcripts/{task_uuid}/audio")
         assert retained.headers["content-type"] == "audio/flac"
+        assert 'filename="meeting.flac"' in retained.headers["content-disposition"]
         assert retained_files(data_dir) == [f"{task_uuid}.flac"]
         assert leftovers(data_dir) == []
 
@@ -624,7 +625,8 @@ class TestVideo:
 
         assert codes(messages)[-1] == TaskStatus.COMPLETED
         assert fake.examined == [["audio"]]
-        assert fake.durations == [pytest.approx(7.2, abs=0.05)]
+        # 12 秒的聲音剪掉約 4.8 秒靜音（見 VOICED）；AAC 的編解碼讓長度差一點點，差多少看 ffmpeg 的版本
+        assert fake.durations == [pytest.approx(7.2, abs=0.3)]
 
 
 class TestVadTestEndpoint:

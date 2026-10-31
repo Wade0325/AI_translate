@@ -12,8 +12,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.api import upload  # noqa: F401  app_log 只收得到已經建立的 logger
-from app.core.upload_formats import listed
-from tests.support.synthetic_video import stream_types, synthetic_video
+from app.core.upload_formats import limits
+from tests.support.synthetic_video import audio_with_cover, stream_types, synthetic_video
 
 
 def post(client: TestClient, tmp_path, name: str, content: bytes, content_type: str):
@@ -167,6 +167,30 @@ class TestVideo:
         assert response.status_code == 200, response.text
         assert response.json()["filename"].endswith(".flac")
 
+    def test_video_renamed_as_audio_is_extracted_too(self, client: TestClient, tmp_path, source):
+        # 改了副檔名的 MP4：副檔名是音檔，裡面還是影片，一樣只留抽出的音訊
+        video = synthetic_video(source / "clip.mp4")
+        uploads = tmp_path / "uploads"
+
+        response = post(client, uploads, "meeting.m4a", video.read_bytes(), "audio/x-m4a")
+
+        assert response.status_code == 200, response.text
+        saved = response.json()["filename"]
+        assert saved.endswith(".flac")
+        assert stream_types(uploads / saved) == ["audio"]
+
+    def test_audio_with_an_album_cover_is_kept_as_it_is(self, client: TestClient, tmp_path, source):
+        # 專輯封面是一張圖，不是影片：照原檔留著
+        audio = audio_with_cover(source / "song.mp3")
+        uploads = tmp_path / "uploads"
+
+        response = post(client, uploads, "song.mp3", audio.read_bytes(), "audio/mpeg")
+
+        assert response.status_code == 200, response.text
+        saved = response.json()["filename"]
+        assert saved.endswith(".mp3")
+        assert (uploads / saved).read_bytes() == audio.read_bytes()
+
     def test_video_without_sound_is_rejected_and_not_kept(self, client: TestClient, tmp_path, source):
         video = synthetic_video(source / "screen.mp4", with_audio=False)
         uploads = tmp_path / "uploads"
@@ -191,7 +215,7 @@ def test_limits_list_the_formats_and_the_maximum_size(client: TestClient):
     response = client.get("/api/v1/upload/limits")
 
     assert response.status_code == 200
-    assert response.json() == listed()
+    assert response.json() == limits()
 
 
 # ─── 上傳失敗 ────────────────────────────────────────────────────────────────
@@ -208,7 +232,7 @@ class TestUploadFailure:
         assert response.status_code == 400
         assert response.json()["detail"] == (
             "不支援這種檔案格式（.jpg）。可以上傳的音檔：MP3、WAV、M4A、FLAC；"
-            "影片：MP4、MOV、MKV、WebM、AVI、WMV、M4V、MPG、MPEG")
+            "影片：MP4、MOV、MKV、WebM、AVI、WMV、M4V、3GP、MPG、MPEG")
 
     def test_file_over_the_limit_returns_400_and_is_not_kept(
             self, client: TestClient, tmp_path, monkeypatch):

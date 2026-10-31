@@ -7,8 +7,8 @@ from fastapi import APIRouter, UploadFile, File, HTTPException
 from fastapi.concurrency import run_in_threadpool
 
 from app.core.config import get_settings
-from app.core.upload_formats import Rejected, check_upload, listed
-from app.utils.audio import EXTRACTED_AUDIO_SUFFIX, AudioExtraction, extract_audio
+from app.core.upload_formats import Rejected, check_upload, limits
+from app.utils.audio import EXTRACTED_AUDIO_SUFFIX, AudioExtraction, extract_audio, has_video
 from app.utils.logger import setup_logger
 from app.utils.paths import resolve_upload_path
 
@@ -43,7 +43,7 @@ def stored_name(filename: str) -> str:
 @router.get("/upload/limits", tags=["Upload"])
 def upload_limits():
     """轉錄頁收哪些格式、最大多大（app/core/upload_formats.py）；前端照這份清單檢查與說明。"""
-    return listed()
+    return limits()
 
 
 @router.post("/upload", tags=["Upload"])
@@ -54,8 +54,8 @@ async def upload_file(
     上傳檔案到臨時目錄，供後續處理使用。
 
     收不收照 :func:`app.core.upload_formats.check_upload`（只看副檔名與大小）；不收時回 400，``detail``
-    是給使用者看的原因。影片在這裡就抽出音訊，回傳的是抽出的音訊（FLAC）的檔名，影片本身刪掉：
-    之後的任務、保留音檔與供應商都只碰得到音訊（#258）。
+    是給使用者看的原因。影片（以及副檔名是音檔、裡面卻有影像的檔案）在這裡就抽出音訊，回傳的是
+    抽出的音訊（FLAC）的檔名，影片本身刪掉：之後的任務、保留音檔與供應商都只碰得到音訊（#258）。
     """
     if not file.filename:
         raise HTTPException(status_code=400, detail="檔案沒有檔名，請重新選擇檔案")
@@ -87,7 +87,8 @@ async def upload_file(
     finally:
         await file.close()
 
-    if checked.kind == "video":
+    # 副檔名是音檔、裡面卻有影像（例如改了副檔名的 MP4）也抽：不能讓影片原檔送到供應商
+    if checked.kind == "video" or await run_in_threadpool(has_video, temp_file_path):
         temp_file_path = await _audio_of(temp_file_path)
     return {"filename": temp_file_path.name}
 

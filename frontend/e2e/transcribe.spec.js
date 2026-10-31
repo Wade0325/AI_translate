@@ -212,16 +212,16 @@ test('上傳被拒絕時，檔案卡寫出伺服器說的原因（#24 門檻 4�
     await expect(notice.getByText(`錯誤碼 UPLOAD_FAILED · ${detail}`)).toBeVisible()
 })
 
-const SUPPORTED = '（音檔可以用 MP3、WAV、M4A、FLAC；影片可以用 MP4、MOV、MKV、WebM、AVI、WMV、M4V、MPG、MPEG）'
+const SUPPORTED = '（音檔可以用 MP3、WAV、M4A、FLAC；影片可以用 MP4、MOV、MKV、WebM、AVI、WMV、M4V、3GP、MPG、MPEG）'
 
 test('上傳區照伺服器的清單列出音檔與影片格式、上限，說明影片只轉錄聲音（#258）', async ({ page, mockBackend }) => {
     await mockBackend()
     await page.goto('/transcribe')
 
-    await expect(page.getByText('音檔 MP3、WAV、M4A、FLAC，影片 MP4、MOV、MKV、WebM、AVI、WMV、M4V、MPG、MPEG（上限 2 GB）')).toBeVisible()
+    await expect(page.getByText('音檔 MP3、WAV、M4A、FLAC，影片 MP4、MOV、MKV、WebM、AVI、WMV、M4V、3GP、MPG、MPEG（上限 2 GB）')).toBeVisible()
     await expect(page.getByText('影片會先在這台電腦抽出聲音，只轉錄聲音，畫面不會送出')).toBeVisible()
     await expect(page.locator('.ant-upload input[type=file]')).toHaveAttribute(
-        'accept', '.mp3,.wav,.m4a,.flac,.mp4,.mov,.mkv,.webm,.avi,.wmv,.m4v,.mpg,.mpeg')
+        'accept', '.mp3,.wav,.m4a,.flac,.mp4,.mov,.mkv,.webm,.avi,.wmv,.m4v,.3gp,.mpg,.mpeg')
 })
 
 test('影片可以直接加入並轉錄；瀏覽器沒給 MIME 類型也照副檔名收（#258）', async ({ page, mockBackend }) => {
@@ -275,12 +275,12 @@ test('超過伺服器的大小上限時，當場說明檔案太大（#258）', a
         name: 'long.wav', mimeType: 'audio/wav', buffer: Buffer.alloc(1.5 * 1024 ** 2),
     })
 
-    await expect(page.getByText('檔案太大：long.wav（1.5 MB，上限 1.0 MB）')).toBeVisible()
+    await expect(page.getByText('檔案太大：long.wav（1.5 MB，上限 1 MB）')).toBeVisible()
     await expect(page.getByText('long.wav', { exact: true })).toHaveCount(0)
 })
 
 test('讀不到格式清單時照樣可以加入檔案，交給伺服器上傳時檢查（#258）', async ({ page, mockBackend }) => {
-    const detail = '不支援這種檔案格式（.ogg）。可以上傳的音檔：MP3、WAV、M4A、FLAC；影片：MP4、MOV、MKV、WebM、AVI、WMV、M4V、MPG、MPEG'
+    const detail = '不支援這種檔案格式（.ogg）。可以上傳的音檔：MP3、WAV、M4A、FLAC；影片：MP4、MOV、MKV、WebM、AVI、WMV、M4V、3GP、MPG、MPEG'
     await mockBackend({
         routes: { 'GET /upload/limits': reply(500, { detail: 'Internal Server Error' }), 'POST /upload': reply(400, { detail }) },
     })

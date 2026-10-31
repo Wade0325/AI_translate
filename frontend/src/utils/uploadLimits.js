@@ -1,5 +1,3 @@
-import { formatFileSize } from './formatters';
-
 /**
  * 上傳格式與大小（後端 GET /upload/limits，清單只寫在 backend/app/core/upload_formats.py，#258）：
  * 檔案選擇器收哪些副檔名、上傳區的說明文字，以及加入檔案時當場擋下伺服器不會收的檔案。
@@ -20,10 +18,20 @@ export function formatLabels(limits, kind) {
   return limits.formats.filter((f) => f.kind === kind).map((f) => f.label).join('、');
 }
 
-/** 上限寫成 GB：整數不帶小數（2 GB），其他取一位小數。 */
+/**
+ * 位元組 → 「2 GB」「2.1 GB」「1.5 MB」：1 GB 以上寫 GB、以下寫 MB（以 1024 進位），無條件進位到一位
+ * 小數，整數不帶小數。和伺服器的訊息同一種寫法；剛超過上限的檔案不會寫成和上限一樣大。
+ */
+export function sizeLabel(bytes) {
+  const unit = bytes >= 1024 ** 3 ? 1024 ** 3 : 1024 ** 2;
+  const tenths = Math.ceil((bytes * 10) / unit);
+  const size = tenths % 10 === 0 ? String(tenths / 10) : (tenths / 10).toFixed(1);
+  return `${size} ${unit === 1024 ** 3 ? 'GB' : 'MB'}`;
+}
+
+/** 大小上限，寫法見 {@link sizeLabel}，例如「2 GB」。 */
 export function maxSizeLabel(limits) {
-  const gigabytes = limits.max_bytes / 1024 ** 3;
-  return Number.isInteger(gigabytes) ? `${gigabytes} GB` : formatFileSize(limits.max_bytes);
+  return sizeLabel(limits.max_bytes);
 }
 
 /** 檔案選擇器的 accept：列出的副檔名，例如「.mp3,.wav,.mp4」。 */
@@ -43,7 +51,7 @@ export function rejectionOf(file, limits) {
   }
   if (file.size <= 0) return `檔案是空的：${file.name}`;
   if (file.size > limits.max_bytes) {
-    return `檔案太大：${file.name}（${formatFileSize(file.size)}，上限 ${maxSizeLabel(limits)}）`;
+    return `檔案太大：${file.name}（${sizeLabel(file.size)}，上限 ${maxSizeLabel(limits)}）`;
   }
   return null;
 }

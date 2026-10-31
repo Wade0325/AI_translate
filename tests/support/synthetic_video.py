@@ -22,6 +22,7 @@ CODECS: Dict[str, Tuple[str, ...]] = {
     ".webm": ("-c:v", "libvpx", "-c:a", "libopus"),
     ".avi": ("-c:v", "mpeg4", "-c:a", "pcm_s16le"),
     ".wmv": ("-c:v", "wmv2", "-c:a", "wmav2"),
+    ".3gp": ("-c:v", "mpeg4", "-c:a", "aac"),
     # MPEG-1 的系統串流：MP2 要 32 kHz 以上
     ".mpg": ("-c:v", "mpeg1video", "-c:a", "mp2", "-ar", "44100"),
     ".mpeg": ("-c:v", "mpeg1video", "-c:a", "mp2", "-ar", "44100"),
@@ -65,3 +66,24 @@ def stream_types(path: Path) -> List[str]:
         [ffprobe_bin(), "-v", "error", "-show_entries", "stream=codec_type", "-of", "json", str(path)],
         check=True, capture_output=True, text=True, timeout=30)
     return [stream["codec_type"] for stream in json.loads(result.stdout)["streams"]]
+
+
+def audio_with_cover(path: Path, voiced: Sequence[Tuple[float, float]] = VOICED) -> Path:
+    """寫一個附專輯封面（一張圖，ffprobe 標成 attached_pic）的合成音檔到 ``path``（.mp3 或 .m4a），
+    回傳 ``path``。"""
+    audio = path.with_name(f"{path.stem}_source.wav")
+    audio.write_bytes(synthetic_audio("WAV", voiced))
+    cover = path.with_name(f"{path.stem}_cover.png")
+    subprocess.run(
+        [ffmpeg_bin(), "-hide_banner", "-loglevel", "error", "-y",
+         "-f", "lavfi", "-i", "color=c=red:s=64x64", "-frames:v", "1", str(cover)],
+        check=True, capture_output=True, timeout=60)
+    codec = "libmp3lame" if path.suffix.lower() == ".mp3" else "aac"
+    subprocess.run(
+        [ffmpeg_bin(), "-hide_banner", "-loglevel", "error", "-y", "-i", str(audio), "-i", str(cover),
+         "-map", "0:a", "-map", "1:v", "-c:a", codec, "-c:v", "mjpeg",
+         "-disposition:v:0", "attached_pic", str(path)],
+        check=True, capture_output=True, timeout=60)
+    audio.unlink()
+    cover.unlink()
+    return path
