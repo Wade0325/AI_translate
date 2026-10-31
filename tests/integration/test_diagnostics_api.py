@@ -49,8 +49,9 @@ def machine(monkeypatch):
     monkeypatch.setattr(weights, "detect_gpu", lambda: state["gpu"])
     monkeypatch.setattr(weights, "repo_is_ready", lambda repo: repo in state["ready"])
     monkeypatch.setattr(diagnostics, "ffmpeg_bin", lambda: "ffmpeg")
-    monkeypatch.setattr(diagnostics, "_run",
-                        lambda command, *args: state["commands"].get(Path(command).stem))
+    for module in (diagnostics, weights):  # weights 問 nvidia-smi，diagnostics 問 ffmpeg
+        monkeypatch.setattr(module, "command_output",
+                            lambda command, *args: state["commands"].get(Path(command).stem))
     return state
 
 
@@ -101,25 +102,32 @@ class TestStandalone:
         assert free_space[0].endswith(" GB")
 
     def test_driver_without_a_usable_gpu(self, client, machine, standalone):
-        # 驅動太舊時 nvidia-smi 找得到卡，PyTorch 卻用不了：兩行一起看才分得出來
-        machine["gpu"] = None
+        # PyTorch 用不了顯卡時 nvidia-smi 可能照樣找得到卡：原因和轉錄頁同一句，附上原始錯誤
+        machine["gpu"] = weights.GpuUnavailable(
+            "driver_too_old", "NVIDIA 顯卡驅動太舊（目前 472.12，需要 572.61 以上）",
+            "更新驅動後重新開啟 Mimiji，或改用 Gemini",
+            "RuntimeError: The NVIDIA driver on your system is too old (found version 11040).")
         machine["ready"] = set()
 
         lines = report(client).splitlines()
 
         assert "- NVIDIA 驅動：576.02" in lines
-        assert "- 顯卡：PyTorch 看不到可用的 NVIDIA 顯卡" in lines
+        assert "- 顯卡：NVIDIA 顯卡驅動太舊（目前 472.12，需要 572.61 以上）" in lines
+        assert ("- PyTorch 的錯誤：RuntimeError: The NVIDIA driver on your system is too old "
+                "(found version 11040).") in lines
+        assert not any(line.startswith("- 顯卡記憶體") for line in lines)
         assert (f"- 模型權重 moss-align（預設）：缺少 {weights.MOSS_MODEL_ID}、"
                 f"{weights.ALIGNER_MODEL_ID}") in lines
 
     def test_no_nvidia_driver_and_no_ffmpeg(self, client, machine, standalone):
-        machine["gpu"] = None
+        machine["gpu"] = weights.NO_GPU
         machine["commands"] = {}
 
         lines = report(client).splitlines()
 
         assert "- NVIDIA 驅動：找不到 nvidia-smi" in lines
-        assert "- 顯卡：PyTorch 看不到可用的 NVIDIA 顯卡" in lines
+        assert "- 顯卡：這台電腦沒有可用的 NVIDIA 顯卡" in lines
+        assert not any(line.startswith("- PyTorch 的錯誤") for line in lines)
         assert "- ffmpeg：找不到" in lines
 
     def test_unsupported_gpu(self, client, machine, standalone):

@@ -9,6 +9,7 @@ import { LocalDataCard } from "../components/LocalDataCard"
 import { UploadNotice } from "../components/UploadNotice"
 import { PROVIDER_LIST_FAILED, useProviderList } from "../hooks/useProviderList"
 import { providerOptions, providerPromptDisabledReason, requiresApiKey, uploadNotice } from "../utils/providerList"
+import { downloadProgress } from "../utils/weightsDownload"
 import { api } from "../services/api"
 
 const { Text } = Typography
@@ -290,35 +291,31 @@ function LocalModelsCard() {
                     )}
 
                     {status.models.map(m => (
-                        <div key={m.repo_id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                            <Text style={{ color: '#8888a8', fontSize: 12, fontFamily: 'monospace' }}>
-                                {m.repo_id}{m.required ? '' : '（選用）'}
+                        <div key={m.repo_id}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                <Text style={{ color: '#8888a8', fontSize: 12, fontFamily: 'monospace' }}>
+                                    {m.repo_id}{m.required ? '' : '（選用）'}
+                                </Text>
+                                {m.downloaded
+                                    ? <CheckCircle2 size={14} color="#2dd4a8" />
+                                    : <Text style={{ color: m.required ? '#d4a72d' : '#8888a8', fontSize: 12 }}>未下載</Text>}
+                            </div>
+                            {/* 授權照模型卡 license 欄位的原文，連到釘住版本的模型卡 */}
+                            <Text style={{ color: '#8888a8', fontSize: 12, display: 'block' }}>
+                                授權：<span style={{ fontFamily: 'monospace' }}>{m.license}</span>
+                                （<a href={m.model_card_url} target="_blank" rel="noopener noreferrer">Hugging Face 模型卡</a>）
                             </Text>
-                            {m.downloaded
-                                ? <CheckCircle2 size={14} color="#2dd4a8" />
-                                : <Text style={{ color: m.required ? '#d4a72d' : '#8888a8', fontSize: 12 }}>未下載</Text>}
                         </div>
                     ))}
 
-                    {downloading && (
-                        <div>
-                            <Text style={{ color: '#e8e8e8', fontSize: 12, display: 'block', marginBottom: 4 }}>
-                                下載中 ({dl.repo_index}/{dl.repo_count}): {dl.current_repo}
-                            </Text>
-                            <Progress
-                                percent={dl.progress_pct ?? 0}
-                                status="active"
-                                strokeColor="#2dd4a8"
-                            />
-                        </div>
-                    )}
+                    {downloading && <WeightsDownloadProgress download={dl} />}
 
                     {dl.state === 'failed' && (
                         <Alert
                             type="error"
                             showIcon
                             message="下載中斷"
-                            description={`${dl.error || '未知錯誤'} — 已下載部分會保留，重新下載即續傳。`}
+                            description={`${dl.error || '未知錯誤'}。已下載完成的檔案會保留，重新下載只補沒下載完的檔案。`}
                         />
                     )}
                     {startError && (
@@ -350,10 +347,27 @@ function LocalModelsCard() {
                     <Text style={{ color: '#8888a8', fontSize: 12 }}>
                         權重存放於 {status.hf_home}；首次使用 Local provider 前需完成下載。
                         預設的 MOSS 只需非選用的兩項；選用權重供「MOSS + Qwen3-ASR」與舊版「VibeVoice + Qwen3-ASR」使用。
+                        模型權重從 Hugging Face 下載，不隨本程式散布，使用時依各自模型卡上的授權。
                     </Text>
                 </div>
             </Card>
         </Col>
+    )
+}
+
+/** 權重下載中：正在下載哪一份，以及這次要下載的權重合計已經下載了多少位元組。 */
+function WeightsDownloadProgress({ download }) {
+    const { percent, text } = downloadProgress(download)
+    return (
+        <div>
+            <Text style={{ color: '#e8e8e8', fontSize: 12, display: 'block', marginBottom: 4 }}>
+                {download.current_repo
+                    ? `下載中 (${download.repo_index}/${download.repo_count}): ${download.current_repo}`
+                    : '準備下載…'}
+            </Text>
+            <Progress percent={percent} status="active" strokeColor="#2dd4a8" />
+            <Text style={{ color: '#8888a8', fontSize: 12, display: 'block' }}>{text}</Text>
+        </div>
     )
 }
 
