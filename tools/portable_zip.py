@@ -15,6 +15,8 @@
   3. 沒有執行期資料：使用者的音檔、資料庫、環境變數檔（可能有 API 金鑰）、日誌檔，以及開發環境
      的殘留（runtime_data()）。檢查的是 zip 本身，和 build_release.ps1 怎麼挑檔案無關：排除清單
      漏了一項，或改成別的取檔方式（#266）時，一樣抓得到。
+  4. 批次檔（start.bat，#267）cmd 讀得對：開頭沒有 BOM（cmd 會把它當成第一行指令的一部分），
+     換行一律是 CRLF（batch_file_problems()）。
 
 只用標準函式庫：CI 的 runner 不必安裝依賴。
 """
@@ -87,6 +89,16 @@ def runtime_data(path: str) -> str | None:
     return None
 
 
+def batch_file_problems(data: bytes) -> list[str]:
+    """批次檔的內容 cmd 會讀錯的地方；沒有問題時是空的。"""
+    problems = []
+    if data.startswith(b"\xef\xbb\xbf"):
+        problems.append("開頭有 BOM，cmd 會把它當成第一行指令的一部分")
+    if data.replace(b"\r\n", b"").count(b"\n"):
+        problems.append("換行不是 CRLF，cmd 可能讀錯行")
+    return problems
+
+
 def required_files(script: str) -> list[str]:
     """build_release.ps1 第 7 步的必要檔案清單（``$required = @(...)``），路徑改用 /。"""
     match = re.search(r"^\$required = @\((.*?)\)", script, re.M | re.S)
@@ -102,6 +114,8 @@ def check(zip_path: Path, required: Sequence[str]) -> list[str]:
     """檢查免安裝版的 zip；回傳每一個問題的說明，沒有問題時是空的。"""
     with zipfile.ZipFile(zip_path) as archive:
         infos = archive.infolist()
+        batch_files = {info.filename.replace("\\", "/"): archive.read(info) for info in infos
+                       if info.filename.lower().endswith(".bat")}
     # Windows PowerShell 5.1 的 Compress-Archive 用 \ 當分隔符號（zip 規格是 /），兩種都認
     entries = {}
     for info in infos:
@@ -134,6 +148,8 @@ def check(zip_path: Path, required: Sequence[str]) -> list[str]:
     problems += leaked[:MAX_LISTED]
     if len(leaked) > MAX_LISTED:
         problems.append(f"不該打包的還有 {len(leaked) - MAX_LISTED} 個，沒有列出")
+    for name, data in sorted(batch_files.items()):
+        problems += [f"批次檔 {name} {problem}" for problem in batch_file_problems(data)]
     return problems
 
 

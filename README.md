@@ -57,7 +57,7 @@
 | 作業系統 | Windows（64 位元） |
 | 顯卡（本機轉錄） | NVIDIA 顯卡，顯卡記憶體 12 GB 以上，建議 16 GB。8–12 GB 沒有測過；低於 8 GB 可能很慢，長音檔的說話者編號也比較容易對不上，畫面會提示，但照樣能用。GTX 900 系列（Maxwell）以前的顯卡不支援；GTX 10 系列（Pascal）沒有測過 |
 | 顯卡（Gemini） | 不需要，但要自備 Gemini API 金鑰 |
-| 磁碟空間 | 首次啟動下載的執行環境約 3.5 GB；本機的預設模型權重約 3.7 GB，選用模型另需約 21 GB |
+| 磁碟空間 | 首次啟動下載約 3.5 GB 的執行環境，裝好後在解壓資料夾裡約佔 8 GB；下載的檔案另外解開存在 `%LOCALAPPDATA%\uv\cache`（通常在 C 槽）約 8 GB，和解壓資料夾不在同一個磁碟時另外佔空間，佈建完成後可以刪掉。本機的預設模型權重約 3.7 GB，選用模型另需約 21 GB |
 | 網路 | 首次啟動與下載模型權重時需要；用 Gemini 轉錄時也需要 |
 
 ---
@@ -192,7 +192,7 @@ Issue 是公開的，任何人都看得到：
 - **長音檔的說話者編號**：本機一次能處理的長度約 70 分鐘，顯卡記憶體較小時更短；更長的音檔分段轉錄，每一段各自分離說話者，段與段之間的說話者編號可能對不上（例如前一段的 `[S0]` 到下一段變成 `[S1]`）。
 - **介面語言**：介面中英夾雜，例如左側選單、頁面標題與部分按鈕是英文。
 - **API 金鑰沒有加密**：Gemini 的 API 金鑰照原樣存在 `data\app.db`，不要把 `data\` 資料夾或 `app.db` 交給別人。
-- **執行檔沒有數位簽章**：第一次執行 `AI_Translate.exe` 時，Windows 可能跳出 SmartScreen 的警告。
+- **執行檔沒有數位簽章**：第一次執行 `AI_Translate.exe` 時，Windows 可能跳出 SmartScreen 的警告。防毒軟體攔下 `AI_Translate.exe` 時，可以改雙擊同一個資料夾裡的 `start.bat`：做的事一樣，只是不會自動開啟瀏覽器，用法見資料夾裡的 `README.txt`。
 
 ---
 
@@ -218,6 +218,8 @@ cd backend
 ```
 
 要看前端的畫面，先在 `frontend/` 執行 `npm run build`。帶環境變數 `AIT_DATA_DIR=<資料夾>` 可以把資料寫到別的資料夾，不動到既有的紀錄。
+
+模型權重放在 `HF_HOME`；沒設時，免安裝模式用資料目錄（`AIT_DATA_DIR`，沒設時是 repo 的 `data\`）底下的 `models\hf_cache`，和免安裝版相同。要沿用 `local_worker.bat` 那份權重，設 `$env:HF_HOME='D:\AI_translate\models\hf_cache'`。
 
 免安裝模式比 Docker 模式多三項限制（#16）：
 
@@ -408,6 +410,7 @@ git config core.hooksPath .githooks
 
 產出 `build\AI_Translate-v1.2.3-win64.zip`（約 150 MB —— Python 依賴不進 zip，
 由使用者首次啟動時以隨包 `uv` 依 `backend/requirements-standalone.txt` 自動下載）。
+發布包裡給使用者看的 `README.txt` 與手動啟動用的 `start.bat` 放在 `tools/portable/`，建置時複製進去（`README.txt` 的 `{VERSION}` 換成版本號）。
 推 `v*` tag 時 GitHub Actions（`.github/workflows/release.yml`）會先跑一次完整的 CI，通過後自動建置並發布 Release。
 CI 的 `portable` job 在每個 PR 上也用 Windows 建置一次（不上傳、不發布），並用 `tools/portable_zip.py` 檢查 zip：第 7 步清單裡的檔案都在，而且沒有使用者的音檔、資料庫、`.env` 等執行期資料。
 

@@ -141,43 +141,20 @@ $launcherSrc = Join-Path $Root "tools\launcher.cs"
 & $csc /nologo /optimize "/out:$launcherExe" $launcherSrc
 if ($LASTEXITCODE -ne 0) { throw "launcher 編譯失敗" }
 
-# ── 6. README.txt ─────────────────────────────────────────────────────────
-Set-Content -Path (Join-Path $StageDir "README.txt") -Encoding utf8 -Value @"
-AI_Translate $Version — Windows 免安裝版
-==========================================
-
-使用方式
---------
-1. 將整個資料夾解壓到任意位置（建議路徑不含中文與空白）
-2. 雙擊 AI_Translate.exe
-3. 首次啟動會自動下載執行環境（約 3.5 GB，含 PyTorch），
-   視網速需要數分鐘到數十分鐘；中斷後重開即續傳
-4. 就緒後會自動開啟瀏覽器；關閉黑色視窗即停止程式
-
-功能需求
---------
-- Gemini 雲端轉錄：於 Settings 頁填入 Google Gemini API Key 即可使用
-- Local 本機轉錄：需 NVIDIA GPU（16GB VRAM 可一次處理約 70 分鐘，顯存較小時自動切段）；
-  首次使用前於 Settings 頁下載模型權重（預設模型約 3.7 GB；選用模型另需約 21 GB）
-
-資料位置
---------
-所有資料（資料庫、上傳暫存、模型權重）都在本資料夾的 data\ 之下；
-升級新版時把舊版 data\ 複製過來即可保留紀錄。
-
-更新
-----
-程式不會自己檢查或下載更新。目前的版本號在 Settings 頁的 About；
-新版本請到 https://github.com/Wade0325/AI_translate/releases 下載。
-
-疑難排解
---------
-- 若防毒軟體攔截 AI_Translate.exe，可改用手動啟動：
-    設定環境變數 APP_MODE=standalone 後執行
-    runtime\python.exe -m uvicorn main:app --host 127.0.0.1 --port 8000
-    （工作目錄切到 backend\）
-- 連接埠 8000 被占用時會自動改用其他埠，以視窗顯示的網址為準
-"@
+# ── 6. README.txt 與 start.bat ────────────────────────────────────────────
+# 內容在 tools\portable\（#267）。不論 checkout 的換行是什麼，一律寫成 CRLF：記事本與 cmd 都認得。
+# README.txt 寫成帶 BOM 的 UTF-8，舊版記事本才不會當成系統碼頁；start.bat 不能帶 BOM，
+# cmd 會把 BOM 當成第一行指令的一部分。不用 Set-Content：PowerShell 5.1 與 7 的 utf8 一個帶 BOM、一個不帶
+Step "寫入 README.txt 與 start.bat"
+function Write-PortableText($name, $text, [bool]$bom) {
+    $text = $text -replace "`r?`n", "`r`n"
+    [IO.File]::WriteAllText((Join-Path $StageDir $name), $text, (New-Object Text.UTF8Encoding $bom))
+}
+$portableDir = Join-Path $Root "tools\portable"
+$readme = [IO.File]::ReadAllText((Join-Path $portableDir "README.txt"), [Text.Encoding]::UTF8)
+if (-not $readme.Contains("{VERSION}")) { throw "tools\portable\README.txt 沒有 {VERSION}" }
+Write-PortableText "README.txt" ($readme.Replace("{VERSION}", $Version)) $true
+Write-PortableText "start.bat" ([IO.File]::ReadAllText((Join-Path $portableDir "start.bat"), [Text.Encoding]::UTF8)) $false
 
 # ── 7. 結構檢查 ───────────────────────────────────────────────────────────
 # CI 也拿這份清單檢查 zip（tools/portable_zip.py 直接讀這裡）：保持一行一個雙引號字串的寫法
@@ -185,6 +162,7 @@ Step "檢查發布包結構"
 $required = @(
     "AI_Translate.exe",
     "README.txt",
+    "start.bat",
     "runtime\python.exe",
     "runtime\python311._pth",
     "bin\uv.exe",
