@@ -256,9 +256,11 @@ def _parser() -> argparse.ArgumentParser:
     from .summary import cmd_summary
     from .transcribe import cmd_transcribe
 
-    p = sub.add_parser("summary", help="把 eval --json 的結果與兩邊的 manifest 整理成 PR 的評測摘要（只有數字）")
-    p.add_argument("eval_json", metavar="eval 的 JSON",
-                   help="eval --json 寫的檔案；manifest 從轉錄結果旁邊找（<音檔名稱>.manifest.json）")
+    p = sub.add_parser("summary", help="把 eval --json 的結果與兩邊的 manifest 整理成 PR 的評測摘要，"
+                                       "並判定回歸（只有數字）")
+    p.add_argument("eval_json", nargs="+", metavar="eval 的 JSON",
+                   help="eval --json 寫的檔案，評測集的每個音檔一份，同一種語言的合起來判定；"
+                        "manifest 從轉錄結果旁邊找（<音檔名稱>.manifest.json）")
     p.set_defaults(fn=cmd_summary)
 
     p = sub.add_parser("transcribe", help="跑正式的轉錄路徑，輸出轉錄結果（LRC）與 manifest（會用顯卡）")
