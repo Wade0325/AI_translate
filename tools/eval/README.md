@@ -123,19 +123,26 @@ backend\.venv\Scripts\python.exe -m tools.eval eval --reference rec17_A.draft --
 PR 範本（`.github/pull_request_template.md`）的「評測摘要」用這個指令產生：
 
 ```powershell
-# main 與 PR 的轉錄結果做成對比較，寫成 JSON
+# 評測集的每個音檔各做一次：main 與 PR 的轉錄結果做成對比較，寫成 JSON
 backend\.venv\Scripts\python.exe -m tools.eval eval --reference <名稱> `
     --transcript <研究區>\runs\<main>\<音檔名稱>.lrc --vs <研究區>\runs\<PR>\<音檔名稱>.lrc `
-    --json <研究區>\runs\<名稱>.json
+    --json <研究區>\runs\<PR>\<音檔名稱>.json
 
-# 整理成 Markdown，整段貼進 PR
-backend\.venv\Scripts\python.exe -m tools.eval summary <研究區>\runs\<名稱>.json
+# 所有音檔的 JSON 一次給，整理成 Markdown，整段貼進 PR
+backend\.venv\Scripts\python.exe -m tools.eval summary <研究區>\runs\<PR>\<音檔一>.json `
+    <研究區>\runs\<PR>\<音檔二>.json
 ```
 
 - 讀 `eval --json` 的檔案，以及每份轉錄結果旁邊的 manifest（`transcribe` 寫的 `<音檔名稱>.manifest.json`）。轉錄結果的路徑是相對路徑時，先照目前的資料夾找，再照 JSON 所在的資料夾找。
-- 印出：commit、模型與語言、錯字率與 cpMER（全域對應）、RTF 與峰值顯存、結尾核對，兩份轉錄結果時再加上 ΔMER 與 95% CI；另外列出音檔的 SHA-256、標準答案的名稱與草稿標記、用的指令，以及判定。
+- 每個音檔印一張表：commit、模型與語言、錯字率與 cpMER（全域對應）、RTF 與峰值顯存、結尾核對，兩份轉錄結果時再加上 ΔMER 與 95% CI；另外列出音檔的 SHA-256、標準答案的名稱與草稿標記、用的指令。最後是回歸判定。
 - **結尾核對**：LRC 最後一行開始的時間和音檔長度比，看結尾有沒有掉尾。只讀時間戳。
-- **判定**：判定規則見 `docs/adr/0009`，還沒做進這個指令，一律寫「待回歸判定」。
+- 所有音檔的 JSON 要一次給，判定才涵蓋整個語言；分開執行時，每次只判定給了的那幾個音檔。PowerShell 不會替 `python` 展開 `*.json`，要一個一個列出來。
+- **回歸判定**：照 `docs/adr/0009`，以語言為單位。
+  - 同一種語言的片段合起來算（錯誤數總和 ÷ token 總和），錯字率或 cpMER 比基準高就印「回歸」，否則印「通過」。兩邊對的是同一組標準答案、分母相同，所以實際比的是錯誤數，多一個錯就是回歸。表裡列出每種語言用了哪幾段標準答案。
+  - 語言看 manifest 的 `request.language`，只看主要的語言代碼：`zh-TW` 與 `zh-CN` 都是中文。
+  - 這幾種 JSON 不算進判定，摘要會列出來與原因：只有一份轉錄結果（沒有 `--vs`）、標準答案還有草稿標記、兩邊轉錄的音檔不同（SHA-256 不一樣）、找不到 manifest 或兩邊的語言不同。一份都沒得算時，印「無法判定：沒有已確認的標準答案可以和基準比」。
+  - cpMER 在 JSON 裡只有比率、取到小數第四位，判定時乘回 token 數還原錯誤數：一段少於 10000 個 token 時是確切的；更長的段只還原得出一個範圍，範圍重疊、分不出 PR 有沒有比基準多錯時，印「無法判定」，代理不合併。
+  - 95% CI、RTF、峰值顯存與結尾核對只列出，不參與判定。
 - 只輸出數字、雜湊與檔名，不輸出錯誤範例或任何轉錄文字，可以直接貼進 PR。找不到 manifest 的欄位寫「—」，摘要最後會列出找不到的是哪一份。
 - `eval --json` 為此多寫了兩項：每份轉錄結果的 `cp_mer_global`（全域對應的 cpMER）與 `global_mapping`，以及兩份轉錄結果時的 `paired`（`delta_mer`、`ci`、`significant`）。
 

@@ -2,6 +2,7 @@
 整合測試：WebSocket 握手檢查 Origin
 測試範圍：
   WS /api/v1/ws/{file_uid}
+  WS /api/v1/ws/{file_uid}/tasks/{task_uuid}（連線中斷之後接回任務）
   WS /api/v1/batch/ws/{batch_id}
 
 漏洞重現：瀏覽器的 WebSocket 不受同源政策與 CORS 保護，任何網站的頁面都能
@@ -17,6 +18,7 @@ from app.core.config import get_settings
 
 WS_PATHS = [
     "/api/v1/ws/uid-origin-test",
+    "/api/v1/ws/uid-origin-test/tasks/task-origin-test",
     "/api/v1/batch/ws/batch-origin-test",
 ]
 

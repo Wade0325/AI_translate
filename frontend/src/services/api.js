@@ -197,5 +197,7 @@ export const api = {
 
 export const WS_URLS = {
   transcription: (id) => `${DEFAULT_WS_BASE}/${id}`,
+  /** 連線中斷之後接回這個檔案已經送出的單檔任務（#280）：連上就先收到任務現在的狀態 */
+  reattach: (id, taskUuid) => `${DEFAULT_WS_BASE}/${id}/tasks/${taskUuid}`,
   batch: (id) => `${DEFAULT_WS_BATCH_BASE}/${id}`,
 };
