@@ -103,6 +103,32 @@ test('Multi-Speaker 只有開關：沒有人數滑桿，也沒有 Timestamps 開
     await expect(page.getByText(/^(No )?timestamps$/i)).toHaveCount(0)
 })
 
+test('Multi-Speaker 預設關、記住上次：重新開頁還是上次的開關，送出的檔案照它（#13 Q1）', async ({ page, mockBackend }) => {
+    const backend = await mockBackend({ routes: { 'POST /upload': { filename: 'meeting_1.wav' } } })
+    await page.goto('/transcribe')
+    const multiSpeaker = page.getByRole('switch', { name: 'Multi-Speaker', exact: true })
+
+    // 第一次開頁是關；沒動過就不寫進儲存空間
+    await expect(multiSpeaker).not.toBeChecked()
+    expect(await page.evaluate(() => localStorage.getItem('ai_translate_last_multi_speaker'))).toBeNull()
+
+    await multiSpeaker.click()
+    await page.reload()
+
+    await expect(multiSpeaker).toBeChecked()
+    await addAudio(page)
+    await expect(page.getByText('Multi-speaker', { exact: true })).toBeVisible()
+    await page.getByRole('button', { name: 'Start' }).click()
+    await expect(page.getByText('轉錄完成')).toBeVisible()
+    expect(backend.transcriptionRequests).toEqual([expect.objectContaining({ multi_speaker: true })])
+
+    // 關掉也記住
+    await multiSpeaker.click()
+    await page.reload()
+    await expect(multiSpeaker).not.toBeChecked()
+    expect(await page.evaluate(() => localStorage.getItem('ai_translate_last_multi_speaker'))).toBe('false')
+})
+
 test('選本機送出一個檔案，顯示處理中，完成後到結果頁下載 SRT', async ({ page, mockBackend }) => {
     // 假後端送出處理中之後先停住，等畫面上看到處理中才送完成
     let finish

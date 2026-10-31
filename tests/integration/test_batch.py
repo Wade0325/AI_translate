@@ -235,6 +235,45 @@ def test_a_chinese_file_is_stored_in_traditional_like_a_single_file_task(
     assert [s["text"] for s in stored_segments(api, ja["task_uuid"])] == ["我们开会。"]
 
 
+MULTI_SPEAKER_NAMES = ["labelled.wav", "unlabelled.wav"]
+MULTI_SPEAKER_REQUEST = {"multi_speaker": True,
+                         "fields_per_file": {"unlabelled.wav": {"multi_speaker": False}}}
+"""批次層級開著 Multi-Speaker，第二個檔案在每檔設定裡關掉。"""
+
+
+def test_each_file_follows_its_own_multi_speaker_switch(api, in_process_run_mode, batch_fake):
+    # 個別檔案的設定優先，沒設定的用批次的（#13 Q1）：完成時廣播的與下載的輸出格式照各自的開關
+    # 帶或不帶說話者標記；關掉的檔案，片段照樣存說話者編號
+    batch_fake.script = [[(0.2, 1.5, 1, "一つ目。")], [(0.2, 1.5, 1, "二つ目。")]]
+
+    messages = run_batch(api, in_process_run_mode, "batch-multi-speaker", MULTI_SPEAKER_NAMES,
+                         **MULTI_SPEAKER_REQUEST)
+
+    labelled, unlabelled = ends(messages, MULTI_SPEAKER_NAMES)
+    assert download(api, labelled["task_uuid"], "txt") == "[S1] 一つ目。"
+    assert download(api, unlabelled["task_uuid"], "txt") == "二つ目。"
+    for end in (labelled, unlabelled):
+        for fmt in ("srt", "vtt", "lrc", "txt"):
+            assert end["result"]["transcripts"][fmt] == download(api, end["task_uuid"], fmt)
+    assert [s["speaker"] for s in stored_segments(api, unlabelled["task_uuid"])] == ["S1"]
+
+
+def test_files_finished_from_recovery_keep_their_multi_speaker_switch(
+        api, in_process_run_mode, batch_fake):
+    # 輪詢時應用程式重啟，之後從復原入口接回每個檔案的任務：開關從任務紀錄讀回來，不會變成預設
+    batch_fake.script = [[(0.2, 1.5, 1, "一つ目。")], [(0.2, 1.5, 1, "二つ目。")]]
+    batch_fake.batch_polls = [Restart()]
+    submit_batch(api, in_process_run_mode, "batch-multi-speaker-restarted", MULTI_SPEAKER_NAMES,
+                 **MULTI_SPEAKER_REQUEST)
+
+    recovered = ends(recover(api, "batch-multi-speaker-restarted"), MULTI_SPEAKER_NAMES)
+    in_process_run_mode.close(wait=True)  # 等復原整個跑完再查 API
+
+    assert [end["result"]["transcripts"]["txt"] for end in recovered] == ["[S1] 一つ目。", "二つ目。"]
+    assert [download(api, end["task_uuid"], "txt") for end in recovered] == [
+        "[S1] 一つ目。", "二つ目。"]
+
+
 def test_a_failed_file_does_not_stop_the_others(api, in_process_run_mode, batch_fake):
     batch_fake.script = [[(0.2, 1.5, 0, "一つ目。")], Fail("音檔無法解碼"), [(0.2, 1.5, 0, "三つ目。")]]
 
