@@ -23,6 +23,7 @@ import soundfile as sf
 from gevent import GreenletExit
 from starlette.websockets import WebSocketDisconnect
 
+from app.api.transcription import QUEUED_TEXT, SUBMISSION_FAILED_TEXT
 from app.core.default_prompt import build_prompt
 from app.core.task_status import TaskStatus
 from app.exceptions import TransientError
@@ -132,6 +133,25 @@ class DispatchHeld:
         self.reached.set()
         self.release.wait(TIMEOUT)
         self._inner.submit_transcription(task_id, task_params_dict, queue)
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
+class DispatchFails:
+    """交給執行模式時出錯（例如應用程式正在關閉、Docker 模式的 Redis 斷線），其餘照轉；
+    用 ``run_mode.use`` 換上。例外的文字帶著不該讓使用者看到的連線字串。"""
+
+    ERROR = "Redis 連不上：redis://:secret-password@localhost:6379"
+
+    def __init__(self, inner):
+        self._inner = inner
+
+    def submit_transcription(self, task_id, task_params_dict, queue):
+        raise ConnectionError(self.ERROR)
+
+    def submit_batch(self, task_params_dict):
+        raise ConnectionError(self.ERROR)
 
     def __getattr__(self, name):
         return getattr(self._inner, name)
@@ -1028,6 +1048,118 @@ class TestReTranscriptionBeforeTheOldConnectionEnds:
                 ping(old)
                 submit(ws, upload(api))
                 assert receive_until_terminal(ws)[-1]["status_code"] == TaskStatus.COMPLETED
+
+
+# ─── 排隊中與提交失敗（#24 門檻 4） ─────────────────────────────────────────
+
+class TestQueuedAndNotSubmitted:
+    """收到請求之後，畫面一定先收到排隊中（任務派送了）或失敗（沒有派送），不會停在「正在提交任務」。"""
+
+    def test_task_waiting_for_its_turn_reports_queued_until_it_starts(self, api, fake):
+        fake.hold = threading.Event()
+        fake.script = list(SCRIPT) * 2
+        ahead_file, waiting_file = upload(api, "a.wav"), upload(api, "b.wav")
+
+        with api.websocket_connect("/api/v1/ws/uid-ahead") as ahead, \
+                api.websocket_connect("/api/v1/ws/uid-waiting-turn") as waiting:
+            submit(ahead, ahead_file)
+            assert fake.started.wait(TIMEOUT)
+            # GPU 佇列只有一個 worker：第二個任務排在佇列裡，要等第一個轉完
+            submit(waiting, waiting_file)
+            queued = receive(waiting)
+            fake.hold.set()
+            assert codes(receive_until_terminal(ahead))[-1] == TaskStatus.COMPLETED
+            turn = receive_until_terminal(waiting)
+
+        assert (queued["status_code"], queued["status_text"]) == (TaskStatus.PROCESSING, QUEUED_TEXT)
+        # 輪到它時，任務自己的進度接在排隊中後面；全都是同一個任務
+        assert turn[0]["status_text"] == "檔案處理與分析..."
+        assert codes(turn)[-1] == TaskStatus.COMPLETED
+        assert {m["task_uuid"] for m in [queued, *turn]} == {queued["task_uuid"]}
+
+    def test_queued_reaches_the_page_before_the_task_is_handed_over(self, api, fake):
+        # 任務一開始就廣播進度：排隊中要在派送之前送到，才不會晚到、蓋掉進度
+        fake.script = list(SCRIPT)
+        held = DispatchHeld(run_mode.get())
+        filename = upload(api)
+        previous = run_mode.use(held)
+        try:
+            with api.websocket_connect("/api/v1/ws/uid-announced") as ws:
+                submit(ws, filename)
+                assert held.reached.wait(TIMEOUT)
+                queued = receive(ws)
+                held.release.set()
+                rest = receive_until_terminal(ws)
+        finally:
+            run_mode.use(previous)
+
+        assert queued["status_text"] == QUEUED_TEXT
+        assert QUEUED_TEXT not in [m["status_text"] for m in rest]
+        assert codes(rest)[-1] == TaskStatus.COMPLETED
+
+    def test_error_while_handing_over_the_task_fails_it_with_a_fixed_message(
+            self, api, data_dir, app_log):
+        failing = DispatchFails(run_mode.get())
+        filename = upload(api)
+        previous = run_mode.use(failing)
+        try:
+            with api.websocket_connect("/api/v1/ws/uid-not-handed-over") as ws:
+                submit(ws, filename)
+                messages = [receive(ws), receive(ws)]
+                with pytest.raises(WebSocketDisconnect) as closed:
+                    receive(ws)
+        finally:
+            run_mode.use(previous)
+
+        queued, failed = messages
+        assert queued["status_text"] == QUEUED_TEXT
+        assert (failed["status_code"], failed["status_text"]) == (
+            TaskStatus.FAILED, SUBMISSION_FAILED_TEXT)
+        assert closed.value.code == 1011
+        # 沒有任務：上傳檔不留在電腦上，取消端點也查不到任務
+        assert leftovers(data_dir) == []
+        cancel = api.post("/api/v1/transcription/uid-not-handed-over/cancel").json()
+        assert cancel["reason"] == "not-started"
+        # 原因只在 log
+        assert "ConnectionError" in "\n".join(app_log)
+
+    def test_malformed_request_fails_without_dispatching(self, api, fake):
+        with api.websocket_connect("/api/v1/ws/uid-malformed") as ws:
+            ws.send_json({"filename": "a.wav"})  # 少了供應商、模型與原檔名
+            message = receive(ws)
+            with pytest.raises(WebSocketDisconnect) as closed:
+                receive(ws)
+
+        assert (message["status_code"], message["status_text"]) == (
+            TaskStatus.FAILED, SUBMISSION_FAILED_TEXT)
+        assert closed.value.code == 1011
+        assert fake.calls == []
+
+    def test_batch_not_handed_over_fails_every_file_and_leaves_no_upload(
+            self, api, fake, data_dir):
+        fake.model_capabilities = replace(fake.model_capabilities, supports_batch=True)
+        failing = DispatchFails(run_mode.get())
+        files = [upload(api, "a.wav"), upload(api, "b.wav")]
+        previous = run_mode.use(failing)
+        try:
+            with api.websocket_connect("/api/v1/batch/ws/batch-not-handed-over") as ws:
+                ws.send_json({
+                    "files": [{"filename": f, "original_filename": f, "file_uid": f} for f in files],
+                    "provider": "fake",
+                    "model": FAKE_MODEL,
+                    "source_lang": "ja",
+                })
+                message = receive(ws)
+                with pytest.raises(WebSocketDisconnect) as closed:
+                    receive(ws)
+        finally:
+            run_mode.use(previous)
+
+        # 沒有 file_uid：畫面把這批還在處理中的檔案都標成失敗
+        assert message == {"client_id": "batch-not-handed-over", "status_code": TaskStatus.FAILED,
+                           "status_text": SUBMISSION_FAILED_TEXT}
+        assert closed.value.code == 1011
+        assert leftovers(data_dir) == []
 
 
 # ─── 模型能力端點（#108） ───────────────────────────────────────────────────

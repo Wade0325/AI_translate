@@ -25,6 +25,12 @@ import { TASK_STATUS } from '../constants/taskStatus';
  * 請求的內容（defaults、supports 怎麼用，每個檔案帶哪個補充說明）見 utils/transcribeRequest.js。
  */
 
+/** 伺服器還沒回任何一則訊息就關掉了單檔任務的連線：任務沒有送出（見 openTranscriptionSocket）。 */
+const SUBMISSION_LOST = {
+  status_code: TASK_STATUS.FAILED,
+  status_text: '提交任務失敗：伺服器還沒回應，連線就中斷了。請重新轉錄',
+};
+
 const isRestartable = (f) =>
   (f.status === 'waiting' || f.status === 'error' || f.status === 'cancelled') &&
   !!f.originFileObj;
@@ -92,6 +98,9 @@ export function useUploadQueue({ fileList, setFileList, socketManager, onBatchSu
     const sessionId = beginSession(candidates, 'single');
 
     const openTranscriptionSocket = (file, serverFilename) => {
+      // 伺服器收到請求後一定先回一則：排隊中（任務派送了），或失敗（沒有派送）。之後的進度與結果
+      // 都由訊息帶來；一則都還沒收到連線就被伺服器關了，任務就沒有送出
+      let answered = false;
       socketManager.openSocket(file.uid, WS_URLS.transcription(file.uid), {
         onOpen: () => {
           const payload = buildSinglePayload({
@@ -111,7 +120,18 @@ export function useUploadQueue({ fileList, setFileList, socketManager, onBatchSu
           });
           socketManager.sendMessage(file.uid, payload);
         },
-        onMessage: handleSingleMessage,
+        onMessage: (event) => {
+          answered = true;
+          handleSingleMessage(event);
+        },
+        onClose: (event, { byClient }) => {
+          if (answered || byClient) return;
+          setFileList((current) =>
+            current.map((f) =>
+              f.uid === file.uid && f.status === 'processing' ? applyFileResult(f, SUBMISSION_LOST) : f
+            )
+          );
+        },
         onError: () => {
           message.error(`檔案 ${file.name} 的連線發生錯誤。`);
           updateFile(file.uid, {
@@ -140,7 +160,7 @@ export function useUploadQueue({ fileList, setFileList, socketManager, onBatchSu
     }
 
     return { skipped: false };
-  }, [fileList, updateFile, socketManager, handleSingleMessage, beginSession, uploadFile]);
+  }, [fileList, setFileList, updateFile, socketManager, handleSingleMessage, beginSession, uploadFile]);
 
   // 批次模式：所有檔案共用一條 batch WebSocket
   const startBatch = useCallback(async ({ provider, model, defaults, supports }) => {
@@ -230,6 +250,13 @@ export function useUploadQueue({ fileList, setFileList, socketManager, onBatchSu
         if (data.file_uid) {
           setFileList((current) =>
             current.map((f) => (f.uid === data.file_uid ? applyFileResult(f, data) : f))
+          );
+        } else if (data.status_code === TASK_STATUS.FAILED) {
+          // 整批沒有送出（伺服器派送前出錯）：這批還在處理中的檔案都標成失敗
+          setFileList((current) =>
+            current.map((f) =>
+              f.status === 'processing' && uploadedUidSet.has(f.uid) ? applyFileResult(f, data) : f
+            )
           );
         } else {
           // 整體進度文字（無 file_uid）→ 同步到所有 processing 中的檔案
