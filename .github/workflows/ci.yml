@@ -2,7 +2,7 @@
 #
 # 最底下的 `check` 是 ruleset 唯一要求的檢查：不准改名，其他 job 也不准取這個名字。
 # 新增 job 時，要加進 `check` 的 needs；`check` 逐一確認每個 needs 的結果，全部 success
-# 才綠燈（只改文件時，五個重的 job 可以是 skipped）。
+# 才綠燈（只改文件時，六個重的 job 可以是 skipped）。
 #
 # 要跑哪些檢查定義在 tools/check.py：這裡的 job 只呼叫它，不另寫 ruff、pytest、ESLint、vitest、Playwright 等的指令。
 # 不要加 on.paths：被路徑過濾掉的 PR 等不到 `check`，會一直卡在等待中；
@@ -33,7 +33,7 @@ concurrency:
 jobs:
   changes:
     # PR 改動的檔案（含改名前的舊路徑）全在 docs/ 底下或是根目錄的 *.md 時，輸出 docs_only=true，
-    # 五個重的 job 跳過。只有 PR 才判斷：push、排程與 release.yml 呼叫時一律跑全套
+    # 六個重的 job 跳過。只有 PR 才判斷：push、排程與 release.yml 呼叫時一律跑全套
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -264,6 +264,51 @@ jobs:
             exit 1
           fi
 
+  portable:
+    # 免安裝版的建置（#256）：和 release.yml 的 windows-zip 一樣先建前端，再用 Windows PowerShell
+    # 執行 build_release.ps1 -SkipFrontend；不上傳、不發布。打包的改動（build_release.ps1、
+    # tools/launcher.cs）因此每個 PR 都在 Windows 上實際建置過一次，不必等維護者在本機建置。
+    # - 建置前先在 backend/ 與 data/ 放進用過的開發環境會有的執行期資料（tools/portable_zip.py plant），
+    #   build_release.ps1 排除執行期資料的那一步才真的被考到
+    # - 啟動器在 build_release.ps1 第 5 步編譯，編譯失敗時那一步就失敗
+    # - 建好後檢查 zip：第 7 步清單裡的檔案都在、沒有執行期資料（tools/portable_zip.py check）
+    # 每個 PR 都跑（只改文件時跳過）：Python embeddable、uv 與 ffmpeg 每次重新下載，不用快取
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
+    runs-on: windows-2025
+    timeout-minutes: 20
+    env:
+      PYTHONIOENCODING: utf-8 # tools/portable_zip.py 印中文
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: frontend/.nvmrc
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+      - name: 安裝前端依賴
+        working-directory: frontend
+        run: npm ci
+      - name: 建置前端
+        working-directory: frontend
+        run: npm run build
+      - name: 放進執行期資料（模擬用過的開發環境）
+        run: python tools/portable_zip.py plant
+      - name: 建置免安裝版
+        shell: powershell # 和 release.yml 一樣用 Windows PowerShell 5.1，不是 pwsh
+        run: |
+          # Windows PowerShell 5.1 的 Invoke-WebRequest 畫進度條時下載很慢：ffmpeg 的 zip 要 4 分鐘，
+          # 關掉之後和 curl 差不多。腳本沿用呼叫端的這個設定，build_release.ps1 本身不用改
+          $ProgressPreference = 'SilentlyContinue'
+          .\build_release.ps1 -Version ci -SkipFrontend
+      - name: 檢查 zip
+        run: python tools/portable_zip.py check build/AI_Translate-ci-win64.zip
+
   workflows:
     needs: changes
     if: needs.changes.outputs.docs_only != 'true'
@@ -305,7 +350,7 @@ jobs:
 
   check:
     if: always()
-    needs: [changes, python, frontend, browser, docker, workflows, pr-body]
+    needs: [changes, python, frontend, browser, docker, portable, workflows, pr-body]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
