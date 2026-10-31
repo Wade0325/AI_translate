@@ -98,7 +98,7 @@ export default function TranscribePage() {
     const promptTemplateDisabledReason = providerPromptDisabledReason(providerList, provider)
 
     const [globalConfig, setGlobalConfig] = useState({
-        language: sourceLang || "zh-TW",
+        language: sourceLang,
         isMultiSpeaker: multiSpeaker,
         prompt: globalPrompt,
     })
