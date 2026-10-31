@@ -5,11 +5,11 @@
 cpMER、ΔMER 與 95% CI、RTF 與峰值顯存、結尾核對），最後是回歸判定。
 
 判定（docs/adr/0009、#15 的 Q2a、Q2b、Q3）：只算沒有草稿標記的標準答案，同一種語言的片段合起來
-（錯誤數總和 ÷ token 總和），錯字率或 cpMER 比基準高就是回歸，否則通過。95% CI、RTF、峰值顯存與
-結尾核對只列出，不參與判定。語言看 manifest 的 ``request.language``，只看主要的語言代碼
+（錯誤數總和 ÷ token 總和），錯字率或 cpMER 比基準高就是回歸，否則通過。標準答案註明「cpMER 不計」
+的片段只算錯字率。95% CI、RTF、峰值顯存與結尾核對只列出，不參與判定。語言看 manifest 的 ``request.language``，只看主要的語言代碼
 （``zh-TW`` 與 ``zh-CN`` 都是中文）。
 
-只輸出數字、雜湊與檔名，不輸出錯誤範例或任何轉錄文字：評測集的原文不進 PR（#15 的 Q4）。
+只輸出數字、雜湊、檔名與「cpMER 不計」的理由，不輸出錯誤範例或任何轉錄文字：評測集的原文不進 PR（#15 的 Q4）。
 結尾核對只讀 LRC 每一行的時間戳。
 """
 
@@ -87,6 +87,18 @@ def _clock(seconds: float | None) -> str:
 
 def _percent(value: float | None) -> str:
     return "—" if value is None else f"{value * 100:.2f}%"
+
+
+def _cp_scored(excerpt: dict[str, Any]) -> bool:
+    """這一段的 cpMER 算不算進判定：標準答案註明「cpMER 不計」時不算（舊的 JSON 沒有這一欄，照算）。"""
+    return excerpt.get("cp_mer_scored", True) is not False
+
+
+def _cp_cell(system: _System) -> str:
+    excerpts = system.score.get("per_excerpt") or []
+    if excerpts and not any(_cp_scored(e) for e in excerpts):
+        return "不計"
+    return _percent(system.score.get("cp_mer_global"))
 
 
 def _load(path: Path, what: str) -> dict[str, Any]:
@@ -182,7 +194,7 @@ def render(run: _Eval) -> str:
         ("commit", _commit),
         ("模型與語言", _request),
         ("錯字率（MER）", lambda s: _percent(s.score.get("total_mer"))),
-        ("cpMER（全域對應）", lambda s: _percent(s.score.get("cp_mer_global"))),
+        ("cpMER（全域對應）", _cp_cell),
         ("RTF", _rtf),
         ("峰值顯存", _vram),
         ("結尾核對", _tail),
@@ -208,6 +220,9 @@ def render(run: _Eval) -> str:
     drafts = result.get("reference_draft_marks") or 0
     draft_note = f"，草稿標記 {drafts} 處：數字只能當工具驗證，不能當結論" if drafts else ""
     out.append(f"- 標準答案：{'、'.join(references) or '—'}{draft_note}")
+    skipped = _cp_skipped(run)
+    if skipped:
+        out.append(f"- cpMER 不計（只算錯字率，ADR 0009）：{'；'.join(skipped)}")
     commands = sorted({_transcribe_command(m) for m in manifests})
     vs = " --vs <這個 PR 的 LRC>" if len(systems) == 2 else ""
     commands.append(f"python -m tools.eval eval --reference {' '.join(references)} "
@@ -235,8 +250,10 @@ class _Errors:
     cp_low: int = 0
     cp_high: int = 0
 
-    def add(self, excerpt: dict[str, Any]) -> None:
+    def add(self, excerpt: dict[str, Any], *, cp: bool = True) -> None:
         self.mer += excerpt["subs"] + excerpt["dels"] + excerpt["ins"]
+        if not cp:
+            return
         tokens = max(excerpt["ref_len"], 1)  # mer.evaluate：沒有 token 時分母是 1
         cp = excerpt["cp_mer_global"]
         # 1e-9 吸收浮點數的誤差：還原出的範圍寧可寬一點，也不能漏掉真正的錯誤數
@@ -256,6 +273,7 @@ class _Language:
     code: str
     references: list[str] = field(default_factory=list)
     tokens: int = 0
+    cp_tokens: int = 0  # 算 cpMER 的片段的 token 數（不含註明「cpMER 不計」的）
     base: _Errors = field(default_factory=_Errors)
     head: _Errors = field(default_factory=_Errors)
 
@@ -273,11 +291,22 @@ class _Language:
         return UNDECIDED
 
     def row(self) -> str:
-        base, head, tokens = self.base, self.head, self.tokens
+        base, head, tokens, cp_tokens = self.base, self.head, self.tokens, self.cp_tokens
+        cp = (f"{_rate(base.cp_low, base.cp_high, cp_tokens)} → {_rate(head.cp_low, head.cp_high, cp_tokens)}"
+              if cp_tokens else "不計")
         return (f"| {self.name} | {'、'.join(self.references)} | {tokens} "
                 f"| {_rate(base.mer, base.mer, tokens)} → {_rate(head.mer, head.mer, tokens)} "
-                f"| {_rate(base.cp_low, base.cp_high, tokens)} → {_rate(head.cp_low, head.cp_high, tokens)} "
-                f"| {self.verdict} |")
+                f"| {cp} | {self.verdict} |")
+
+
+def _cp_skipped(run: _Eval) -> list[str]:
+    """標準答案註明「cpMER 不計」的片段與理由。"""
+    skipped: dict[str, str] = {}
+    for system in run.systems:
+        for excerpt in system.score.get("per_excerpt") or []:
+            if not _cp_scored(excerpt):
+                skipped.setdefault(excerpt.get("name", "?"), excerpt.get("cp_mer_skip") or "")
+    return [f"{name}（{reason}）" if reason else name for name, reason in skipped.items()]
 
 
 def _excluded(run: _Eval) -> str | None:
@@ -325,13 +354,15 @@ def render_verdict(runs: list[_Eval]) -> str:
         language.references += run.references
         base, head = (s.score["per_excerpt"] for s in run.systems)
         for b, h in zip(base, head, strict=True):
+            cp = _cp_scored(b) and _cp_scored(h)
             language.tokens += b["ref_len"]
-            language.base.add(b)
-            language.head.add(h)
+            language.cp_tokens += b["ref_len"] if cp else 0
+            language.base.add(b, cp=cp)
+            language.head.add(h, cp=cp)
 
     out = ["### 回歸判定", "",
            "只算沒有草稿標記的標準答案。同一種語言的片段合起來，錯字率或 cpMER 比基準高就是回歸"
-           "（docs/adr/0009）；95% CI 只列出，不參與判定。", ""]
+           "（docs/adr/0009）；註明「cpMER 不計」的片段只算錯字率；95% CI 只列出，不參與判定。", ""]
     if languages:
         out += ["| 語言 | 標準答案 | token | 錯字率：基準 → 這個 PR | cpMER：基準 → 這個 PR | 判定 |",
                 "|---|---|---|---|---|---|"]

@@ -13,6 +13,8 @@
   * ``~`` 開頭＝對方講話時插進來的附和，可單獨排除計分
   * ``[聽不清]`` 是聽不出來的地方，那個位置怎麼轉錄都不計分
   * ``A?:`` 與 ``(?)`` 是草稿標記，正式的標準答案不該有；沒有允許草稿時拒絕讀取
+  * ``# cpMER 不計：理由`` 的註解行：這一段只算錯字率，cpMER 不進回歸判定（ADR 0009）。用在說話者的
+    安排量不到說話者分離的片段，例如幾位說話者唸同一份台本、依序接成區塊；理由一定要寫
 
 轉錄結果讀的是 LRC（見 :mod:`.lrc`），依標準答案的時間範圍裁切。
 """
@@ -33,6 +35,8 @@ UTT_RE = re.compile(
     r"^(?:\[(?P<ts>[\d:.]+)\]\s*)?(?P<ov>~)?\s*(?P<spk>[A-Za-z][\w-]*)(?P<doubt>\?)?\s*[:：]\s*(?P<text>.*)$")
 
 UNCLEAR = "[聽不清]"
+# 這一段不算 cpMER：「# cpMER 不計：理由」
+CP_SKIP_RE = re.compile(r"^#\s*cpMER\s*不計\s*(?:[:：]\s*(?P<reason>.*))?$")
 DOUBT_RE = re.compile(r"\(\?[^)]*\)")
 
 # 轉錄結果裡沒有說話者標記的行，全部算這一位說話者
@@ -61,6 +65,7 @@ class Excerpt:
     end: float
     utterances: list[Utterance] = field(default_factory=list)
     draft_marks: int = 0
+    cp_mer_skip: str | None = None  # 不算 cpMER 的理由；None 是照常計分
 
 
 def _ts_to_sec(s: str) -> float:
@@ -87,8 +92,15 @@ def read_reference(path: str | Path, allow_draft: bool = False) -> Excerpt:
 
     utts: list[Utterance] = []
     marks = 0
+    cp_skip: str | None = None
     for line in raw:
         s = line.strip()
+        if s.startswith("#") and (m := CP_SKIP_RE.match(s)):
+            cp_skip = (m.group("reason") or "").strip()
+            if not cp_skip:
+                raise ReferenceSetError(
+                    f"{p.name} 寫了「cpMER 不計」但沒有理由：寫成「# cpMER 不計：理由」，"
+                    f"例如「四位說話者唸同一份台本、依序接成區塊，量不到說話者分離」。")
         if not s or s.startswith("#"):
             continue
         m = UTT_RE.match(s)
@@ -108,7 +120,8 @@ def read_reference(path: str | Path, allow_draft: bool = False) -> Excerpt:
             f"{p.name} 還有 {marks} 處草稿標記（(?) 或 代號?:）未確認。\n"
             f"確認完請刪掉標記；若只是想先試跑工具，加 --allow-draft。")
 
-    return Excerpt(name=name, start=start, end=end, utterances=utts, draft_marks=marks)
+    return Excerpt(name=name, start=start, end=end, utterances=utts, draft_marks=marks,
+                   cp_mer_skip=cp_skip)
 
 
 def clip_transcript(lrc_path: str | Path, start: float, end: float) -> list[Utterance]:

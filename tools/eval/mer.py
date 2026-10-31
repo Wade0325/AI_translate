@@ -304,6 +304,7 @@ class Result:
     cp_mer_local: float = 0.0
     mapping_local: dict[str, str] = field(default_factory=dict)
     cp_mer_global: float = 0.0
+    cp_mer_skip: str | None = None  # 標準答案註明不算 cpMER 的理由（reference_set.Excerpt）
     budget: dict[str, int] = field(default_factory=dict)
     examples: dict[str, list[str]] = field(default_factory=dict)
     term_total: int = 0
@@ -332,6 +333,8 @@ class Result:
             "mer_no_overlap": round(self.mer_no_overlap, 4),
             "cp_mer_local": round(self.cp_mer_local, 4),
             "cp_mer_global": round(self.cp_mer_global, 4),
+            "cp_mer_scored": self.cp_mer_skip is None,
+            "cp_mer_skip": self.cp_mer_skip,
             "mapping_local": self.mapping_local,
             "term_recall": round(self.term_recall, 4),
             "term_hit": self.term_hit, "term_total": self.term_total,
@@ -372,7 +375,7 @@ def evaluate(excerpt: Excerpt, transcript: Sequence[Utterance], vocabulary: Cust
 
     res = Result(name=excerpt.name, window=(excerpt.start, excerpt.end),
                  n_utts=len(excerpt.utterances), ref_len=len(ref) - unk,
-                 transcript_len=len(hyp_tokens), unk=unk)
+                 transcript_len=len(hyp_tokens), unk=unk, cp_mer_skip=excerpt.cp_mer_skip)
 
     n_lines = len(ref_lines)
     res.line_errors = [0] * n_lines
@@ -470,11 +473,19 @@ def paired_delta_ci(a: Sequence[int], b: Sequence[int], lens: Sequence[int],
 
 
 # ----------------------------------------------------------------- 全域對應
-def global_mapping(results: Sequence[Result]) -> tuple[dict[str, str], float]:
+def global_mapping(results: Sequence[Result]) -> tuple[dict[str, str], float | None]:
     """評測集的所有音檔共用同一組說話者對應時的最佳解與 cpMER。
 
     與每段音檔各自最佳（cp_mer_local）的差距，就是說話者標記在音檔之間不一致的代價。
+    標準答案註明「cpMER 不計」的片段不參與對應，它的 cp_mer_global 只列出局部對應的值；
+    每一段都不計時，cpMER 是 None。
     """
+    for r in results:
+        if r.cp_mer_skip is not None:
+            r.cp_mer_global = r.cp_mer_local
+    results = [r for r in results if r.cp_mer_skip is None]
+    if not results:
+        return {}, None
     labels_hyp = sorted({k for r in results for k in r.transcript_spk})
     labels_ref = sorted({k for r in results for k in r.ref_spk})
     n = max(len(labels_hyp), len(labels_ref))
@@ -498,7 +509,7 @@ def global_mapping(results: Sequence[Result]) -> tuple[dict[str, str], float]:
 
 # ------------------------------------------------------------------- 報告
 def format_report(results: Sequence[Result], transcript_label: str,
-                  global_map: dict[str, str], cp_global: float) -> str:
+                  global_map: dict[str, str], cp_global: float | None) -> str:
     out: list[str] = [f"轉錄結果：{transcript_label}", ""]
     tot_err = sum(r.errors for r in results)
     tot_ref = sum(r.ref_len for r in results)
@@ -512,7 +523,8 @@ def format_report(results: Sequence[Result], transcript_label: str,
             f"   排除附和後      {r.mer_no_overlap*100:6.2f}%",
             f"   cpMER 局部對應  {r.cp_mer_local*100:6.2f}%   "
             f"對應 {_mapping_text(r.mapping_local)}",
-            f"   cpMER 全域對應  {r.cp_mer_global*100:6.2f}%",
+            f"   cpMER 全域對應  {r.cp_mer_global*100:6.2f}%" if r.cp_mer_skip is None else
+            f"   cpMER          不計（{r.cp_mer_skip}）：上面的局部對應只列出，不進判定",
             f"   術語召回        {r.term_recall*100:6.1f}%   "
             f"({r.term_hit}/{r.term_total})   誤插入 {r.term_false_ins}",
             "   錯誤預算：" + "  ".join(
@@ -523,16 +535,19 @@ def format_report(results: Sequence[Result], transcript_label: str,
             if r.examples.get(b):
                 out.append(f"     {b}: " + " ｜ ".join(r.examples[b]))
         out.append("")
-    out += [
-        f"總計  MER {tot_err/max(1,tot_ref)*100:.2f}%  "
-        f"({tot_err} 錯 / {tot_ref} token)",
-        f"      cpMER 全域對應 {cp_global*100:.2f}%   對應 {_mapping_text(global_map)}",
-    ]
+    out.append(f"總計  MER {tot_err/max(1,tot_ref)*100:.2f}%  "
+               f"({tot_err} 錯 / {tot_ref} token)")
+    scored = [r for r in results if r.cp_mer_skip is None]
+    if cp_global is None or not scored:
+        out.append("      cpMER 不計：每一段的標準答案都註明「cpMER 不計」")
+        return "\n".join(out)
+    out.append(f"      cpMER 全域對應 {cp_global*100:.2f}%   對應 {_mapping_text(global_map)}"
+               + (f"（不含註明不計的 {len(results) - len(scored)} 段）" if len(scored) < len(results) else ""))
     local = sum(r.cp_mer_local * max(1, sum(len(v) for v in r.ref_spk.values()))
-                for r in results) / max(1, sum(
-                    sum(len(v) for v in r.ref_spk.values()) for r in results))
+                for r in scored) / max(1, sum(
+                    sum(len(v) for v in r.ref_spk.values()) for r in scored))
     gap = cp_global - local
-    if len(results) > 1:
+    if len(scored) > 1:
         out.append(f"      cpMER 局部對應 {local*100:.2f}%"
                    f"   差距 {gap*100:+.2f} pp"
                    + ("   ← 說話者標記在音檔之間不一致" if gap > 0.01 else ""))
