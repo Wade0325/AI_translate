@@ -219,13 +219,14 @@ class TestTaskKeyResolution:
     ])
     def test_single_task_uses_db_key(self, task_env, stored_keys, overrides):
         stored_keys("Google", [REAL_KEY])
-        transcription.start_transcription_task_sync(_single_payload(**overrides), "uid-key")
+        transcription.start_transcription_task_sync(
+            _single_payload(**overrides), "uid-key", announce_queued=lambda _: None)
         assert task_env[0]["api_keys"] == REAL_KEY
 
     def test_single_task_masked_value_picks_matching_key(self, task_env, stored_keys):
         stored_keys("Google", [REAL_KEY, SECOND_KEY])
         transcription.start_transcription_task_sync(
-            _single_payload(api_keys=SECOND_KEY_MASKED), "uid-key")
+            _single_payload(api_keys=SECOND_KEY_MASKED), "uid-key", announce_queued=lambda _: None)
         assert task_env[0]["api_keys"] == SECOND_KEY
 
     @pytest.mark.parametrize("overrides", [

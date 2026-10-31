@@ -32,16 +32,19 @@
 四種格式由同一串行產生，說話者標記一律「[S0] 文字」：LRC 一行一個時間戳；TXT 只留文字；
 SRT／VTT 另有結束時間，照實際說話的時間顯示（ADR-0008，規則見 :func:`_subtitles`）：不同說話者
 的字幕可以重疊，同一位說話者的不疊，每一行至少 0.8 秒，字幕依開始時間排序。有片段的任務和沒有
-片段的任務（從存下來的 LRC 轉換）用同一套規則。SRT／VTT 的開始時間取 LRC 時間戳讀回來的值，和
-以前從 LRC 轉換時一樣；結束時間取到毫秒。斷行的規則見 :func:`_segment_lines`。
+片段的任務（從存下來的 LRC 轉換）用同一套規則。SRT／VTT 的開始時間取 LRC 時間戳的值（0.01 秒），
+和以前從 LRC 轉換時一樣；開始與結束時間都四捨五入到毫秒（見 :func:`_milliseconds`）。斷行的規則見
+:func:`_segment_lines`。
 
 SRT／VTT 和其他兩種格式不同的地方只有兩點（#12）：超過兩行的量的行用逐字時間拆成數則字幕
 （見 :func:`_subtitle_pieces`），以及依說話者上色（見 :data:`SPEAKER_COLORS`）。LRC、TXT 不能
-上色，也不拆。
+上色，也不拆。文字只有 VTT 跳脫（#24，見 :func:`_vtt`）；SRT 沒有跳脫的寫法，和 LRC、TXT 一樣
+照原樣寫（見 :func:`_srt`）。
 """
 
 from __future__ import annotations
 
+import html
 import re
 import unicodedata
 from bisect import bisect_right
@@ -491,7 +494,8 @@ def _lrc_timestamp(seconds: float) -> str:
 
 
 def _lrc_seconds(seconds: float) -> float:
-    """這個時間寫成 LRC 時間戳再讀回來的秒數（11.6 讀回來是 11.599…，以前就是這樣）。"""
+    """這個時間寫成 LRC 時間戳再讀回來的秒數。讀回來的是浮點數，不一定剛好（11.60 讀回來是
+    11.599…），寫進 SRT／VTT 前由 :func:`_milliseconds` 四捨五入。"""
     match = _LRC_LINE_RE.match(_lrc_timestamp(seconds))
     return _stamp_seconds(match) if match else seconds
 
@@ -502,10 +506,11 @@ def _stamp_seconds(match: re.Match) -> float:
 
 
 def _milliseconds(seconds: float) -> int:
-    """開始時間寫進 SRT／VTT 的毫秒數：毫秒以下捨去，負的當成 0。這是以前的寫法，開始時間因此
-    和以前逐字相同（11.60 寫成 11,599）；真實結束時間沒有這個包袱，四捨五入到毫秒。"""
-    seconds = max(seconds, 0.0)
-    return int(seconds) * 1000 + int((seconds - int(seconds)) * 1000)
+    """寫進 SRT／VTT 的毫秒數：四捨五入到毫秒，負的當成 0。開始與結束時間都用它。
+
+    #24 之前開始時間是捨去：LRC 的 11.60 讀回來是浮點數 11.599…，寫成 11,599，約一半的開始
+    因此少 1 毫秒；Gemini 三位小數的 1.001 也寫成 1,000。"""
+    return round(max(seconds, 0.0) * 1000)
 
 
 def _timestamp(milliseconds: int, separator: str) -> str:
@@ -558,7 +563,7 @@ def _subtitles(cues: Sequence[Cue]) -> List[Tuple[str, int, int]]:
     for cue, start, speaker in zip(ordered, starts, speakers, strict=True):
         next_start = _first_after(starts, start)
         if cue.end is not None:
-            end = round(cue.end * 1000)
+            end = _milliseconds(cue.end)
         elif next_start is not None:
             end = next_start
         else:
@@ -604,7 +609,13 @@ def _color_index(text: str) -> int:
 
 
 def _srt(cues: Sequence[Cue]) -> str:
-    """SRT 用 ``<font color>`` 上色：VLC 與 ffmpeg（mpv 用它解碼）都認得。"""
+    """SRT 用 ``<font color>`` 上色：VLC 與 ffmpeg（mpv 用它解碼）都認得。
+
+    文字照原樣寫，不跳脫（#24）。SRT 沒有規格，也沒有跳脫的寫法：VLC 3.0 與 ffmpeg 都不解
+    ``&amp;`` 這類字元參照，跳脫了反而照字面顯示「&amp;」。兩者都把沒有結尾標籤的 ``<笑>``、
+    ``&``、``-->`` 照原樣顯示（ffmpeg 6.1 實測；VLC 照 3.0.x 的 modules/codec/subsdec.c）。
+    寫不出來的只有字面上的格式標籤：文字裡的 ``<i>…</i>`` 這類標籤，播放器一律當成格式。
+    """
     blocks: List[str] = []
     for number, (text, start, end) in enumerate(_subtitles(cues), start=1):
         color = SPEAKER_COLORS[_color_index(text)]
@@ -616,8 +627,13 @@ def _srt(cues: Sequence[Cue]) -> str:
 def _vtt(cues: Sequence[Cue]) -> str:
     """VTT 用檔頭的 STYLE 區塊定義顏色，字幕用 ``<c.colorN>`` 包起來。
 
+    文字依 WebVTT 規格跳脫（#24）：字幕文字裡的 & 與 < 要寫成字元參照（§4.2.2），字幕內容
+    不能有「-->」（§4.1），所以 &、<、> 寫成 &amp;、&lt;、&gt;。沒跳脫時，Chromium 與 ffmpeg
+    都把 ``<笑>`` 當成標籤吃掉；Chromium 遇到「-->」整則字幕的文字都不見。說話者與顏色看的是
+    跳脫前的文字。
+
     ffmpeg 7.0 之前的版本遇到 STYLE 區塊，整個檔案都讀不出來（7.0 起跳過它），所以只在有要上色
-    的行時才寫，只有白色或沒有標記的 VTT 和以前逐字相同。類別名稱不用 WebVTT 的預設顏色名
+    的行時才寫，只有白色或沒有標記的 VTT 不帶 STYLE 區塊。類別名稱不用 WebVTT 的預設顏色名
     （yellow、cyan、lime）：不讀 CSS 的 VLC 會照那些名字套上純色。
     """
     subtitles = _subtitles(cues)
@@ -629,7 +645,8 @@ def _vtt(cues: Sequence[Cue]) -> str:
                    *(f"::cue(.color{index}) {{ color: {SPEAKER_COLORS[index]}; }}" for index in used),
                    ""]
     for (text, start, end), index in zip(subtitles, indexes, strict=True):
-        colored = f"<c.color{index}>{text}</c>" if index else text
+        escaped = html.escape(text, quote=False)
+        colored = f"<c.color{index}>{escaped}</c>" if index else escaped
         blocks += [f"{_timestamp(start, '.')} --> {_timestamp(end, '.')}", colored, ""]
     return "\n".join(blocks)
 

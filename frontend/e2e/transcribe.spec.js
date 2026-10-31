@@ -1,5 +1,7 @@
 import { test, expect, download } from './support/test.js'
-import { GEMINI_UPLOAD_NOTICE, PROVIDERS, TRANSCRIPTS, readiness, transcriptionMessages } from './support/backend.js'
+import {
+    GEMINI_UPLOAD_NOTICE, PROVIDERS, QUEUED_TEXT, SUBMISSION_FAILED_TEXT, TRANSCRIPTS, readiness, transcriptionMessages,
+} from './support/backend.js'
 
 // 內容不重要：音檔只經過假後端，不會被解碼
 const AUDIO = { name: 'meeting.wav', mimeType: 'audio/wav', buffer: Buffer.from('RIFF0000WAVE') }
@@ -166,6 +168,69 @@ test('任務失敗時，檔案卡顯示後端的失敗原因', async ({ page, mo
     await expect(page.getByText('1 個任務失敗')).toBeVisible()
     // 失敗的檔案可以重新轉錄
     await expect(page.getByRole('button', { name: 'Start' })).toBeEnabled()
+})
+
+test('排在別的任務後面時，檔案卡顯示排隊中，輪到時接著顯示進度（#24 門檻 4）', async ({ page, mockBackend }) => {
+    // 假後端送出排隊中之後先停住，等畫面上看到排隊中才開始
+    let start
+    const started = new Promise((resolve) => { start = resolve })
+    await mockBackend({
+        routes: { 'POST /upload': { filename: 'meeting_1.wav' } },
+        transcribe: async (request, send) => {
+            const { queued, processing, completed } = transcriptionMessages(request)
+            send(queued)
+            await started
+            send(processing)
+            send(completed)
+        },
+    })
+    await page.goto('/transcribe')
+
+    await addAudio(page)
+    await page.getByRole('button', { name: 'Start' }).click()
+
+    await expect(page.getByText(QUEUED_TEXT)).toBeVisible()
+    start()
+    await expect(page.getByText('轉錄完成')).toBeVisible()
+})
+
+test('伺服器還沒回應就關掉連線時，檔案卡顯示提交失敗，可以重新轉錄（#24 門檻 4）', async ({ page, mockBackend }) => {
+    await mockBackend({
+        routes: { 'POST /upload': { filename: 'meeting_1.wav' } },
+        transcribe: async (request, send, close) => close(),
+    })
+    await page.goto('/transcribe')
+
+    await addAudio(page)
+    await page.getByRole('button', { name: 'Start' }).click()
+
+    await expect(page.getByText('提交任務失敗：伺服器還沒回應，連線就中斷了。請重新轉錄')).toBeVisible()
+    await expect(page.getByText('1 個任務失敗')).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Start' })).toBeEnabled()
+})
+
+test('整批沒有送出時，這批的檔案都標成失敗（#24 門檻 4）', async ({ page, mockBackend }) => {
+    const uploads = []
+    await mockBackend({
+        routes: { 'POST /upload': () => ({ filename: `upload_${uploads.push(1)}.wav` }) },
+        batch: async (request, send, close) => {
+            // 沒有 file_uid：整批沒有派送
+            send({ client_id: request.batch_id, status_code: 'FAILED', status_text: SUBMISSION_FAILED_TEXT })
+            close()
+        },
+    })
+    await page.goto('/transcribe')
+    await page.getByLabel('供應商').selectOption('google')
+    await page.getByLabel('處理模式').selectOption('batch')
+
+    await page.locator('.ant-upload input[type=file]').setInputFiles([
+        AUDIO, { ...AUDIO, name: 'interview.wav' },
+    ])
+    await expect(page.getByText('interview.wav')).toBeVisible()
+    await page.getByRole('button', { name: 'Start' }).click()
+
+    await expect(page.getByText(SUBMISSION_FAILED_TEXT)).toHaveCount(2)
+    await expect(page.getByText('2 個任務失敗')).toBeVisible()
 })
 
 const NO_GPU = '這台電腦沒有可用的 NVIDIA 顯卡，本機轉錄不能用，可以改用 Gemini'

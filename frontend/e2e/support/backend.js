@@ -137,13 +137,20 @@ function requestBody(request) {
     }
 }
 
+/** 後端派送單檔任務之前先送的排隊中（backend/app/api/transcription.py 的 QUEUED_TEXT）。 */
+export const QUEUED_TEXT = '排隊中，輪到時開始轉錄...'
+
+/** 派送前出了非預期的錯誤時，後端給的固定訊息（backend/app/api/transcription.py 的 SUBMISSION_FAILED_TEXT）。 */
+export const SUBMISSION_FAILED_TEXT = '提交任務失敗，任務沒有開始。請重新轉錄；一直失敗時，請到設定頁回報問題並附上日誌'
+
 /**
- * 單檔任務收到請求後，後端依序送出的兩則狀態訊息（形狀照後端的 publish_status）：
- * processing 是處理中，completed 是完成並帶四種輸出格式。
+ * 單檔任務收到請求後，後端依序送出的三則狀態訊息（形狀照後端的 publish_status）：
+ * queued 是派送前的排隊中，processing 是處理中，completed 是完成並帶四種輸出格式。
  */
 export function transcriptionMessages(request) {
     const task_uuid = `task-${request.file_uid}`
     return {
+        queued: { task_uuid, status_code: 'PROCESSING', status_text: QUEUED_TEXT, file_uid: request.file_uid },
         processing: { task_uuid, status_code: 'PROCESSING', status_text: '轉錄中...', file_uid: request.file_uid },
         completed: {
             task_uuid,
@@ -164,9 +171,10 @@ export function transcriptionMessages(request) {
     }
 }
 
-/** 單檔任務的 WebSocket 預設怎麼回：處理中之後馬上完成。send 送一則狀態訊息。 */
+/** 單檔任務的 WebSocket 預設怎麼回：排隊中、處理中之後馬上完成。send 送一則狀態訊息。 */
 async function completeTranscription(request, send) {
-    const { processing, completed } = transcriptionMessages(request)
+    const { queued, processing, completed } = transcriptionMessages(request)
+    send(queued)
     send(processing)
     send(completed)
 }
@@ -174,9 +182,14 @@ async function completeTranscription(request, send) {
 /** 單檔任務的 WebSocket：/api/v1/ws/<file_uid> */
 const TRANSCRIPTION_SOCKET = /^\/api\/v1\/ws\/[^/]+$/
 
+/** 批次的 WebSocket：/api/v1/batch/ws/<batch_id> */
+const BATCH_SOCKET = /^\/api\/v1\/batch\/ws\/[^/]+$/
+
 /**
- * 換上假後端。routes 蓋過 {@link DEFAULT_ROUTES} 的同名端點；transcribe(request, send) 決定
- * 單檔任務的 WebSocket 收到請求後怎麼回，預設是 {@link completeTranscription}。
+ * 換上假後端。routes 蓋過 {@link DEFAULT_ROUTES} 的同名端點；transcribe(request, send, close) 決定
+ * 單檔任務的 WebSocket 收到請求後怎麼回，預設是 {@link completeTranscription}；
+ * batch(request, send, close) 決定批次的 WebSocket 怎麼回，沒給時批次的 WebSocket 算沒有設定。
+ * send 送一則狀態訊息，close 從伺服器那一端關掉連線。
  *
  * 回傳的物件記下畫面送出的東西，給測試檢查：
  *   - requests：每個 /api/v1 請求的 { method, path, query, body }
@@ -185,7 +198,7 @@ const TRANSCRIPTION_SOCKET = /^\/api\/v1\/ws\/[^/]+$/
  *     見 e2e/support/test.js
  *   - external：畫面向本機以外要的資源（網址）；測試結束時也要是空的
  */
-export async function mockBackend(page, { routes = {}, transcribe = completeTranscription } = {}) {
+export async function mockBackend(page, { routes = {}, transcribe = completeTranscription, batch } = {}) {
     const table = { ...DEFAULT_ROUTES, ...routes }
     const backend = { requests: [], transcriptionRequests: [], unhandled: [], external: [] }
 
@@ -217,22 +230,30 @@ export async function mockBackend(page, { routes = {}, transcribe = completeTran
         await route.fulfill(toFulfill(response))
     })
 
-    // /api 底下的 WebSocket 全部攔下，沒有一條會經 vite 的 proxy 接到真的後端。目前只模擬
-    // 單檔任務；其他的（例如批次的 /api/v1/batch/ws/<id>）記成沒有設定，直接關掉
+    // /api 底下的 WebSocket 全部攔下，沒有一條會經 vite 的 proxy 接到真的後端。模擬單檔任務，以及
+    // 測試給了 batch 時的批次；其他的記成沒有設定，直接關掉
     await page.routeWebSocket((url) => url.pathname.startsWith('/api/'), (ws) => {
         const path = new URL(ws.url()).pathname
-        if (!TRANSCRIPTION_SOCKET.test(path)) {
+        const id = path.split('/').pop()
+        const send = (payload) => ws.send(JSON.stringify(payload))
+        const close = () => ws.close()
+        if (TRANSCRIPTION_SOCKET.test(path)) {
+            ws.onMessage(async (message) => {
+                const data = JSON.parse(String(message))
+                if (data.type === 'ping') return
+                backend.transcriptionRequests.push(data)
+                await transcribe({ ...data, file_uid: id }, send, close)
+            })
+        } else if (batch && BATCH_SOCKET.test(path)) {
+            ws.onMessage(async (message) => {
+                const data = JSON.parse(String(message))
+                if (data.type === 'ping') return
+                await batch({ ...data, batch_id: id }, send, close)
+            })
+        } else {
             backend.unhandled.push(`WebSocket ${path}`)
             ws.close()
-            return
         }
-        ws.onMessage(async (message) => {
-            const data = JSON.parse(String(message))
-            if (data.type === 'ping') return
-            backend.transcriptionRequests.push(data)
-            const file_uid = path.split('/').pop()
-            await transcribe({ ...data, file_uid }, (payload) => ws.send(JSON.stringify(payload)))
-        })
     })
 
     return backend
