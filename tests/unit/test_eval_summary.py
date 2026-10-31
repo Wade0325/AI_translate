@@ -1,4 +1,5 @@
-"""``python -m tools.eval summary``：把 eval 的 JSON 與兩邊的 manifest 整理成 PR 的評測摘要（#38）。
+"""``python -m tools.eval summary``：把 eval 的 JSON 與兩邊的 manifest 整理成 PR 的評測摘要（#38），
+最後照 ADR 0009 判定回歸（#264）。
 
 摘要要貼進 PR，所以只能有數字、雜湊與檔名：標準答案與轉錄結果的文字一個字都不能出現（#15 的 Q4）。
 """
@@ -19,12 +20,12 @@ def _write(path, text):
 
 
 def _manifest(lrc, commit, *, sha256="ab" * 32, duration=30.0, rtf=0.1234, vram=10.5,
-              dirty=False):
+              dirty=False, audio="demo.wav", language="zh-TW"):
     """transcribe 在轉錄結果旁邊寫的 manifest（只留摘要用到的欄位）。"""
     manifest = {
         "command": "transcribe",
-        "request": {"provider": "local", "model": "moss-align", "language": "zh-TW"},
-        "audio": {"file": "demo.wav", "sha256": sha256, "duration_seconds": duration},
+        "request": {"provider": "local", "model": "moss-align", "language": language},
+        "audio": {"file": audio, "sha256": sha256, "duration_seconds": duration},
         "code": {"commit": commit, "dirty": dirty},
         "run": {"success": True, "rtf": rtf, "peak_vram_gb": vram},
     }
@@ -49,8 +50,8 @@ def runs(tmp_path):
     return base, head
 
 
-def _eval(capsys, out, *transcripts, extra=()):
-    argv = ["eval", "--reference", "demo_A", "--transcript", str(transcripts[0])]
+def _eval(capsys, out, *transcripts, reference="demo_A", extra=()):
+    argv = ["eval", "--reference", reference, "--transcript", str(transcripts[0])]
     if len(transcripts) == 2:
         argv += ["--vs", str(transcripts[1])]
     assert cli.main([*argv, *extra, "--json", str(out)]) == 0
@@ -58,8 +59,8 @@ def _eval(capsys, out, *transcripts, extra=()):
     return out
 
 
-def _summary(capsys, path):
-    code = cli.main(["summary", str(path)])
+def _summary(capsys, *paths):
+    code = cli.main(["summary", *map(str, paths)])
     captured = capsys.readouterr()
     return code, captured.out, captured.err
 
@@ -97,7 +98,8 @@ def test_compares_main_and_the_pull_request(lab, runs, tmp_path, capsys):
     assert ("`python -m tools.eval transcribe --audio demo.wav --provider local --model moss-align "
             "--language zh-TW`") in out
     assert "--transcript <基準的 LRC> --vs <這個 PR 的 LRC> --bootstrap 1000" in out
-    assert out.rstrip().endswith("- 判定：待回歸判定")
+    assert "| 中文 | demo_A | 8 | 12.50%（1 個錯） → 0.00%（0 個錯） | 12.50%（1 個錯） → 0.00%（0 個錯） | 通過 |" in out
+    assert out.rstrip().endswith("- 判定：通過（中文）")
 
 
 def test_never_prints_any_transcript_or_reference_text(lab, runs, tmp_path, capsys):
@@ -121,6 +123,8 @@ def test_single_transcript(lab, runs, tmp_path, capsys):
     assert "| 錯字率（MER） | 12.50% |" in out
     assert "ΔMER" not in out
     assert "--vs" not in out
+    assert "- 沒算進判定：demo.wav（只有一份轉錄結果，沒有基準可比）" in out
+    assert out.rstrip().endswith("- 判定：無法判定：沒有已確認的標準答案可以和基準比（有草稿標記的不算）")
 
 
 def test_missing_manifest_leaves_blanks_and_says_so(lab, runs, tmp_path, capsys):
@@ -143,6 +147,8 @@ def test_warns_when_the_two_runs_used_different_audio(lab, runs, tmp_path, capsy
     _, out, _ = _summary(capsys, path)
 
     assert "兩邊轉錄的音檔不同" in out
+    assert "- 沒算進判定：demo.wav（兩邊轉錄的音檔不同）" in out
+    assert "- 判定：無法判定" in out
 
 
 def test_draft_reference_is_flagged(lab, runs, tmp_path, capsys):
@@ -158,6 +164,22 @@ def test_draft_reference_is_flagged(lab, runs, tmp_path, capsys):
     assert "- 標準答案：demo_B.draft，草稿標記 1 處：數字只能當工具驗證，不能當結論" in out
 
 
+def test_no_confirmed_reference_means_no_verdict(lab, runs, tmp_path, capsys):
+    # 草稿的標準答案就算兩邊都比了，也不拿來判定（#15 的 Q3）
+    for lrc in runs:
+        _manifest(lrc, "1" * 40)
+    _write(lab / "data" / "eval" / "demo_B.draft.txt",
+           f"# demo_B  00:00.00-00:30.00\nA?: {REFERENCE_TEXT}\n")
+    path = _eval(capsys, tmp_path / "eval.json", *runs, reference="demo_B.draft",
+                 extra=["--allow-draft"])
+
+    _, out, _ = _summary(capsys, path)
+
+    assert "| 語言 |" not in out
+    assert "- 沒算進判定：demo.wav（標準答案還有 1 處草稿標記）" in out
+    assert out.rstrip().endswith("- 判定：無法判定：沒有已確認的標準答案可以和基準比（有草稿標記的不算）")
+
+
 def test_relative_transcript_paths_are_found_next_to_the_json(lab, runs, tmp_path, capsys,
                                                               monkeypatch):
     # eval 在 runs 資料夾執行、給相對路徑；summary 在別的地方執行也找得到
@@ -169,6 +191,130 @@ def test_relative_transcript_paths_are_found_next_to_the_json(lab, runs, tmp_pat
     _, out, _ = _summary(capsys, path)
 
     assert f"| commit | `{'1' * 12}` |" in out
+
+
+def test_same_output_as_the_baseline_passes(lab, runs, tmp_path, capsys):
+    # 容忍值是 0：一樣就通過，多一個錯就是回歸（下一個測試）
+    for lrc in runs:
+        _manifest(lrc, "1" * 40)
+    path = _eval(capsys, tmp_path / "eval.json", runs[0], runs[0])
+
+    _, out, _ = _summary(capsys, path)
+
+    assert "| 中文 | demo_A | 8 | 12.50%（1 個錯） → 12.50%（1 個錯） |" in out
+    assert out.rstrip().endswith("- 判定：通過（中文）")
+
+
+def test_higher_mer_than_the_baseline_is_a_regression(lab, runs, tmp_path, capsys):
+    for lrc in runs:
+        _manifest(lrc, "1" * 40)
+    # 這次全對的當基準、漏字的當 PR
+    path = _eval(capsys, tmp_path / "eval.json", runs[1], runs[0])
+
+    _, out, _ = _summary(capsys, path)
+
+    assert "| 中文 | demo_A | 8 | 0.00%（0 個錯） → 12.50%（1 個錯） |" in out
+    assert "| 回歸 |" in out
+    assert out.rstrip().endswith(
+        "- 判定：回歸（中文）：代理不合併，等使用者明確接受並在 PR 上記下理由")
+
+
+def test_higher_cpmer_alone_is_a_regression(lab, tmp_path, capsys):
+    # 字全對、只有說話者標錯：錯字率一樣，cpMER 變高，一樣是回歸（#15 的 Q2b）
+    _write(lab / "data" / "eval" / "demo_C.txt", "# demo_C  00:00.00-00:30.00\nA: 我們下週二\nB: 去爬山\n")
+    base = _write(tmp_path / "runs" / "main" / "demo.lrc",
+                  "[00:01.00][S0] 我們下週二\n[00:02.00][S1] 去爬山\n")
+    head = _write(tmp_path / "runs" / "pr" / "demo.lrc",
+                  "[00:01.00][S0] 我們下週二\n[00:02.00][S0] 去爬山\n")
+    for lrc in (base, head):
+        _manifest(lrc, "1" * 40)
+    path = _eval(capsys, tmp_path / "eval.json", base, head, reference="demo_C")
+
+    _, out, _ = _summary(capsys, path)
+
+    # cpMER 的錯誤數是從 JSON 的比率乘回 token 數還原的，要和 mer 算的一樣：S0 對到 A 最好，
+    # A 多了「去爬山」3 個字，B 沒有對到任何標記、3 個字全漏，共 6 個錯
+    assert ("| 中文 | demo_C | 8 | 0.00%（0 個錯） → 0.00%（0 個錯） "
+            "| 0.00%（0 個錯） → 75.00%（6 個錯） | 回歸 |") in out
+    assert out.rstrip().endswith(
+        "- 判定：回歸（中文）：代理不合併，等使用者明確接受並在 PR 上記下理由")
+
+
+def _other_audio(lab, tmp_path, capsys, *, base_text, head_text, language):
+    """評測集的另一個音檔：自己的標準答案、兩份轉錄結果與 eval 的 JSON。"""
+    _write(lab / "data" / "eval" / "other_A.txt", "# other_A  00:00.00-00:30.00\nA: 東京大学図書館\n")
+    lrcs = [_write(tmp_path / "runs" / side / "other.lrc", f"[00:01.00][S0] {text}\n")
+            for side, text in (("main", base_text), ("pr", head_text))]
+    for lrc in lrcs:
+        _manifest(lrc, "1" * 40, sha256="cd" * 32, audio="other.wav", language=language)
+    return _eval(capsys, tmp_path / "other.json", *lrcs, reference="other_A")
+
+
+def test_same_language_is_judged_across_audio_files(lab, runs, tmp_path, capsys):
+    # demo：PR 多錯 1 個；other：PR 少錯 2 個。同一種語言合起來，PR 比基準少錯 1 個，通過。
+    # 兩個音檔的語言代碼不同（zh-TW、zh-CN），一樣算中文
+    for lrc in runs:
+        _manifest(lrc, "1" * 40)
+    demo = _eval(capsys, tmp_path / "demo.json", runs[1], runs[0])
+    other = _other_audio(lab, tmp_path, capsys, base_text="東京大学図", head_text="東京大学図書館",
+                         language="zh-CN")
+
+    _, alone, _ = _summary(capsys, demo)
+    _, out, _ = _summary(capsys, demo, other)
+
+    assert "- 判定：回歸（中文）" in alone
+    assert "### 評測摘要：demo.wav" in out
+    assert "### 評測摘要：other.wav" in out
+    assert "| 中文 | demo_A、other_A | 15 | 13.33%（2 個錯） → 6.67%（1 個錯） |" in out
+    assert out.rstrip().endswith("- 判定：通過（中文）")
+
+
+def test_each_language_is_judged_on_its_own(lab, runs, tmp_path, capsys):
+    for lrc in runs:
+        _manifest(lrc, "1" * 40)
+    chinese = _eval(capsys, tmp_path / "demo.json", *runs)
+    japanese = _other_audio(lab, tmp_path, capsys, base_text="東京大学図書館", head_text="東京大学図書",
+                            language="ja")
+
+    _, out, _ = _summary(capsys, chinese, japanese)
+
+    assert "| 中文 | demo_A | 8 |" in out
+    assert "| 日文 | other_A | 7 | 0.00%（0 個錯） → 14.29%（1 個錯） |" in out
+    assert out.rstrip().endswith(
+        "- 判定：回歸（日文）：代理不合併，等使用者明確接受並在 PR 上記下理由")
+
+
+def test_a_run_without_manifests_is_left_out(lab, runs, tmp_path, capsys):
+    # 沒有 manifest 就不知道是哪種語言，不能和別的音檔合起來
+    path = _eval(capsys, tmp_path / "eval.json", *runs)
+
+    _, out, _ = _summary(capsys, path)
+
+    assert "- 沒算進判定：demo.lrc（找不到 manifest，不知道是哪種語言）" in out
+    assert "- 判定：無法判定" in out
+
+
+def test_cpmer_too_coarse_to_tell_is_undecided(tmp_path, capsys):
+    # eval 的 JSON 只存 cpMER 的比率（小數第四位）：一段有 30000 個 token 時，0.1000 可能是
+    # 2999～3001 個錯，兩邊都寫 0.1000 就分不出 PR 有沒有比基準多錯
+    systems = []
+    for side in ("main", "pr"):
+        lrc = _write(tmp_path / side / "long.lrc", "[00:01.00][S0] 略\n")
+        _manifest(lrc, "1" * 40, audio="long.wav")
+        excerpt = {"name": "long_A", "subs": 100, "dels": 0, "ins": 0, "ref_len": 30000,
+                   "cp_mer_global": 0.1}
+        systems.append({"transcript": str(lrc), "per_excerpt": [excerpt],
+                        "total_mer": 0.0033, "cp_mer_global": 0.1})
+    path = tmp_path / "eval.json"
+    path.write_text(json.dumps({"command": "eval", "reference": ["long_A.txt"],
+                                "reference_draft_marks": 0, "bootstrap": 1000,
+                                "systems": systems, "paired": None}), encoding="utf-8")
+
+    _, out, _ = _summary(capsys, path)
+
+    assert "| 10.00%（2999～3001 個錯） → 10.00%（2999～3001 個錯） | 無法判定 |" in out
+    assert out.rstrip().endswith(
+        "- 判定：無法判定（中文）：JSON 裡的 cpMER 只到小數第四位，分不出有沒有比基準高；代理不合併，交給使用者")
 
 
 @pytest.mark.parametrize("content", ['{"command": "transcribe"}', "不是 JSON"])
