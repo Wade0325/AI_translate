@@ -148,8 +148,13 @@ class TranscriptionLogRepository:
 
         worker 行程中途被終止（斷電、手動砍掉）不會回來更新狀態，這類紀錄
         會永遠顯示「處理中」。批次有自己的 recover 機制，不在此處理。
+
+        max_age_hours 是 0 時全掃（免安裝模式啟動時：任務跑在同一個行程裡，重新啟動之後一定已經停了），
+        細節照實寫應用程式在轉錄途中關閉了；畫面接回任務時會顯示這個細節（#280）。
         """
         cutoff = datetime.now() - timedelta(hours=max_age_hours)
+        detail = ("應用程式在轉錄途中關閉或重新啟動了，任務沒有做完" if max_age_hours == 0
+                  else f"超過 {max_age_hours} 小時仍在處理中，轉錄途中程式可能關閉或重新啟動了")
         updated = (
             db.query(TranscriptionLog)
             .filter(
@@ -161,8 +166,7 @@ class TranscriptionLogRepository:
                 {
                     TranscriptionLog.status: TaskStatus.FAILED,
                     TranscriptionLog.error_code: ErrorCode.INTERRUPTED,
-                    TranscriptionLog.error_message:
-                        f"超過 {max_age_hours} 小時仍在處理中，轉錄途中程式可能關閉或重新啟動了",
+                    TranscriptionLog.error_message: detail,
                     TranscriptionLog.completed_at: datetime.now(),
                 },
                 synchronize_session=False,

@@ -182,25 +182,31 @@ async function completeTranscription(request, send) {
 /** 單檔任務的 WebSocket：/api/v1/ws/<file_uid> */
 const TRANSCRIPTION_SOCKET = /^\/api\/v1\/ws\/[^/]+$/
 
+/** 連線中斷之後接回任務的 WebSocket：/api/v1/ws/<file_uid>/tasks/<task_uuid>（#280） */
+const REATTACH_SOCKET = /^\/api\/v1\/ws\/([^/]+)\/tasks\/([^/]+)$/
+
 /** 批次的 WebSocket：/api/v1/batch/ws/<batch_id> */
 const BATCH_SOCKET = /^\/api\/v1\/batch\/ws\/[^/]+$/
 
 /**
  * 換上假後端。routes 蓋過 {@link DEFAULT_ROUTES} 的同名端點；transcribe(request, send, close) 決定
  * 單檔任務的 WebSocket 收到請求後怎麼回，預設是 {@link completeTranscription}；
- * batch(request, send, close) 決定批次的 WebSocket 怎麼回，沒給時批次的 WebSocket 算沒有設定。
+ * batch(request, send, close) 決定批次的 WebSocket 怎麼回，沒給時批次的 WebSocket 算沒有設定；
+ * reattach({ file_uid, task_uuid }, send, close) 決定連線中斷之後接回任務的 WebSocket 一連上怎麼回，
+ * 每連一次呼叫一次，沒給時這條 WebSocket 算沒有設定。
  * send 送一則狀態訊息，close 從伺服器那一端關掉連線。
  *
  * 回傳的物件記下畫面送出的東西，給測試檢查：
  *   - requests：每個 /api/v1 請求的 { method, path, query, body }
  *   - transcriptionRequests：從單檔任務的 WebSocket 收到的請求（已解析的 JSON，不含心跳）
+ *   - reattachments：每次接回任務的 WebSocket 連上時的 { file_uid, task_uuid }
  *   - unhandled：沒有設定回應的請求（回 404）與 WebSocket（直接關掉）；測試結束時要是空的，
  *     見 e2e/support/test.js
  *   - external：畫面向本機以外要的資源（網址）；測試結束時也要是空的
  */
-export async function mockBackend(page, { routes = {}, transcribe = completeTranscription, batch } = {}) {
+export async function mockBackend(page, { routes = {}, transcribe = completeTranscription, batch, reattach } = {}) {
     const table = { ...DEFAULT_ROUTES, ...routes }
-    const backend = { requests: [], transcriptionRequests: [], unhandled: [], external: [] }
+    const backend = { requests: [], transcriptionRequests: [], reattachments: [], unhandled: [], external: [] }
 
     // 對外的連線一律擋掉並記下來：app 不收遙測（ADR-0005），開頁面也不該向第三方要資源，
     // 例如 Google Fonts（#16 Q3）。只有使用者點了才開的外部連結（像 GitHub Releases）不算
@@ -231,13 +237,20 @@ export async function mockBackend(page, { routes = {}, transcribe = completeTran
     })
 
     // /api 底下的 WebSocket 全部攔下，沒有一條會經 vite 的 proxy 接到真的後端。模擬單檔任務，以及
-    // 測試給了 batch 時的批次；其他的記成沒有設定，直接關掉
+    // 測試給了 batch、reattach 時的批次與接回任務；其他的記成沒有設定，直接關掉
     await page.routeWebSocket((url) => url.pathname.startsWith('/api/'), (ws) => {
         const path = new URL(ws.url()).pathname
         const id = path.split('/').pop()
         const send = (payload) => ws.send(JSON.stringify(payload))
         const close = () => ws.close()
-        if (TRANSCRIPTION_SOCKET.test(path)) {
+        const reattaching = REATTACH_SOCKET.exec(path)
+        if (reattach && reattaching) {
+            // 伺服器一連上就先回任務現在的狀態；畫面送來的只有心跳
+            const task = { file_uid: reattaching[1], task_uuid: reattaching[2] }
+            backend.reattachments.push(task)
+            ws.onMessage(() => {})
+            reattach(task, send, close)
+        } else if (TRANSCRIPTION_SOCKET.test(path)) {
             ws.onMessage(async (message) => {
                 const data = JSON.parse(String(message))
                 if (data.type === 'ping') return
