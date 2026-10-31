@@ -91,10 +91,15 @@ def parse_port(argv: Sequence[str]) -> int | None:
 
 
 def pause() -> None:
-    """失敗時停下來，雙擊執行的人才看得到原因。輸入不是 console（例如導向檔案）時不等。"""
+    """失敗時停下來，雙擊執行的人才看得到原因。輸入不是 console（例如導向檔案）時不等。
+
+    伺服器跑的時候按過的鍵還留在 console 的緩衝區：先丟掉，否則一停下來就被它們關掉（和啟動器相同）。
+    """
     print("按任意鍵關閉...", flush=True)
     if sys.platform == "win32" and sys.stdin is not None and sys.stdin.isatty():
         import msvcrt
+        while msvcrt.kbhit():
+            msvcrt.getch()
         msvcrt.getch()
 
 

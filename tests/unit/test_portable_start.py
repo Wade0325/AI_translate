@@ -7,8 +7,11 @@ start.bat 是防毒軟體攔下 AI_Translate.exe 時的手動啟動，只用隨�
 start.bat 只能是 ASCII：cmd 遇到多位元組字元會算錯下一行的位置，把後面的字當成指令執行（#267 在
 Windows 10 上實測到）。發布包裡的換行、BOM 與 ASCII 由 CI 檢查 zip（tools/portable_zip.py）。
 """
+import io
 import re
 import subprocess
+import sys
+import types
 from pathlib import Path, PureWindowsPath
 
 import pytest
@@ -230,6 +233,49 @@ class TestMain:
         captured = capsys.readouterr()
         assert "PermissionError: 拒絕存取" in captured.err
         assert "按任意鍵關閉" in captured.out
+
+
+class _Console:
+    """假的 stdin：是 console。"""
+
+    def isatty(self) -> bool:
+        return True
+
+
+class TestPause:
+    def _msvcrt(self, monkeypatch, pending: list[bytes]) -> list[bytes]:
+        """換成假的 Windows console：pending 是緩衝區裡已經按過的鍵；回傳讀到的鍵。"""
+        read: list[bytes] = []
+
+        def getch() -> bytes:
+            key = pending.pop(0) if pending else b"now"
+            read.append(key)
+            return key
+
+        fake = types.ModuleType("msvcrt")
+        fake.kbhit = lambda: bool(pending)  # type: ignore[attr-defined]
+        fake.getch = getch  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "msvcrt", fake)
+        monkeypatch.setattr(sys, "platform", "win32")
+        return read
+
+    def test_keys_pressed_while_the_server_ran_do_not_close_the_window(self, monkeypatch):
+        # 伺服器跑的時候按過的鍵還在緩衝區：先丟掉，等的是看到訊息之後的那一下（和啟動器相同）
+        read = self._msvcrt(monkeypatch, [b"a", b"\r"])
+        monkeypatch.setattr(sys, "stdin", _Console())
+
+        start.pause()
+
+        assert read == [b"a", b"\r", b"now"]
+
+    def test_does_not_wait_when_input_is_not_a_console(self, monkeypatch, capsys):
+        read = self._msvcrt(monkeypatch, [])
+        monkeypatch.setattr(sys, "stdin", io.StringIO(""))
+
+        start.pause()
+
+        assert read == []
+        assert "按任意鍵關閉" in capsys.readouterr().out
 
 
 class _FakeProcess:
