@@ -142,6 +142,9 @@ def test_network_errors(error):
 
 @pytest.mark.parametrize("reason, code", [
     ("no_gpu", ErrorCode.LOCAL_NO_GPU),
+    ("driver_too_old", ErrorCode.LOCAL_DRIVER_TOO_OLD),
+    ("cuda_init_failed", ErrorCode.LOCAL_CUDA_INIT_FAILED),
+    ("torch_load_failed", ErrorCode.LOCAL_TORCH_LOAD_FAILED),
     ("unsupported_gpu", ErrorCode.LOCAL_UNSUPPORTED_GPU),
     ("missing_weights", ErrorCode.LOCAL_MISSING_WEIGHTS),
 ])
@@ -227,6 +230,7 @@ def test_error_code_values_are_unchanged():
         "GEMINI_NO_API_KEY", "GEMINI_KEY_REJECTED", "GEMINI_BILLING", "GEMINI_QUOTA",
         "GEMINI_UNAVAILABLE", "GEMINI_BLOCKED", "GEMINI_REQUEST_FAILED", "NETWORK",
         "LOCAL_NO_GPU", "LOCAL_UNSUPPORTED_GPU", "LOCAL_MISSING_WEIGHTS", "LOCAL_OUT_OF_MEMORY",
+        "LOCAL_DRIVER_TOO_OLD", "LOCAL_CUDA_INIT_FAILED", "LOCAL_TORCH_LOAD_FAILED",
         "AUDIO_UNREADABLE", "NO_TRANSCRIPT",
         "UNSUPPORTED_REQUEST", "UPLOAD_MISSING", "SUBMIT_FAILED",
         "INTERRUPTED", "DATABASE", "BATCH_FAILED", "INTERNAL",
