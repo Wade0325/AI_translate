@@ -757,7 +757,8 @@ def cmd_apply(args) -> int:
     if target.exists():
         raise UsageError(f"{target} 已經存在：不覆寫，換一個 --out 或先移走它。")
     out_dir.mkdir(parents=True, exist_ok=True)
-    target.write_text(applied.text, encoding="utf-8")
+    # 只用 LF，Windows 上也不換成 CRLF（同 transcribe 寫的 LRC）
+    target.write_text(applied.text, encoding="utf-8", newline="")
 
     c = applied.counts
     print(f"已決定 {len(payload['spots']) - c['undecided']}／{len(payload['spots'])} 處："

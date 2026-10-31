@@ -285,7 +285,9 @@ def test_apply_uses_each_choice_and_marks_undecided_spots(tmp_path, compared, ca
 
     assert code == 0
     assert "沒決定 1（加了草稿標記）" in capsys.readouterr().out
-    text = (tmp_path / "final" / "demo_A.txt").read_text(encoding="utf-8")
+    written = (tmp_path / "final" / "demo_A.txt").read_bytes()
+    assert b"\r\n" not in written  # Windows 上也只用 LF
+    text = written.decode("utf-8")
     assert "[00:01.00] A: 我們夏洲二去爬山。\n" in text
     assert "[00:05.00] B: 要帶雨傘呢？\n" in text
     assert "A: 天気が良(?)ければ散歩に行きます。\n" in text
