@@ -44,7 +44,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Iterator, Optional, Union
+from typing import Any, Callable, Dict, Iterator, List, Optional, Union
 
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -381,7 +381,8 @@ class TaskLifecycle:
 
         response = _completed_response(
             self._task_uuid, transcripts, tokens=tokens, cost=cost, model=self._task.model,
-            source_language=self._task.source_lang, duration=self._duration)
+            source_language=self._task.source_lang, duration=self._duration,
+            speaker_count=_speaker_count(result.segments))
         return _Outcome(TaskStatus.COMPLETED, "任務完成", broadcast_result=response,
                         return_value={"raw_lrc_text": transcripts["lrc"]})
 
@@ -601,15 +602,16 @@ def completed_result(db: Session, task_uuid) -> Optional[dict]:
         return None
     transcripts = {fmt.value: output_format.for_task(db, record, fmt) or ""
                    for fmt in output_format.OutputFormat}
+    segments = TranscriptSegmentRepository.segments_for_task(db, record.task_uuid)
     return _completed_response(
         record.task_uuid, transcripts, tokens=record.total_tokens or 0, cost=record.cost or 0.0,
         model=record.model_used or "", source_language=record.source_language or "",
-        duration=record.audio_duration_seconds or 0.0)
+        duration=record.audio_duration_seconds or 0.0, speaker_count=_speaker_count(segments))
 
 
 def _completed_response(task_uuid, transcripts: dict, *, tokens: int, cost: float, model: str,
-                        source_language: str, duration: float) -> dict:
-    """完成時送給畫面的結果：四種輸出格式與計價。"""
+                        source_language: str, duration: float, speaker_count: int) -> dict:
+    """完成時送給畫面的結果：四種輸出格式、計價與說話者人數。"""
     response = TranscriptionResponse(
         task_uuid=task_uuid,
         transcripts=transcripts,
@@ -618,9 +620,15 @@ def _completed_response(task_uuid, transcripts: dict, *, tokens: int, cost: floa
         model=model,
         source_language=source_language,
         audio_duration_seconds=duration,
+        speaker_count=speaker_count,
     ).model_dump()
     response["task_uuid"] = response["task_uuid"].hex
     return response
+
+
+def _speaker_count(segments: List[Dict[str, Any]]) -> int:
+    """片段裡出現幾個不同的說話者編號（結果頁顯示的人數，#13 Q1）；沒有說話者編號的片段不算。"""
+    return len({seg["speaker"] for seg in segments if seg.get("speaker")})
 
 
 def _discount(service_tier: Optional[str]) -> Optional[float]:

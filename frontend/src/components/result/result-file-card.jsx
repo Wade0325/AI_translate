@@ -72,7 +72,8 @@ export function ResultFileCard({ file, onDownload }) {
                     {/* Row 2: stats */}
                     <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px 16px' }}>
                         <StatChip icon={Languages} label={file.language || "Unknown"} />
-                        <StatChip icon={Users} label={`${fData.speakerCount || 1} speaker(s)`} />
+                        {/* 轉錄結果裡實際出現的說話者人數（後端從片段算）；不知道或沒有說話者編號時不顯示 */}
+                        {fData.speakerCount > 0 && <StatChip icon={Users} label={`${fData.speakerCount} speaker(s)`} />}
                         <StatChip icon={Clock} label={formatDuration(file.audioDurationSec || 0)} />
                         {fData.cost !== undefined && <StatChip icon={Coins} label={`$${fData.cost.toFixed(4)}`} highlight />}
                     </div>

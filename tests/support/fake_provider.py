@@ -44,9 +44,10 @@ CAPABILITIES = ModelCapabilities(
 Word = Tuple[str, float, float]
 """(詞, 起, 迄)：對齊器的一個詞，時間軸和所屬的那一行相同。"""
 
-Line = Union[Tuple[float, Optional[float], int, str],
-             Tuple[float, Optional[float], int, str, Sequence[Word]]]
-"""(起, 迄, 說話者編號, 文字[, 逐字時間])，時間軸是送進來的這段音檔；迄是 None 時片段沒有結束時間。"""
+Line = Union[Tuple[float, Optional[float], Optional[int], str],
+             Tuple[float, Optional[float], Optional[int], str, Sequence[Word]]]
+"""(起, 迄, 說話者編號, 文字[, 逐字時間])，時間軸是送進來的這段音檔；迄是 None 時片段沒有結束時間，
+說話者編號是 None 時片段沒有說話者編號（例如 Gemini 沒寫說話者代號的行）。"""
 
 
 @dataclass
@@ -84,7 +85,8 @@ BATCH_DONE = frozenset({"SUCCEEDED", "FAILED", "CANCELLED", "EXPIRED"})
 def _segment(i: int, line: Line) -> dict:
     start, end, speaker, text, *timings = line
     segment = {"seg_key": f"{i:04d}", "seq": i, "start": start, "end": end,
-               "speaker": f"S{speaker}", "text": text, "source": "fake"}
+               "speaker": None if speaker is None else f"S{speaker}", "text": text,
+               "source": "fake"}
     if timings:
         segment["words"] = [{"text": word, "start": word_start, "end": word_end}
                             for word, word_start, word_end in timings[0]]

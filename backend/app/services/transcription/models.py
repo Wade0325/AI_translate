@@ -43,3 +43,6 @@ class TranscriptionResponse(BaseModel):
     model: str = Field(..., description="使用的模型名稱")
     source_language: str = Field(..., description="來源語言")
     audio_duration_seconds: float = Field(..., description="音訊總時長（秒）")
+    speaker_count: int = Field(
+        ..., description="片段裡出現幾個不同的說話者編號，結果頁顯示的人數；沒有片段帶說話者編號時"
+                         "（例如 Gemini 沒寫說話者代號）是 0")

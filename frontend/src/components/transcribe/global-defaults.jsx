@@ -1,6 +1,6 @@
 // @ts-nocheck
-import { Select, Switch, Slider, Typography, Input, Tooltip } from "antd"
-import { Languages, Users, Clock, MessageSquareText, ChevronDown, CopyCheck } from "lucide-react"
+import { Select, Switch, Typography, Input, Tooltip } from "antd"
+import { Languages, Users, MessageSquareText, ChevronDown, CopyCheck } from "lucide-react"
 import { useState } from "react"
 import { ReasonText } from "@/components/disabled-reason"
 import { languages } from "@/constants/languages"
@@ -48,40 +48,9 @@ export function GlobalDefaults({ config, onChange, onApplyAll, fileCount = 0, pr
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, height: 32 }}>
                         <Switch
                             size="small"
+                            aria-label="Multi-Speaker"
                             checked={config.isMultiSpeaker}
                             onChange={(v) => update({ isMultiSpeaker: v })}
-                        />
-                        {config.isMultiSpeaker && (
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                                <Slider
-                                    min={2}
-                                    max={10}
-                                    step={1}
-                                    value={config.speakerCount}
-                                    onChange={(v) => update({ speakerCount: v })}
-                                    style={{ width: 80, margin: 0 }}
-                                />
-                                <Text strong style={{ fontSize: 12, color: '#2dd4a8', width: 12, textAlign: 'center' }}>
-                                    {config.speakerCount}
-                                </Text>
-                            </div>
-                        )}
-                    </div>
-                </div>
-
-                {/* Divider */}
-                <div style={{ height: 32, width: 1, background: '#3a3a5c', alignSelf: 'flex-end' }} />
-
-                {/* Timestamps */}
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                    <Text style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: '#8888a8' }}>
-                        <Clock size={12} /> Timestamps
-                    </Text>
-                    <div style={{ display: 'flex', alignItems: 'center', height: 32 }}>
-                        <Switch
-                            size="small"
-                            checked={config.includeTimestamps}
-                            onChange={(v) => update({ includeTimestamps: v })}
                         />
                     </div>
                 </div>

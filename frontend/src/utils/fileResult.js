@@ -21,6 +21,8 @@ export function applyFileResult(file, data) {
     next.audioDurationSec = data.result?.audio_duration_seconds;
     next.model = data.result?.model ?? file.model;
     next.sourceLanguage = data.result?.source_language;
+    // 轉錄結果裡實際出現的說話者人數；沒有片段帶說話者編號時是 0，結果頁不顯示
+    next.speakerCount = data.result?.speaker_count;
   } else if (data.status_code === TASK_STATUS.FAILED) {
     next.status = 'error';
     next.percent = 100;

@@ -51,6 +51,22 @@ test('費用估算只給按 token 計費的模型：選本機時只顯示檔案�
     await expect(page.getByRole('button', { name: 'Start' })).toBeEnabled()
 })
 
+test('Multi-Speaker 只有開關：沒有人數滑桿，也沒有 Timestamps 開關（#13 Q1、Q2）', async ({ page, mockBackend }) => {
+    await mockBackend()
+    await page.goto('/transcribe')
+    await addAudio(page)
+    await expect(page.getByText('Single', { exact: true })).toBeVisible()
+
+    // 全域與每檔設定都只有開關；打開也不會冒出人數滑桿，檔案卡的標籤只寫開或關
+    await page.getByRole('switch', { name: 'Multi-Speaker', exact: true }).click()
+    await page.getByRole('button', { name: '每檔設定' }).click()
+    await expect(page.getByRole('switch', { name: '這個檔案的 Multi-Speaker' })).toBeChecked()
+
+    await expect(page.getByText('Multi-speaker', { exact: true })).toBeVisible()
+    await expect(page.getByRole('slider')).toHaveCount(0)
+    await expect(page.getByText(/^(No )?timestamps$/i)).toHaveCount(0)
+})
+
 test('選本機送出一個檔案，顯示處理中，完成後到結果頁下載 SRT', async ({ page, mockBackend }) => {
     // 假後端送出處理中之後先停住，等畫面上看到處理中才送完成
     let finish
@@ -91,6 +107,8 @@ test('選本機送出一個檔案，顯示處理中，完成後到結果頁下�
     await page.getByRole('link', { name: 'Result Viewer' }).click()
     await expect(page).toHaveURL(/\/result$/)
     await expect(page.getByText(AUDIO.name)).toBeVisible()
+    // 說話者人數是後端從轉錄結果算的，不是轉錄頁填的人數（#13 Q1）
+    await expect(page.getByText('2 speaker(s)')).toBeVisible()
 
     await page.getByRole('button', { name: 'Download', exact: true }).hover()
     expect(await download(page, () => page.getByText('SRT (Subtitles)').click()))

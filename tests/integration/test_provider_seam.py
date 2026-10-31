@@ -319,6 +319,15 @@ class TestSingleFileTask:
         # 沒超過單次能處理的長度：整個語音視圖一次送進供應商
         assert len(fake.calls) == 1
 
+    def test_result_counts_the_speakers_in_the_segments(self, api, fake):
+        # 結果頁的說話者人數是轉錄結果裡實際出現的說話者編號（S0、S1 兩位），不是使用者填的人數（#13 Q1）
+        assert transcribe(api, "uid-speakers")[-1]["result"]["speaker_count"] == 2
+
+    def test_result_counts_no_speakers_when_no_segment_has_one(self, api, fake):
+        # Gemini 沒寫說話者代號的行沒有說話者編號：人數是 0，結果頁不顯示人數
+        fake.script = [[(0.2, 1.5, None, "おはよう。"), (2.3, 3.6, None, "こんにちは。")]]
+        assert transcribe(api, "uid-no-speakers")[-1]["result"]["speaker_count"] == 0
+
     @pytest.mark.parametrize("fmt", ["srt", "vtt", "lrc", "txt"])
     def test_every_output_format_downloads(self, api, fmt):
         task_uuid = transcribe(api, "uid-complete")[-1]["task_uuid"]

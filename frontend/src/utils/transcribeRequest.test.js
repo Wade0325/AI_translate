@@ -89,7 +89,7 @@ describe('批次送出的提示詞（補充說明）', () => {
 
 describe('檔案卡顯示的提示詞', () => {
   it('跟著全域：沒有自己的提示詞（沒填過，或清空、只剩空白），套用全域設定之後也是', () => {
-    const globalConfig = { language: 'ja-JP', isMultiSpeaker: false, speakerCount: 2, includeTimestamps: true };
+    const globalConfig = { language: 'ja-JP', isMultiSpeaker: false };
     expect([
       followsGlobalPrompt(untouched()),
       followsGlobalPrompt(untouched({ prompt: '這個檔案是關西腔' })),
@@ -148,7 +148,7 @@ describe('按 Start 時的全域預設', () => {
 describe('套用全域設定（Apply to All、Reset to global）', () => {
   it('套用之後，檔案跟著全域提示詞走：之後改的全域提示詞也會送出；語言照套用當下的全域值', () => {
     const globalConfig = {
-      language: 'zh-TW', isMultiSpeaker: true, speakerCount: 3, includeTimestamps: false,
+      language: 'zh-TW', isMultiSpeaker: true,
       prompt: '套用當下的全域提示詞',
     };
     const file = {
