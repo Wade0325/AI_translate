@@ -80,6 +80,12 @@ as described below.
   其中 --enable-lib… 等項目是靜態連入 ffmpeg.exe 的外部函式庫；每個函式庫的上游位置與
   版本，記在上面建置腳本的 scripts.d\ 裡。
 
+- 靜態連入的函式庫：這些外部函式庫與它們的依賴，連同 mingw-w64 與 GCC 的執行期函式庫，
+  各自的版本、來源與授權全文：
+    licenses\ffmpeg\libraries.txt
+  其中 rav1e 與 librsvg 是 Rust 寫的，它們用到的 Rust 套件（crate）：
+    licenses\ffmpeg\rust-crates.txt
+
 This software is based in part on the work of the Independent JPEG Group.
 （FFmpeg 的 libavcodec 有部分程式碼來自 IJG 的 libjpeg，依它的條款在這裡致謝。）
 
@@ -104,6 +110,8 @@ FFmpeg is a trademark of Fabrice Bellard, originator of the FFmpeg project.
 - 授權：MIT License 或 Apache License 2.0，擇一適用（Copyright (c) 2025 Astral Software Inc.）：
     licenses\uv\LICENSE-MIT.txt
     licenses\uv\LICENSE-APACHE.txt
+- uv.exe 靜態連入的 Rust 標準函式庫與 Rust 套件（crate），各自的版本與授權全文：
+    licenses\uv\crates.txt
 
 
 4. 介面（frontend\dist）打包的 npm 套件

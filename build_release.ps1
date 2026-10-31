@@ -287,9 +287,12 @@ $required = @(
     "THIRD_PARTY_NOTICES.txt",
     "licenses\ffmpeg\COPYING.LGPLv3.txt",
     "licenses\ffmpeg\COPYING.GPLv3.txt",
+    "licenses\ffmpeg\libraries.txt",
+    "licenses\ffmpeg\rust-crates.txt",
     "licenses\python\LICENSE.txt",
     "licenses\uv\LICENSE-MIT.txt",
     "licenses\uv\LICENSE-APACHE.txt",
+    "licenses\uv\crates.txt",
     "licenses\frontend\npm-packages.txt"
 )
 foreach ($rel in $required) {
