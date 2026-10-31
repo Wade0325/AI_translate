@@ -1,7 +1,7 @@
 import { test, expect, download } from './support/test.js'
 import {
-    GEMINI_UPLOAD_NOTICE, PROVIDERS, QUEUED_TEXT, SUBMISSION_FAILED_TEXT, TRANSCRIPTS, readiness, reply,
-    transcriptionMessages,
+    GEMINI_UPLOAD_NOTICE, PROVIDERS, QUEUED_TEXT, SUBMISSION_FAILED_TEXT, TRANSCRIPTS, UPLOAD_LIMITS, readiness,
+    reply, transcriptionMessages,
 } from './support/backend.js'
 
 // 內容不重要：音檔只經過假後端，不會被解碼
@@ -259,7 +259,7 @@ test('失敗訊息沒帶錯誤碼時，檔案卡照狀態文字寫出原因', as
 })
 
 test('上傳被拒絕時，檔案卡寫出伺服器說的原因（#24 門檻 4）', async ({ page, mockBackend }) => {
-    const detail = '不支援這種檔案格式（image/jpeg），請改用常見的音訊或影片格式，例如 MP3、WAV、M4A、MP4'
+    const detail = '檔案是空的（0 位元組），請確認檔案沒有損壞'
     await mockBackend({ routes: { 'POST /upload': reply(400, { detail }) } })
     await page.goto('/transcribe')
 
@@ -271,6 +271,34 @@ test('上傳被拒絕時，檔案卡寫出伺服器說的原因（#24 門檻 4�
     await expect(notice.getByText(`錯誤碼 UPLOAD_FAILED · ${detail}`)).toBeVisible()
 })
 
+const SUPPORTED = '（音檔可以用 MP3、WAV、M4A、FLAC；影片可以用 MP4、MOV、MKV、WebM、AVI、WMV、M4V、3GP、MPG、MPEG）'
+
+test('上傳區照伺服器的清單列出音檔與影片格式、上限，說明影片只轉錄聲音（#258）', async ({ page, mockBackend }) => {
+    await mockBackend()
+    await page.goto('/transcribe')
+
+    await expect(page.getByText('音檔 MP3、WAV、M4A、FLAC，影片 MP4、MOV、MKV、WebM、AVI、WMV、M4V、3GP、MPG、MPEG（上限 2 GB）')).toBeVisible()
+    await expect(page.getByText('影片會先在這台電腦抽出聲音，只轉錄聲音，畫面不會送出')).toBeVisible()
+    await expect(page.locator('.ant-upload input[type=file]')).toHaveAttribute(
+        'accept', '.mp3,.wav,.m4a,.flac,.mp4,.mov,.mkv,.webm,.avi,.wmv,.m4v,.3gp,.mpg,.mpeg')
+})
+
+test('影片可以直接加入並轉錄；瀏覽器沒給 MIME 類型也照副檔名收（#258）', async ({ page, mockBackend }) => {
+    const backend = await mockBackend({ routes: { 'POST /upload': { filename: 'meeting_1.flac' } } })
+    await page.goto('/transcribe')
+
+    await page.locator('.ant-upload input[type=file]').setInputFiles([
+        { name: 'meeting.mp4', mimeType: 'video/mp4', buffer: Buffer.from('ftypisom') },
+        { name: 'interview.M4A', mimeType: '', buffer: Buffer.from('ftypM4A ') },
+    ])
+    await expect(page.getByText('meeting.mp4')).toBeVisible()
+    await expect(page.getByText('interview.M4A')).toBeVisible()
+    await page.getByRole('button', { name: 'Start' }).click()
+
+    await expect(page.getByText('轉錄完成')).toHaveCount(2)
+    expect(backend.requests.filter((r) => r.path === '/upload')).toHaveLength(2)
+})
+
 test('加入伺服器不收的格式時，當場說明不支援並列出可以用的格式', async ({ page, mockBackend }) => {
     await mockBackend()
     await page.goto('/transcribe')
@@ -279,8 +307,51 @@ test('加入伺服器不收的格式時，當場說明不支援並列出可以�
         name: 'voice.ogg', mimeType: 'audio/ogg', buffer: Buffer.from('OggS'),
     })
 
-    await expect(page.getByText('不支援這種格式：voice.ogg（可以用 MP3、WAV、M4A、FLAC、WebM）')).toBeVisible()
-    await expect(page.getByText('MP3, WAV, M4A, FLAC, WebM (max 1000MB)')).toBeVisible()
+    await expect(page.getByText(`不支援這種格式：voice.ogg${SUPPORTED}`)).toBeVisible()
+    await expect(page.getByText('voice.ogg', { exact: true })).toHaveCount(0)
+})
+
+test('拖進不收的格式時也說明原因，不會默默沒反應（#258）', async ({ page, mockBackend }) => {
+    await mockBackend()
+    await page.goto('/transcribe')
+
+    const dropped = await page.evaluateHandle(() => {
+        const transfer = new DataTransfer()
+        transfer.items.add(new File(['%PDF-1.4'], 'slides.pdf', { type: 'application/pdf' }))
+        return transfer
+    })
+    await page.locator('.ant-upload-drag .ant-upload-btn').dispatchEvent('drop', { dataTransfer: dropped })
+
+    await expect(page.getByText(`不支援這種格式：slides.pdf${SUPPORTED}`)).toBeVisible()
+})
+
+test('超過伺服器的大小上限時，當場說明檔案太大（#258）', async ({ page, mockBackend }) => {
+    // 上限改成 1 MB：測試裡不必做出 2 GB 的檔案
+    await mockBackend({ routes: { 'GET /upload/limits': { ...UPLOAD_LIMITS, max_bytes: 1024 ** 2 } } })
+    await page.goto('/transcribe')
+
+    await page.locator('.ant-upload input[type=file]').setInputFiles({
+        name: 'long.wav', mimeType: 'audio/wav', buffer: Buffer.alloc(1.5 * 1024 ** 2),
+    })
+
+    await expect(page.getByText('檔案太大：long.wav（1.5 MB，上限 1 MB）')).toBeVisible()
+    await expect(page.getByText('long.wav', { exact: true })).toHaveCount(0)
+})
+
+test('讀不到格式清單時照樣可以加入檔案，交給伺服器上傳時檢查（#258）', async ({ page, mockBackend }) => {
+    const detail = '不支援這種檔案格式（.ogg）。可以上傳的音檔：MP3、WAV、M4A、FLAC；影片：MP4、MOV、MKV、WebM、AVI、WMV、M4V、3GP、MPG、MPEG'
+    await mockBackend({
+        routes: { 'GET /upload/limits': reply(500, { detail: 'Internal Server Error' }), 'POST /upload': reply(400, { detail }) },
+    })
+    await page.goto('/transcribe')
+
+    await page.locator('.ant-upload input[type=file]').setInputFiles({
+        name: 'voice.ogg', mimeType: 'audio/ogg', buffer: Buffer.from('OggS'),
+    })
+    await expect(page.getByText('voice.ogg')).toBeVisible()
+    await page.getByRole('button', { name: 'Start' }).click()
+
+    await expect(page.getByTestId('failure-notice').getByText(`錯誤碼 UPLOAD_FAILED · ${detail}`)).toBeVisible()
 })
 
 test('排在別的任務後面時，檔案卡顯示排隊中，輪到時接著顯示進度（#24 門檻 4）', async ({ page, mockBackend }) => {

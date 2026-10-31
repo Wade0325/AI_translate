@@ -87,6 +87,19 @@ export const LOCAL_DATA = {
     retained_audio: { enabled: true, retention_days: 30, folder: '/app/audio_store', file_count: 0, total_bytes: 0 },
 }
 
+/**
+ * GET /upload/limits：上傳收的格式與大小上限（backend/app/core/upload_formats.py，#258）。只看副檔名；
+ * 影片在上傳時抽出音訊。
+ */
+export const UPLOAD_LIMITS = {
+    formats: [
+        ...['MP3', 'WAV', 'M4A', 'FLAC'].map((label) => ({ extension: `.${label.toLowerCase()}`, label, kind: 'audio' })),
+        ...['MP4', 'MOV', 'MKV', 'WebM', 'AVI', 'WMV', 'M4V', '3GP', 'MPG', 'MPEG']
+            .map((label) => ({ extension: `.${label.toLowerCase()}`, label, kind: 'video' })),
+    ],
+    max_bytes: 2 * 1024 ** 3,
+}
+
 const EMPTY_STATS = {
     total_tasks: 0, completed_tasks: 0, failed_tasks: 0, success_rate: 0.0, total_cost: 0.0,
     total_tokens: 0, total_audio_duration_seconds: 0.0, avg_processing_time_seconds: 0.0,
@@ -99,6 +112,7 @@ const EMPTY_STATS = {
 const DEFAULT_ROUTES = {
     'GET /providers': PROVIDERS,
     'GET /version': { version: 'v0.1.0-test' },
+    'GET /upload/limits': UPLOAD_LIMITS,
     'GET /setting/models/google': GOOGLE_CONFIG,
     'GET /setting/models/local': { provider: 'Local', apiKeys: [], model: null, prompt: null },
     // Docker 模式的回應：設定頁不顯示本機模型權重的卡片，轉錄頁不問這台電腦能不能轉錄（#11）

@@ -1,31 +1,12 @@
 """
 單元測試：上傳工具函數
-測試範圍：api/upload.py 中的 stored_name 與 SUPPORTED_MIME_TYPES
+測試範圍：api/upload.py 中的 stored_name（收哪些格式見 test_upload_formats.py）
 """
 import re
 
 import pytest
 
-from app.api.upload import stored_name, SUPPORTED_MIME_TYPES
-
-
-# ─── SUPPORTED_MIME_TYPES ────────────────────────────────────────────────────
-
-class TestSupportedMimeTypes:
-    def test_common_audio_types_supported(self):
-        assert "audio/mpeg" in SUPPORTED_MIME_TYPES
-        assert "audio/wav" in SUPPORTED_MIME_TYPES
-        assert "audio/mp4" in SUPPORTED_MIME_TYPES
-        assert "audio/flac" in SUPPORTED_MIME_TYPES
-
-    def test_common_video_types_supported(self):
-        assert "video/mp4" in SUPPORTED_MIME_TYPES
-        assert "video/webm" in SUPPORTED_MIME_TYPES
-
-    def test_unsupported_types_not_in_set(self):
-        assert "image/jpeg" not in SUPPORTED_MIME_TYPES
-        assert "application/pdf" not in SUPPORTED_MIME_TYPES
-        assert "text/plain" not in SUPPORTED_MIME_TYPES
+from app.api.upload import stored_name
 
 
 # ─── stored_name ─────────────────────────────────────────────────────────────

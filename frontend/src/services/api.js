@@ -62,6 +62,10 @@ export const api = {
   upload(formData) {
     return request('/upload', { method: 'POST', body: formData });
   },
+  /** 上傳收的格式與大小上限：{ formats: [{ extension, label, kind }], max_bytes }（utils/uploadLimits.js） */
+  uploadLimits() {
+    return request('/upload/limits');
+  },
   transcription: {
     cancel(fileUid) {
       return request(`/transcription/${fileUid}/cancel`, { method: 'POST' });
