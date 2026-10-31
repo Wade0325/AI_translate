@@ -2,8 +2,10 @@
 
 期望值是本機原本會產生的輸出：LRC 照本機的斷行規則（#110 之前由本機轉接器自己寫 LRC，搭配
 真的 Qwen3-ForcedAligner 斷詞）手算，SRT／VTT／TXT 是舊的 LRC 轉換器從那份 LRC 轉出的結果。
-和原本不同的只有兩處：SRT／VTT 的結束時間改用片段的真實結束時間（#96，見「SRT／VTT 的結束時間」
-那一節）；秒數取到 0.01 是 60 的 LRC 時間戳進到下一分鐘（#154，見「LRC 時間戳的進位」那一節）。
+和原本不同的有四處：SRT／VTT 的結束時間改用片段的真實結束時間（#96，見「SRT／VTT 的結束時間」
+那一節）；秒數取到 0.01 是 60 的 LRC 時間戳進到下一分鐘（#154，見「LRC 時間戳的進位」那一節）；
+SRT／VTT 的開始時間四捨五入到毫秒，不再捨去（#24，見「SRT／VTT／TXT」那一節）；VTT 跳脫
+特殊字元（#24，見「SRT／VTT 的特殊字元」那一節）。
 逐字時間的 text 是對齊器的詞：標點被丟掉，漢字一字一詞，連續的假名、英數字是一詞。
 「本機的逐字時間都用得上」那一節用真的對齊器斷詞，確認本機存下來的逐字時間都對得上文字；
 「和 #110 之前本機寫的 LRC 逐字相同」那一節比對隨機片段和存下來的舊輸出。
@@ -351,14 +353,95 @@ class TestSrtVttAndTxt:
             "[S0] おはようございます。\n[S0] 今日は、いい天気ですね！\n"
             "[S1] ラーメン食べた？\n[S1] 人々も来た。")
 
-    def test_starts_are_read_back_from_lrc_timestamps_and_ends_are_milliseconds(self):
-        # 開始時間和以前從 LRC 轉換時相同：取 LRC 時間戳讀回來的值，毫秒以下捨去（11.60 寫成
-        # 11,599）。結束時間是每一行最後一個詞的結束，取到毫秒（11.2 寫成 11,200）
+    def test_starts_are_lrc_timestamps_and_ends_are_rounded_to_milliseconds(self):
+        # 開始時間是 LRC 時間戳的值（0.01 秒），結束時間是每一行最後一個詞的結束，兩者都四捨五入
+        # 到毫秒。以前開始時間捨去：11.60 讀回來是浮點數 11.599…，寫成 11,599
         assert formats(*SENTENCES).srt == (
             "1\n00:00:10,080 --> 00:00:11,200\n[S0] おはようございます。\n\n"
-            "2\n00:00:11,599 --> 00:00:13,600\n[S0] 今日は、いい天気ですね！\n\n"
+            "2\n00:00:11,600 --> 00:00:13,600\n[S0] 今日は、いい天気ですね！\n\n"
             "3\n00:00:14,080 --> 00:00:15,360\n<font color=\"#FFDD55\">[S1] ラーメン食べた？</font>\n\n"
-            "4\n00:00:15,839 --> 00:00:16,800\n<font color=\"#FFDD55\">[S1] 人々も来た。</font>\n")
+            "4\n00:00:15,840 --> 00:00:16,800\n<font color=\"#FFDD55\">[S1] 人々も来た。</font>\n")
+
+    @pytest.mark.parametrize("stamp, start", [
+        ("[00:11.60]", "00:00:11,600"),
+        ("[00:04.35]", "00:00:04,350"),
+        # Gemini 寫的時間戳有三位小數：1.001 讀回來是 1.000999…，以前寫成 1,000
+        ("[00:01.001]", "00:00:01,001"),
+    ])
+    def test_stored_lrc_starts_are_rounded_to_milliseconds(self, stamp, start):
+        # 沒有片段的任務從存下來的 LRC 轉換，開始時間一樣四捨五入
+        result = output_format.convert_from_lrc(f"{stamp}[S0] はい")
+        assert result.srt.split("\n")[1] == f"{start} --> 00:00:{int(start[6:8]) + 5:02d},{start[9:]}"
+        assert result.vtt.split("\n")[2].startswith(start.replace(",", ".") + " --> ")
+
+    def test_every_start_is_on_an_lrc_timestamp(self):
+        # 300 組隨機片段（見「和 #110 之前本機寫的 LRC 逐字相同」）：SRT 每一則的開始都是 LRC 的
+        # 0.01 秒，毫秒的最後一位是 0；以前捨去，一部分的開始少 1 毫秒，最後一位是 9
+        starts = [int(ms) for entries in random_cases()
+                  for ms in re.findall(r"^\d\d:\d\d:\d\d,(\d{3}) --> ",
+                                       formats(*map(stored_segment, entries)).srt,
+                                       flags=re.MULTILINE)]
+        assert starts
+        assert [ms for ms in starts if ms % 10] == []
+
+
+# ─── SRT／VTT 的特殊字元 ─────────────────────────────────────────────────────
+
+SPECIAL = "A & B <笑> --> x"
+
+
+class TestSpecialCharacters:
+    """VTT 依 WebVTT 規格跳脫字幕文字：& 與 < 要寫成字元參照（§4.2.2），字幕內容不能有「-->」
+    （§4.1），所以 &、<、> 寫成 &amp;、&lt;、&gt;。沒跳脫時播放器把 <笑> 當成標籤吃掉。
+    SRT 沒有跳脫的寫法：VLC 3.0 與 ffmpeg 都不解 &amp; 這類字元參照，跳脫了反而照字面顯示，
+    所以照原樣寫；兩者都把沒有結尾標籤的 <笑> 照原樣顯示。LRC、TXT 是純文字，也照原樣寫。"""
+
+    def test_vtt_escapes_ampersands_angle_brackets_and_the_arrow(self):
+        result = formats({"start": 1.0, "end": 2.0, "speaker": "S0", "text": SPECIAL},
+                         {"start": 3.0, "end": 4.0, "speaker": "S1", "text": SPECIAL})
+        assert result.vtt == (
+            "WEBVTT\n\nSTYLE\n::cue(.color1) { color: #FFDD55; }\n\n"
+            "00:00:01.000 --> 00:00:02.000\n[S0] A &amp; B &lt;笑&gt; --&gt; x\n\n"
+            "00:00:03.000 --> 00:00:04.000\n<c.color1>[S1] A &amp; B &lt;笑&gt; --&gt; x</c>\n")
+
+    def test_srt_lrc_and_txt_keep_the_text_as_it_is(self):
+        result = formats({"start": 1.0, "end": 2.0, "speaker": "S1", "text": SPECIAL})
+        assert result.srt == ("1\n00:00:01,000 --> 00:00:02,000\n"
+                              f'<font color="#FFDD55">[S1] {SPECIAL}</font>\n')
+        assert result.lrc == f"[00:01.00][S1] {SPECIAL}"
+        assert result.txt == f"[S1] {SPECIAL}"
+
+    def test_stored_lrc_is_escaped_the_same_way(self):
+        lrc = f"[00:01.00]{SPECIAL}\n[00:03.00]Speaker 1: 1 < 2 && 3 > 2"
+        result = output_format.convert_from_lrc(lrc)
+        assert result.vtt == (
+            "WEBVTT\n\n"
+            "00:00:01.000 --> 00:00:03.000\nA &amp; B &lt;笑&gt; --&gt; x\n\n"
+            "00:00:03.000 --> 00:00:08.000\nSpeaker 1: 1 &lt; 2 &amp;&amp; 3 &gt; 2\n")
+        assert result.srt == ("1\n00:00:01,000 --> 00:00:03,000\nA & B <笑> --> x\n\n"
+                              "2\n00:00:03,000 --> 00:00:08,000\nSpeaker 1: 1 < 2 && 3 > 2\n")
+        assert result.lrc == lrc
+
+    def test_long_vtt_line_is_split_on_the_text_and_each_piece_escaped(self):
+        # 拆長字幕（見「SRT／VTT 拆開長字幕」）時，字寬照顯示的字算，「&lt;」不算 4 個字；
+        # 拆開以後每一則各自跳脫
+        segment = {
+            "start": 10.0, "end": 17.0, "speaker": "S0",
+            "text": "今日はゆっくり休んでくださいね<笑>、ずっと頑張ってきたんだから、"
+                    "少しくらい甘えてもいいんですよ&。",
+            "words": words(("今", 10.0, 10.25), ("日", 10.25, 10.5), ("はゆっくり", 10.5, 11.0),
+                           ("休", 11.0, 11.25), ("んでくださいね", 11.25, 12.0),
+                           ("笑", 12.0, 12.25), ("ずっと", 12.5, 12.75), ("頑", 12.75, 13.0),
+                           ("張", 13.0, 13.25), ("ってきたんだから", 13.25, 14.0),
+                           ("少", 14.5, 14.75), ("しくらい", 14.75, 15.0), ("甘", 15.0, 15.25),
+                           ("えてもいいんですよ", 15.25, 16.5)),
+        }
+        blocks = formats(segment).vtt.strip().split("\n\n")[1:]
+        assert [block.split("\n") for block in blocks] == [
+            ["00:00:10.000 --> 00:00:12.250", "[S0] 今日はゆっくり休んでくださいね&lt;笑&gt;、"],
+            ["00:00:12.500 --> 00:00:14.000", "[S0] ずっと頑張ってきたんだから、"],
+            ["00:00:14.500 --> 00:00:16.500", "[S0] 少しくらい甘えてもいいんですよ&amp;。"],
+        ]
 
 
 # ─── SRT／VTT 的結束時間（#96） ──────────────────────────────────────────────
@@ -398,8 +481,7 @@ class TestSubtitleEndTimes:
                                       "00:00:41,500 --> 00:00:42,500"]
 
     def test_segment_without_word_timings_ends_at_the_segment_end(self):
-        # 真實結束時間取到毫秒：2.8 秒寫成 2,800，3727.125 秒寫成 07,125（開始時間照以前，
-        # 2.80 會寫成 2,799）
+        # 真實結束時間四捨五入到毫秒：2.8 秒寫成 2,800，3727.125 秒寫成 07,125
         segments = [{"start": 1.5, "end": 2.8, "speaker": "S0", "text": "おはよう。"},
                     {"start": 3725.5, "end": 3727.125, "speaker": "S1", "text": "またね。"}]
         assert srt_times(*segments) == ["00:00:01,500 --> 00:00:02,800",
