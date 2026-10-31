@@ -173,6 +173,40 @@ def test_spot_time_is_interpolated_inside_the_lrc_line(tmp_path, next_line, per_
     assert spot.end_seconds == pytest.approx(10 + 8 * per_char)
 
 
+def test_words_both_models_dropped_use_the_source_line_time(tmp_path):
+    # 兩個模型在 10 秒之後都沒有轉出字：只能靠底稿每一句的時間戳定位，
+    # 不能全部掛在模型最後一個字（10 秒多）上
+    source = """
+        # demo_E  00:00.00-01:00.00
+        [00:10.00] A: 我們下週二去爬山
+        [00:20.00] B: 大家早安
+        [00:30.00] A: 一二三四五六七八
+        [00:40.00] B: 好
+    """
+    lrc = "[00:10.00][S0] 我們下週二去爬山\n[00:30.00][S0] 一二三四五六七\n"
+    result = _compare(tmp_path, source, lrc, lrc)
+
+    assert [(s.line, s.category) for s in result.spots] == [
+        (1, "models_agree"), (2, "models_agree"), (3, "models_agree")]
+    assert [(s.seconds, s.end_seconds) for s in result.spots] == [
+        pytest.approx((20, 21.6)),        # 整句：4 個字，每字最多算 0.4 秒
+        pytest.approx((30 + 7 * 0.4, 30 + 8 * 0.4)),  # 句尾一個字：照字數內插
+        pytest.approx((40, 40.4)),        # 最後一句：一個字
+    ]
+
+
+def test_words_both_models_dropped_fall_back_to_the_model_time_without_timestamps(tmp_path):
+    source = """
+        # demo_F  00:00.00-01:00.00
+        A: 一二三四五六七八
+    """
+    lrc = "[00:10.00][S0] 一二三四五六七\n"
+    result = _compare(tmp_path, source, lrc, lrc)
+
+    [spot] = result.spots
+    assert (spot.seconds, spot.end_seconds) == pytest.approx((10 + 7 * 0.4, 10 + 7 * 0.4))
+
+
 def test_lines_outside_the_source_window_are_ignored(tmp_path):
     source = """
         # demo_D  00:10.00-00:20.00

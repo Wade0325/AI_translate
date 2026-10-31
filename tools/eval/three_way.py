@@ -18,7 +18,8 @@
 * ``source_with_one``：底稿和其中一個模型一致，另一個模型不同。
 
 時間點：轉錄結果的 LRC 只有每行的開始時間，行內的位置照字數在這一行和下一行的開始時間之間
-內插（每字最多算 0.4 秒），只拿來定位播放。
+內插（每字最多算 0.4 秒），只拿來定位播放。兩個模型在那一處都沒有字（一起漏掉）時，改用底稿
+那一句的時間戳同樣內插；底稿沒有時間戳才用模型前一個字的時間（模型漏掉一長段時會不準）。
 
 只輸出數字到終端機；底稿與轉錄結果的文字只寫進 ``--out`` 的 JSON 與試聽頁，不寫進標準答案的
 資料夾（``data/eval``）。標準答案由使用者確認後，自己從 ``--out`` 複製過去。
@@ -439,6 +440,24 @@ class _Side:
         return t, t
 
 
+def _source_time_span(source: SourceText, line: int, start: int, end: int) -> tuple[float, float] | None:
+    """底稿這一句裡第 start～end 個字的時間：照字數在這一句和下一個有時間戳的句子之間內插
+    （每字最多算 0.4 秒，最後一句以底稿的結束時間為界）。這一句沒有時間戳時是 None。"""
+    here = source.lines[line]
+    if here.seconds is None:
+        return None
+    length = max(1, len(here.text))
+    span = length * SECONDS_PER_CHAR_CAP
+    following = next((s.seconds for s in source.lines[line + 1:] if s.seconds is not None), source.end)
+    if following > here.seconds:
+        span = min(span, following - here.seconds)
+
+    def at(char: int) -> float:
+        return here.seconds + span * min(1.0, char / length)
+
+    return at(start), at(end)
+
+
 @dataclass
 class Comparison:
     """``compare`` 的結果。"""
@@ -531,16 +550,20 @@ def compare(source: SourceText, first: Transcript, second: Transcript) -> Compar
                 s0 = s1 = src_tokens[g].start
         src_variant = Variant(text[s0:s1], [t.text for t in src_span], text, s0, s1)
         variants: list[Variant] = []
-        times: list[tuple[float, float]] = []
+        heard: list[tuple[float, float]] = []    # 模型在這一處有字：那些字的時間
+        anchors: list[tuple[float, float]] = []  # 模型在這一處沒有字：前一個字的時間
         for side, a in zip(sides, alignments, strict=True):
             j1, j2 = a.ranges[p0][0], a.ranges[p1][1]
             variants.append(side.variant(j1, j2))
             span = side.time_span(j1, j2)
             if span is not None:
-                times.append(span)
+                (heard if j2 > j1 else anchors).append(span)
         category = categorize(src_variant.tokens, variants[0].tokens, variants[1].tokens)
         if category is None:
             continue
+        # 兩個模型都沒有字時，前一個字可能在很久以前（模型漏掉一長段）：底稿有時間戳就用底稿的
+        from_source = None if heard else _source_time_span(source, line, s0, s1)
+        times = heard or ([from_source] if from_source is not None else anchors)
         if times:
             seconds, end_seconds = min(t[0] for t in times), max(t[1] for t in times)
         else:
