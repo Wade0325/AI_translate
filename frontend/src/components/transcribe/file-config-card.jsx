@@ -20,9 +20,12 @@ import {
 import { Button, Select, Switch, Tag, Typography, Input, Dropdown, Spin, Tooltip, Popconfirm } from "antd"
 import { LoadingOutlined } from "@ant-design/icons"
 import { ReasonText } from "@/components/disabled-reason"
+import { FailureNotice } from "@/components/FailureNotice"
+import { ConnectionNotice } from "@/components/ConnectionNotice"
 import { languages, formatLang } from "@/constants/languages"
 import { downloadFormats } from "@/constants/downloadFormats"
 import { globalSettingsPatch } from "@/utils/transcribeRequest"
+import { describeConnection } from "@/utils/connectionLoss"
 
 const { Text } = Typography
 const { TextArea } = Input
@@ -31,7 +34,7 @@ const statusConfig = {
     waiting: { icon: Hourglass, color: "#8888a8", label: "等待處理" },
     processing: { icon: Loader2, color: "#d4a72d", label: "處理中" },
     completed: { icon: CheckCircle2, color: "#2dd4a8", label: "完成" },
-    error: { icon: AlertCircle, color: "#e05252", label: "錯誤" },
+    error: { icon: AlertCircle, color: "#e05252", label: "失敗" },
     batch_pending: { icon: Hourglass, color: "#47b8d4", label: "批次等待" },
     cancelled: { icon: Ban, color: "#8888a8", label: "已取消" },
 }
@@ -79,6 +82,11 @@ export function FileConfigCard({
     const isError = config.status === "error"
     const isActive = config.status === "processing"
     const isCancelled = config.status === "cancelled"
+    // 失敗的原因與下一步寫在卡片下方（FailureNotice），標籤只寫「失敗」；沒有錯誤碼的失敗（連線錯誤）
+    // 照舊顯示狀態文字
+    const failure = isError ? config.failure : null
+    // 送出之後連線斷了：任務仍是處理中，標籤寫連線的狀況，原因與下一步寫在卡片下方（ConnectionNotice）
+    const connection = isActive ? describeConnection(config.connection) : null
 
     // 還會送出的檔案（等待中、失敗、已取消）才標出所選的模型不支援、送出時不會帶上的輸入；
     // notSentReason 是不會帶上的原因，會帶上時是 null
@@ -164,7 +172,7 @@ export function FileConfigCard({
                                 margin: 0,
                             }}
                         >
-                            {config.statusText || sc.label}
+                            {failure ? sc.label : connection ? connection.label : (config.statusText || sc.label)}
                         </Tag>
                     </div>
                     <div style={{ display: "flex", flexWrap: "wrap", gap: 4, alignItems: "center" }}>
@@ -328,6 +336,9 @@ export function FileConfigCard({
                     )}
                 </div>
             </div>
+
+            {failure && <FailureNotice failure={failure} />}
+            {connection && <ConnectionNotice connection={config.connection} />}
 
             {/* Expanded per-file override settings：處理中時強制收起 */}
             {expanded && !isActive && (

@@ -16,6 +16,8 @@
   執行模式不重試整個任務。萬一有暫時錯誤漏到這裡，一律照失敗處理，任務不會停在處理中。
 - 完成和片段一起寫：任務紀錄記成完成（連同凍結的原始轉錄副本）和片段在同一個交易，片段
   寫不進去就照失敗處理。同一個任務再完成一次時，使用者動過的片段不刪、不覆寫（ADR-0007）。
+- 說話者標記跟著 Multi-Speaker 開關：任務紀錄記下開關，完成時送給畫面的輸出格式照它帶或不帶
+  說話者標記，和之後下載的相同；片段與凍結的原始轉錄副本不論開關都有說話者編號（#13 Q1、ADR-0007）。
 - 中文一律輸出繁體：完成時先把片段轉成繁體輸出（:mod:`app.services.traditional_output`），
   輸出格式、凍結的原始轉錄副本與片段都從轉換後的片段產生（ADR-0002）。
 - 計價照模型能力的計價方式；實際以 Flex 或批次完成的照設定打折。供應商已經回應的用量，
@@ -28,9 +30,11 @@
 - 不會再執行的任務也收尾（:meth:`TaskLifecycle.abandon`）：在佇列中被撤銷、應用程式關閉時還在
   排隊的任務，一樣留下紀錄、保留或清理上傳檔。
 - 收尾之後才宣告結果：畫面收到完成、失敗或取消時，紀錄、片段與保留音檔都已就緒。
+- 失敗帶錯誤碼：讓任務失敗的例外由 :func:`app.core.error_codes.describe` 對應成錯誤碼與細節，
+  一起記進任務紀錄、隨失敗的狀態廣播送給畫面；畫面照錯誤碼顯示原因與下一步（#24 門檻 4）。
 - 資料庫出錯不轉述例外：資料庫例外一接到就換成只有類型與原因的
   :class:`~app.exceptions.TaskDatabaseError`（:func:`~app.database.session.without_db_details`），
-  記進 log 與往上拋給執行模式的都是它；畫面與任務紀錄給看得懂的固定訊息（:func:`shown_to_user`）。
+  記進 log 與往上拋給執行模式的都是它；畫面與任務紀錄只有錯誤碼，細節是空的。
   批次在任務之外出錯時也照這條規則。
 
 狀態廣播與查詢取消只經由執行模式模組（:mod:`app.runtime.run_mode`）。
@@ -44,15 +48,16 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterator, List, Optional, Union
+from typing import Any, Callable, Dict, Iterator, List, Optional, Union, cast
 
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.core.error_codes import ErrorCode, Failure, TaskFailedError, describe
 from app.core.task_status import TaskStatus
 from app.database.session import SessionLocal, without_db_details
-from app.exceptions import TaskDatabaseError, TranscriptionCancelledError
+from app.exceptions import TranscriptionCancelledError
 from app.provider.base import ProgressAndCancel
 from app.provider.registry import UnsupportedModelError, model_capabilities
 from app.repositories.transcript_segment_repository import TranscriptSegmentRepository
@@ -88,6 +93,9 @@ class Task:
     provider: str
     model: str
     source_lang: str
+    multi_speaker: Optional[bool]
+    """Multi-Speaker 開關：輸出格式帶不帶說話者標記（見 :func:`app.services.output_format.shows_speaker_labels`）。
+    只有接回開關做出來之前開始的任務（:meth:`TaskLifecycle.resume`）時是 None。"""
     target_lang: Optional[str] = None
     session_id: Optional[str] = None
     batch_id: Optional[str] = None
@@ -107,20 +115,26 @@ class _Outcome:
     """收尾之後往上拋，讓執行模式記下失敗。"""
     return_value: Optional[dict] = None
     """:meth:`TaskLifecycle.run` 回傳給執行模式的值。"""
+    failure: Optional[Failure] = None
+    """失敗時的錯誤碼與細節，隨宣告送給畫面。"""
+
+
+_COMPLETED_TEXT = "任務完成"
+_CANCELLED_TEXT = "任務已取消"
+
+
+def _failed_text(detail: Optional[str]) -> str:
+    """失敗時宣告的狀態文字：帶著細節，沒有細節時只說失敗。"""
+    return f"任務失敗: {detail}" if detail else "任務失敗"
 
 
 def _cancelled() -> _Outcome:
-    return _Outcome(TaskStatus.CANCELLED, "任務已取消", return_value={"cancelled": True})
+    return _Outcome(TaskStatus.CANCELLED, _CANCELLED_TEXT, return_value={"cancelled": True})
 
 
-_DB_ERROR_MESSAGE = "轉錄結果沒有存進資料庫，請重新轉錄"
-"""資料庫出錯時給使用者看的原因；開始時就建立不了任務紀錄時也一樣沒有轉錄結果。"""
-
-
-def shown_to_user(error: Exception) -> str:
-    """給使用者看的失敗原因：資料庫出錯換成看得懂的固定訊息，原因只記在 log；其他例外
-    （例如供應商回報的錯誤）照例外訊息。"""
-    return _DB_ERROR_MESSAGE if isinstance(error, TaskDatabaseError) else str(error)
+def _failed(failure: Failure, error: Exception) -> _Outcome:
+    """失敗：宣告時的狀態文字帶著細節，錯誤碼與細節另外放在宣告的欄位裡（見 :meth:`TaskLifecycle._publish`）。"""
+    return _Outcome(TaskStatus.FAILED, _failed_text(failure.detail), error=error, failure=failure)
 
 
 class TaskLifecycle:
@@ -166,6 +180,7 @@ class TaskLifecycle:
             provider=record.provider or "",
             model=record.model_used or "",
             source_lang=record.source_language or "",
+            multi_speaker=cast(Optional[bool], record.multi_speaker),
             target_lang=record.target_language,
             session_id=record.session_id,
             batch_id=record.batch_id,
@@ -242,7 +257,8 @@ class TaskLifecycle:
                 if cancelled:
                     self._cancel_before_start(db)
                 else:
-                    self._fail_before_start(db, "應用程式關閉時任務還在排隊，沒有開始轉錄")
+                    self._fail_before_start(db, Failure(
+                        ErrorCode.INTERRUPTED, "應用程式關閉時任務還在排隊，沒有開始轉錄"))
             except Exception as e:
                 logger.error(
                     f"任務 {self._task_uuid} 無法更新任務紀錄: {without_db_details(e)}")
@@ -261,8 +277,7 @@ class TaskLifecycle:
                 # 連任務紀錄都寫不進去（例如資料庫連不上）：照樣收尾，宣告失敗
                 error = without_db_details(e)
                 logger.error(f"任務 {self._task_uuid} 無法更新任務紀錄: {error}")
-                outcome = _Outcome(
-                    TaskStatus.FAILED, f"任務失敗: {shown_to_user(error)}", error=error)
+                outcome = _failed(describe(error), error)
             finally:
                 # 一定收尾。被強制終止時（Docker 模式的 gevent 丟 GreenletExit，不是 Exception）
                 # 例外照樣往上拋、不宣告結果，但上傳的音檔已經保留或清掉
@@ -291,11 +306,11 @@ class TaskLifecycle:
                 return self._cancel(db, result)
             if not result.success:
                 # 失敗結果的 text 是錯誤描述而非 LRC，不能標成完成、產出空字幕
-                raise ValueError(f"轉錄失敗: {result.text}")
+                raise TaskFailedError(result.error_code or ErrorCode.INTERNAL, result.text)
             if not result.segments:
                 # 每一段都沒有內容（例如 Gemini 沒寫出任何帶時間戳的行）：沒有轉錄結果，一樣不能
                 # 標成完成；text 是供應商寫的原因
-                raise ValueError(f"轉錄失敗: {result.text or '沒有轉錄出任何內容'}")
+                raise TaskFailedError(result.error_code or ErrorCode.NO_TRANSCRIPT, result.text)
             return self._complete(db, result)
         except Exception as e:
             return self._failed_attempt(db, e, usage=result)
@@ -349,7 +364,9 @@ class TaskLifecycle:
             target_lang=self._task.target_lang)})
 
         self._progress.report("正在轉換字幕格式...")
-        transcripts = _output_formats(result)
+        transcripts = output_format.for_result(
+            result, speaker_labels=output_format.shows_speaker_labels(self._task.multi_speaker),
+        ).model_dump()
 
         self._progress.report("正在計算費用...")
         elapsed = self._elapsed()
@@ -363,8 +380,8 @@ class TaskLifecycle:
             "total_tokens": tokens,
             "cost": cost,
             "completed_at": datetime.now(),
-            # 凍結的原始轉錄副本（ADR-0007）：和下載的 LRC 一樣由輸出格式模組從轉錄結果產生
-            "lrc_content": transcripts["lrc"] or None,
+            # 凍結的原始轉錄副本（ADR-0007）：不論 Multi-Speaker 開關都帶說話者標記
+            "lrc_content": output_format.frozen_copy(result) or None,
             "service_tier_used": result.service_tier_used or "standard",
         }, commit=False)
         # 只有取消不蓋掉；其他狀態照實記成完成（例如啟動清掃把還在跑的任務記成了失敗）
@@ -383,7 +400,7 @@ class TaskLifecycle:
             self._task_uuid, transcripts, tokens=tokens, cost=cost, model=self._task.model,
             source_language=self._task.source_lang, duration=self._duration,
             speaker_count=_speaker_count(result.segments))
-        return _Outcome(TaskStatus.COMPLETED, "任務完成", broadcast_result=response,
+        return _Outcome(TaskStatus.COMPLETED, _COMPLETED_TEXT, broadcast_result=response,
                         return_value={"raw_lrc_text": transcripts["lrc"]})
 
     def _cancel(self, db: Session, usage: Optional[TranscriptionTaskResult] = None) -> _Outcome:
@@ -409,19 +426,19 @@ class TaskLifecycle:
         self._records.insert_log(db, {**self._record_fields(), **self._cancelled_fields()})
         return _cancelled()
 
-    def _fail_before_start(self, db: Session, reason: str) -> None:
+    def _fail_before_start(self, db: Session, failure: Failure) -> None:
         """開始前就停了、也不是使用者取消的（例如應用程式關閉時還在排隊）：記成失敗並寫明原因。"""
-        logger.warning(f"任務 {self._task_uuid} 沒有開始就停了: {reason}")
+        logger.warning(f"任務 {self._task_uuid} 沒有開始就停了: {failure.detail}")
         self._records.insert_log(db, {
             **self._record_fields(),
             "status": TaskStatus.FAILED,
-            "error_message": reason,
+            **failure.fields(),
             "completed_at": datetime.now(),
         })
 
     def _fail(self, db: Session, error: Exception,
               usage: Optional[TranscriptionTaskResult] = None) -> _Outcome:
-        """失敗：任務紀錄寫 FAILED 與錯誤訊息。
+        """失敗：任務紀錄寫 FAILED 與錯誤碼、細節（:func:`~app.core.error_codes.describe`）。
 
         供應商已經回應過（``usage`` 是它的用量）時，連同用量與費用一起記下（見 :meth:`_usage`）：
         供應商照樣收費，儀表板與計費頁不能少算。
@@ -429,17 +446,17 @@ class TaskLifecycle:
         logger.error(
             f"Transcription task failed for log ID: {self._task_uuid}\n"
             f"{''.join(traceback.format_exception(error))}")
-        reason = shown_to_user(error)
+        failure = describe(error)
         failed = self._records.update_log_unless_cancelled(db, self._task_uuid, {
             "status": TaskStatus.FAILED,
-            "error_message": reason,
+            **failure.fields(),
             "processing_time_seconds": self._elapsed(),
             **self._usage(usage),
         })
         if not failed and self._is_record_cancelled(db):
             # 取消端點剛好先把紀錄記成已取消：失敗不蓋掉取消
             return self._cancel(db, usage)
-        return _Outcome(TaskStatus.FAILED, f"任務失敗: {reason}", error=error)
+        return _failed(failure, error)
 
     def _finish(self, db: Session) -> None:
         """收尾：先保留音檔，再清理。
@@ -488,10 +505,15 @@ class TaskLifecycle:
         return run_mode.get().is_cancel_requested(self._task.file_uid)
 
     def _announce(self, outcome: _Outcome) -> None:
-        self._publish(outcome.text, outcome.status, outcome.broadcast_result)
+        self._publish(outcome.text, outcome.status, outcome.broadcast_result, outcome.failure)
 
-    def _publish(self, text: str, status: TaskStatus, result: Optional[dict] = None) -> None:
+    def _publish(self, text: str, status: TaskStatus, result: Optional[dict] = None,
+                 failure: Optional[Failure] = None) -> None:
+        """狀態廣播；失敗時另外帶錯誤碼與細節（``error_code``、``error_message``，和任務紀錄同名）。"""
         task = self._task
+        extra = {"batch_id": task.batch_id} if task.batch_id else {}
+        if failure is not None:
+            extra.update(failure.fields())
         publish_status(
             task.client_id,
             self._task_uuid,
@@ -499,7 +521,7 @@ class TaskLifecycle:
             status_code=status,
             file_uid=task.file_uid,
             result_data=result,
-            extra={"batch_id": task.batch_id} if task.batch_id else None,
+            extra=extra or None,
         )
 
     # ── 小工具 ────────────────────────────────────────────────────
@@ -509,6 +531,7 @@ class TaskLifecycle:
             "original_filename": task.original_filename,
             "model_used": task.model,
             "source_language": task.source_lang,
+            "multi_speaker": task.multi_speaker,
             "task_uuid": self._task_uuid,
             "provider": task.provider,
             "target_language": task.target_lang,
@@ -609,6 +632,29 @@ def completed_result(db: Session, task_uuid) -> Optional[dict]:
         duration=record.audio_duration_seconds or 0.0, speaker_count=_speaker_count(segments))
 
 
+def ended_status(db: Session, task_uuid) -> Optional[dict]:
+    """一個已經結束的任務結束時宣告的內容，從任務紀錄（與完成時的片段）重新產生，和當時宣告的相同：
+    狀態碼與狀態文字，完成時另有結果（:func:`completed_result`），失敗時另有錯誤碼與細節（和任務紀錄
+    同名）。沒有紀錄、或任務還沒結束時是 None。
+
+    連線中斷、錯過了結束的宣告時，接回任務的連線用它補上（#280）。
+    """
+    record = TranscriptionLogRepository().get(db, task_uuid)
+    if record is None:
+        return None
+    status = cast(str, record.status)
+    if status == TaskStatus.COMPLETED:
+        return {"status_code": TaskStatus.COMPLETED, "status_text": _COMPLETED_TEXT,
+                "result": completed_result(db, task_uuid)}
+    if status == TaskStatus.FAILED:
+        detail = cast(Optional[str], record.error_message)
+        return {"status_code": TaskStatus.FAILED, "status_text": _failed_text(detail),
+                "error_code": cast(Optional[str], record.error_code), "error_message": detail}
+    if status == TaskStatus.CANCELLED:
+        return {"status_code": TaskStatus.CANCELLED, "status_text": _CANCELLED_TEXT}
+    return None
+
+
 def _completed_response(task_uuid, transcripts: dict, *, tokens: int, cost: float, model: str,
                         source_language: str, duration: float, speaker_count: int) -> dict:
     """完成時送給畫面的結果：四種輸出格式、計價與說話者人數。"""
@@ -636,12 +682,6 @@ def _discount(service_tier: Optional[str]) -> Optional[float]:
     settings = get_settings()
     return {"flex": settings.flex_cost_discount,
             "batch": settings.batch_cost_discount}.get(service_tier or "")
-
-
-def _output_formats(result: TranscriptionTaskResult) -> dict:
-    """完成時送給畫面的四種輸出格式，由輸出格式模組產生：和之後下載的內容相同；
-    凍結的原始轉錄副本也是這裡的 LRC。"""
-    return output_format.for_result(result).model_dump()
 
 
 def _resolve_input(file_path: Optional[str], task_uuid: str) -> Optional[Path]:

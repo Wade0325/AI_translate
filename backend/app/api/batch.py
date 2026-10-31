@@ -1,4 +1,7 @@
+from collections import OrderedDict
+from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Optional, cast
 
 from fastapi import (
     APIRouter,
@@ -10,10 +13,13 @@ from fastapi import (
 from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session
 from app.celery.models import BatchTranscriptionTaskParams, BatchFileItemParams
-from app.api.transcription import SUBMISSION_FAILED_TEXT
+from app.api.transcription import SUBMISSION_FAILED, SUBMISSION_FAILED_TEXT, TASK_GONE
 from app.runtime import run_mode
+from app.core.batch_state import IN_PROGRESS, BatchState
 from app.core.config import get_settings
+from app.core.error_codes import ErrorCode, Failure, describe
 from app.core.task_status import TaskStatus
+from app.database.models import BatchFile
 from app.database.session import SessionLocal, get_db, traceback_without_db_details
 from app.provider.registry import UnsupportedModelError, check_request
 from app.repositories.batch_job_repository import BatchJobRepository
@@ -21,6 +27,7 @@ from app.repositories.model_manager_repository import stored_prompt_template
 from app.services import audio_store
 from app.services.api_keys import PlaintextApiKeyError, refuse_plaintext_api_keys, resolve_api_key
 from app.tasks import batch_core
+from app.tasks.lifecycle import ended_status
 from app.utils.logger import setup_logger
 from app.utils.paths import MissingUploadError, UnsafeUploadFilenameError, existing_upload_path
 from app.websocket.manager import manager
@@ -42,6 +49,26 @@ TEMP_UPLOADS_DIR = settings.temp_uploads_path
 TEMP_UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
 batch_repo = BatchJobRepository()
+
+
+SUBMITTING_TEXT = "正在送出批次..."
+"""接回批次時，伺服器還在送出這個批次（驗證請求、派送）：給畫面看的狀態文字（#286）。"""
+
+QUEUED_TEXT = "批次排隊中，輪到時開始處理..."
+"""接回批次時，批次已經派送、還沒開始執行（還沒有批次紀錄）：給畫面看的狀態文字（#286）。"""
+
+REATTACHED_TEXT = "重新連上了，批次還在處理中..."
+"""接回批次時，批次已經開始、還沒送出給供應商（去靜音、上傳）：給畫面看的狀態文字，之後的進度照樣由
+批次廣播（#286）。"""
+
+SUBMITTED_TEXT = "批次已送出，等待處理中..."
+"""接回批次時，批次已經送出給供應商：和送出時一樣，畫面把還在等的檔案改成批次等待，結果到任務頁取回
+（#286）。"""
+
+NOT_SUBMITTED = Failure(
+    ErrorCode.SUBMIT_FAILED,
+    "伺服器上沒有這個批次，批次沒有送出：可能是送出時連線就中斷了，或應用程式關閉了")
+"""接回批次時，伺服器上找不到這個批次（沒有批次紀錄，這個行程也沒有收到它）時的錯誤碼與細節（#286）。"""
 
 
 # ==================== Task Page Endpoints ====================
@@ -155,14 +182,71 @@ def recover_batch(batch_id: str, body: RecoverBatchRequest, db: Session = Depend
 
 # ==================== Original Endpoints ====================
 
-def start_batch_task_sync(payload_str: str, batch_id: str) -> list[dict]:
+@dataclass(frozen=True)
+class Dispatched:
+    """送出批次的結果：派送了的話是執行它的任務 id，以及被拒檔案的 FAILED 訊息。"""
+
+    run_id: Optional[str]
+    """執行這個批次的任務 id；整批都沒有派送時是 None。"""
+    rejected: list[dict] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class Submission:
+    """這個行程收到的一個批次：還在送出時 ``run_id`` 是 None，派送之後是執行它的任務 id。"""
+
+    run_id: Optional[str] = None
+
+
+class Submissions:
+    """這個行程收到、送出中或已經派送的批次，以 batch_id 為 key（#286）。
+
+    批次紀錄要等批次開始執行才建立（:func:`app.tasks.batch_core.run_batch`），在那之前只有這裡知道
+    批次送出了：接回批次時靠它分清楚「還在送出、還在排隊」與「沒有送出」。整批沒有派送時拿掉。
+
+    只記在這個行程的記憶體裡，和批次的連線一樣（:class:`~app.websocket.manager.ConnectionManager`）：
+    免安裝模式的批次也在這個行程裡執行，應用程式重新啟動之後，還在排隊的批次已經收尾、有了紀錄
+    （:func:`~app.tasks.batch_core.abandon_batch`），或跟著行程停了、不會再執行。只在 event loop
+    裡讀寫，不必上鎖。最多記 :attr:`LIMIT` 個：更早的批次早就開始執行、有了紀錄。
+    """
+
+    LIMIT = 256
+
+    def __init__(self) -> None:
+        self._submissions: OrderedDict[str, Submission] = OrderedDict()
+
+    def submitting(self, batch_id: str) -> None:
+        self._remember(batch_id, Submission())
+
+    def dispatched(self, batch_id: str, run_id: Optional[str]) -> None:
+        """派送了（``run_id`` 是執行它的任務 id）；整批沒有派送（None）時拿掉。"""
+        if run_id is None:
+            self._submissions.pop(batch_id, None)
+        else:
+            self._remember(batch_id, Submission(run_id))
+
+    def get(self, batch_id: str) -> Optional[Submission]:
+        return self._submissions.get(batch_id)
+
+    def _remember(self, batch_id: str, submission: Submission) -> None:
+        self._submissions[batch_id] = submission
+        self._submissions.move_to_end(batch_id)
+        while len(self._submissions) > self.LIMIT:
+            self._submissions.popitem(last=False)
+
+
+submissions = Submissions()
+
+
+def start_batch_task_sync(payload_str: str, batch_id: str) -> Dispatched:
     """
     同步函式：解析批次請求並派發批次轉錄任務。
     在獨立執行緒中執行以避免阻塞事件迴圈。
 
     檔名不合法（不是 temp_uploads 內的單純檔名）或上傳檔已經不在的檔案不派發，其餘照常，
     一個都不剩時整批不派發；模型不屬於所選供應商、不支援批次或不吃提示詞，或請求帶了明文
-    金鑰（#16 Q8b）時也整批不派發。回傳被拒檔案的 FAILED 訊息，由 WS 端點送回前端。
+    金鑰（#16 Q8b）時也整批不派發。回傳執行它的任務 id（整批沒有派發時是 None）與被拒檔案的
+    FAILED 訊息，由 WS 端點送回前端。
 
     派送前出了非預期的錯誤（例如讀不到設定）時往上拋：整批都沒有派送，上傳檔不會變成任務，
     刪掉不留在電腦上。
@@ -176,8 +260,8 @@ def start_batch_task_sync(payload_str: str, batch_id: str) -> list[dict]:
         raise
 
 
-def _submit_batch(request_data: WebSocketBatchRequest, batch_id: str) -> list[dict]:
-    """驗證請求、組出批次並派送；回傳被拒檔案的 FAILED 訊息（見 :func:`start_batch_task_sync`）。"""
+def _submit_batch(request_data: WebSocketBatchRequest, batch_id: str) -> Dispatched:
+    """驗證請求、組出批次並派送（見 :func:`start_batch_task_sync`）。"""
     try:
         refuse_plaintext_api_keys(request_data.api_keys)
         # 批次層級與各檔案的提示詞串在一起檢查：任一個填了，串起來就不是空白
@@ -190,12 +274,13 @@ def _submit_batch(request_data: WebSocketBatchRequest, batch_id: str) -> list[di
         # 被拒絕的批次不會執行：上傳檔不留在電腦上（前端重新送出時會重新上傳）
         for f in request_data.files:
             audio_store.discard_upload(f.filename, TEMP_UPLOADS_DIR)
-        return [{
+        return Dispatched(None, [{
             "client_id": batch_id,
             "file_uid": f.file_uid,
             "status_code": TaskStatus.FAILED,
             "status_text": str(e),
-        } for f in request_data.files]
+            **describe(e).fields(),
+        } for f in request_data.files])
 
     file_items = []
     rejected = []
@@ -213,6 +298,7 @@ def _submit_batch(request_data: WebSocketBatchRequest, batch_id: str) -> list[di
                 "file_uid": f.file_uid,
                 "status_code": TaskStatus.FAILED,
                 "status_text": str(e),
+                **describe(e).fields(),
             })
             continue
 
@@ -228,7 +314,7 @@ def _submit_batch(request_data: WebSocketBatchRequest, batch_id: str) -> list[di
 
     if not file_items:
         logger.error(f"批次 {batch_id} 沒有有效的檔案，不派送")
-        return rejected
+        return Dispatched(None, rejected)
 
     # 請求不帶金鑰或只帶遮罩值（明文在上面已經拒收）：用資料庫裡的金鑰
     with SessionLocal() as db:
@@ -251,9 +337,9 @@ def _submit_batch(request_data: WebSocketBatchRequest, batch_id: str) -> list[di
         session_id=request_data.session_id or batch_id,
     )
 
-    run_mode.get().submit_batch(task_params.model_dump())
+    run_id = run_mode.get().submit_batch(task_params.model_dump())
     logger.info(f"已為 batch_id: {batch_id} 啟動批次轉錄任務 ({len(file_items)} 個檔案)。")
-    return rejected
+    return Dispatched(run_id, rejected)
 
 
 @router.websocket("/ws/{batch_id}", name="WebSocket Batch Transcription")
@@ -272,30 +358,34 @@ async def batch_websocket_endpoint(
     - 接收個別檔案的 PROCESSING / COMPLETED / FAILED 狀態
     - 接收整體批次的 BATCH_COMPLETED 狀態
     - 整批沒有派送時（派送前出了非預期的錯誤），收到一則沒有 file_uid 的 FAILED，接著連線關閉
+
+    送出時連線斷了，畫面從接回批次的端點（:func:`batch_reattach_endpoint`）接著收；這裡送的被拒檔案與
+    整批沒有派送的訊息，送給這個批次現在登記的連線，接回的連線也收得到（#286）。
     """
     await manager.connect(websocket, batch_id)
     try:
         payload_str = await websocket.receive_text()
 
+        submissions.submitting(batch_id)
         try:
-            rejected = await run_in_threadpool(
+            dispatched = await run_in_threadpool(
                 start_batch_task_sync, payload_str=payload_str, batch_id=batch_id
             )
         except Exception as e:
+            submissions.dispatched(batch_id, None)
             # 整批沒有派送：送一則沒有 file_uid 的失敗，畫面把這批還在處理中的檔案都標成失敗，
             # 不會停在「批次已送出」。例外不轉述（資料庫例外帶著 SQL 原文），log 只記類型與原因
             logger.error(f"提交批次失敗 (batch_id: {batch_id}):\n"
                          f"{traceback_without_db_details(e)}")
-            await websocket.send_json({
-                "client_id": batch_id,
-                "status_code": TaskStatus.FAILED,
-                "status_text": SUBMISSION_FAILED_TEXT,
-            })
+            await manager.send_personal_message(_batch_status(
+                batch_id, TaskStatus.FAILED, SUBMISSION_FAILED_TEXT, failure=SUBMISSION_FAILED),
+                batch_id)
             # 只關、只移除這條連線：同一個 batch_id 的新連線可能已經登記上來（#203）
             await manager.close(batch_id, websocket, code=1011)
             return
-        for message in rejected:
-            await websocket.send_json(message)
+        submissions.dispatched(batch_id, dispatched.run_id)
+        for message in dispatched.rejected:
+            await manager.send_personal_message(message, batch_id)
 
         while True:
             await websocket.receive_text()
@@ -308,3 +398,102 @@ async def batch_websocket_endpoint(
                      f"{traceback_without_db_details(e)}")
         # 只關、只移除這條連線：同一個 batch_id 的新連線可能已經登記上來（#203）
         await manager.close(batch_id, websocket)
+
+
+@router.websocket("/ws/{batch_id}/reattach", name="WebSocket Reattach Batch")
+async def batch_reattach_endpoint(websocket: WebSocket, batch_id: str):
+    """送出批次之後連線中斷，接回這個批次（#286）。
+
+    連線斷了不會停止批次：批次照樣在伺服器上跑。batch_id 是畫面送出時自己產生的，所以連線在伺服器
+    回應之前就斷了也接得回來。畫面重新連上這裡，先收到批次現在的狀態（:func:`batch_state`），之後和
+    送出批次的那條連線一樣收這個批次的廣播。
+
+    連線先登記、再查狀態：查完之後才宣告的進度、檔案的結束與送出給供應商，一定送得到這條連線。查狀態
+    時出錯就以 1011 關閉，畫面稍後再連一次。
+    """
+    await manager.connect(websocket, batch_id)
+    try:
+        submission = submissions.get(batch_id)
+        for message in await run_in_threadpool(batch_state, batch_id, submission):
+            await websocket.send_json(message)
+        # 保持連線開啟，收批次之後的廣播；畫面送來的只有心跳
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        logger.info(f"接回批次的 WebSocket 連線關閉: {batch_id}")
+        manager.disconnect(batch_id, websocket)
+    except Exception as e:
+        logger.error(f"接回批次時發生錯誤 (batch_id: {batch_id}):\n"
+                     f"{traceback_without_db_details(e)}")
+        # 只關、只移除這條連線：同一個批次可能已經有新的連線登記上來（#203）
+        await manager.close(batch_id, websocket, code=1011)
+
+
+def batch_state(batch_id: str, submission: Optional[Submission]) -> list[dict]:
+    """這個批次現在的狀態，寫成和批次廣播一樣的狀態訊息；接回批次時依序送給畫面。
+
+    ``submission`` 是這個行程收到這個批次的紀錄（:class:`Submissions`），沒有收到時是 None。
+
+    還沒有批次紀錄（批次還沒開始執行）時只有一則批次層級的訊息：
+
+    - 還在送出：處理中「正在送出批次...」；之後被拒的檔案或整批沒有派送的訊息，也送到接回的連線。
+    - 已經派送，執行它的任務還在（或不知道）：處理中「批次排隊中...」。
+    - 都不是：失敗，錯誤碼 SUBMIT_FAILED，批次沒有送出。不會當成已經送出或完成。
+
+    有批次紀錄時，先補上斷線期間已經結束的檔案（每個檔案一則，照任務紀錄補上結束時的宣告，見
+    :func:`~app.tasks.lifecycle.ended_status`），還有沒結束的檔案時再看批次：
+
+    - 已經送出給供應商：「批次已送出」（BATCH_SUBMITTED），和送出時一樣，結果到任務頁取回。
+    - 還沒送出、看著它的任務還在（或不知道）：處理中「重新連上了...」，之後的進度照樣由批次廣播。
+    - 還沒送出、看著它的任務已經不在了（例如上傳時應用程式重新啟動，啟動時還沒收尾）：還沒結束的
+      檔案各記一則失敗，錯誤碼 INTERRUPTED，和接回單檔任務時伺服器上已經沒有這個任務一樣。
+    """
+    with SessionLocal() as db:
+        job = batch_repo.get_job(db, batch_id)
+        if job is None:
+            return [_unrecorded(batch_id, submission)]
+        rows = batch_repo.files(db, batch_id)
+        ended = [(row, ended_status(db, row.task_uuid)) for row in rows]
+        # 讀出來的值：型別檢查把 Column 的屬性看成欄位本身，不是它的值
+        status = cast(str, job.status)
+        submitted = bool(cast(Optional[str], job.gemini_job_name))
+        alive = (batch_core.watched(job) if status in IN_PROGRESS
+                 else run_mode.get().is_alive(cast(Optional[str], job.celery_task_id) or ""))
+    messages = [_file_status(batch_id, row, status) for row, status in ended if status is not None]
+    remaining = [row for row, status in ended if status is None]
+    if not remaining:
+        return messages
+    if submitted:
+        return [*messages, _batch_status(batch_id, TaskStatus.BATCH_SUBMITTED, SUBMITTED_TEXT)]
+    if alive is False or status == BatchState.FAILED:
+        return [*messages, *(_file_status(batch_id, row, {
+            "status_code": TaskStatus.FAILED, "status_text": f"任務失敗: {TASK_GONE.detail}",
+            **TASK_GONE.fields()}) for row in remaining)]
+    return [*messages, _batch_status(batch_id, TaskStatus.PROCESSING, REATTACHED_TEXT)]
+
+
+def _unrecorded(batch_id: str, submission: Optional[Submission]) -> dict:
+    """還沒有批次紀錄的批次，接回時的那一則（見 :func:`batch_state`）。"""
+    if submission is not None:
+        if submission.run_id is None:
+            return _batch_status(batch_id, TaskStatus.PROCESSING, SUBMITTING_TEXT)
+        # 免安裝模式查得準；Docker 模式的 Celery 在任務排隊時回不知道（None），當成還在
+        if run_mode.get().is_alive(submission.run_id) is not False:
+            return _batch_status(batch_id, TaskStatus.PROCESSING, QUEUED_TEXT)
+    return _batch_status(batch_id, TaskStatus.FAILED, f"批次沒有送出: {NOT_SUBMITTED.detail}",
+                         failure=NOT_SUBMITTED)
+
+
+def _file_status(batch_id: str, row: BatchFile, status: dict) -> dict:
+    """批次裡一個檔案的狀態訊息，欄位和任務生命週期替批次裡的檔案廣播的相同。"""
+    return {"client_id": batch_id, "batch_id": batch_id, "file_uid": cast(str, row.file_uid),
+            "task_uuid": str(row.task_uuid), **status}
+
+
+def _batch_status(batch_id: str, status_code: TaskStatus, status_text: str, *,
+                  failure: Optional[Failure] = None) -> dict:
+    """端點自己送給畫面的批次層級狀態訊息（沒有 file_uid）；失敗時帶錯誤碼與細節。"""
+    message = {"client_id": batch_id, "status_code": status_code, "status_text": status_text}
+    if failure is not None:
+        message.update(failure.fields())
+    return message

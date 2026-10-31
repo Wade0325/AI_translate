@@ -49,6 +49,7 @@ from app.celery.models import BatchFileItemParams, BatchTranscriptionTaskParams
 from app.core.batch_state import IN_PROGRESS, BatchState
 from app.core.config import get_settings
 from app.core.default_prompt import build_prompt
+from app.core.error_codes import ErrorCode, TaskFailedError
 from app.core.task_status import TaskStatus
 from app.database.models import BatchFile, BatchJob
 from app.database.session import SessionLocal, without_db_details
@@ -84,8 +85,12 @@ FileOutcome = Union[TranscriptionTaskResult, Exception]
 """一個檔案的結果：供應商的轉錄結果（時間在原音檔的時間軸上），或讓它失敗的例外。"""
 
 
-class _BatchError(Exception):
-    """批次讓一個檔案失敗的原因，例如上傳失敗、整個批次失敗；訊息給使用者看。"""
+class _BatchError(TaskFailedError):
+    """批次讓一個檔案失敗的原因，例如上傳失敗、整個批次失敗；帶著錯誤碼，訊息（細節）給使用者看。
+
+    做某一步時出錯的（:meth:`~app.core.error_codes.TaskFailedError.because`），錯誤碼照出錯的例外
+    歸類，例如上傳時金鑰無效是 GEMINI_KEY_REJECTED；批次本身沒有正常結束的是 BATCH_FAILED。
+    """
 
 
 class _Interrupted(_BatchError):
@@ -105,8 +110,8 @@ def _batch_reason(error: Exception, on_db_error: str) -> str:
     """整批失敗時給使用者看的原因：資料庫出錯換成 ``on_db_error``，原因只記在 log；其他例外
     （例如供應商回報的錯誤）照例外訊息。
 
-    不用檔案層級的固定訊息（:func:`~app.tasks.lifecycle.shown_to_user`）：它說的是一個檔案沒有
-    轉錄結果，放在批次上會讓人以為整批都沒有。
+    不用檔案層級的錯誤碼（:func:`~app.core.error_codes.describe`）：資料庫出錯時的 DATABASE 說的是
+    一個檔案沒有轉錄結果，放在批次上會讓人以為整批都沒有。
     """
     return on_db_error if isinstance(error, TaskDatabaseError) else str(error)
 
@@ -304,7 +309,7 @@ def _end_stopped_file(batch_id: str, row: BatchFile) -> None:
     if lifecycle is None:
         _record_status(batch_id, str(row.task_uuid), TaskStatus.FAILED)
         return
-    _end_file(batch_id, lifecycle, _BatchError(STOPPED_WHILE_UPLOADING))
+    _end_file(batch_id, lifecycle, _BatchError(ErrorCode.INTERRUPTED, STOPPED_WHILE_UPLOADING))
 
 
 def abandon_batch(task_params_dict: dict) -> None:
@@ -421,7 +426,8 @@ class _Run:
                    started_at=self._started_at).until_done(adapter, name, label)
             # 存下來的檔案清單少了誰（不該發生）：那個檔案照樣要結束，不停在處理中
             for file in uploaded:
-                self._end(file, _BatchError("批次紀錄裡找不到這個檔案，無法取回結果"))
+                self._end(file, _BatchError(
+                    ErrorCode.BATCH_FAILED, "批次紀錄裡找不到這個檔案，無法取回結果"))
         except _Interrupted as e:
             # 送出的檔案與批次都已經照失敗結束；沒讀到的檔案（不該發生）照同一個原因結束
             failure = e
@@ -492,7 +498,7 @@ class _Run:
             except Exception as e:
                 logger.error(f"上傳第 {number} 個檔案失敗 (task={file.lifecycle.task_uuid}): {e}",
                              exc_info=True)
-                self._end(file, _BatchError(f"檔案上傳失敗: {e}"))
+                self._end(file, _BatchError.because("檔案上傳失敗", e))
                 continue
             finally:
                 if file.view is not None:
@@ -506,7 +512,7 @@ class _Run:
             name = _retrying(self._publish, "送出批次", adapter.submit_batch, requests,
                              f"transcription-{self._batch_id[:8]}")
         except Exception as e:
-            raise _BatchError(f"送出批次失敗: {e}") from e
+            raise _BatchError.because("送出批次失敗", e) from e
         logger.info(f"批次已送出: {name}")
         return name
 
@@ -529,7 +535,7 @@ class _Run:
         return build_prompt(
             source_lang=item.source_lang or params.source_lang,
             target_lang=item.target_lang or params.target_lang,
-            multi_speaker=params.multi_speaker if item.multi_speaker is None else item.multi_speaker,
+            multi_speaker=_multi_speaker(item, params),
             template=params.prompt_template,
             supplement=item.prompt or params.prompt,
         )
@@ -598,7 +604,7 @@ class _Watch:
         try:
             status = self._poll(adapter, name, label)
         except Exception as e:
-            interrupted = _Interrupted(f"查詢批次狀態失敗: {e}")
+            interrupted = _Interrupted.because("查詢批次狀態失敗", e)
             self._end_files(lambda file: interrupted, failure=f"批次失敗: {interrupted}")
             raise interrupted from e
         logger.info(f"批次 {self._batch_id} 結束，狀態: {status.state}")
@@ -664,7 +670,7 @@ class _Watch:
             except Exception as e:
                 # 拿不到這個檔案的結果（不該發生；放不回原音檔的時間軸由 _result_of 自己處理）：
                 # 這個檔案照失敗結束
-                outcome = _BatchError(f"取不出這個檔案的結果: {e}")
+                outcome = _BatchError.because("取不出這個檔案的結果", e)
             # 拿到任務生命週期之後一定結束：回報進度與結束都不往上拋例外
             lifecycle.progress.report(
                 f"處理結果 ({file.request_index + 1}/{len(submitted)}): {file.original_filename}")
@@ -720,9 +726,9 @@ def _result_of(status: BatchStatus, file: _Submitted) -> FileOutcome:
     照樣收費，任務生命週期和供應商回報失敗時一樣把用量記在失敗的任務紀錄上。
     """
     if not status.succeeded:
-        return _BatchError(_failed_state(status))
+        return _BatchError(ErrorCode.BATCH_FAILED, _failed_state(status))
     if file.request_index >= len(status.results):
-        return _BatchError("供應商沒有回傳這個檔案的結果")
+        return _BatchError(ErrorCode.BATCH_FAILED, "供應商沒有回傳這個檔案的結果")
     result = status.results[file.request_index]
     if not result.success:
         return result
@@ -780,10 +786,16 @@ def _task(item: BatchFileItemParams, params: BatchTranscriptionTaskParams) -> Ta
         provider=params.provider,
         model=params.model,
         source_lang=item.source_lang or params.source_lang,
+        multi_speaker=_multi_speaker(item, params),
         target_lang=item.target_lang or params.target_lang,
         session_id=params.session_id or params.batch_id,
         batch_id=params.batch_id,
     )
+
+
+def _multi_speaker(item: BatchFileItemParams, params: BatchTranscriptionTaskParams) -> bool:
+    """這個檔案的 Multi-Speaker 開關：個別檔案的設定優先，沒設定的用批次的。"""
+    return params.multi_speaker if item.multi_speaker is None else item.multi_speaker
 
 
 def _create_record(db: Session, params: BatchTranscriptionTaskParams, files: Sequence[_File], *,

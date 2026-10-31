@@ -431,7 +431,9 @@ export default function TranscribePage() {
                             tokens_used: file.tokens_used,
                             cost: file.cost,
                             result: file.result,
-                            error: file.error,
+                            failure: file.failure,
+                            // 送出之後連線斷了時的狀況（utils/connectionLoss.js），接回之後清掉
+                            connection: file.connection ?? null,
                             userSuppliedText: file.userSuppliedText,
                         }}
                         globalConfig={globalConfig}

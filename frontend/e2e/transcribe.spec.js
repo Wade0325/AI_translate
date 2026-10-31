@@ -1,6 +1,7 @@
 import { test, expect, download } from './support/test.js'
 import {
-    GEMINI_UPLOAD_NOTICE, PROVIDERS, QUEUED_TEXT, SUBMISSION_FAILED_TEXT, TRANSCRIPTS, readiness, transcriptionMessages,
+    GEMINI_UPLOAD_NOTICE, PROVIDERS, QUEUED_TEXT, SUBMISSION_FAILED_TEXT, TRANSCRIPTS, readiness, reply,
+    transcriptionMessages,
 } from './support/backend.js'
 
 // 內容不重要：音檔只經過假後端，不會被解碼
@@ -102,6 +103,32 @@ test('Multi-Speaker 只有開關：沒有人數滑桿，也沒有 Timestamps 開
     await expect(page.getByText(/^(No )?timestamps$/i)).toHaveCount(0)
 })
 
+test('Multi-Speaker 預設關、記住上次：重新開頁還是上次的開關，送出的檔案照它（#13 Q1）', async ({ page, mockBackend }) => {
+    const backend = await mockBackend({ routes: { 'POST /upload': { filename: 'meeting_1.wav' } } })
+    await page.goto('/transcribe')
+    const multiSpeaker = page.getByRole('switch', { name: 'Multi-Speaker', exact: true })
+
+    // 第一次開頁是關；沒動過就不寫進儲存空間
+    await expect(multiSpeaker).not.toBeChecked()
+    expect(await page.evaluate(() => localStorage.getItem('ai_translate_last_multi_speaker'))).toBeNull()
+
+    await multiSpeaker.click()
+    await page.reload()
+
+    await expect(multiSpeaker).toBeChecked()
+    await addAudio(page)
+    await expect(page.getByText('Multi-speaker', { exact: true })).toBeVisible()
+    await page.getByRole('button', { name: 'Start' }).click()
+    await expect(page.getByText('轉錄完成')).toBeVisible()
+    expect(backend.transcriptionRequests).toEqual([expect.objectContaining({ multi_speaker: true })])
+
+    // 關掉也記住
+    await multiSpeaker.click()
+    await page.reload()
+    await expect(multiSpeaker).not.toBeChecked()
+    expect(await page.evaluate(() => localStorage.getItem('ai_translate_last_multi_speaker'))).toBe('false')
+})
+
 test('選本機送出一個檔案，顯示處理中，完成後到結果頁下載 SRT', async ({ page, mockBackend }) => {
     // 假後端送出處理中之後先停住，等畫面上看到處理中才送完成
     let finish
@@ -150,7 +177,37 @@ test('選本機送出一個檔案，顯示處理中，完成後到結果頁下�
         .toEqual({ filename: 'meeting.srt', text: TRANSCRIPTS.srt })
 })
 
-test('任務失敗時，檔案卡顯示後端的失敗原因', async ({ page, mockBackend }) => {
+test('任務失敗時，檔案卡寫出原因、下一步與錯誤碼，可以前往設定頁處理（#24 門檻 4）', async ({ page, mockBackend }) => {
+    const detail = '403 PERMISSION_DENIED: Your API key was reported as leaked.'
+    await mockBackend({
+        routes: { 'POST /upload': { filename: 'meeting_1.wav' } },
+        transcribe: async (request, send) => {
+            // 形狀照後端任務失敗時的狀態廣播：錯誤碼與細節和任務紀錄同名
+            send({
+                task_uuid: 'task-1', status_code: 'FAILED', status_text: `任務失敗: ${detail}`,
+                file_uid: request.file_uid, error_code: 'GEMINI_KEY_REJECTED', error_message: detail,
+            })
+        },
+    })
+    await page.goto('/transcribe')
+
+    await page.getByLabel('供應商').selectOption('google')
+    await addAudio(page)
+    await page.getByRole('button', { name: 'Start' }).click()
+
+    const notice = page.getByTestId('failure-notice')
+    await expect(notice.getByText('Gemini 不接受這把 API 金鑰')).toBeVisible()
+    await expect(notice.getByText(/到設定頁的 Gemini 換一把可用的 API Key/)).toBeVisible()
+    await expect(notice.getByText(`錯誤碼 GEMINI_KEY_REJECTED · ${detail}`)).toBeVisible()
+    await expect(page.getByText('1 個任務失敗')).toBeVisible()
+    // 失敗的檔案可以重新轉錄
+    await expect(page.getByRole('button', { name: 'Start' })).toBeEnabled()
+
+    await notice.getByRole('link', { name: '前往設定頁' }).click()
+    await expect(page).toHaveURL(/\/settings$/)
+})
+
+test('失敗訊息沒帶錯誤碼時，檔案卡照狀態文字寫出原因', async ({ page, mockBackend }) => {
     const reason = '找不到 NVIDIA 顯示卡，本機轉錄無法執行'
     await mockBackend({
         routes: { 'POST /upload': { filename: 'meeting_1.wav' } },
@@ -164,10 +221,33 @@ test('任務失敗時，檔案卡顯示後端的失敗原因', async ({ page, mo
     await addAudio(page)
     await page.getByRole('button', { name: 'Start' }).click()
 
-    await expect(page.getByText(reason)).toBeVisible()
+    await expect(page.getByTestId('failure-notice').getByText(reason)).toBeVisible()
     await expect(page.getByText('1 個任務失敗')).toBeVisible()
-    // 失敗的檔案可以重新轉錄
-    await expect(page.getByRole('button', { name: 'Start' })).toBeEnabled()
+})
+
+test('上傳被拒絕時，檔案卡寫出伺服器說的原因（#24 門檻 4）', async ({ page, mockBackend }) => {
+    const detail = '不支援這種檔案格式（image/jpeg），請改用常見的音訊或影片格式，例如 MP3、WAV、M4A、MP4'
+    await mockBackend({ routes: { 'POST /upload': reply(400, { detail }) } })
+    await page.goto('/transcribe')
+
+    await addAudio(page)
+    await page.getByRole('button', { name: 'Start' }).click()
+
+    const notice = page.getByTestId('failure-notice')
+    await expect(notice.getByText('檔案沒有上傳成功')).toBeVisible()
+    await expect(notice.getByText(`錯誤碼 UPLOAD_FAILED · ${detail}`)).toBeVisible()
+})
+
+test('加入伺服器不收的格式時，當場說明不支援並列出可以用的格式', async ({ page, mockBackend }) => {
+    await mockBackend()
+    await page.goto('/transcribe')
+
+    await page.locator('.ant-upload input[type=file]').setInputFiles({
+        name: 'voice.ogg', mimeType: 'audio/ogg', buffer: Buffer.from('OggS'),
+    })
+
+    await expect(page.getByText('不支援這種格式：voice.ogg（可以用 MP3、WAV、M4A、FLAC、WebM）')).toBeVisible()
+    await expect(page.getByText('MP3, WAV, M4A, FLAC, WebM (max 1000MB)')).toBeVisible()
 })
 
 test('排在別的任務後面時，檔案卡顯示排隊中，輪到時接著顯示進度（#24 門檻 4）', async ({ page, mockBackend }) => {
@@ -204,9 +284,133 @@ test('伺服器還沒回應就關掉連線時，檔案卡顯示提交失敗，�
     await addAudio(page)
     await page.getByRole('button', { name: 'Start' }).click()
 
-    await expect(page.getByText('提交任務失敗：伺服器還沒回應，連線就中斷了。請重新轉錄')).toBeVisible()
+    const notice = page.getByTestId('failure-notice')
+    await expect(notice.getByText('任務沒有送出')).toBeVisible()
+    await expect(notice.getByText('錯誤碼 SUBMIT_FAILED · 伺服器還沒回應，連線就中斷了')).toBeVisible()
     await expect(page.getByText('1 個任務失敗')).toBeVisible()
     await expect(page.getByRole('button', { name: 'Start' })).toBeEnabled()
+})
+
+/** 一個之後才會放行的關卡：open() 之前，等它的地方都停住。 */
+function gate() {
+    let open
+    const opened = new Promise((resolve) => { open = resolve })
+    return { opened, open }
+}
+
+test('排隊中之後連線斷了：檔案卡寫出連線中斷，不再停在排隊中；接回之後接著顯示進度與結果（#280）', async ({ page, mockBackend }) => {
+    let messages
+    const reconnected = gate()
+    const backend = await mockBackend({
+        routes: { 'POST /upload': { filename: 'meeting_1.wav' } },
+        transcribe: async (request, send, close) => {
+            messages = transcriptionMessages(request)
+            send(messages.queued)
+            close()
+        },
+        // 接回時任務還在排隊；等畫面上看到連線中斷，才回狀態、之後輪到它轉完
+        reattach: async (task, send) => {
+            await reconnected.opened
+            send(messages.queued)
+            send(messages.processing)
+            send(messages.completed)
+        },
+    })
+    await page.goto('/transcribe')
+
+    await addAudio(page)
+    await page.getByRole('button', { name: 'Start' }).click()
+
+    const notice = page.getByTestId('connection-notice')
+    await expect(notice.getByText('和伺服器的連線中斷了')).toBeVisible()
+    await expect(notice.getByText(/連線中斷不會停止任務，不必重新轉錄/)).toBeVisible()
+    await expect(page.getByText('連線中斷，正在重新連線...')).toBeVisible()
+    await expect(page.getByText(QUEUED_TEXT)).toHaveCount(0)
+    // 接回的是同一個檔案送出的同一個任務
+    expect(backend.reattachments).toEqual([{ file_uid: messages.queued.file_uid, task_uuid: messages.queued.task_uuid }])
+
+    reconnected.open()
+    await expect(page.getByText('轉錄完成')).toBeVisible()
+    await expect(notice).toHaveCount(0)
+    await expect(page.getByText('1 個任務已完成')).toBeVisible()
+})
+
+test('斷線期間任務完成了：接回之後顯示結果，Result 頁看得到也下載得到（#280）', async ({ page, mockBackend }) => {
+    let messages
+    await mockBackend({
+        routes: { 'POST /upload': { filename: 'meeting_1.wav' } },
+        transcribe: async (request, send, close) => {
+            messages = transcriptionMessages(request)
+            send(messages.queued)
+            send(messages.processing)
+            close()
+        },
+        // 伺服器照任務紀錄補上結束時的宣告，和完成時廣播的一樣帶著結果
+        reattach: async (task, send) => send({ ...messages.completed, status_text: '任務完成' }),
+    })
+    await page.goto('/transcribe')
+
+    await addAudio(page)
+    await page.getByRole('button', { name: 'Start' }).click()
+
+    await expect(page.getByText('任務完成', { exact: true })).toBeVisible()
+    await expect(page.getByTestId('connection-notice')).toHaveCount(0)
+    await expect(page.getByText('1 個任務已完成')).toBeVisible()
+
+    // 結果和連線沒斷時一樣：Result 頁看得到、下載得到
+    await page.getByRole('link', { name: 'Result Viewer' }).click()
+    await expect(page.getByText('2 speaker(s)')).toBeVisible()
+    await page.getByRole('button', { name: 'Download', exact: true }).hover()
+    expect(await download(page, () => page.getByText('SRT (Subtitles)').click()))
+        .toEqual({ filename: 'meeting.srt', text: TRANSCRIPTS.srt })
+})
+
+test('連不上伺服器時說明要重新開啟 Mimiji；重新開啟之後自動接回，任務沒做完就顯示要重新轉錄（#280）', async ({ page, mockBackend }) => {
+    let messages
+    const restarted = gate()
+    let attempts = 0
+    await mockBackend({
+        routes: { 'POST /upload': { filename: 'meeting_1.wav' } },
+        transcribe: async (request, send, close) => {
+            messages = transcriptionMessages(request)
+            send(messages.queued)
+            send(messages.processing)
+            close()
+        },
+        reattach: async (task, send, close) => {
+            attempts += 1
+            // 第一次：伺服器已經停了，一則都沒回就斷了
+            if (attempts === 1) return close()
+            // 之後：重新開啟了。免安裝模式重新啟動時，伺服器上已經沒有這個任務
+            await restarted.opened
+            send({
+                ...messages.processing,
+                status_code: 'FAILED',
+                status_text: '任務失敗: 伺服器上已經沒有這個任務：任務還沒做完，應用程式就關閉或重新啟動了',
+                error_code: 'INTERRUPTED',
+                error_message: '伺服器上已經沒有這個任務：任務還沒做完，應用程式就關閉或重新啟動了',
+            })
+        },
+    })
+    await page.goto('/transcribe')
+
+    await addAudio(page)
+    await page.getByRole('button', { name: 'Start' }).click()
+
+    const notice = page.getByTestId('connection-notice')
+    await expect(notice.getByText('連不上伺服器，Mimiji 可能已經關閉')).toBeVisible()
+    await expect(notice.getByText(/請重新開啟 Mimiji（免安裝版是 AI_Translate.exe/)).toBeVisible()
+    await expect(notice.getByRole('link', { name: '任務頁' })).toHaveAttribute('href', '/tasks')
+    await expect(notice.getByRole('link', { name: '歷史紀錄' })).toHaveAttribute('href', '/history')
+    await expect(page.getByText('連線中斷，連不上伺服器')).toBeVisible()
+    await expect(page.getByText('轉錄中...')).toHaveCount(0)
+
+    restarted.open()
+    const failure = page.getByTestId('failure-notice')
+    await expect(failure.getByText('應用程式在處理途中關閉了')).toBeVisible()
+    await expect(failure.getByText('任務沒有做完，重新轉錄一次即可。')).toBeVisible()
+    await expect(notice).toHaveCount(0)
+    await expect(page.getByText('1 個任務失敗')).toBeVisible()
 })
 
 test('整批沒有送出時，這批的檔案都標成失敗（#24 門檻 4）', async ({ page, mockBackend }) => {
@@ -214,8 +418,11 @@ test('整批沒有送出時，這批的檔案都標成失敗（#24 門檻 4）',
     await mockBackend({
         routes: { 'POST /upload': () => ({ filename: `upload_${uploads.push(1)}.wav` }) },
         batch: async (request, send, close) => {
-            // 沒有 file_uid：整批沒有派送
-            send({ client_id: request.batch_id, status_code: 'FAILED', status_text: SUBMISSION_FAILED_TEXT })
+            // 沒有 file_uid：整批沒有派送；原因只記在 log，所以只有錯誤碼沒有細節
+            send({
+                client_id: request.batch_id, status_code: 'FAILED', status_text: SUBMISSION_FAILED_TEXT,
+                error_code: 'SUBMIT_FAILED', error_message: null,
+            })
             close()
         },
     })
@@ -229,7 +436,135 @@ test('整批沒有送出時，這批的檔案都標成失敗（#24 門檻 4）',
     await expect(page.getByText('interview.wav')).toBeVisible()
     await page.getByRole('button', { name: 'Start' }).click()
 
-    await expect(page.getByText(SUBMISSION_FAILED_TEXT)).toHaveCount(2)
+    await expect(page.getByTestId('failure-notice').getByText('任務沒有送出')).toHaveCount(2)
+    await expect(page.getByText('錯誤碼 SUBMIT_FAILED', { exact: true })).toHaveCount(2)
+    await expect(page.getByText('2 個任務失敗')).toBeVisible()
+})
+
+/** 選 Gemini 的批次模式，加入兩個檔案後按 Start。 */
+async function startBatchOfTwo(page) {
+    await page.goto('/transcribe')
+    await page.getByLabel('供應商').selectOption('google')
+    await page.getByLabel('處理模式').selectOption('batch')
+    await page.locator('.ant-upload input[type=file]').setInputFiles([
+        AUDIO, { ...AUDIO, name: 'interview.wav' },
+    ])
+    await expect(page.getByText('interview.wav')).toBeVisible()
+    await page.getByRole('button', { name: 'Start' }).click()
+}
+
+/** 批次送出時每個檔案的進度（檔案層級，形狀照後端的廣播）。 */
+const uploadProgress = (request) => request.files.map((file, index) => ({
+    client_id: request.batch_id, batch_id: request.batch_id, task_uuid: `task-${file.file_uid}`,
+    status_code: 'PROCESSING', status_text: `前處理與上傳 (${index + 1}/2): ${file.original_filename}`,
+    file_uid: file.file_uid,
+}))
+
+test('批次送出後連線斷了：檔案卡寫出連線中斷，不再停在原本的進度；接回之後改成批次等待（#286）', async ({ page, mockBackend }) => {
+    let submitted
+    const reconnected = gate()
+    const backend = await mockBackend({
+        routes: {
+            'POST /upload': { filename: 'upload.wav' },
+            // 任務頁的批次清單：這一批送出給供應商了，還在等結果
+            'GET /batch/tasks': () => (submitted ? [{
+                batch_id: submitted.batch_id, status: 'POLLING', file_count: 2, is_alive: true,
+                created_at: null, elapsed_seconds: 0, files: [], session_id: submitted.session_id, recoverable: false,
+            }] : []),
+        },
+        // 上傳到一半時連線斷了
+        batch: async (request, send, close) => {
+            submitted = request
+            uploadProgress(request).forEach(send)
+            close()
+        },
+        // 接回時批次還在上傳；等畫面上看到連線中斷，才回狀態、之後送出給供應商
+        batchReattach: async (batchId, send) => {
+            await reconnected.opened
+            send({ client_id: batchId, status_code: 'PROCESSING', status_text: '重新連上了，批次還在處理中...' })
+            send({
+                client_id: batchId, batch_id: batchId, task_uuid: 'run-1', status_code: 'BATCH_SUBMITTED',
+                status_text: '批次已送出給 Gemini，共 2 個檔案，等待處理中...',
+            })
+        },
+    })
+    await startBatchOfTwo(page)
+
+    const notices = page.getByTestId('connection-notice')
+    await expect(notices.getByText('和伺服器的連線中斷了')).toHaveCount(2)
+    await expect(notices.getByText(/連線中斷不會停止任務，不必重新轉錄/)).toHaveCount(2)
+    await expect(page.getByText('連線中斷，正在重新連線...')).toHaveCount(2)
+    await expect(page.getByText(/前處理與上傳/)).toHaveCount(0)
+    // 接回的是畫面送出的同一批
+    expect(backend.batchReattachments).toEqual([submitted.batch_id])
+
+    // 和連線沒斷時一樣：檔案卡改成批次等待，結果到任務頁取回
+    reconnected.open()
+    await expect(page.getByText('批次已送出給 Gemini，共 2 個檔案，等待處理中...')).toHaveCount(2)
+    await expect(notices).toHaveCount(0)
+    await expect(page.getByText(/批次已送出，可繼續其他操作/)).toBeVisible()
+})
+
+test('還沒派送就斷線的批次，不會被當成已經送出或已經完成（#286）', async ({ page, mockBackend }) => {
+    const backend = await mockBackend({
+        routes: { 'POST /upload': { filename: 'upload.wav' } },
+        // 請求送出之後、伺服器回應之前連線就斷了
+        batch: async (request, send, close) => close(),
+        // 伺服器上沒有這個批次（沒有批次紀錄，也沒有收到它）
+        batchReattach: async (batchId, send) => send({
+            client_id: batchId, status_code: 'FAILED',
+            status_text: '批次沒有送出: 伺服器上沒有這個批次，批次沒有送出：可能是送出時連線就中斷了，或應用程式關閉了',
+            error_code: 'SUBMIT_FAILED',
+            error_message: '伺服器上沒有這個批次，批次沒有送出：可能是送出時連線就中斷了，或應用程式關閉了',
+        }),
+    })
+    await startBatchOfTwo(page)
+
+    await expect(page.getByTestId('failure-notice').getByText('任務沒有送出')).toHaveCount(2)
+    await expect(page.getByText(/^錯誤碼 SUBMIT_FAILED · 伺服器上沒有這個批次/)).toHaveCount(2)
+    await expect(page.getByText('2 個任務失敗')).toBeVisible()
+    await expect(page.getByText(/批次已送出|批次結果已儲存/)).toHaveCount(0)
+    expect(backend.batchReattachments).toHaveLength(1)
+})
+
+test('批次上傳時連不上伺服器：說明要重新開啟 Mimiji；重新開啟之後自動接回，沒送出的檔案標成失敗（#286）', async ({ page, mockBackend }) => {
+    const restarted = gate()
+    let submitted
+    let attempts = 0
+    await mockBackend({
+        routes: { 'POST /upload': { filename: 'upload.wav' } },
+        batch: async (request, send, close) => {
+            submitted = request
+            uploadProgress(request).forEach(send)
+            close()
+        },
+        batchReattach: async (batchId, send, close) => {
+            attempts += 1
+            // 第一次：伺服器已經停了，一則都沒回就斷了
+            if (attempts === 1) return close()
+            // 之後：重新開啟了。免安裝模式啟動時，上傳時停住的批次記成失敗，每個檔案照任務紀錄補上
+            await restarted.opened
+            for (const progress of uploadProgress(submitted)) {
+                send({
+                    ...progress, status_code: 'FAILED', status_text: '任務失敗: 上傳時服務停止了，批次沒有送出',
+                    error_code: 'INTERRUPTED', error_message: '上傳時服務停止了，批次沒有送出',
+                })
+            }
+        },
+    })
+    await startBatchOfTwo(page)
+
+    const notices = page.getByTestId('connection-notice')
+    await expect(notices.getByText('連不上伺服器，Mimiji 可能已經關閉')).toHaveCount(2)
+    await expect(notices.getByText(/請重新開啟 Mimiji（免安裝版是 AI_Translate.exe/)).toHaveCount(2)
+    await expect(notices.first().getByRole('link', { name: '任務頁' })).toHaveAttribute('href', '/tasks')
+    await expect(page.getByText('連線中斷，連不上伺服器')).toHaveCount(2)
+
+    restarted.open()
+    const failures = page.getByTestId('failure-notice')
+    await expect(failures.getByText('應用程式在處理途中關閉了')).toHaveCount(2)
+    await expect(page.getByText(/上傳時服務停止了，批次沒有送出/)).toHaveCount(2)
+    await expect(notices).toHaveCount(0)
     await expect(page.getByText('2 個任務失敗')).toBeVisible()
 })
 

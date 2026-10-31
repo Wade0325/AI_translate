@@ -35,7 +35,7 @@ const pageConfig = {
 
 export function DashboardLayout() {
     const { pathname } = useLocation()
-    const config = pageConfig[pathname] || { title: "AI_translate", description: "" }
+    const config = pageConfig[pathname] || { title: "Mimiji", description: "" }
     const [collapsed, setCollapsed] = useState(false)
     const [sidebarWidth, setSidebarWidth] = useState(240)
 

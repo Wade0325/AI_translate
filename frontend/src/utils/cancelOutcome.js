@@ -88,6 +88,8 @@ async function endedTask(file, api) {
         message: {
           ...message,
           status_text: record.error_message ? `任務失敗: ${record.error_message}` : '任務失敗',
+          error_code: record.error_code,
+          error_message: record.error_message,
         },
       };
     case TASK_STATUS.CANCELLED:

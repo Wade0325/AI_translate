@@ -168,10 +168,12 @@ def local_models_status():
 
     ``all_downloaded`` 只看預設模型所需的權重；選用權重以 ``required: false`` 標示。每個權重附上
     Hugging Face 模型卡寫的授權（``license``，照原文）與模型卡的網址（``model_card_url``）。
-    ``gpu_problem`` 是顯卡跑不了本機轉錄的原因（沒有顯卡、顯卡不支援），``vram_notice`` 是預設模型
-    在這張顯卡上的記憶體提示（#11），都可以直接顯示給使用者。
+    ``gpu_problem`` 是顯卡跑不了本機轉錄的原因與下一步（:func:`weights.gpu_problem`），``vram_notice``
+    是預設模型在這張顯卡上的記憶體提示（#11），都可以直接顯示給使用者。
     """
     gpu = weights.detect_gpu()
+    card = gpu if isinstance(gpu, weights.Gpu) else None
+    problem = weights.gpu_problem(gpu)
     models = [
         {
             "repo_id": repo,
@@ -186,10 +188,10 @@ def local_models_status():
     download = _download_status()
     return {
         "standalone": get_settings().is_standalone,
-        "gpu_available": gpu is not None and gpu.supported,
-        "gpu_name": gpu.name if gpu else None,
-        "gpu_vram_gb": gpu.vram_gb if gpu else None,
-        "gpu_problem": weights.gpu_problem(gpu),
+        "gpu_available": problem is None,
+        "gpu_name": card.name if card else None,
+        "gpu_vram_gb": card.vram_gb if card else None,
+        "gpu_problem": problem,
         "vram_notice": vram_notice(None),
         "hf_home": get_settings().hf_home,
         "default_model": weights.DEFAULT_LOCAL_MODEL,

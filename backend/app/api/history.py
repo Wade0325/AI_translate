@@ -1,6 +1,6 @@
 import math
 from pathlib import Path
-from typing import Optional
+from typing import Optional, cast
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -51,6 +51,7 @@ def _log_to_response(log: TranscriptionLog) -> HistoryLogResponse:
         source_language=log.source_language,
         total_tokens=log.total_tokens,
         cost=log.cost,
+        error_code=cast(Optional[str], log.error_code),
         error_message=log.error_message,
         is_batch=log.is_batch,
         session_id=log.session_id,
