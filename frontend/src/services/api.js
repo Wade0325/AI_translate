@@ -75,6 +75,10 @@ export const api = {
   version() {
     return request('/version');
   },
+  /** 設定頁「複製診斷資訊」：{ text }，回報問題時貼進 GitHub Issue；不含檔名、金鑰、路徑與轉錄內容 */
+  diagnostics() {
+    return request('/diagnostics');
+  },
   history: {
     list({ page = 1, pageSize = 10, keyword, status, mode } = {}) {
       const params = new URLSearchParams({

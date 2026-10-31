@@ -4,6 +4,7 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy.exc import SQLAlchemyError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from contextlib import asynccontextmanager
+from app.api import diagnostics
 from app.api import local_data
 from app.api import local_models
 from app.api import model_manager
@@ -166,6 +167,7 @@ app.include_router(transcripts.router, prefix="/api/v1/transcripts",
                    tags=["Transcripts"])
 app.include_router(vad.router, prefix="/api/v1/vad", tags=["VAD"])
 app.include_router(local_data.router, prefix="/api/v1/local-data", tags=["Local Data"])
+app.include_router(diagnostics.router, prefix="/api/v1/diagnostics", tags=["Health"])
 
 # Host 白名單、CORS 與 WebSocket 的 Origin 檢查，依執行模式分開設定（app/core/api_access.py）
 restrict_access(app, get_settings())

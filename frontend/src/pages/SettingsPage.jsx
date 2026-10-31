@@ -4,6 +4,7 @@ import { Card, Button, Input, Typography, Row, Col, Spin, Divider, Progress, Ale
 import { Key, Save, Cpu, Download, CheckCircle2, Info } from "lucide-react"
 import { useModelManager } from "../components/ModelManager"
 import { ReasonText } from "../components/disabled-reason"
+import { DiagnosticsCopy } from "../components/DiagnosticsCopy"
 import { LocalDataCard } from "../components/LocalDataCard"
 import { UploadNotice } from "../components/UploadNotice"
 import { PROVIDER_LIST_FAILED, useProviderList } from "../hooks/useProviderList"
@@ -171,8 +172,8 @@ export default function SettingsPage() {
 const RELEASES_URL = "https://github.com/Wade0325/AI_translate/releases"
 
 /**
- * 版本號與新版本的下載頁連結（#85）。app 不會自己連到 GitHub 檢查更新：
- * 版本號問的是本機的後端，下載頁要使用者自己點。
+ * 版本號與新版本的下載頁連結（#85），以及回報問題用的「複製診斷資訊」（#24）。app 不會自己連到
+ * GitHub 檢查更新：版本號問的是本機的後端，下載頁要使用者自己點。
  */
 function AboutCard() {
     const [version, setVersion] = useState(null)
@@ -204,6 +205,7 @@ function AboutCard() {
                         <a href={RELEASES_URL} target="_blank" rel="noopener noreferrer">GitHub Releases</a>
                         {' '}下載，把舊版的 data 資料夾複製過去就能保留紀錄。想在新版發布時收到通知，可以在 GitHub 上對這個專案按 Watch，選 Custom 裡的 Releases。
                     </Text>
+                    <DiagnosticsCopy />
                 </div>
             </Card>
         </Col>
