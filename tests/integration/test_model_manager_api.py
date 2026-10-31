@@ -271,7 +271,7 @@ def local_machine(monkeypatch):
         gpu="Test GPU", downloaded={weights.MOSS_MODEL_ID, weights.ALIGNER_MODEL_ID})
     monkeypatch.setattr(get_settings(), "app_mode", "standalone")
     monkeypatch.setattr(weights, "detect_gpu",
-                        lambda: weights.Gpu(machine.gpu, 16.0, True) if machine.gpu else None)
+                        lambda: weights.Gpu(machine.gpu, 16.0, True) if machine.gpu else weights.NO_GPU)
     monkeypatch.setattr(weights, "repo_is_ready", lambda repo: repo in machine.downloaded)
     return machine
 

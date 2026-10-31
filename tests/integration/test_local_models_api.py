@@ -147,7 +147,7 @@ class TestReadiness:
             "vram_notice": None}
 
     def test_without_a_gpu_suggests_another_provider(self, client, fake_env, monkeypatch):
-        use_gpu(monkeypatch, None)
+        use_gpu(monkeypatch, weights.NO_GPU)
         body = client.get(READINESS_URL, params={"model": "moss-align"}).json()
         assert (body["checked"], body["ready"], body["reason"]) == (True, False, "no_gpu")
         assert "沒有可用的 NVIDIA 顯卡" in body["message"]
@@ -175,7 +175,7 @@ class TestReadiness:
     def test_docker_mode_does_not_check_the_api_container(self, client, fake_env, monkeypatch):
         # Docker 模式的本機轉錄在主機的 GPU worker，API 容器看到的不是它的顯卡
         monkeypatch.setattr(get_settings(), "app_mode", "docker")
-        use_gpu(monkeypatch, None)
+        use_gpu(monkeypatch, weights.NO_GPU)
         assert client.get(READINESS_URL).json() == {
             "checked": False, "ready": None, "reason": None, "message": None,
             "vram_notice": None}
