@@ -134,10 +134,15 @@ class TestBuildPrompt:
 # ─── 提示詞寫語言名稱，Auto Detect 時不寫語言（#261） ─────────────────────────
 
 def _menu_languages(source: str) -> set[str]:
-    """轉錄頁語言選單上的語言代碼，不含 Auto Detect（它不是一種語言）。"""
-    codes = set(re.findall(r"\{ value: '([^']+)', label: '", source))
+    """轉錄頁語言選單上的語言代碼，不含 Auto Detect（它不是一種語言）。
+
+    每個寫了 ``value:`` 的地方都要讀得出代碼：改了寫法（引號、換行）讀不出來時測試失敗，
+    不會少比對幾種語言還是綠燈。
+    """
+    codes = re.findall(r"""\bvalue:\s*(['"])([^'"]+)\1""", source)
     assert codes, "languages.js 找不到語言選項"
-    return codes - {"auto"}
+    assert len(codes) == len(re.findall(r"\bvalue:", source)), "languages.js 有讀不出代碼的語言選項"
+    return {code for _, code in codes} - {"auto"}
 
 
 class TestSourceLanguageInPrompt:
