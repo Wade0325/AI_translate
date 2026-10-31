@@ -73,13 +73,19 @@ def _git(*args: str, cwd: Path | None = None, timeout: int = 900) -> str:
     return result.stdout
 
 
+def _workdir(url: str) -> Path:
+    """快取裡放這個 repo 的資料夾：名稱短而固定（Windows 的路徑長度上限是 260 個字元）。"""
+    name = re.sub(r"[^\w.-]+", "_", PurePosixPath(url.rstrip("/")).name.removesuffix(".git"))[:32]
+    return CACHE / "git" / f"{name}-{hashlib.sha256(url.encode()).hexdigest()[:12]}"
+
+
 class GitTree:
     """一個 commit 的檔案樹。只抓樹（--filter=blob:none），讀檔時才下載那個檔案。"""
 
     def __init__(self, url: str, ref: str, mirrors: Sequence[str] = ()):
         errors = []
         for candidate in (url, *mirrors):
-            workdir = CACHE / "git" / re.sub(r"[^\w.-]+", "_", candidate.split("://", 1)[-1])
+            workdir = _workdir(candidate)
             try:
                 self.commit = self._fetch(candidate, ref, workdir)
             except (ValueError, subprocess.TimeoutExpired) as e:
