@@ -200,4 +200,6 @@ export const WS_URLS = {
   /** 連線中斷之後接回這個檔案已經送出的單檔任務（#280）：連上就先收到任務現在的狀態 */
   reattach: (id, taskUuid) => `${DEFAULT_WS_BASE}/${id}/tasks/${taskUuid}`,
   batch: (id) => `${DEFAULT_WS_BATCH_BASE}/${id}`,
+  /** 連線中斷之後用畫面自己產生的 batch_id 接回這一批（#286）：連上就先收到批次現在的狀態 */
+  batchReattach: (id) => `${DEFAULT_WS_BATCH_BASE}/${id}/reattach`,
 };
