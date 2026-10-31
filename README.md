@@ -422,6 +422,8 @@ CI 的 `portable` job 在每個 PR 上也用 Windows 建置一次（不上傳、
 
 本專案採用 [Apache License 2.0](LICENSE)，理由見 [ADR 0006](docs/adr/0006-license-apache-2.md)。
 
+本機的模型權重不隨本專案散布，由 app 在你的電腦上從 Hugging Face 下載，使用時依各自模型卡上的授權。Settings 頁的 Local Models 卡片列出每份權重的授權，並連到下載的那個版本的模型卡。
+
 ---
 
 <div align="center">
