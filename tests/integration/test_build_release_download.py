@@ -92,9 +92,13 @@ def _get_verified(tmp_path: Path, url: str) -> subprocess.CompletedProcess[str]:
         cmd += ["-ExecutionPolicy", "Bypass"]
     cmd += ["-File", str(harness), str(ROOT / "build_release.ps1"), str(tmp_path / "cache"),
             url, NAME, PINNED_SHA256]
+    # 不沿用 PSModulePath：CI 的步驟在 pwsh 7 裡執行，它把自己的模組路徑放在最前面；
+    # Windows PowerShell 5.1 繼承之後載入不了內建模組，連 Get-FileHash 都找不到。
+    # 發版建置時 powershell.exe 由 runner 直接啟動，沒有這個問題
+    env = {k: v for k, v in os.environ.items() if k.upper() != "PSMODULEPATH"}
     # 錯誤訊息是中文，Windows PowerShell 用系統碼頁輸出；只比對 ASCII 的部分
     return subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="replace",
-                          timeout=120, check=False)
+                          env=env, timeout=120, check=False)
 
 
 def _cached(tmp_path: Path) -> Path:
