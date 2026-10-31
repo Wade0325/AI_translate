@@ -117,9 +117,10 @@ class TranscriptionLog(Base):
     provider = Column(String, nullable=True)
     target_language = Column(String, nullable=True)
     completed_at = Column(DateTime, nullable=True)
-    # 凍結的原始轉錄副本（ADR-0007），任務完成時由輸出格式模組從轉錄結果產生。有片段的
-    # 任務，輸出格式從片段產生、不讀這裡；沒有片段的任務（片段上線前的任務、#110 之前的 Gemini
-    # 任務、#115 之前批次裡的任務）才從這份 LRC 轉換（app.services.output_format）
+    # 凍結的原始轉錄副本（ADR-0007），任務完成時由輸出格式模組從轉錄結果產生，不論 Multi-Speaker
+    # 開關都帶說話者標記。有片段的任務，輸出格式從片段產生、不讀這裡；沒有片段的任務（片段上線前的
+    # 任務、#110 之前的 Gemini 任務、#115 之前批次裡的任務）才從這份 LRC 轉換
+    # （app.services.output_format）
     lrc_content = Column(Text, nullable=True)
     file_uid = Column(String, nullable=True, index=True)  # 前端檔案 uid
     session_id = Column(String, nullable=True, index=True)  # 同一次 Start 的任務群組
@@ -128,6 +129,10 @@ class TranscriptionLog(Base):
     # 保留音檔的檔名（位於 audio_store 目錄內）。校正介面要能重播它，
     # 只存檔名不存完整路徑，資料目錄搬家後仍然有效
     audio_filename = Column(String, nullable=True)
+    # Multi-Speaker 開關（#13 Q1）：開時輸出格式帶說話者標記，關時不帶；片段與凍結的原始轉錄
+    # 副本照樣有說話者編號。開關做出來之前（#259）的任務是 NULL，當成開，下載結果不變
+    # （app.services.output_format.shows_speaker_labels）
+    multi_speaker = Column(Boolean, nullable=True)
 
 
 class TranscriptSegment(Base):

@@ -531,7 +531,7 @@ class TestSpeechView:
         fake.script = [[(1.0, junction, 0, "前半。", [("前", 1.0, 3.0), ("半", 3.0, junction)]),
                         (junction, 8.0, 1, "後半。",
                          [("後", junction, junction), ("半", junction, 8.0)])]]
-        task_uuid = transcribe(api, "uid-junction", voiced=LONG_GAP)[-1]["task_uuid"]
+        task_uuid = transcribe(api, "uid-junction", voiced=LONG_GAP, multi_speaker=True)[-1]["task_uuid"]
 
         first, second = stored_segments(api, task_uuid)
         assert flat_times([first, second]) == pytest.approx([1.0, 6.3, 13.7, 15.4])
@@ -559,7 +559,7 @@ class TestSpeechView:
         fake.script = [[(1.0, junction, 0, "今日は、ありがとう。",
                          [("今", 1.0, 1.2), ("日", 1.2, 1.4), ("は", 1.4, 1.8),
                           ("ありがとう", 5.3, junction)])]]
-        task_uuid = transcribe(api, "uid-junction-end", voiced=LONG_GAP)[-1]["task_uuid"]
+        task_uuid = transcribe(api, "uid-junction-end", voiced=LONG_GAP, multi_speaker=True)[-1]["task_uuid"]
 
         assert download(api, task_uuid, "lrc") == "[00:01.00][S0] 今日は、ありがとう。"
         assert download(api, task_uuid, "srt") == (
@@ -851,6 +851,15 @@ class TestSplitRetryAfterFailure:
 
 # ─── 輸出格式從片段產生 ─────────────────────────────────────────────────────
 
+INTERJECTION = [
+    (0.5, 6.5, 1, "你拉不拉货。但是。",
+     [("你", 0.5, 1.0), ("拉", 1.0, 1.5), ("不", 1.5, 2.0), ("拉", 2.0, 2.5),
+      ("货", 2.5, 3.5), ("但", 4.0, 4.5), ("是", 4.5, 6.5)]),
+    (3.0, 3.25, 0, "对", [("对", 3.0, 3.0)]),
+]
+"""像 AISHELL-4 會議錄音 4:07.6 的插話（ADR-0008）：S1 講到 3.5 秒，S0 在 3.0 秒插一句「对」；
+「对」的詞是零長度。"""
+
 class TestOutputFormatsFromSegments:
     @pytest.fixture
     def completed(self, api, fake):
@@ -859,7 +868,7 @@ class TestOutputFormatsFromSegments:
         # 一個片段兩句，逐字時間讓下載在句尾斷行
         fake.script = [[(0.2, 2.6, 0, "おはよう。こんにちは。",
                          [("おはよう", 0.24, 0.9), ("こんにちは", 1.5, 2.56)])]]
-        messages = transcribe(api, "uid-words")
+        messages = transcribe(api, "uid-words", multi_speaker=True)
         assert codes(messages)[-1] == TaskStatus.COMPLETED
         return messages[-1]
 
@@ -883,7 +892,7 @@ class TestOutputFormatsFromSegments:
         assert broadcast == download(api, completed["task_uuid"], fmt)
 
     def test_frozen_original_transcription_is_the_lrc_download(self, api, completed, test_engine):
-        # 凍結的原始轉錄副本和下載的 LRC 一樣，由輸出格式模組從轉錄結果產生
+        # 凍結的原始轉錄副本和 Multi-Speaker 開著時下載的 LRC 一樣，由輸出格式模組從轉錄結果產生
         task_uuid = completed["task_uuid"]
         assert frozen_original(test_engine, task_uuid) == download(api, task_uuid, "lrc")
 
@@ -897,7 +906,7 @@ class TestOutputFormatsFromSegments:
         fake.script = [[(0.8, 8.2, 0, "今日は、ありがとう。",
                          [("今", 1.0, 1.2), ("日", 1.2, 1.4), ("は", 1.4, 1.8),
                           ("ありがとう", 7.0, 8.0)])]]
-        messages = transcribe(api, "uid-gap", voiced=LONG_GAP)
+        messages = transcribe(api, "uid-gap", voiced=LONG_GAP, multi_speaker=True)
         assert codes(messages)[-1] == TaskStatus.COMPLETED
         return messages[-1]
 
@@ -929,11 +938,8 @@ class TestOutputFormatsFromSegments:
         # 「对」，兩行同時顯示；「对」的詞是零長度，顯示最短的 0.8 秒。字幕依開始時間排序，
         # S1 的片段斷成的第二行排在「对」後面
         fake.model_capabilities = replace(fake.model_capabilities, remove_silence=False)
-        fake.script = [[(0.5, 6.5, 1, "你拉不拉货。但是。",
-                         [("你", 0.5, 1.0), ("拉", 1.0, 1.5), ("不", 1.5, 2.0), ("拉", 2.0, 2.5),
-                          ("货", 2.5, 3.5), ("但", 4.0, 4.5), ("是", 4.5, 6.5)]),
-                        (3.0, 3.25, 0, "对", [("对", 3.0, 3.0)])]]
-        messages = transcribe(api, "uid-interjection")
+        fake.script = [list(INTERJECTION)]
+        messages = transcribe(api, "uid-interjection", multi_speaker=True)
 
         assert codes(messages)[-1] == TaskStatus.COMPLETED
         assert download(api, messages[-1]["task_uuid"], fmt) == expected
@@ -949,7 +955,7 @@ class TestOutputFormatsFromSegments:
         # 供應商只給開始時間：照以前，下一行的開始，最後一行加 5 秒
         fake.model_capabilities = replace(fake.model_capabilities, remove_silence=False)
         fake.script = [[(0.25, None, 0, "おはよう。"), (2.5, None, 1, "こんにちは。")]]
-        messages = transcribe(api, "uid-no-end")
+        messages = transcribe(api, "uid-no-end", multi_speaker=True)
 
         assert codes(messages)[-1] == TaskStatus.COMPLETED
         assert download(api, messages[-1]["task_uuid"], fmt) == expected
@@ -960,11 +966,56 @@ class TestOutputFormatsFromSegments:
         fake.script = [[(0.2, 0.9, 0, None),
                         (1.0, 2.6, 1, "おはよう。こんにちは。",
                          [("おはよう", 1.04, 1.6), ("こんにちは", None, 2.56)])]]
-        messages = transcribe(api, "uid-untimed")
+        messages = transcribe(api, "uid-untimed", multi_speaker=True)
 
         assert codes(messages)[-1] == TaskStatus.COMPLETED
         assert download(api, messages[-1]["task_uuid"], "lrc") == (
             "[00:01.00][S1] おはよう。こんにちは。")
+
+
+# ─── Multi-Speaker 開關（#13 Q1） ───────────────────────────────────────────
+
+class TestMultiSpeakerOff:
+    """關掉時四種輸出格式都不帶說話者標記；片段與凍結的原始轉錄副本照樣有說話者編號。開著時的
+    輸出見上面 :class:`TestOutputFormatsFromSegments` 的插話。"""
+
+    @pytest.fixture
+    def interjection(self, api, fake):
+        """沒帶 Multi-Speaker 的任務（請求的預設是關）：S0 在 S1 講話時插話。"""
+        fake.model_capabilities = replace(fake.model_capabilities, remove_silence=False)
+        fake.script = [list(INTERJECTION)]
+        messages = transcribe(api, "uid-multi-speaker-off")
+        assert codes(messages)[-1] == TaskStatus.COMPLETED
+        return messages[-1]
+
+    @pytest.mark.parametrize("fmt, expected", [
+        # LRC、TXT 照片段的順序；行首沒有說話者標記，時間戳後面直接接文字
+        ("lrc", "[00:00.50]你拉不拉货。\n[00:04.00]但是。\n[00:03.00]对"),
+        ("txt", "你拉不拉货。\n但是。\n对"),
+        # 沒有標記的行都算同一位說話者（ADR-0008）：不重疊，S1 的字幕在「对」開始時結束；也不上色
+        ("srt", "1\n00:00:00,500 --> 00:00:03,000\n你拉不拉货。\n\n"
+                "2\n00:00:03,000 --> 00:00:03,800\n对\n\n"
+                "3\n00:00:04,000 --> 00:00:06,500\n但是。\n"),
+        ("vtt", "WEBVTT\n\n00:00:00.500 --> 00:00:03.000\n你拉不拉货。\n\n"
+                "00:00:03.000 --> 00:00:03.800\n对\n\n"
+                "00:00:04.000 --> 00:00:06.500\n但是。\n"),
+    ])
+    def test_downloads_have_no_speaker_labels_and_do_not_overlap(
+            self, api, interjection, fmt, expected):
+        assert download(api, interjection["task_uuid"], fmt) == expected
+
+    @pytest.mark.parametrize("fmt", ["lrc", "srt", "vtt", "txt"])
+    def test_completion_broadcast_matches_the_download(self, api, interjection, fmt):
+        broadcast = interjection["result"]["transcripts"][fmt]
+        assert broadcast == download(api, interjection["task_uuid"], fmt)
+
+    def test_segments_and_the_frozen_original_keep_the_speakers(
+            self, api, interjection, test_engine):
+        # 原始轉錄不少資訊（ADR-0007）：只在產生輸出格式時省略標記
+        task_uuid = interjection["task_uuid"]
+        assert [s["speaker"] for s in stored_segments(api, task_uuid)] == ["S1", "S0"]
+        assert frozen_original(test_engine, task_uuid) == (
+            "[00:00.50][S1] 你拉不拉货。\n[00:04.00][S1] 但是。\n[00:03.00][S0] 对")
 
 
 # ─── 模型不屬於供應商 ───────────────────────────────────────────────────────
@@ -1534,7 +1585,7 @@ class TestTraditionalOutput:
         # 本機的模型寫簡體：存下的片段、四種下載、完成時的廣播與凍結的原始轉錄副本都是繁體，
         # 字形與用詞都換成台灣的（「软件的信息」→「軟體的資訊」），「台」不寫成「臺」
         fake.script = [[(0.2, 1.5, 0, "我们在台湾开会。"), (3.0, 3.6, 1, "软件的信息。")]]
-        end = transcribe(api, "uid-traditional", source_lang="zh-TW")[-1]
+        end = transcribe(api, "uid-traditional", source_lang="zh-TW", multi_speaker=True)[-1]
 
         assert end["status_code"] == TaskStatus.COMPLETED
         task_uuid = end["task_uuid"]
