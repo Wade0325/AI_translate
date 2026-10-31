@@ -129,6 +129,39 @@ test('Multi-Speaker 預設關、記住上次：重新開頁還是上次的開關
     expect(await page.evaluate(() => localStorage.getItem('ai_translate_last_multi_speaker'))).toBe('false')
 })
 
+test('語言預設 Auto Detect、記住上次：重新開頁還是上次選的語言，送出的檔案照它（#261）', async ({ page, mockBackend }) => {
+    const backend = await mockBackend({ routes: { 'POST /upload': { filename: 'meeting_1.wav' } } })
+    await page.goto('/transcribe')
+    const language = page.getByRole('combobox', { name: 'Language', exact: true })
+    const menu = page.locator('.ant-select-dropdown:visible')
+    // antd 另有一個看不到的無障礙區塊也寫選到的值，只數看得到的
+    const shown = (text) => page.getByText(text, { exact: true }).filter({ visible: true })
+
+    // 第一次開頁是 Auto Detect；沒動過就不寫進儲存空間
+    await expect(shown('Auto Detect')).toHaveCount(1)
+    expect(await page.evaluate(() => localStorage.getItem('ai_translate_last_language'))).toBeNull()
+
+    await language.click()
+    await menu.locator('.ant-select-item-option[title="Japanese"]').click()
+    await page.reload()
+
+    // 全域選單是上次選的語言，之後加進來的檔案跟著它，送出的也是它
+    await expect(shown('Japanese')).toHaveCount(1)
+    await addAudio(page)
+    await expect(shown('Japanese')).toHaveCount(2)
+    await page.getByRole('button', { name: 'Start' }).click()
+    await expect(page.getByText('轉錄完成')).toBeVisible()
+    expect(backend.transcriptionRequests).toEqual([expect.objectContaining({ source_lang: 'ja' })])
+
+    // 選回 Auto Detect 也記住
+    await page.reload()
+    await language.click()
+    await menu.locator('.ant-select-item-option[title="Auto Detect"]').click()
+    await page.reload()
+    await expect(shown('Auto Detect')).toHaveCount(1)
+    expect(await page.evaluate(() => localStorage.getItem('ai_translate_last_language'))).toBe('"auto"')
+})
+
 test('選本機送出一個檔案，顯示處理中，完成後到結果頁下載 SRT', async ({ page, mockBackend }) => {
     // 假後端送出處理中之後先停住，等畫面上看到處理中才送完成
     let finish
