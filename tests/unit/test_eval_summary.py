@@ -269,6 +269,28 @@ def test_same_language_is_judged_across_audio_files(lab, runs, tmp_path, capsys)
     assert out.rstrip().endswith("- 判定：通過（中文）")
 
 
+def test_speakers_are_paired_within_each_audio_file(lab, tmp_path, capsys):
+    # 兩段無關的錄音，字全對，同名的標記指不同的人：demo 的 A 是 S0，other 的 A 是 S1。
+    # 每個音檔各自配對都全對；若把兩段一起配對，有一段的說話者會全部配錯（#298）
+    _write(lab / "data" / "eval" / "demo_C.txt", "# demo_C  00:00.00-00:30.00\nA: 我們下週二\nB: 去爬山\n")
+    _write(lab / "data" / "eval" / "other_C.txt", "# other_C  00:00.00-00:30.00\nA: 要帶水嗎\nB: 當然記得\n")
+    transcripts = {
+        "demo": "[00:01.00][S0] 我們下週二\n[00:02.00][S1] 去爬山\n",
+        "other": "[00:01.00][S1] 要帶水嗎\n[00:02.00][S0] 當然記得\n",
+    }
+    paths = []
+    for (name, text), sha256 in zip(transcripts.items(), ("ab" * 32, "cd" * 32), strict=True):
+        lrcs = [_write(tmp_path / "runs" / side / f"{name}.lrc", text) for side in ("main", "pr")]
+        for lrc in lrcs:
+            _manifest(lrc, "1" * 40, sha256=sha256, audio=f"{name}.wav")
+        paths.append(_eval(capsys, tmp_path / f"{name}.json", *lrcs, reference=f"{name}_C"))
+
+    _, out, _ = _summary(capsys, *paths)
+
+    assert ("| 中文 | demo_C、other_C | 16 | 0.00%（0 個錯） → 0.00%（0 個錯） "
+            "| 0.00%（0 個錯） → 0.00%（0 個錯） | 通過 |") in out
+
+
 def test_each_language_is_judged_on_its_own(lab, runs, tmp_path, capsys):
     for lrc in runs:
         _manifest(lrc, "1" * 40)
