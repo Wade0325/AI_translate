@@ -2,6 +2,8 @@ import uuid
 from pydantic import BaseModel, Field
 from typing import Dict, List, Optional, Any
 
+from app.core.error_codes import ErrorCode
+
 
 class TranscriptionTaskResult(BaseModel):
     """
@@ -9,16 +11,22 @@ class TranscriptionTaskResult(BaseModel):
     """
     success: bool = Field(..., description="轉錄是否成功")
     text: str = Field(
-        "",
+        default="",
         description="給使用者看的說明：失敗時是原因；成功但沒有片段時是為什麼沒有（例如 Gemini "
                     "的回應沒有任何帶時間戳的文字），整個任務都沒有片段時任務生命週期拿它回報失敗。"
                     "有片段時是空的：轉錄結果就是 segments。",
     )
-    input_tokens: int = Field(0, description="輸入 token 數量")
-    output_tokens: int = Field(0, description="輸出 token 數量")
-    total_tokens: int = Field(0, description="使用的 token 總數")
+    error_code: Optional[ErrorCode] = Field(
+        default=None,
+        description="失敗、或沒有片段時的錯誤碼（app.core.error_codes），由寫下 text 的地方一起寫；"
+                    "沒寫時任務生命週期把失敗當成 INTERNAL、沒有片段當成 NO_TRANSCRIPT。",
+    )
+    # 預設值寫成 default=：寫成第一個位置參數時，型別檢查看不出欄位有預設值
+    input_tokens: int = Field(default=0, description="輸入 token 數量")
+    output_tokens: int = Field(default=0, description="輸出 token 數量")
+    total_tokens: int = Field(default=0, description="使用的 token 總數")
     service_tier_used: Optional[str] = Field(
-        None, description="實際採用的 service tier：'flex' 或 'standard'（None 表示 standard）"
+        default=None, description="實際採用的 service tier：'flex' 或 'standard'（None 表示 standard）"
     )
     segments: List[Dict[str, Any]] = Field(
         default_factory=list,

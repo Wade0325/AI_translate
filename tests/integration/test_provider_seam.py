@@ -25,6 +25,7 @@ from starlette.websockets import WebSocketDisconnect
 
 from app.api.transcription import QUEUED_TEXT, SUBMISSION_FAILED_TEXT
 from app.core.default_prompt import build_prompt
+from app.core.error_codes import ErrorCode
 from app.core.task_status import TaskStatus
 from app.exceptions import TransientError
 from app.runtime import run_mode
@@ -1115,6 +1116,7 @@ class TestQueuedAndNotSubmitted:
         assert queued["status_text"] == QUEUED_TEXT
         assert (failed["status_code"], failed["status_text"]) == (
             TaskStatus.FAILED, SUBMISSION_FAILED_TEXT)
+        assert (failed["error_code"], failed["error_message"]) == (ErrorCode.SUBMIT_FAILED, None)
         assert closed.value.code == 1011
         # 沒有任務：上傳檔不留在電腦上，取消端點也查不到任務
         assert leftovers(data_dir) == []
@@ -1157,7 +1159,8 @@ class TestQueuedAndNotSubmitted:
 
         # 沒有 file_uid：畫面把這批還在處理中的檔案都標成失敗
         assert message == {"client_id": "batch-not-handed-over", "status_code": TaskStatus.FAILED,
-                           "status_text": SUBMISSION_FAILED_TEXT}
+                           "status_text": SUBMISSION_FAILED_TEXT,
+                           "error_code": ErrorCode.SUBMIT_FAILED, "error_message": None}
         assert closed.value.code == 1011
         assert leftovers(data_dir) == []
 
@@ -2032,7 +2035,7 @@ class TestTransientError:
                               "0.01 秒後第 1 次重試（最多 3 次）...")
         assert codes(messages)[-1] == TaskStatus.FAILED
         assert messages[-1]["status_text"].endswith(
-            "分段轉錄的第 2 段（00:09–00:12）：暫時錯誤重試 3 次仍失敗（429 RESOURCE_EXHAUSTED）]]")
+            "分段轉錄的第 2 段（00:09–00:12）：暫時錯誤重試 3 次仍失敗（429 RESOURCE_EXHAUSTED）")
 
     def test_cancel_while_waiting_stops_at_once(self, api, fake, settings, monkeypatch):
         # 等待重試的期間按下取消：不必等退避結束就停下，任務記成已取消，不再送出。等待調得比

@@ -11,6 +11,7 @@ from pathlib import Path
 
 from app.celery.models import TranscriptionTaskParams
 from app.core.config import get_settings
+from app.core.error_codes import ErrorCode
 from app.core.default_prompt import build_prompt
 from app.provider.base import ProgressAndCancel, Provider, TranscribeRequest
 from app.provider.registry import open_provider
@@ -92,7 +93,9 @@ def _transcribe_speech_view(
     duration = get_audio_duration(audio)
     if duration is None:
         logger.error(f"無法取得音訊時長 {audio.name}")
-        return TranscriptionTaskResult(success=False, text=f"[[無法讀取檔案 {audio.name}]]")
+        # 不寫檔名：這裡的檔名是上傳時換成的隨機名稱，使用者認不得
+        return TranscriptionTaskResult(
+            success=False, text="讀不出音檔的長度", error_code=ErrorCode.AUDIO_UNREADABLE)
 
     # 不用 audio.parent：同一個任務再執行一次時（Docker 模式的重派）輸入音檔在保留區，
     # 暫存檔寫到那裡就清不掉

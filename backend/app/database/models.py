@@ -103,6 +103,9 @@ class TranscriptionLog(Base):
     total_tokens = Column(Integer, nullable=True)
     cost = Column(Float, nullable=True)
     error_message = Column(Text, nullable=True)
+    # 失敗的錯誤碼（app.core.error_codes.ErrorCode），error_message 是它的細節；畫面照錯誤碼顯示原因
+    # 與下一步。#24 門檻 4 之前的失敗與其他狀態是 NULL
+    error_code = Column(String, nullable=True)
     is_batch = Column(Boolean, default=False, nullable=True)
     # batch_id 參照 batch_jobs.batch_id，但允許 NULL（不屬於批次的任務）
     batch_id = Column(

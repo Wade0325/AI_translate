@@ -32,6 +32,7 @@ import warnings
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from app.core.error_codes import ErrorCode
 # HF_HOME 由 weights 模組（權重單一事實來源）於 import 時設定
 from app.provider.local.weights import (  # noqa: F401 — re-export 供既有引用
     ALIGNER_MODEL_ID,
@@ -432,7 +433,8 @@ def transcribe_with_local_models(
         return {
             # 本機沒有內容時照舊算失敗（分段轉錄時整個任務失敗），只是寫明原因
             "success": bool(records),
-            "text": "" if records else "[[本機的模型沒有轉錄出任何內容]]",
+            "text": "" if records else "本機的模型沒有轉錄出任何內容",
+            "error_code": None if records else ErrorCode.NO_TRANSCRIPT,
             "input_tokens": 0,
             "output_tokens": 0,
             "total_tokens": 0,

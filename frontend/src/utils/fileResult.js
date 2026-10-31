@@ -1,9 +1,10 @@
 import { TASK_STATUS } from '../constants/taskStatus';
+import { failureOf } from './failure';
 
 /**
- * 依任務的狀態訊息（WebSocket 廣播的形狀：status_code、status_text、task_uuid，完成時再帶 result），
- * 算出檔案卡的下一個 state。WebSocket 收到的訊息、按取消時照任務紀錄補上的結果（utils/cancelOutcome.js）
- * 都經過這裡，檔案卡完成、失敗、已取消時的欄位只在這裡寫。
+ * 依任務的狀態訊息（WebSocket 廣播的形狀：status_code、status_text、task_uuid，完成時再帶 result，失敗時
+ * 再帶錯誤碼與細節 error_code、error_message），算出檔案卡的下一個 state。WebSocket 收到的訊息、按取消時
+ * 照任務紀錄補上的結果（utils/cancelOutcome.js）都經過這裡，檔案卡完成、失敗、已取消時的欄位只在這裡寫。
  */
 export function applyFileResult(file, data) {
   const next = {
@@ -27,6 +28,11 @@ export function applyFileResult(file, data) {
     next.status = 'error';
     next.percent = 100;
     next.error = data.status_text;
+    // 錯誤碼與細節：檔案卡照錯誤碼寫出原因與下一步（components/FailureNotice.jsx）。訊息沒帶錯誤碼與
+    // 細節時，狀態文字就是原因
+    next.failure = data.error_code || data.error_message
+      ? failureOf(data)
+      : { code: null, detail: data.status_text || '' };
   } else if (data.status_code === TASK_STATUS.CANCELLED) {
     next.status = 'cancelled';
     next.percent = 100;

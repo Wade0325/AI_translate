@@ -1,6 +1,7 @@
 import { test, expect, download } from './support/test.js'
 import {
-    GEMINI_UPLOAD_NOTICE, PROVIDERS, QUEUED_TEXT, SUBMISSION_FAILED_TEXT, TRANSCRIPTS, readiness, transcriptionMessages,
+    GEMINI_UPLOAD_NOTICE, PROVIDERS, QUEUED_TEXT, SUBMISSION_FAILED_TEXT, TRANSCRIPTS, readiness, reply,
+    transcriptionMessages,
 } from './support/backend.js'
 
 // 內容不重要：音檔只經過假後端，不會被解碼
@@ -150,7 +151,37 @@ test('選本機送出一個檔案，顯示處理中，完成後到結果頁下�
         .toEqual({ filename: 'meeting.srt', text: TRANSCRIPTS.srt })
 })
 
-test('任務失敗時，檔案卡顯示後端的失敗原因', async ({ page, mockBackend }) => {
+test('任務失敗時，檔案卡寫出原因、下一步與錯誤碼，可以前往設定頁處理（#24 門檻 4）', async ({ page, mockBackend }) => {
+    const detail = '403 PERMISSION_DENIED: Your API key was reported as leaked.'
+    await mockBackend({
+        routes: { 'POST /upload': { filename: 'meeting_1.wav' } },
+        transcribe: async (request, send) => {
+            // 形狀照後端任務失敗時的狀態廣播：錯誤碼與細節和任務紀錄同名
+            send({
+                task_uuid: 'task-1', status_code: 'FAILED', status_text: `任務失敗: ${detail}`,
+                file_uid: request.file_uid, error_code: 'GEMINI_KEY_REJECTED', error_message: detail,
+            })
+        },
+    })
+    await page.goto('/transcribe')
+
+    await page.getByLabel('供應商').selectOption('google')
+    await addAudio(page)
+    await page.getByRole('button', { name: 'Start' }).click()
+
+    const notice = page.getByTestId('failure-notice')
+    await expect(notice.getByText('Gemini 不接受這把 API 金鑰')).toBeVisible()
+    await expect(notice.getByText(/到設定頁的 Gemini 換一把可用的 API Key/)).toBeVisible()
+    await expect(notice.getByText(`錯誤碼 GEMINI_KEY_REJECTED · ${detail}`)).toBeVisible()
+    await expect(page.getByText('1 個任務失敗')).toBeVisible()
+    // 失敗的檔案可以重新轉錄
+    await expect(page.getByRole('button', { name: 'Start' })).toBeEnabled()
+
+    await notice.getByRole('link', { name: '前往設定頁' }).click()
+    await expect(page).toHaveURL(/\/settings$/)
+})
+
+test('失敗訊息沒帶錯誤碼時，檔案卡照狀態文字寫出原因', async ({ page, mockBackend }) => {
     const reason = '找不到 NVIDIA 顯示卡，本機轉錄無法執行'
     await mockBackend({
         routes: { 'POST /upload': { filename: 'meeting_1.wav' } },
@@ -164,10 +195,33 @@ test('任務失敗時，檔案卡顯示後端的失敗原因', async ({ page, mo
     await addAudio(page)
     await page.getByRole('button', { name: 'Start' }).click()
 
-    await expect(page.getByText(reason)).toBeVisible()
+    await expect(page.getByTestId('failure-notice').getByText(reason)).toBeVisible()
     await expect(page.getByText('1 個任務失敗')).toBeVisible()
-    // 失敗的檔案可以重新轉錄
-    await expect(page.getByRole('button', { name: 'Start' })).toBeEnabled()
+})
+
+test('上傳被拒絕時，檔案卡寫出伺服器說的原因（#24 門檻 4）', async ({ page, mockBackend }) => {
+    const detail = '不支援這種檔案格式（image/jpeg），請改用常見的音訊或影片格式，例如 MP3、WAV、M4A、MP4'
+    await mockBackend({ routes: { 'POST /upload': reply(400, { detail }) } })
+    await page.goto('/transcribe')
+
+    await addAudio(page)
+    await page.getByRole('button', { name: 'Start' }).click()
+
+    const notice = page.getByTestId('failure-notice')
+    await expect(notice.getByText('檔案沒有上傳成功')).toBeVisible()
+    await expect(notice.getByText(`錯誤碼 UPLOAD_FAILED · ${detail}`)).toBeVisible()
+})
+
+test('加入伺服器不收的格式時，當場說明不支援並列出可以用的格式', async ({ page, mockBackend }) => {
+    await mockBackend()
+    await page.goto('/transcribe')
+
+    await page.locator('.ant-upload input[type=file]').setInputFiles({
+        name: 'voice.ogg', mimeType: 'audio/ogg', buffer: Buffer.from('OggS'),
+    })
+
+    await expect(page.getByText('不支援這種格式：voice.ogg（可以用 MP3、WAV、M4A、FLAC、WebM）')).toBeVisible()
+    await expect(page.getByText('MP3, WAV, M4A, FLAC, WebM (max 1000MB)')).toBeVisible()
 })
 
 test('排在別的任務後面時，檔案卡顯示排隊中，輪到時接著顯示進度（#24 門檻 4）', async ({ page, mockBackend }) => {
@@ -204,7 +258,9 @@ test('伺服器還沒回應就關掉連線時，檔案卡顯示提交失敗，�
     await addAudio(page)
     await page.getByRole('button', { name: 'Start' }).click()
 
-    await expect(page.getByText('提交任務失敗：伺服器還沒回應，連線就中斷了。請重新轉錄')).toBeVisible()
+    const notice = page.getByTestId('failure-notice')
+    await expect(notice.getByText('任務沒有送出')).toBeVisible()
+    await expect(notice.getByText('錯誤碼 SUBMIT_FAILED · 伺服器還沒回應，連線就中斷了')).toBeVisible()
     await expect(page.getByText('1 個任務失敗')).toBeVisible()
     await expect(page.getByRole('button', { name: 'Start' })).toBeEnabled()
 })
@@ -214,8 +270,11 @@ test('整批沒有送出時，這批的檔案都標成失敗（#24 門檻 4）',
     await mockBackend({
         routes: { 'POST /upload': () => ({ filename: `upload_${uploads.push(1)}.wav` }) },
         batch: async (request, send, close) => {
-            // 沒有 file_uid：整批沒有派送
-            send({ client_id: request.batch_id, status_code: 'FAILED', status_text: SUBMISSION_FAILED_TEXT })
+            // 沒有 file_uid：整批沒有派送；原因只記在 log，所以只有錯誤碼沒有細節
+            send({
+                client_id: request.batch_id, status_code: 'FAILED', status_text: SUBMISSION_FAILED_TEXT,
+                error_code: 'SUBMIT_FAILED', error_message: null,
+            })
             close()
         },
     })
@@ -229,7 +288,8 @@ test('整批沒有送出時，這批的檔案都標成失敗（#24 門檻 4）',
     await expect(page.getByText('interview.wav')).toBeVisible()
     await page.getByRole('button', { name: 'Start' }).click()
 
-    await expect(page.getByText(SUBMISSION_FAILED_TEXT)).toHaveCount(2)
+    await expect(page.getByTestId('failure-notice').getByText('任務沒有送出')).toHaveCount(2)
+    await expect(page.getByText('錯誤碼 SUBMIT_FAILED', { exact: true })).toHaveCount(2)
     await expect(page.getByText('2 個任務失敗')).toBeVisible()
 })
 
