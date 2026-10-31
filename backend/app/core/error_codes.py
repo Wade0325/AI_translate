@@ -52,7 +52,13 @@ class ErrorCode(StrEnum):
     """連不上供應商（網路斷線、DNS、逾時）。"""
     # ── 本機 ──
     LOCAL_NO_GPU = "LOCAL_NO_GPU"
-    """這台電腦沒有可用的 NVIDIA 顯卡。"""
+    """這台電腦沒有可用的 NVIDIA 顯卡（或沒有裝 NVIDIA 驅動）。"""
+    LOCAL_DRIVER_TOO_OLD = "LOCAL_DRIVER_TOO_OLD"
+    """NVIDIA 顯卡驅動比 PyTorch 帶的 CUDA 舊。"""
+    LOCAL_CUDA_INIT_FAILED = "LOCAL_CUDA_INIT_FAILED"
+    """驅動在，CUDA 卻初始化失敗。"""
+    LOCAL_TORCH_LOAD_FAILED = "LOCAL_TORCH_LOAD_FAILED"
+    """PyTorch 載入失敗，或裝到不支援 CUDA 的版本。"""
     LOCAL_UNSUPPORTED_GPU = "LOCAL_UNSUPPORTED_GPU"
     """目前的 PyTorch 不支援這張顯卡。"""
     LOCAL_MISSING_WEIGHTS = "LOCAL_MISSING_WEIGHTS"
@@ -237,6 +243,9 @@ def _app_error(error: BaseException) -> Optional[Failure]:
 
 _LOCAL_NOT_READY = {
     "no_gpu": ErrorCode.LOCAL_NO_GPU,
+    "driver_too_old": ErrorCode.LOCAL_DRIVER_TOO_OLD,
+    "cuda_init_failed": ErrorCode.LOCAL_CUDA_INIT_FAILED,
+    "torch_load_failed": ErrorCode.LOCAL_TORCH_LOAD_FAILED,
     "unsupported_gpu": ErrorCode.LOCAL_UNSUPPORTED_GPU,
     "missing_weights": ErrorCode.LOCAL_MISSING_WEIGHTS,
 }
