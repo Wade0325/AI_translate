@@ -87,7 +87,7 @@ static class Launcher
 
         Log.Detail(string.Format(CultureInfo.InvariantCulture,
             "啟動器開始：版本 {0}，Windows {1}，.NET {2}，行程 {3}",
-            ReadVersion(backend), Environment.OSVersion.Version, Environment.Version,
+            ReadVersion(backend), WindowsVersion(), Environment.Version,
             Process.GetCurrentProcess().Id));
         Log.Detail("程式資料夾：" + root);
 
@@ -98,6 +98,8 @@ static class Launcher
                     + ExeName + "；不要直接在 zip 裡雙擊。");
 
         CreateFolder(dataDir);
+        // 伺服器的資料庫、上傳暫存與日誌都寫在 data：寫不進去時伺服器一定起不來，先在這裡說清楚
+        CheckWritable(dataDir);
         Log.Start(Path.Combine(dataDir, "logs"));
 
         _urlFile = Path.Combine(dataDir, "launcher-url.txt");
@@ -138,7 +140,7 @@ static class Launcher
         if (health == Health.Exited)
             throw new LaunchFailure(
                 "伺服器還沒就緒就結束了（結束代碼 " + ExitCodeText(_server.ExitCode) + "）。",
-                "上方視窗裡伺服器印出的最後幾行通常就是原因；伺服器的日誌是同一個資料夾裡的 app-日期.log。");
+                "上方視窗裡伺服器印出的最後幾行通常就是原因。");
         if (health == Health.TimedOut)
             throw new LaunchFailure(
                 "伺服器在 " + timeout + " 秒內沒有就緒，已經停止它。",
@@ -159,7 +161,7 @@ static class Launcher
         var failure = new LaunchFailure(
             "伺服器意外停止了（結束代碼 " + ExitCodeText(code) + "）。",
             "如果有進行中的轉錄，它已經中斷；重新執行 " + ExeName + " 之後會記成失敗，可以再重新轉錄。",
-            "上方視窗裡伺服器印出的最後幾行通常就是原因；伺服器的日誌是同一個資料夾裡的 app-日期.log。");
+            "上方視窗裡伺服器印出的最後幾行通常就是原因。");
         failure.ExitCode = code != 0 ? code : 1;
         throw failure;
     }
@@ -184,7 +186,7 @@ static class Launcher
         }
         else
         {
-            Log.Error("日誌沒有寫成：" + (Log.Problem ?? "還沒開始寫日誌就出錯了") + "。");
+            Log.Error("日誌沒有寫成：" + (Log.Problem ?? "還沒開始寫日誌就出錯了").TrimEnd('。', '.') + "。");
             Log.Error("需要協助時，請到 " + IssuesUrl + " 回報，並附上這個視窗的內容。");
         }
         Pause();
@@ -203,7 +205,14 @@ static class Launcher
     static void Pause()
     {
         Console.WriteLine("按任意鍵關閉...");
-        try { Console.ReadKey(true); } catch (Exception) { }
+        try
+        {
+            // 先丟掉出錯之前就按下的鍵（例如等佈建時按過 Enter），免得訊息一出現視窗就關掉
+            while (Console.KeyAvailable)
+                Console.ReadKey(true);
+            Console.ReadKey(true);
+        }
+        catch (Exception) { }
     }
 
     static string ExitCodeText(int code)
@@ -441,6 +450,22 @@ static class Launcher
         }
     }
 
+    static void CheckWritable(string folder)
+    {
+        string probe = Path.Combine(folder, ".launcher-write-test");
+        try
+        {
+            File.WriteAllText(probe, "");
+            File.Delete(probe);
+        }
+        catch (Exception e)
+        {
+            if (!IsIoProblem(e))
+                throw;
+            throw IoFailure("無法寫入資料夾：" + folder, e);
+        }
+    }
+
     static void WriteFile(string path, string content)
     {
         try
@@ -520,6 +545,35 @@ static class Launcher
                     + "或重新解壓縮整個 zip。");
         }
     }
+
+    // Environment.OSVersion 在沒有宣告支援 Windows 10 的 exe 裡會被降成 6.2.9200（Windows 8），
+    // 日誌要的是真正的版本：RtlGetVersion 不受相容性設定影響
+    static string WindowsVersion()
+    {
+        try
+        {
+            var info = new OSVERSIONINFOEX();
+            info.dwOSVersionInfoSize = Marshal.SizeOf(typeof(OSVERSIONINFOEX));
+            if (RtlGetVersion(ref info) == 0)
+                return string.Format(CultureInfo.InvariantCulture, "{0}.{1}.{2}",
+                    info.dwMajorVersion, info.dwMinorVersion, info.dwBuildNumber);
+        }
+        catch (Exception) { }
+        return Environment.OSVersion.Version.ToString();
+    }
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    struct OSVERSIONINFOEX
+    {
+        public int dwOSVersionInfoSize, dwMajorVersion, dwMinorVersion, dwBuildNumber, dwPlatformId;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)]
+        public string szCSDVersion;
+        public ushort wServicePackMajor, wServicePackMinor, wSuiteMask;
+        public byte wProductType, wReserved;
+    }
+
+    [DllImport("ntdll.dll")]
+    static extern int RtlGetVersion(ref OSVERSIONINFOEX info);
 
     static string ReadVersion(string backend)
     {

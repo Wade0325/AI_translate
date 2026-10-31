@@ -258,6 +258,39 @@ class TestIoErrors:
         assert "日誌沒有寫成" in result.output
         assert app.calls() == []
 
+    @windows_only
+    def test_data_folder_without_write_permission_is_reported_before_starting(self, app):
+        # 實測時伺服器先起來、才在 traceback 最後一行寫 PermissionError：啟動器要自己先說清楚
+        app.data.mkdir()
+        user = os.environ["USERNAME"]
+        subprocess.run(["icacls", str(app.data), "/deny", f"{user}:(OI)(CI)(W,AD)"],
+                       check=True, capture_output=True)
+        try:
+            result = app.run()
+        finally:
+            subprocess.run(["icacls", str(app.data), "/remove:d", user],
+                           check=True, capture_output=True)
+
+        assert result.returncode == 1
+        assert f"無法寫入資料夾：{app.data}" in result.output
+        assert "原因：沒有寫入權限（存取被拒）" in result.output
+        assert "不要放在 C:\\Program Files 底下" in result.output
+        assert app.calls() == []
+
+    def test_log_folder_that_cannot_be_created_does_not_stop_the_launch(self, app):
+        app.data.mkdir()
+        (app.data / "logs").write_text("佔住 logs 這個名稱的檔案", encoding="utf-8")
+
+        result = app.run(server="exit:3")
+
+        assert "注意：日誌檔寫不進去，只顯示在這個視窗" in result.output
+        assert "伺服器還沒就緒就結束了（結束代碼 3）" in result.output
+        assert "日誌沒有寫成：無法建立" in result.output
+        # 例外訊息自己的句號不再多接一個
+        assert "。。" not in result.output and ".。" not in result.output
+        # 沒有日誌資料夾時，不說伺服器的日誌在「同一個資料夾」
+        assert "同一個資料夾" not in result.output
+
 
 @windows_only
 class TestSingleInstance:
@@ -300,6 +333,10 @@ class TestLog:
         result = app.run(server="exit:3")
 
         assert "啟動器開始：版本 v0.0.0-test" in result.log
+        if WINDOWS:
+            # 真正的 Windows 版本，不是相容性設定降成的 6.2.9200（Windows 8）
+            major = int(result.log.split("啟動器開始：版本 v0.0.0-test，Windows ", 1)[1].split(".")[0])
+            assert major >= 10
         assert "正在啟動 AI_Translate 伺服器" in result.log
         assert " - ERROR - " in result.log
         assert "伺服器還沒就緒就結束了（結束代碼 3）" in result.log
