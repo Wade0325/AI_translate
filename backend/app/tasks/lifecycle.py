@@ -46,7 +46,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterator, List, Optional, Union
+from typing import Any, Callable, Dict, Iterator, List, Optional, Union, cast
 
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -114,14 +114,22 @@ class _Outcome:
     """失敗時的錯誤碼與細節，隨宣告送給畫面。"""
 
 
+_COMPLETED_TEXT = "任務完成"
+_CANCELLED_TEXT = "任務已取消"
+
+
+def _failed_text(detail: Optional[str]) -> str:
+    """失敗時宣告的狀態文字：帶著細節，沒有細節時只說失敗。"""
+    return f"任務失敗: {detail}" if detail else "任務失敗"
+
+
 def _cancelled() -> _Outcome:
-    return _Outcome(TaskStatus.CANCELLED, "任務已取消", return_value={"cancelled": True})
+    return _Outcome(TaskStatus.CANCELLED, _CANCELLED_TEXT, return_value={"cancelled": True})
 
 
 def _failed(failure: Failure, error: Exception) -> _Outcome:
     """失敗：宣告時的狀態文字帶著細節，錯誤碼與細節另外放在宣告的欄位裡（見 :meth:`TaskLifecycle._publish`）。"""
-    text = f"任務失敗: {failure.detail}" if failure.detail else "任務失敗"
-    return _Outcome(TaskStatus.FAILED, text, error=error, failure=failure)
+    return _Outcome(TaskStatus.FAILED, _failed_text(failure.detail), error=error, failure=failure)
 
 
 class TaskLifecycle:
@@ -384,7 +392,7 @@ class TaskLifecycle:
             self._task_uuid, transcripts, tokens=tokens, cost=cost, model=self._task.model,
             source_language=self._task.source_lang, duration=self._duration,
             speaker_count=_speaker_count(result.segments))
-        return _Outcome(TaskStatus.COMPLETED, "任務完成", broadcast_result=response,
+        return _Outcome(TaskStatus.COMPLETED, _COMPLETED_TEXT, broadcast_result=response,
                         return_value={"raw_lrc_text": transcripts["lrc"]})
 
     def _cancel(self, db: Session, usage: Optional[TranscriptionTaskResult] = None) -> _Outcome:
@@ -613,6 +621,29 @@ def completed_result(db: Session, task_uuid) -> Optional[dict]:
         record.task_uuid, transcripts, tokens=record.total_tokens or 0, cost=record.cost or 0.0,
         model=record.model_used or "", source_language=record.source_language or "",
         duration=record.audio_duration_seconds or 0.0, speaker_count=_speaker_count(segments))
+
+
+def ended_status(db: Session, task_uuid) -> Optional[dict]:
+    """一個已經結束的任務結束時宣告的內容，從任務紀錄（與完成時的片段）重新產生，和當時宣告的相同：
+    狀態碼與狀態文字，完成時另有結果（:func:`completed_result`），失敗時另有錯誤碼與細節（和任務紀錄
+    同名）。沒有紀錄、或任務還沒結束時是 None。
+
+    連線中斷、錯過了結束的宣告時，接回任務的連線用它補上（#280）。
+    """
+    record = TranscriptionLogRepository().get(db, task_uuid)
+    if record is None:
+        return None
+    status = cast(str, record.status)
+    if status == TaskStatus.COMPLETED:
+        return {"status_code": TaskStatus.COMPLETED, "status_text": _COMPLETED_TEXT,
+                "result": completed_result(db, task_uuid)}
+    if status == TaskStatus.FAILED:
+        detail = cast(Optional[str], record.error_message)
+        return {"status_code": TaskStatus.FAILED, "status_text": _failed_text(detail),
+                "error_code": cast(Optional[str], record.error_code), "error_message": detail}
+    if status == TaskStatus.CANCELLED:
+        return {"status_code": TaskStatus.CANCELLED, "status_text": _CANCELLED_TEXT}
+    return None
 
 
 def _completed_response(task_uuid, transcripts: dict, *, tokens: int, cost: float, model: str,

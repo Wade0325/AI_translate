@@ -23,7 +23,7 @@ import soundfile as sf
 from gevent import GreenletExit
 from starlette.websockets import WebSocketDisconnect
 
-from app.api.transcription import QUEUED_TEXT, SUBMISSION_FAILED_TEXT
+from app.api.transcription import QUEUED_TEXT, REATTACHED_TEXT, SUBMISSION_FAILED_TEXT, TASK_GONE
 from app.core.default_prompt import build_prompt
 from app.core.error_codes import ErrorCode
 from app.core.task_status import TaskStatus
@@ -1163,6 +1163,134 @@ class TestQueuedAndNotSubmitted:
                            "error_code": ErrorCode.SUBMIT_FAILED, "error_message": None}
         assert closed.value.code == 1011
         assert leftovers(data_dir) == []
+
+
+# ─── 連線中斷之後接回任務（#280） ───────────────────────────────────────────
+
+class NothingRegistered:
+    """登記裡一個任務都沒有，像應用程式剛重新啟動（免安裝模式的登記只在記憶體裡）；其餘照轉。
+    用 ``run_mode.use`` 換上。"""
+
+    def __init__(self, inner):
+        self._inner = inner
+
+    def registered_task(self, file_uid):
+        return None
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
+def reattach(api, file_uid: str, task_uuid: str):
+    """畫面在連線中斷之後重新連上，接回這個檔案送出的任務。"""
+    return api.websocket_connect(f"/api/v1/ws/{file_uid}/tasks/{task_uuid}")
+
+
+class TestReattachAfterTheConnectionDrops:
+    """送出任務之後連線斷了：任務照樣在伺服器上跑。畫面重新連上時，先收到任務現在的狀態，
+    之後照樣收到任務的進度與結果，檔案卡不會停在斷線前的那一則。"""
+
+    @pytest.fixture(autouse=True)
+    def _script(self, fake):
+        fake.script = list(SCRIPT) * 2
+
+    @pytest.mark.parametrize("step", [None, Fail("模型壞掉了")], ids=["completed", "failed"])
+    def test_task_that_ended_while_disconnected_is_reported_as_it_was_announced(
+            self, api, fake, step):
+        if step is not None:
+            fake.script = [step]
+        announced = transcribe(api, "uid-ended-offline")[-1]
+
+        with reattach(api, "uid-ended-offline", announced["task_uuid"]) as ws:
+            # 完成時連同結果（四種輸出格式、計價、說話者人數），失敗時連同錯誤碼與細節
+            assert receive(ws) == announced
+
+    def test_cancelled_task_is_reported_as_cancelled(self, api, fake):
+        fake.hold = threading.Event()
+        filename = upload(api)
+        with api.websocket_connect("/api/v1/ws/uid-cancelled-offline") as ws:
+            submit(ws, filename)
+            task_uuid = receive(ws)["task_uuid"]
+            assert fake.started.wait(TIMEOUT)
+        cancel_when_dispatched(api, "uid-cancelled-offline")
+
+        with reattach(api, "uid-cancelled-offline", task_uuid) as ws:
+            state = receive(ws)
+        assert (state["status_code"], state["status_text"]) == (TaskStatus.CANCELLED, "任務已取消")
+
+    def test_running_task_keeps_reporting_to_the_new_connection(self, api, fake):
+        fake.hold = threading.Event()
+        filename = upload(api)
+        with api.websocket_connect("/api/v1/ws/uid-running-offline") as ws:
+            submit(ws, filename)
+            task_uuid = receive(ws)["task_uuid"]
+            assert fake.started.wait(TIMEOUT)
+
+        with reattach(api, "uid-running-offline", task_uuid) as ws:
+            state = receive(ws)
+            fake.hold.set()
+            rest = receive_until_terminal(ws)
+
+        assert (state["status_code"], state["status_text"]) == (TaskStatus.PROCESSING, REATTACHED_TEXT)
+        assert codes(rest)[-1] == TaskStatus.COMPLETED
+        assert {m["task_uuid"] for m in [state, *rest]} == {task_uuid}
+
+    def test_queued_task_reports_queued_then_its_turn(self, api, fake):
+        fake.hold = threading.Event()
+        ahead_file, waiting_file = upload(api, "a.wav"), upload(api, "b.wav")
+        with api.websocket_connect("/api/v1/ws/uid-ahead-offline") as ahead:
+            submit(ahead, ahead_file)
+            assert fake.started.wait(TIMEOUT)
+            # GPU 佇列只有一個 worker：第二個任務排在佇列裡，排隊中的時候連線就斷了
+            with api.websocket_connect("/api/v1/ws/uid-queued-offline") as waiting:
+                submit(waiting, waiting_file)
+                task_uuid = receive(waiting)["task_uuid"]
+
+            with reattach(api, "uid-queued-offline", task_uuid) as ws:
+                state = receive(ws)
+                fake.hold.set()
+                turn = receive_until_terminal(ws)
+            receive_until_terminal(ahead)
+
+        assert (state["status_code"], state["status_text"]) == (TaskStatus.PROCESSING, QUEUED_TEXT)
+        assert codes(turn)[-1] == TaskStatus.COMPLETED
+        assert {m["task_uuid"] for m in turn} == {task_uuid}
+
+    def test_task_unknown_to_the_server_is_reported_as_interrupted(self, api):
+        # 例如還在排隊時應用程式被強制關掉、又重新啟動：沒有登記，也沒有任務紀錄
+        task_uuid = "4f6c1b0e-6d1a-4a8e-9a43-3f0a2f1d7c55"
+        with reattach(api, "uid-unknown", task_uuid) as ws:
+            state = receive(ws)
+
+        assert state == {
+            "client_id": "uid-unknown", "file_uid": "uid-unknown", "task_uuid": task_uuid,
+            "status_code": TaskStatus.FAILED, "status_text": f"任務失敗: {TASK_GONE.detail}",
+            "error_code": ErrorCode.INTERRUPTED, "error_message": TASK_GONE.detail,
+        }
+
+    @pytest.mark.parametrize("swept", [True, False], ids=["after-startup-sweep", "record-left-processing"])
+    def test_task_lost_in_a_restart_is_reported_as_interrupted(self, api, fake, test_engine, swept):
+        fake.hold = threading.Event()
+        filename = upload(api)
+        previous = None
+        try:
+            with api.websocket_connect("/api/v1/ws/uid-restarted") as ws:
+                submit(ws, filename)
+                task_uuid = receive(ws)["task_uuid"]
+                assert fake.started.wait(TIMEOUT)
+            # 應用程式重新啟動了：登記是空的；免安裝模式啟動時把還在處理中的紀錄記成失敗
+            previous = run_mode.use(NothingRegistered(run_mode.get()))
+            if swept:
+                run_startup_sweep(test_engine)
+            with reattach(api, "uid-restarted", task_uuid) as ws:
+                state = receive(ws)
+        finally:
+            if previous is not None:
+                run_mode.use(previous)
+            fake.hold.set()
+
+        assert (state["status_code"], state["error_code"]) == (TaskStatus.FAILED, ErrorCode.INTERRUPTED)
+        assert state["task_uuid"] == task_uuid
 
 
 # ─── 模型能力端點（#108） ───────────────────────────────────────────────────
