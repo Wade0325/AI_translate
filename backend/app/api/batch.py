@@ -10,6 +10,7 @@ from fastapi import (
 from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session
 from app.celery.models import BatchTranscriptionTaskParams, BatchFileItemParams
+from app.api.transcription import SUBMISSION_FAILED_TEXT
 from app.runtime import run_mode
 from app.core.config import get_settings
 from app.core.task_status import TaskStatus
@@ -162,9 +163,21 @@ def start_batch_task_sync(payload_str: str, batch_id: str) -> list[dict]:
     檔名不合法（不是 temp_uploads 內的單純檔名）或上傳檔已經不在的檔案不派發，其餘照常，
     一個都不剩時整批不派發；模型不屬於所選供應商、不支援批次或不吃提示詞，或請求帶了明文
     金鑰（#16 Q8b）時也整批不派發。回傳被拒檔案的 FAILED 訊息，由 WS 端點送回前端。
+
+    派送前出了非預期的錯誤（例如讀不到設定）時往上拋：整批都沒有派送，上傳檔不會變成任務，
+    刪掉不留在電腦上。
     """
     request_data = WebSocketBatchRequest.model_validate_json(payload_str)
+    try:
+        return _submit_batch(request_data, batch_id)
+    except BaseException:
+        for f in request_data.files:
+            audio_store.discard_upload(f.filename, TEMP_UPLOADS_DIR)
+        raise
 
+
+def _submit_batch(request_data: WebSocketBatchRequest, batch_id: str) -> list[dict]:
+    """驗證請求、組出批次並派送；回傳被拒檔案的 FAILED 訊息（見 :func:`start_batch_task_sync`）。"""
     try:
         refuse_plaintext_api_keys(request_data.api_keys)
         # 批次層級與各檔案的提示詞串在一起檢查：任一個填了，串起來就不是空白
@@ -258,14 +271,29 @@ async def batch_websocket_endpoint(
     - 連線後發送 JSON 格式的 WebSocketBatchRequest
     - 接收個別檔案的 PROCESSING / COMPLETED / FAILED 狀態
     - 接收整體批次的 BATCH_COMPLETED 狀態
+    - 整批沒有派送時（派送前出了非預期的錯誤），收到一則沒有 file_uid 的 FAILED，接著連線關閉
     """
     await manager.connect(websocket, batch_id)
     try:
         payload_str = await websocket.receive_text()
 
-        rejected = await run_in_threadpool(
-            start_batch_task_sync, payload_str=payload_str, batch_id=batch_id
-        )
+        try:
+            rejected = await run_in_threadpool(
+                start_batch_task_sync, payload_str=payload_str, batch_id=batch_id
+            )
+        except Exception as e:
+            # 整批沒有派送：送一則沒有 file_uid 的失敗，畫面把這批還在處理中的檔案都標成失敗，
+            # 不會停在「批次已送出」。例外不轉述（資料庫例外帶著 SQL 原文），log 只記類型與原因
+            logger.error(f"提交批次失敗 (batch_id: {batch_id}):\n"
+                         f"{traceback_without_db_details(e)}")
+            await websocket.send_json({
+                "client_id": batch_id,
+                "status_code": TaskStatus.FAILED,
+                "status_text": SUBMISSION_FAILED_TEXT,
+            })
+            # 只關、只移除這條連線：同一個 batch_id 的新連線可能已經登記上來（#203）
+            await manager.close(batch_id, websocket, code=1011)
+            return
         for message in rejected:
             await websocket.send_json(message)
 
@@ -276,7 +304,6 @@ async def batch_websocket_endpoint(
         logger.info(f"批次 WebSocket 連線由客戶端關閉: {batch_id}")
         manager.disconnect(batch_id, websocket)
     except Exception as e:
-        # 資料庫例外（例如派送前讀不到設定）不轉述：log 只記類型與原因，traceback 留著出錯的位置
         logger.error(f"批次 WebSocket 端點發生錯誤 (batch_id: {batch_id}):\n"
                      f"{traceback_without_db_details(e)}")
         # 只關、只移除這條連線：同一個 batch_id 的新連線可能已經登記上來（#203）

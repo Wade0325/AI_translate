@@ -20,6 +20,7 @@ import fakeredis.aioredis
 import pytest
 from celery.result import AsyncResult
 
+from app.api.transcription import QUEUED_TEXT
 from app.core.task_status import TaskStatus
 from app.provider.base import LOCAL_QUEUE
 from app.runtime import run_mode
@@ -154,8 +155,11 @@ def test_a_single_file_task_completes_and_cancelling_it_afterwards_changes_nothi
 
     with api.websocket_connect("/api/v1/ws/uid-docker") as ws:
         submit(ws, filename)
-        end = receive_until(ws, *TERMINAL)[-1]
+        messages = receive_until(ws, *TERMINAL)
+    end = messages[-1]
 
+    # 端點派送前直接送排隊中，任務的進度經 Redis 廣播、排在它後面（#24 門檻 4）
+    assert [m["status_text"] for m in messages[:2]] == [QUEUED_TEXT, "檔案處理與分析..."]
     assert end["status_code"] == TaskStatus.COMPLETED
     assert "こんにちは。" in end["result"]["transcripts"]["srt"]
     assert len(fake.calls) == 1
@@ -196,6 +200,8 @@ def test_cancelling_a_queued_task_revokes_it_and_the_worker_discards_it(
         assert fake.started.wait(TIMEOUT)
     with api.websocket_connect("/api/v1/ws/uid-docker-queued") as ws:
         submit(ws, second)
+        # 排在佇列裡的任務，畫面看得到排隊中
+        assert receive_until(ws, TaskStatus.PROCESSING)[-1]["status_text"] == QUEUED_TEXT
         queued = registered_task_id(docker_run_mode, "uid-docker-queued")
         # Celery 查不出排隊中的任務在不在（PENDING）：當成還在佇列裡，撤銷它
         assert cancel_when_dispatched(api, "uid-docker-queued")["cancelled"] is True
