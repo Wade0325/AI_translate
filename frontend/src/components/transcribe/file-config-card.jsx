@@ -358,6 +358,8 @@ export function FileConfigCard({
                                 value={config.language}
                                 onChange={(v) => update({ language: v })}
                                 options={languages}
+                                labelRender={({ value }) => formatLang(value)}
+                                aria-label="這個檔案的 Language"
                                 style={{ width: "100%" }}
                                 size="small"
                             />

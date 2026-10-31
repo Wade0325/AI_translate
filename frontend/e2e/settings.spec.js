@@ -177,6 +177,58 @@ test('讀不到版本號時照樣顯示下載頁連結', async ({ page, mockBack
     await expect(about.getByRole('link', { name: 'GitHub Releases' })).toBeVisible()
 })
 
+/** GET /diagnostics 回的診斷資訊（後端的 app/services/diagnostics.py 產生）。 */
+const DIAGNOSTICS = '診斷資訊\n- 版本：v0.1.0-beta.1\n- 執行模式：免安裝模式\n- 作業系統：Windows 11（10.0.26100，AMD64）\n'
+
+/** 畫面送出的「讀診斷資訊」請求。 */
+const diagnosticsRequests = (backend) => backend.requests.filter((r) => r.path === '/diagnostics')
+
+test('複製診斷資訊：按下才問後端，放進剪貼簿，並顯示複製了什麼（#24）', async ({ page, mockBackend }) => {
+    await page.context().grantPermissions(['clipboard-read', 'clipboard-write'])
+    const backend = await mockBackend({ routes: { 'GET /diagnostics': { text: DIAGNOSTICS } } })
+    await page.goto('/settings')
+
+    const about = providerCard(page, 'About')
+    await expect(about.getByText('不含檔名、金鑰、路徑與轉錄內容', { exact: false })).toBeVisible()
+    // 開設定頁時不問：後端要查顯卡、nvidia-smi 與 ffmpeg
+    expect(diagnosticsRequests(backend)).toEqual([])
+
+    await about.getByRole('button', { name: '複製診斷資訊' }).click()
+
+    await expect(page.getByText('已複製診斷資訊，可以貼進 GitHub Issue')).toBeVisible()
+    expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(DIAGNOSTICS)
+    await expect(about.getByText('已複製以下內容：')).toBeVisible()
+    await expect(about.getByRole('textbox', { name: '診斷資訊' })).toHaveValue(DIAGNOSTICS)
+    expect(diagnosticsRequests(backend)).toHaveLength(1)
+})
+
+test('瀏覽器不給剪貼簿時，顯示診斷資訊讓使用者自己複製', async ({ page, mockBackend }) => {
+    // 用區網 IP 開 Docker 模式時沒有 navigator.clipboard；使用者拒絕權限時 writeText 失敗
+    await page.addInitScript(() => {
+        navigator.clipboard.writeText = () => Promise.reject(new DOMException('denied', 'NotAllowedError'))
+    })
+    await mockBackend({ routes: { 'GET /diagnostics': { text: DIAGNOSTICS } } })
+    await page.goto('/settings')
+
+    const about = providerCard(page, 'About')
+    await about.getByRole('button', { name: '複製診斷資訊' }).click()
+
+    await expect(page.getByText('瀏覽器不允許自動複製，請選取下面的文字自己複製')).toBeVisible()
+    await expect(about.getByText('請選取以下內容自己複製：')).toBeVisible()
+    await expect(about.getByRole('textbox', { name: '診斷資訊' })).toHaveValue(DIAGNOSTICS)
+})
+
+test('讀不到診斷資訊時說明原因，不顯示空白的內容', async ({ page, mockBackend }) => {
+    await mockBackend({ routes: { 'GET /diagnostics': reply(500, { detail: '壞掉了' }) } })
+    await page.goto('/settings')
+
+    const about = providerCard(page, 'About')
+    await about.getByRole('button', { name: '複製診斷資訊' }).click()
+
+    await expect(page.getByText('讀不到診斷資訊：壞掉了')).toBeVisible()
+    await expect(about.getByRole('textbox', { name: '診斷資訊' })).toHaveCount(0)
+})
+
 /** 「資料與隱私」卡片上的保留音檔：retained 蓋過假後端預設的那一份。 */
 const localData = (retained, extra = {}) => ({
     ...LOCAL_DATA, ...extra, retained_audio: { ...LOCAL_DATA.retained_audio, ...retained },

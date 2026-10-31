@@ -4,6 +4,7 @@ import { Card, Button, Input, Typography, Row, Col, Spin, Divider, Progress, Ale
 import { Key, Save, Cpu, Download, CheckCircle2, Info } from "lucide-react"
 import { useModelManager } from "../components/ModelManager"
 import { ReasonText } from "../components/disabled-reason"
+import { DiagnosticsCopy } from "../components/DiagnosticsCopy"
 import { LocalDataCard } from "../components/LocalDataCard"
 import { UploadNotice } from "../components/UploadNotice"
 import { PROVIDER_LIST_FAILED, useProviderList } from "../hooks/useProviderList"
@@ -177,8 +178,8 @@ const RELEASES_URL = "https://github.com/Wade0325/AI_translate/releases"
 const ISSUES_URL = "https://github.com/Wade0325/AI_translate/issues/new/choose"
 
 /**
- * 版本號、新版本的下載頁與回報問題的連結（#85、#24）。app 不會自己連到 GitHub 檢查更新：
- * 版本號問的是本機的後端，兩個連結都要使用者自己點。
+ * 版本號與新版本的下載頁連結（#85），以及回報問題的連結與「複製診斷資訊」（#24）。app 不會自己連到
+ * GitHub 檢查更新：版本號問的是本機的後端，兩個連結都要使用者自己點。
  */
 function AboutCard() {
     const [version, setVersion] = useState(null)
@@ -213,8 +214,9 @@ function AboutCard() {
                     <Text style={{ color: '#8888a8', fontSize: 12 }}>
                         遇到問題或有建議，請到{' '}
                         <a href={ISSUES_URL} target="_blank" rel="noopener noreferrer">GitHub Issues</a>
-                        {' '}選一個範本回報，並附上上面的版本號。Issues 是公開的，任何人都看得到：不要貼轉錄結果的內容，也不要附私人錄音或 API 金鑰。
+                        {' '}選一個範本回報。Issues 是公開的，任何人都看得到：不要貼轉錄結果的內容，也不要附私人錄音或 API 金鑰。
                     </Text>
+                    <DiagnosticsCopy />
                 </div>
             </Card>
         </Col>
