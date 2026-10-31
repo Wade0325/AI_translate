@@ -13,6 +13,9 @@ from dataclasses import replace
 import pytest
 from fastapi.testclient import TestClient
 
+from app.api.batch import NOT_SUBMITTED, REATTACHED_TEXT, SUBMITTED_TEXT, SUBMITTING_TEXT
+from app.api.batch import QUEUED_TEXT as BATCH_QUEUED_TEXT
+from app.api.transcription import SUBMISSION_FAILED_TEXT, TASK_GONE
 from app.core.default_prompt import build_prompt
 from app.core.error_codes import ErrorCode
 from app.core.task_status import TaskStatus
@@ -1433,3 +1436,193 @@ def test_a_batch_already_sent_is_left_for_recovery_at_startup(
     assert shown(api, "batch-sent-before-restart") == ("POLLING", False, True)
     end = of_file(recover(api, "batch-sent-before-restart"), "sent.wav")[-1]
     assert end["status_code"] == TaskStatus.COMPLETED
+
+
+# ─── 送出之後連線中斷，接回批次（#286）──────────────────────────────────────
+# 批次的 id 是畫面送出時自己產生的：連線在伺服器回應之前就斷了，畫面也能用它重新連上、接回批次。
+# 接回的連線先收到批次現在的狀態，之後和送出的那條連線一樣收批次的廣播
+
+def reattach_batch(api: TestClient, batch_id: str):
+    """接回批次的連線（畫面在送出的連線斷了之後開的）。"""
+    return api.websocket_connect(f"/api/v1/batch/ws/{batch_id}/reattach")
+
+
+def batch_level(batch_id: str, status_code: TaskStatus, status_text: str, **failure) -> dict:
+    """接回時批次層級的那一則（沒有 file_uid）。"""
+    return {"client_id": batch_id, "status_code": status_code, "status_text": status_text,
+            **failure}
+
+
+def test_a_batch_still_uploading_keeps_reporting_to_the_new_connection(
+        api, in_process_run_mode, batch_fake):
+    batch_fake.hold = threading.Event()
+    batch_fake.script = [list(LINES)]
+    with api.websocket_connect("/api/v1/batch/ws/batch-reattach-uploading") as ws:
+        ws.send_json(batch_request(api, ["uploading.wav"]))
+        assert batch_fake.started.wait(TIMEOUT)
+    # 上傳時連線斷了：批次照樣在上傳，接回之後接著收進度、送出與結果
+    with reattach_batch(api, "batch-reattach-uploading") as ws:
+        first = receive(ws)
+        batch_fake.hold.set()
+        messages = receive_until(ws, TaskStatus.BATCH_COMPLETED)
+    wait_until(lambda: not in_process_run_mode.is_alive(messages[-1]["task_uuid"]))
+
+    assert first == batch_level("batch-reattach-uploading", TaskStatus.PROCESSING, REATTACHED_TEXT)
+    assert TaskStatus.BATCH_SUBMITTED in codes(messages)
+    assert of_file(messages, "uploading.wav")[-1]["status_code"] == TaskStatus.COMPLETED
+
+
+def test_files_that_ended_while_disconnected_are_reported_before_the_submission(
+        api, in_process_run_mode, batch_fake):
+    # 第一個檔案上傳失敗、第二個送出了；批次停在輪詢，結果還沒回來
+    batch_fake.script = [list(LINES)]
+    batch_fake.upload_errors = [RuntimeError("讀不到檔案"), None]
+    batch_fake.poll_holds = [threading.Event()]
+    broadcast = submit_until_polling(api, "batch-reattach-polling", ["gone.wav", "sent.wav"])
+
+    with reattach_batch(api, "batch-reattach-polling") as ws:
+        state = [receive(ws), receive(ws)]
+    batch_fake.poll_holds[0].set()
+    wait_until(lambda: not in_process_run_mode.is_alive(broadcast[-1]["task_uuid"]))
+
+    # 已經結束的檔案照它結束時的宣告補上；還在等的檔案和送出時一樣改成批次等待，結果到任務頁取回
+    assert state == [
+        of_file(broadcast, "gone.wav")[-1],
+        batch_level("batch-reattach-polling", TaskStatus.BATCH_SUBMITTED, SUBMITTED_TEXT),
+    ]
+    assert state[0]["status_code"] == TaskStatus.FAILED
+
+
+def submit_until_polling(api: TestClient, batch_id: str, names: list[str]) -> list[dict]:
+    """送出批次，收下廣播直到送出給供應商，再等批次開始輪詢；回傳收到的廣播。"""
+    with api.websocket_connect(f"/api/v1/batch/ws/{batch_id}") as ws:
+        ws.send_json(batch_request(api, names))
+        messages = receive_until(ws, TaskStatus.BATCH_SUBMITTED)
+    wait_until(lambda: shown(api, batch_id)[0] == "POLLING")
+    return messages
+
+
+def test_a_batch_that_ended_while_disconnected_is_reported_as_it_was_announced(
+        api, in_process_run_mode, batch_fake):
+    batch_fake.script = [list(LINES), Fail("模型壞掉了")]
+    names = ["ended-a.wav", "ended-b.wav"]
+    messages = run_batch(api, in_process_run_mode, "batch-reattach-ended", names)
+
+    with reattach_batch(api, "batch-reattach-ended") as ws:
+        state = [receive(ws) for _ in names]
+
+    # 完成的帶結果、失敗的帶錯誤碼與細節，和批次結束時廣播的每個檔案的那一則相同
+    assert state == ends(messages, names)
+    assert codes(state) == [TaskStatus.COMPLETED, TaskStatus.FAILED]
+
+
+def test_a_batch_still_queued_is_reported_as_queued_then_its_turn(
+        api, in_process_run_mode, batch_fake):
+    # 執行緒池只有一個 worker：第一個批次停在上傳，第二個批次排在佇列裡
+    batch_fake.hold = threading.Event()
+    batch_fake.script = [list(LINES), list(LINES)]
+    with api.websocket_connect("/api/v1/batch/ws/batch-ahead") as ahead:
+        ahead.send_json(batch_request(api, ["ahead.wav"]))
+        assert batch_fake.started.wait(TIMEOUT)
+        with api.websocket_connect("/api/v1/batch/ws/batch-reattach-queued") as behind:
+            request = batch_request(api, ["behind.wav"])
+            # 多一個上傳檔已經不在的檔案：端點派送之後才回它被拒，收到時批次已經派送了
+            request["files"].append(
+                {"filename": "swept.wav", "original_filename": "swept.wav", "file_uid": "swept"})
+            behind.send_json(request)
+            assert receive(behind)["file_uid"] == "swept"
+        # 排隊時連線斷了
+        with reattach_batch(api, "batch-reattach-queued") as ws:
+            first = receive(ws)
+            batch_fake.hold.set()
+            messages = receive_until(ws, TaskStatus.BATCH_COMPLETED)
+        receive_until(ahead, TaskStatus.BATCH_COMPLETED)
+    wait_until(lambda: not in_process_run_mode.is_alive(messages[-1]["task_uuid"]))
+
+    assert first == batch_level("batch-reattach-queued", TaskStatus.PROCESSING, BATCH_QUEUED_TEXT)
+    assert of_file(messages, "behind.wav")[-1]["status_code"] == TaskStatus.COMPLETED
+
+
+class HeldSubmission:
+    """送出批次（驗證請求、派送）停在開頭，直到 ``release`` 被 set；``fail`` 時改拋錯，整批沒有派送。"""
+
+    def __init__(self, monkeypatch):
+        from app.api import batch as batch_api
+
+        self.entered = threading.Event()
+        self.release = threading.Event()
+        self.fail = False
+        original = batch_api.start_batch_task_sync
+
+        def held(payload_str, batch_id):
+            self.entered.set()
+            assert self.release.wait(TIMEOUT)
+            if self.fail:
+                raise RuntimeError("讀不到設定")
+            return original(payload_str, batch_id)
+
+        monkeypatch.setattr(batch_api, "start_batch_task_sync", held)
+
+
+@pytest.mark.parametrize("dispatched", [True, False], ids=["dispatched", "not-dispatched"])
+def test_a_batch_still_being_submitted_reports_how_the_submission_ends(
+        api, in_process_run_mode, batch_fake, monkeypatch, dispatched):
+    batch_fake.script = [list(LINES)]
+    submission = HeldSubmission(monkeypatch)
+    submission.fail = not dispatched
+    batch_id = f"batch-reattach-submitting-{dispatched}"
+    with api.websocket_connect(f"/api/v1/batch/ws/{batch_id}") as submitting:
+        submitting.send_json(batch_request(api, ["submitting.wav"]))
+        assert submission.entered.wait(TIMEOUT)
+        # 伺服器還在送出時連線斷了；接回的連線換掉了送出的那條，送出的結果改送到接回的連線
+        with reattach_batch(api, batch_id) as ws:
+            first = receive(ws)
+            submission.release.set()
+            messages = receive_until(ws, TaskStatus.BATCH_COMPLETED, TaskStatus.FAILED)
+    if dispatched:
+        wait_until(lambda: not in_process_run_mode.is_alive(messages[-1]["task_uuid"]))
+
+    assert first == batch_level(batch_id, TaskStatus.PROCESSING, SUBMITTING_TEXT)
+    if dispatched:
+        assert of_file(messages, "submitting.wav")[-1]["status_code"] == TaskStatus.COMPLETED
+    else:
+        assert messages == [batch_level(batch_id, TaskStatus.FAILED, SUBMISSION_FAILED_TEXT,
+                                        error_code=ErrorCode.SUBMIT_FAILED, error_message=None)]
+        # 整批沒有派送：再接回一次，伺服器說沒有這個批次
+        with reattach_batch(api, batch_id) as ws:
+            assert receive(ws)["error_code"] == ErrorCode.SUBMIT_FAILED
+
+
+def test_a_batch_the_server_never_received_is_not_taken_as_submitted(api, in_process_run_mode):
+    # 例如送出時連線就斷了，請求沒有送到；或應用程式關閉之後重新開啟，排隊中的批次跟著停了
+    with reattach_batch(api, "batch-never-received") as ws:
+        message = receive(ws)
+
+    assert message == batch_level(
+        "batch-never-received", TaskStatus.FAILED, f"批次沒有送出: {NOT_SUBMITTED.detail}",
+        error_code=ErrorCode.SUBMIT_FAILED, error_message=NOT_SUBMITTED.detail)
+    assert "batch-never-received" not in listed_batch_ids(api)
+
+
+@pytest.mark.parametrize("swept", [True, False], ids=["after-startup-sweep", "batch-left-uploading"])
+def test_a_batch_stopped_while_uploading_is_reported_as_interrupted(
+        api, in_process_run_mode, batch_fake, swept):
+    # 第一個檔案上傳好了，第二個上傳失敗，第三個上傳到一半時應用程式重啟
+    names = ["restart-a.wav", "restart-b.wav", "restart-c.wav"]
+    batch_fake.upload_errors = [None, RuntimeError("讀不到檔案"), Restart()]
+    batch_id = f"batch-reattach-restarted-{swept}"
+    stop_while_uploading(api, batch_id, names)
+    if swept:
+        batch_core.end_stopped_uploads()
+
+    with reattach_batch(api, batch_id) as ws:
+        state = {message["file_uid"]: message for message in (receive(ws) for _ in names)}
+
+    # 每個檔案都記成失敗，不會停在處理中；上傳失敗的檔案照它自己的原因
+    assert {uid: m["status_code"] for uid, m in state.items()} == dict.fromkeys(
+        names, TaskStatus.FAILED)
+    assert "讀不到檔案" in state["restart-b.wav"]["error_message"]
+    for name in ("restart-a.wav", "restart-c.wav"):
+        assert state[name]["error_code"] == ErrorCode.INTERRUPTED
+        assert state[name]["error_message"] == (
+            batch_core.STOPPED_WHILE_UPLOADING if swept else TASK_GONE.detail)

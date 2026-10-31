@@ -1,8 +1,9 @@
 """``python -m tools.eval`` 的指令：eval（對標準答案計分）、summary（整理成 PR 的評測摘要）、
-selftest（自我驗證）與 transcribe（跑正式的轉錄路徑，產生要計分的轉錄結果）。
+selftest（自我驗證）、transcribe（跑正式的轉錄路徑，產生要計分的轉錄結果）與 three-way（三方對照，
+起草標準答案）。
 
-在 repo 根目錄執行，用法見同一個資料夾的 README.md。eval、summary 與 selftest 離線執行，不呼叫
-任何 API、不讀音檔；transcribe 讀音檔、用本機模型轉錄，見 transcribe.py。
+在 repo 根目錄執行，用法見同一個資料夾的 README.md。eval、summary、selftest 與 three-way 離線執行，
+不呼叫任何 API、不讀音檔；transcribe 讀音檔、用本機模型轉錄，見 transcribe.py。
 """
 
 from __future__ import annotations
@@ -220,6 +221,15 @@ def cmd_eval(args) -> int:
     return 0
 
 
+def cmd_three_way(args) -> int:
+    # 用到時才 import：three_way 要 rapidfuzz 與 opencc（requirements-dev.txt）
+    from . import three_way
+
+    if args.three_way_cmd == "compare":
+        return three_way.cmd_compare(args)
+    return three_way.cmd_apply(args)
+
+
 def cmd_selftest(_) -> int:
     from . import selftest
 
@@ -274,6 +284,30 @@ def _parser() -> argparse.ArgumentParser:
                         "不能是標準答案的資料夾")
     p.add_argument("--yes", action="store_true", help="不停下來確認已經停掉其他使用顯卡的工作")
     p.set_defaults(fn=cmd_transcribe)
+
+    p = sub.add_parser("three-way", help="三方對照：底稿和兩個本機模型的轉錄結果逐句比對，列出不一致的地方"
+                                         "給人聽，再把決定套回成標準答案")
+    three_way = p.add_subparsers(dest="three_way_cmd", required=True)
+    p = three_way.add_parser("compare", help="列出不一致的地方，寫成清單（JSON）與試聽頁（HTML）；"
+                                             "終端機只印數量")
+    p.add_argument("--source", required=True, help="底稿，格式同標準答案（表頭的時間範圍、每句「代號: 文字」）")
+    p.add_argument("--transcript", required=True, help="第一個模型的轉錄結果 LRC（預設模型 moss-align）")
+    p.add_argument("--second-hypothesis", required=True,
+                   help="另一個模型的轉錄結果 LRC（第二假設，例如 moss-qwen3-asr）")
+    p.add_argument("--audio", help="音檔；試聽頁用它播放每一處，不給就只能看文字")
+    p.add_argument("--out", required=True, metavar="資料夾",
+                   help="寫 <名稱>.three-way.json 與 <名稱>.three-way.html，已經有時拒絕；"
+                        "不能是標準答案的資料夾")
+    p.set_defaults(fn=cmd_three_way)
+    p = three_way.add_parser("apply", help="把試聽頁下載的決定套回底稿，寫成標準答案；"
+                                           "沒決定的地方加草稿標記")
+    p.add_argument("--spots", required=True, help="compare 寫的 <名稱>.three-way.json")
+    p.add_argument("--decisions", required=True, help="試聽頁下載的 <名稱>.decisions.json")
+    p.add_argument("--out", required=True, metavar="資料夾",
+                   help="寫 <名稱>.txt，已經有時拒絕；不能是標準答案的資料夾，確認後再自己複製過去")
+    p.add_argument("--confirmed-by", metavar="名字",
+                   help="每一處都決定了時，在標準答案記下確認者與今天的日期")
+    p.set_defaults(fn=cmd_three_way)
     return ap
 
 

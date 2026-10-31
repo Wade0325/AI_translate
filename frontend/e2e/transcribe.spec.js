@@ -129,6 +129,39 @@ test('Multi-Speaker 預設關、記住上次：重新開頁還是上次的開關
     expect(await page.evaluate(() => localStorage.getItem('ai_translate_last_multi_speaker'))).toBe('false')
 })
 
+test('語言預設 Auto Detect、記住上次：重新開頁還是上次選的語言，送出的檔案照它（#261）', async ({ page, mockBackend }) => {
+    const backend = await mockBackend({ routes: { 'POST /upload': { filename: 'meeting_1.wav' } } })
+    await page.goto('/transcribe')
+    const language = page.getByRole('combobox', { name: 'Language', exact: true })
+    const menu = page.locator('.ant-select-dropdown:visible')
+    // antd 另有一個看不到的無障礙區塊也寫選到的值，只數看得到的
+    const shown = (text) => page.getByText(text, { exact: true }).filter({ visible: true })
+
+    // 第一次開頁是 Auto Detect；沒動過就不寫進儲存空間
+    await expect(shown('Auto Detect')).toHaveCount(1)
+    expect(await page.evaluate(() => localStorage.getItem('ai_translate_last_language'))).toBeNull()
+
+    await language.click()
+    await menu.locator('.ant-select-item-option[title="Japanese"]').click()
+    await page.reload()
+
+    // 全域選單是上次選的語言，之後加進來的檔案跟著它，送出的也是它
+    await expect(shown('Japanese')).toHaveCount(1)
+    await addAudio(page)
+    await expect(shown('Japanese')).toHaveCount(2)
+    await page.getByRole('button', { name: 'Start' }).click()
+    await expect(page.getByText('轉錄完成')).toBeVisible()
+    expect(backend.transcriptionRequests).toEqual([expect.objectContaining({ source_lang: 'ja' })])
+
+    // 選回 Auto Detect 也記住
+    await page.reload()
+    await language.click()
+    await menu.locator('.ant-select-item-option[title="Auto Detect"]').click()
+    await page.reload()
+    await expect(shown('Auto Detect')).toHaveCount(1)
+    expect(await page.evaluate(() => localStorage.getItem('ai_translate_last_language'))).toBe('"auto"')
+})
+
 test('選本機送出一個檔案，顯示處理中，完成後到結果頁下載 SRT', async ({ page, mockBackend }) => {
     // 假後端送出處理中之後先停住，等畫面上看到處理中才送完成
     let finish
@@ -438,6 +471,133 @@ test('整批沒有送出時，這批的檔案都標成失敗（#24 門檻 4）',
 
     await expect(page.getByTestId('failure-notice').getByText('任務沒有送出')).toHaveCount(2)
     await expect(page.getByText('錯誤碼 SUBMIT_FAILED', { exact: true })).toHaveCount(2)
+    await expect(page.getByText('2 個任務失敗')).toBeVisible()
+})
+
+/** 選 Gemini 的批次模式，加入兩個檔案後按 Start。 */
+async function startBatchOfTwo(page) {
+    await page.goto('/transcribe')
+    await page.getByLabel('供應商').selectOption('google')
+    await page.getByLabel('處理模式').selectOption('batch')
+    await page.locator('.ant-upload input[type=file]').setInputFiles([
+        AUDIO, { ...AUDIO, name: 'interview.wav' },
+    ])
+    await expect(page.getByText('interview.wav')).toBeVisible()
+    await page.getByRole('button', { name: 'Start' }).click()
+}
+
+/** 批次送出時每個檔案的進度（檔案層級，形狀照後端的廣播）。 */
+const uploadProgress = (request) => request.files.map((file, index) => ({
+    client_id: request.batch_id, batch_id: request.batch_id, task_uuid: `task-${file.file_uid}`,
+    status_code: 'PROCESSING', status_text: `前處理與上傳 (${index + 1}/2): ${file.original_filename}`,
+    file_uid: file.file_uid,
+}))
+
+test('批次送出後連線斷了：檔案卡寫出連線中斷，不再停在原本的進度；接回之後改成批次等待（#286）', async ({ page, mockBackend }) => {
+    let submitted
+    const reconnected = gate()
+    const backend = await mockBackend({
+        routes: {
+            'POST /upload': { filename: 'upload.wav' },
+            // 任務頁的批次清單：這一批送出給供應商了，還在等結果
+            'GET /batch/tasks': () => (submitted ? [{
+                batch_id: submitted.batch_id, status: 'POLLING', file_count: 2, is_alive: true,
+                created_at: null, elapsed_seconds: 0, files: [], session_id: submitted.session_id, recoverable: false,
+            }] : []),
+        },
+        // 上傳到一半時連線斷了
+        batch: async (request, send, close) => {
+            submitted = request
+            uploadProgress(request).forEach(send)
+            close()
+        },
+        // 接回時批次還在上傳；等畫面上看到連線中斷，才回狀態、之後送出給供應商
+        batchReattach: async (batchId, send) => {
+            await reconnected.opened
+            send({ client_id: batchId, status_code: 'PROCESSING', status_text: '重新連上了，批次還在處理中...' })
+            send({
+                client_id: batchId, batch_id: batchId, task_uuid: 'run-1', status_code: 'BATCH_SUBMITTED',
+                status_text: '批次已送出給 Gemini，共 2 個檔案，等待處理中...',
+            })
+        },
+    })
+    await startBatchOfTwo(page)
+
+    const notices = page.getByTestId('connection-notice')
+    await expect(notices.getByText('和伺服器的連線中斷了')).toHaveCount(2)
+    await expect(notices.getByText(/連線中斷不會停止任務，不必重新轉錄/)).toHaveCount(2)
+    await expect(page.getByText('連線中斷，正在重新連線...')).toHaveCount(2)
+    await expect(page.getByText(/前處理與上傳/)).toHaveCount(0)
+    // 接回的是畫面送出的同一批
+    expect(backend.batchReattachments).toEqual([submitted.batch_id])
+
+    // 和連線沒斷時一樣：檔案卡改成批次等待，結果到任務頁取回
+    reconnected.open()
+    await expect(page.getByText('批次已送出給 Gemini，共 2 個檔案，等待處理中...')).toHaveCount(2)
+    await expect(notices).toHaveCount(0)
+    await expect(page.getByText(/批次已送出，可繼續其他操作/)).toBeVisible()
+})
+
+test('還沒派送就斷線的批次，不會被當成已經送出或已經完成（#286）', async ({ page, mockBackend }) => {
+    const backend = await mockBackend({
+        routes: { 'POST /upload': { filename: 'upload.wav' } },
+        // 請求送出之後、伺服器回應之前連線就斷了
+        batch: async (request, send, close) => close(),
+        // 伺服器上沒有這個批次（沒有批次紀錄，也沒有收到它）
+        batchReattach: async (batchId, send) => send({
+            client_id: batchId, status_code: 'FAILED',
+            status_text: '批次沒有送出: 伺服器上沒有這個批次，批次沒有送出：可能是送出時連線就中斷了，或應用程式關閉了',
+            error_code: 'SUBMIT_FAILED',
+            error_message: '伺服器上沒有這個批次，批次沒有送出：可能是送出時連線就中斷了，或應用程式關閉了',
+        }),
+    })
+    await startBatchOfTwo(page)
+
+    await expect(page.getByTestId('failure-notice').getByText('任務沒有送出')).toHaveCount(2)
+    await expect(page.getByText(/^錯誤碼 SUBMIT_FAILED · 伺服器上沒有這個批次/)).toHaveCount(2)
+    await expect(page.getByText('2 個任務失敗')).toBeVisible()
+    await expect(page.getByText(/批次已送出|批次結果已儲存/)).toHaveCount(0)
+    expect(backend.batchReattachments).toHaveLength(1)
+})
+
+test('批次上傳時連不上伺服器：說明要重新開啟 Mimiji；重新開啟之後自動接回，沒送出的檔案標成失敗（#286）', async ({ page, mockBackend }) => {
+    const restarted = gate()
+    let submitted
+    let attempts = 0
+    await mockBackend({
+        routes: { 'POST /upload': { filename: 'upload.wav' } },
+        batch: async (request, send, close) => {
+            submitted = request
+            uploadProgress(request).forEach(send)
+            close()
+        },
+        batchReattach: async (batchId, send, close) => {
+            attempts += 1
+            // 第一次：伺服器已經停了，一則都沒回就斷了
+            if (attempts === 1) return close()
+            // 之後：重新開啟了。免安裝模式啟動時，上傳時停住的批次記成失敗，每個檔案照任務紀錄補上
+            await restarted.opened
+            for (const progress of uploadProgress(submitted)) {
+                send({
+                    ...progress, status_code: 'FAILED', status_text: '任務失敗: 上傳時服務停止了，批次沒有送出',
+                    error_code: 'INTERRUPTED', error_message: '上傳時服務停止了，批次沒有送出',
+                })
+            }
+        },
+    })
+    await startBatchOfTwo(page)
+
+    const notices = page.getByTestId('connection-notice')
+    await expect(notices.getByText('連不上伺服器，Mimiji 可能已經關閉')).toHaveCount(2)
+    await expect(notices.getByText(/請重新開啟 Mimiji（免安裝版是 AI_Translate.exe/)).toHaveCount(2)
+    await expect(notices.first().getByRole('link', { name: '任務頁' })).toHaveAttribute('href', '/tasks')
+    await expect(page.getByText('連線中斷，連不上伺服器')).toHaveCount(2)
+
+    restarted.open()
+    const failures = page.getByTestId('failure-notice')
+    await expect(failures.getByText('應用程式在處理途中關閉了')).toHaveCount(2)
+    await expect(page.getByText(/上傳時服務停止了，批次沒有送出/)).toHaveCount(2)
+    await expect(notices).toHaveCount(0)
     await expect(page.getByText('2 個任務失敗')).toBeVisible()
 })
 

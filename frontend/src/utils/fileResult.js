@@ -1,5 +1,6 @@
 import { TASK_STATUS } from '../constants/taskStatus';
 import { failureOf } from './failure';
+import { connectionRestored } from './connectionLoss';
 
 /**
  * 依任務的狀態訊息（WebSocket 廣播的形狀：status_code、status_text、task_uuid，完成時再帶 result，失敗時
@@ -9,10 +10,8 @@ import { failureOf } from './failure';
  * 收到任務的狀態就代表又和任務接上了：連線中斷的記號（utils/connectionLoss.js）一律清掉。
  */
 export function applyFileResult(file, data) {
-  // eslint-disable-next-line no-unused-vars -- 拿掉連線中斷的記號
-  const { connection, ...rest } = file;
   const next = {
-    ...rest,
+    ...connectionRestored(file),
     statusText: data.status_text,
     task_uuid: data.task_uuid,
   };

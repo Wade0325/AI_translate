@@ -4,6 +4,7 @@
   WS /api/v1/ws/{file_uid}
   WS /api/v1/ws/{file_uid}/tasks/{task_uuid}（連線中斷之後接回任務）
   WS /api/v1/batch/ws/{batch_id}
+  WS /api/v1/batch/ws/{batch_id}/reattach（連線中斷之後接回批次）
 
 漏洞重現：瀏覽器的 WebSocket 不受同源政策與 CORS 保護，任何網站的頁面都能
 連進本機後端、提交轉錄請求並收看任務進度與結果。
@@ -20,6 +21,7 @@ WS_PATHS = [
     "/api/v1/ws/uid-origin-test",
     "/api/v1/ws/uid-origin-test/tasks/task-origin-test",
     "/api/v1/batch/ws/batch-origin-test",
+    "/api/v1/batch/ws/batch-origin-test/reattach",
 ]
 
 
