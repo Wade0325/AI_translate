@@ -408,6 +408,7 @@ git config core.hooksPath .githooks
 產出 `build\AI_Translate-v1.2.3-win64.zip`（約 150 MB —— Python 依賴不進 zip，
 由使用者首次啟動時以隨包 `uv` 依 `backend/requirements-standalone.txt` 自動下載）。
 推 `v*` tag 時 GitHub Actions（`.github/workflows/release.yml`）會先跑一次完整的 CI，通過後自動建置並發布 Release。
+CI 的 `portable` job 在每個 PR 上也用 Windows 建置一次（不上傳、不發布），並用 `tools/portable_zip.py` 檢查 zip：第 7 步清單裡的檔案都在，而且沒有使用者的音檔、資料庫、`.env` 等執行期資料。
 
 ---
 
