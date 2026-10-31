@@ -123,7 +123,7 @@ Step "複製 backend 源碼與 frontend/dist"
 # 資料夾名稱與 backend/app/core/config.py 一致（tests/unit/test_runtime_dirs_excluded.py 檢查）。
 # CI 建置前會在 backend/ 放進這些資料，建好後檢查 zip（tools/portable_zip.py，#256）：漏排除就紅燈
 Copy-Tree (Join-Path $Root "backend") (Join-Path $StageDir "backend") @(
-    "/XD", ".venv", "__pycache__", "temp_uploads", "vad_artifacts", "audio_store",
+    "/XD", ".venv", "__pycache__", "temp_uploads", "vad_artifacts",
     "persistent_uploads", ".cache", ".pytest_cache",
     "/XF", ".env", "*.pyc", "*.db"
 )
