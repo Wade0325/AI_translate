@@ -129,7 +129,8 @@ class TestLicenseText:
                                                 encoding="utf-8")
         for rel, text in files.items():
             (directory / rel).parent.mkdir(parents=True, exist_ok=True)
-            (directory / rel).write_text(text, encoding="utf-8")
+            # newline=""：照字面寫入，Windows 上不會把 \n 換成 \r\n（測 CRLF 的授權檔要用到）
+            (directory / rel).write_text(text, encoding="utf-8", newline="")
         return npm_licenses.Package(name, "1.0.0", "MIT", f"node_modules/{name}")
 
     def test_license_file_at_package_root(self, tmp_path):

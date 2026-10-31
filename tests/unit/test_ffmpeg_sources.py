@@ -60,7 +60,7 @@ def upstream(tmp_path) -> tuple[str, str]:
     _git("init", "-q", cwd=repo)
     (repo / "COPYING.LGPLv3").write_bytes(LGPL)
     (repo / "COPYING.GPLv3").write_bytes(GPL)
-    (repo / "configure").write_text("#!/bin/sh\n", encoding="ascii")
+    (repo / "configure").write_bytes(b"#!/bin/sh\n")
     _git("add", ".", cwd=repo)
     _git("commit", "-q", "-m", "init", cwd=repo)
     return repo.as_uri(), _git("rev-parse", "HEAD", cwd=repo)
@@ -119,6 +119,22 @@ class TestSourceCheckout:
         assert f"FFmpeg-{commit}/configure" in names
         assert f"FFmpeg-{commit}/COPYING.GPLv3" in names
         assert checkout.read("COPYING.LGPLv3") == LGPL
+
+    def test_archive_keeps_the_committed_line_endings(self, tmp_path, upstream, monkeypatch):
+        # Windows 的 Git 預設 core.autocrlf=true：git archive 會把文字檔換成 CRLF，
+        # 附件裡的 configure 等 shell 腳本就不能執行，在不同平台產生的內容也不同
+        config = tmp_path / "gitconfig"
+        config.write_bytes(b"[core]\n\tautocrlf = true\n\teol = crlf\n")
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
+        url, commit = upstream
+        checkout = ffmpeg_sources.SourceCheckout(url, commit, tmp_path / "work")
+
+        archive = checkout.archive(tmp_path / f"FFmpeg-{commit}.tar.gz")
+
+        with tarfile.open(archive) as tar:
+            configure = tar.extractfile(f"FFmpeg-{commit}/configure")
+            assert configure is not None
+            assert configure.read() == b"#!/bin/sh\n"
 
     def test_unknown_commit_fails(self, tmp_path, upstream):
         url, _ = upstream

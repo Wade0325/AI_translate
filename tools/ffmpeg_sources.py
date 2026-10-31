@@ -169,9 +169,14 @@ class SourceCheckout:
         return result.stdout
 
     def archive(self, dest: Path) -> Path:
-        """把這個 commit 打包成 dest（.tar.gz），最上層資料夾是檔名去掉 .tar.gz。"""
+        """把這個 commit 打包成 dest（.tar.gz），最上層資料夾是檔名去掉 .tar.gz。
+
+        換行照 repo 裡存的：Windows 的 Git 預設 core.autocrlf=true，git archive 會把文字檔換成 CRLF，
+        附件裡的 shell 腳本就不能執行，在 Windows 與 Linux 產生的內容也不同。
+        """
         prefix = dest.name.removesuffix(".tar.gz")
-        _git("archive", "--format=tar.gz", f"--prefix={prefix}/", "-o", str(dest), self.commit,
+        _git("-c", "core.autocrlf=false", "-c", "core.eol=lf",
+             "archive", "--format=tar.gz", f"--prefix={prefix}/", "-o", str(dest), self.commit,
              cwd=self.dir)
         return dest
 
