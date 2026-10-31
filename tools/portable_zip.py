@@ -17,8 +17,8 @@
   4. 沒有執行期資料：使用者的音檔、資料庫、環境變數檔（可能有 API 金鑰）、日誌檔，以及開發環境
      的殘留（runtime_data()）。檢查的是 zip 本身，和 build_release.ps1 怎麼挑檔案無關：取檔的
      方式出錯或被改掉時，一樣抓得到。
-  5. 批次檔（start.bat，#267）cmd 讀得對：開頭沒有 BOM（cmd 會把它當成第一行指令的一部分），
-     換行一律是 CRLF（batch_file_problems()）。
+  5. 批次檔（start.bat，#267）cmd 讀得對：只有 ASCII（cmd 遇到多位元組字元會算錯下一行的位置，
+     把後面的字當成指令執行）、開頭沒有 BOM，換行一律是 CRLF（batch_file_problems()）。
   檢查完列出 zip 裡的每一個檔案與大小：改到打包的 PR 可以拿 main 與 PR 的 CI 日誌比對發布包的內容。
 
 只用標準函式庫：CI 的 runner 不必安裝依賴。
@@ -132,6 +132,8 @@ def batch_file_problems(data: bytes) -> list[str]:
     problems = []
     if data.startswith(b"\xef\xbb\xbf"):
         problems.append("開頭有 BOM，cmd 會把它當成第一行指令的一部分")
+    elif not data.isascii():
+        problems.append("有 ASCII 以外的字元，cmd 會算錯下一行的位置、把後面的字當成指令執行")
     if data.replace(b"\r\n", b"").count(b"\n"):
         problems.append("換行不是 CRLF，cmd 可能讀錯行")
     return problems

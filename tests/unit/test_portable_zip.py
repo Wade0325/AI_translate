@@ -210,7 +210,7 @@ class TestCheck:
 
 
 class TestBatchFiles:
-    """start.bat（#267）：build_release.ps1 寫成 CRLF、不帶 BOM；在 zip 裡檢查，換了寫法也抓得到。"""
+    """start.bat（#267）：只有 ASCII、CRLF、不帶 BOM；在 zip 裡檢查，換了寫法也抓得到。"""
 
     def _with_bat(self, tmp_path, data: bytes) -> Path:
         names = [n for n in _good() if n != f"{TOP}/start.bat"]
@@ -228,6 +228,7 @@ class TestBatchFiles:
         (b"\xef\xbb\xbf@echo off\r\n", "開頭有 BOM"),
         (b"@echo off\nchcp 65001 > nul\n", "換行不是 CRLF"),
         (b"@echo off\r\nchcp 65001 > nul\n", "換行不是 CRLF"),
+        ("@echo off\r\necho 首次啟動\r\n".encode("utf-8"), "ASCII 以外的字元"),
     ])
     def test_bom_or_lf_fails(self, tmp_path, data, problem):
         archive = self._with_bat(tmp_path, data)

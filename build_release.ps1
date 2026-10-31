@@ -195,11 +195,12 @@ $launcherSrc = Join-Path $Root "tools\launcher.cs"
 & $csc /nologo /optimize "/out:$launcherExe" $launcherSrc
 if ($LASTEXITCODE -ne 0) { throw "launcher 編譯失敗" }
 
-# ── 6. README.txt 與 start.bat ────────────────────────────────────────────
+# ── 6. README.txt 與手動啟動（start.bat、bin\start.py）──────────────────
 # 內容在 tools\portable\（#267）。不論 checkout 的換行是什麼，一律寫成 CRLF：記事本與 cmd 都認得。
-# README.txt 寫成帶 BOM 的 UTF-8，舊版記事本才不會當成系統碼頁；start.bat 不能帶 BOM，
-# cmd 會把 BOM 當成第一行指令的一部分。不用 Set-Content：PowerShell 5.1 與 7 的 utf8 一個帶 BOM、一個不帶
-Step "寫入 README.txt 與 start.bat"
+# README.txt 寫成帶 BOM 的 UTF-8，舊版記事本才不會當成系統碼頁；start.bat 只有 ASCII、不帶 BOM，
+# cmd 會把 BOM 當成第一行指令的一部分。不用 Set-Content：PowerShell 5.1 與 7 的 utf8 一個帶 BOM、一個不帶。
+# start.bat 用隨包的 Python 執行 bin\start.py，佈建、啟動與中文訊息都在那裡（cmd 讀錯中文行）
+Step "寫入 README.txt 與手動啟動"
 function Write-PortableText($name, $text, [bool]$bom) {
     $text = $text -replace "`r?`n", "`r`n"
     [IO.File]::WriteAllText((Join-Path $StageDir $name), $text, (New-Object Text.UTF8Encoding $bom))
@@ -209,6 +210,7 @@ $readme = [IO.File]::ReadAllText((Join-Path $portableDir "README.txt"), [Text.En
 if (-not $readme.Contains("{VERSION}")) { throw "tools\portable\README.txt 沒有 {VERSION}" }
 Write-PortableText "README.txt" ($readme.Replace("{VERSION}", $Version)) $true
 Write-PortableText "start.bat" ([IO.File]::ReadAllText((Join-Path $portableDir "start.bat"), [Text.Encoding]::UTF8)) $false
+Copy-Item (Join-Path $portableDir "start.py") (Join-Path $binDir "start.py")
 
 # ── 7. 結構檢查 ───────────────────────────────────────────────────────────
 # CI 也拿這份清單檢查 zip（tools/portable_zip.py 直接讀這裡）：保持一行一個雙引號字串的寫法
@@ -217,6 +219,7 @@ $required = @(
     "AI_Translate.exe",
     "README.txt",
     "start.bat",
+    "bin\start.py",
     "runtime\python.exe",
     "runtime\python311._pth",
     "bin\uv.exe",
