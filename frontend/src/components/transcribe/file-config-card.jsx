@@ -6,7 +6,6 @@ import {
     Languages,
     Users,
     MessageSquareText,
-    Clock,
     RotateCcw,
     Download,
     Eye,
@@ -18,7 +17,7 @@ import {
     Scissors,
     Ban,
 } from "lucide-react"
-import { Button, Select, Switch, Slider, Tag, Typography, Input, Dropdown, Spin, Tooltip, Popconfirm } from "antd"
+import { Button, Select, Switch, Tag, Typography, Input, Dropdown, Spin, Tooltip, Popconfirm } from "antd"
 import { LoadingOutlined } from "@ant-design/icons"
 import { ReasonText } from "@/components/disabled-reason"
 import { languages, formatLang } from "@/constants/languages"
@@ -93,8 +92,7 @@ export function FileConfigCard({
 
     const tags = [
         { label: formatLang(config.language), icon: Languages, overridden: isOverridden("language") },
-        { label: config.isMultiSpeaker ? `${config.speakerCount} speakers` : "Single", icon: Users, overridden: isOverridden("isMultiSpeaker") || isOverridden("speakerCount") },
-        { label: config.includeTimestamps ? "Timestamps" : "No timestamps", icon: Clock, overridden: isOverridden("includeTimestamps") },
+        { label: config.isMultiSpeaker ? "Multi-speaker" : "Single", icon: Users, overridden: isOverridden("isMultiSpeaker") },
         ...(shownPrompt || (typedPrompt && notSentReason(disabledReasons.prompt))
             ? [{
                 label: "Prompt",
@@ -308,6 +306,7 @@ export function FileConfigCard({
                             type="text"
                             size="small"
                             icon={<Settings2 size={14} />}
+                            aria-label="每檔設定"
                             onClick={() => setExpanded(!expanded)}
                             style={{
                                 width: 28,
@@ -371,36 +370,9 @@ export function FileConfigCard({
                             <div style={{ display: "flex", alignItems: "center", gap: 8, height: 32 }}>
                                 <Switch
                                     size="small"
+                                    aria-label="這個檔案的 Multi-Speaker"
                                     checked={config.isMultiSpeaker}
                                     onChange={(v) => update({ isMultiSpeaker: v })}
-                                />
-                                {config.isMultiSpeaker && (
-                                    <div style={{ display: "flex", alignItems: "center", gap: 6, flex: 1 }}>
-                                        <Slider
-                                            min={2}
-                                            max={10}
-                                            step={1}
-                                            value={config.speakerCount}
-                                            onChange={(v) => update({ speakerCount: v })}
-                                            style={{ flex: 1, margin: 0 }}
-                                        />
-                                        <Text strong style={{ fontSize: 12, color: "#2dd4a8", width: 12, textAlign: "center" }}>
-                                            {config.speakerCount}
-                                        </Text>
-                                    </div>
-                                )}
-                            </div>
-                        </div>
-
-                        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                            <Text style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, color: "#8888a8" }}>
-                                <Clock size={12} /> Timestamps
-                            </Text>
-                            <div style={{ display: "flex", alignItems: "center", height: 32 }}>
-                                <Switch
-                                    size="small"
-                                    checked={config.includeTimestamps}
-                                    onChange={(v) => update({ includeTimestamps: v })}
                                 />
                             </div>
                         </div>

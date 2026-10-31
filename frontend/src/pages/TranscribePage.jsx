@@ -100,9 +100,7 @@ export default function TranscribePage() {
     const [globalConfig, setGlobalConfig] = useState({
         language: sourceLang || "zh-TW",
         isMultiSpeaker: multiSpeaker,
-        speakerCount: 2,
         prompt: globalPrompt,
-        includeTimestamps: true,
     })
 
     const handleGlobalConfigChange = (newConfig) => {
@@ -417,7 +415,6 @@ export default function TranscribePage() {
                             size: file.size ? `${(file.size / (1024 * 1024)).toFixed(1)} MB` : "",
                             language: file.language || globalConfig.language,
                             isMultiSpeaker: file.isMultiSpeaker ?? globalConfig.isMultiSpeaker,
-                            speakerCount: file.speakerCount ?? globalConfig.speakerCount,
                             // 這個檔案自己的提示詞（每檔設定裡編輯的就是它）；清空就回到跟著全域
                             prompt: file.prompt ?? "",
                             followsGlobalPrompt: followsGlobalPrompt(file),
@@ -427,7 +424,6 @@ export default function TranscribePage() {
                             // 提示詞範本每次都送，不顯示在卡片上（utils/transcribeRequest.js）
                             promptToSend: promptToSend(file, globalConfig.prompt, supports),
                             sentPrompt: file.sentPrompt ?? null,
-                            includeTimestamps: file.includeTimestamps ?? globalConfig.includeTimestamps,
                             hasOverride: file.hasOverride || false,
                             status: file.status,
                             statusText: file.statusText,

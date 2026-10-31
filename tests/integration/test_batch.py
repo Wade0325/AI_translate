@@ -215,6 +215,8 @@ def test_a_file_ends_like_a_single_file_task(api, in_process_run_mode, batch_fak
         assert content == batched["result"]["transcripts"][fmt]
     assert (single["result"]["cost"], batched["result"]["cost"]) == (
         pytest.approx(0.30), pytest.approx(0.15))
+    # 說話者人數從存下來的片段算（S0、S1），和單檔任務完成時廣播的一樣
+    assert (single["result"]["speaker_count"], batched["result"]["speaker_count"]) == (2, 2)
 
 
 def test_a_chinese_file_is_stored_in_traditional_like_a_single_file_task(

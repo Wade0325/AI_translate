@@ -48,14 +48,12 @@ export const requestDefaults = ({ language, multiSpeaker, processingMode, global
 
 /**
  * 把一個檔案的每檔設定改回全域預設（Apply to All、Reset to global）時要更新的欄位。
- * 語言、說話者與時間戳複製全域當下的值；提示詞清掉，讓檔案跟著全域提示詞走，之後改的也會送出。
+ * 語言與 Multi-Speaker 複製全域當下的值；提示詞清掉，讓檔案跟著全域提示詞走，之後改的也會送出。
  */
 export const globalSettingsPatch = (globalConfig) => ({
   language: globalConfig.language,
   isMultiSpeaker: globalConfig.isMultiSpeaker,
-  speakerCount: globalConfig.speakerCount,
   prompt: undefined,
-  includeTimestamps: globalConfig.includeTimestamps,
   hasOverride: false,
 });
 

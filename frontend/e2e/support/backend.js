@@ -158,6 +158,7 @@ export function transcriptionMessages(request) {
                 model: request.model,
                 source_language: request.source_lang,
                 audio_duration_seconds: 5.0,
+                speaker_count: 2,
             },
         },
     }
