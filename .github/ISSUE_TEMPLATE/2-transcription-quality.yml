@@ -1,0 +1,139 @@
+# 轉錄品質（#24 的「Issue 範本與回報入口」）。開頭的隱私提醒與結尾的確認見 1-bug.yml 的說明。
+#
+# 品質問題最需要看內容，偏偏內容最不能公開：表單只問問題的種類、位置與條件，要舉例時只寫不涉及
+# 隱私的一兩個詞；能重現的錄音只收公開、可以分享的。
+name: 轉錄品質
+description: 錯字、漏掉或多出內容、說話者分錯、時間不準、出現簡體字
+labels: [needs-triage]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **這裡的 Issue 是公開的**：任何人都看得到，送出後再修改，原本的內容仍可能留在編輯紀錄裡。
+
+        - 不要貼轉錄結果的內容（字幕、逐字稿），也不要附私人錄音，或看得到轉錄內容與檔名的截圖。
+        - 不要貼 API 金鑰。
+
+        請用描述代替原文，例如「人名都被寫成同音字」「1 小時 50 分之後就沒有字幕」。
+  - type: dropdown
+    id: problem
+    attributes:
+      label: 哪一類問題
+      description: 可以複選。
+      multiple: true
+      options:
+        - 錯字或聽錯（同音字、專有名詞）
+        - 漏掉內容（例如少了結尾）
+        - 多出音檔裡沒有的內容，或同一句一直重複
+        - 說話者分錯（標錯人、人數不對）
+        - 時間不準（字幕太早或太晚出現）
+        - 中文出現簡體字或中國用語
+        - 語言判斷錯誤
+        - 其他
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: 描述問題
+      description: >-
+        用你自己的話描述。要舉例時只寫不涉及隱私的一兩個詞（例如「把 A 寫成 B」），不要貼整句或整段。
+    validations:
+      required: true
+  - type: input
+    id: position
+    attributes:
+      label: 問題出現的位置
+      description: 從第幾分鐘開始，或是整份都有。
+      placeholder: 例如 1:52:00 之後、整份都有
+  - type: dropdown
+    id: language
+    attributes:
+      label: 音檔的語言
+      options:
+        - 日文
+        - 中文
+        - 日文與中文混合
+        - 其他語言
+    validations:
+      required: true
+  - type: dropdown
+    id: audio-type
+    attributes:
+      label: 音檔的類型
+      options:
+        - ASMR
+        - 影片或直播
+        - 會議
+        - 訪談
+        - Podcast 或廣播
+        - 其他
+  - type: input
+    id: audio
+    attributes:
+      label: 音檔長度與說話者人數
+      placeholder: 例如 2 小時 5 分、3 人
+  - type: dropdown
+    id: provider
+    attributes:
+      label: 供應商
+      options:
+        - 本機
+        - Gemini
+    validations:
+      required: true
+  - type: input
+    id: model
+    attributes:
+      label: 模型
+      description: 轉錄頁（New Transcription）模型選單上顯示的名稱。
+      placeholder: 例如 MOSS-Transcribe-Diarize、gemini-3.5-flash
+  - type: dropdown
+    id: processing-mode
+    attributes:
+      label: 處理模式
+      description: 只有 Gemini 有處理模式。
+      options:
+        - 標準
+        - Flex
+        - 批次
+        - 不適用（本機）
+  - type: dropdown
+    id: output-format
+    attributes:
+      label: 在哪裡看到問題
+      description: 可以複選。
+      multiple: true
+      options:
+        - 畫面上的預覽
+        - SRT
+        - VTT
+        - LRC
+        - TXT
+  - type: textarea
+    id: settings
+    attributes:
+      label: 其他設定
+      description: 有沒有填 Custom Prompt，或改過 Settings 頁的提示詞範本？寫「有」或「沒有」就好，不必貼內容。
+  - type: input
+    id: version
+    attributes:
+      label: 版本
+      description: Settings 頁 About 卡片上的版本號。
+      placeholder: 例如 v0.1.0-beta.1
+    validations:
+      required: true
+  - type: textarea
+    id: public-sample
+    attributes:
+      label: 能重現問題的公開錄音
+      description: >-
+        選填。只有公開、允許分享的錄音（例如採用 Creative Commons 授權的錄音）才貼連結，並寫上時間點。
+        不要附自己的私人錄音；錄音裡有別人的聲音時，也要先取得他們同意。
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: 送出前確認
+      options:
+        - label: 這份回報沒有轉錄結果的內容、私人錄音與 API 金鑰。
+          required: true

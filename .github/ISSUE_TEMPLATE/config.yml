@@ -1,0 +1,14 @@
+# Issue 範本選單（#24 的「Issue 範本與回報入口」）。只在合併進 main 之後生效。
+#
+# 關掉空白 Issue：一般使用者只能選範本，每份範本開頭都有隱私提醒。有寫入權限的人仍看得到標成
+# 「Maintainers only」的空白選項（GitHub 文件「Configuring issue templates for your repository」）。
+# 用 API 或 gh issue create --title … --body … 開票不經過範本選單，docs/agents/issue-tracker.md 的
+# 開票方式不受影響。
+blank_issues_enabled: false
+contact_links:
+  - name: 使用說明（README）
+    url: https://github.com/Wade0325/AI_translate#readme
+    about: 安裝、轉錄步驟、資料與隱私，以及日誌檔放在哪裡。
+  - name: 下載最新版（GitHub Releases）
+    url: https://github.com/Wade0325/AI_translate/releases
+    about: 回報之前，可以先確認問題在最新版還會不會發生。
