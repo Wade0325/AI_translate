@@ -222,10 +222,8 @@ export function FileConfigCard({
                         <Dropdown
                             menu={{
                                 items: downloadFormats,
-                                onClick: ({ key }) => {
-                                    const content = config.result?.[key]
-                                    if (content) onDownload(content, config.name, key)
-                                },
+                                // 沒有內容時（例如批次模式完成的檔案）由 onDownload 提示，不是點了沒反應
+                                onClick: ({ key }) => onDownload(config, key),
                             }}
                         >
                             <Tooltip title="下載">
