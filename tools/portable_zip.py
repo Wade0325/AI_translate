@@ -6,17 +6,20 @@
     python tools/portable_zip.py check <zip>    # 建置後：檢查 zip
 
 - ``plant``：CI 的 checkout 是乾淨的，沒有執行期資料可以漏；先在 backend/ 與 data/ 放一份
-  （PLANTED），build_release.ps1 排除執行期資料的那一步才真的被考到。只新增檔案，已經存在的
+  （PLANTED），build_release.ps1 取後端檔案的那一步才真的被考到。只新增檔案，已經存在的
   不覆寫，所以不會蓋掉本機的 .env 或資料庫；但檔案會留在工作目錄裡，本機不必執行。
 - ``check``：
   1. zip 的最上層剛好一個資料夾：解壓後是一個資料夾，不會把檔案散在解壓的位置。
   2. build_release.ps1 第 7 步的清單（``$required``）每一個都在，而且不是空檔。清單直接讀
      build_release.ps1，那裡是唯一來源；改清單時這裡不必跟著改。
-  3. 沒有執行期資料：使用者的音檔、資料庫、環境變數檔（可能有 API 金鑰）、日誌檔，以及開發環境
-     的殘留（runtime_data()）。檢查的是 zip 本身，和 build_release.ps1 怎麼挑檔案無關：排除清單
-     漏了一項，或改成別的取檔方式（#266）時，一樣抓得到。
-  4. 批次檔（start.bat，#267）cmd 讀得對：開頭沒有 BOM（cmd 會把它當成第一行指令的一部分），
+  3. backend/ 底下只有後端白名單（build_release.ps1 的 ``$BackendPaths``，#266）裡的路徑，
+     加上建置時寫的 VERSION。
+  4. 沒有執行期資料：使用者的音檔、資料庫、環境變數檔（可能有 API 金鑰）、日誌檔，以及開發環境
+     的殘留（runtime_data()）。檢查的是 zip 本身，和 build_release.ps1 怎麼挑檔案無關：取檔的
+     方式出錯或被改掉時，一樣抓得到。
+  5. 批次檔（start.bat，#267）cmd 讀得對：開頭沒有 BOM（cmd 會把它當成第一行指令的一部分），
      換行一律是 CRLF（batch_file_problems()）。
+  檢查完列出 zip 裡的每一個檔案與大小：改到打包的 PR 可以拿 main 與 PR 的 CI 日誌比對發布包的內容。
 
 只用標準函式庫：CI 的 runner 不必安裝依賴。
 """
@@ -64,6 +67,9 @@ PLANTED_CONTENT = b"planted by tools/portable_zip.py: must not end up in the por
 # 一次最多列出幾個不該打包的檔案：整個 .venv 漏進去時有上萬個
 MAX_LISTED = 30
 
+# backend/ 底下白名單以外唯一可以有的檔案：建置時寫入的版本號（build_release.ps1 第 4 步）
+BACKEND_GENERATED = ("backend/VERSION",)
+
 
 def runtime_data(path: str) -> str | None:
     """發布包裡的一個路徑（最上層資料夾以下，用 /）不該打包時，回傳原因；可以打包時回傳 None。"""
@@ -89,6 +95,38 @@ def runtime_data(path: str) -> str | None:
     return None
 
 
+def _string_list(script: str, variable: str, what: str) -> list[str]:
+    """build_release.ps1 裡 ``$<variable> = @(...)`` 的雙引號字串，路徑改用 /。"""
+    match = re.search(rf"^\${variable} = @\((.*?)\)", script, re.M | re.S)
+    if not match:
+        raise ValueError(f"build_release.ps1 裡找不到{what}（${variable} = @(...)）")
+    items = [f.replace("\\", "/") for f in re.findall(r'"([^"]+)"', match.group(1))]
+    if not items:
+        raise ValueError(f"build_release.ps1 的{what}（${variable}）是空的")
+    return items
+
+
+def required_files(script: str) -> list[str]:
+    """build_release.ps1 第 7 步的必要檔案清單（``$required = @(...)``），路徑改用 /。"""
+    return _string_list(script, "required", "第 7 步的必要檔案清單")
+
+
+def backend_paths(script: str) -> list[str]:
+    """build_release.ps1 的後端白名單（``$BackendPaths = @(...)``）：檔案或資料夾，路徑用 /。"""
+    return _string_list(script, "BackendPaths", "後端白名單")
+
+
+def _in_backend_whitelist(rel: str, allowed: Sequence[str]) -> bool:
+    """rel（最上層資料夾以下）是 backend/ 以外的路徑，或是白名單允許的路徑。"""
+    if rel != "backend" and not rel.startswith("backend/"):
+        return True
+    if rel in BACKEND_GENERATED:
+        return True
+    # 白名單裡的檔案或資料夾本身、資料夾底下的東西，以及通往它們的上層資料夾（backend/）
+    return any(rel == path or rel.startswith(f"{path}/") or path.startswith(f"{rel}/")
+               for path in allowed)
+
+
 def batch_file_problems(data: bytes) -> list[str]:
     """批次檔的內容 cmd 會讀錯的地方；沒有問題時是空的。"""
     problems = []
@@ -99,28 +137,31 @@ def batch_file_problems(data: bytes) -> list[str]:
     return problems
 
 
-def required_files(script: str) -> list[str]:
-    """build_release.ps1 第 7 步的必要檔案清單（``$required = @(...)``），路徑改用 /。"""
-    match = re.search(r"^\$required = @\((.*?)\)", script, re.M | re.S)
-    if not match:
-        raise ValueError("build_release.ps1 裡找不到第 7 步的必要檔案清單（$required = @(...)）")
-    files = [f.replace("\\", "/") for f in re.findall(r'"([^"]+)"', match.group(1))]
-    if not files:
-        raise ValueError("build_release.ps1 的必要檔案清單（$required）是空的")
-    return files
+def _batch_files(zip_path: Path) -> dict[str, bytes]:
+    """zip 裡的批次檔：路徑（用 /）對應到內容。"""
+    with zipfile.ZipFile(zip_path) as archive:
+        return {info.filename.replace("\\", "/"): archive.read(info) for info in archive.infolist()
+                if info.filename.lower().endswith(".bat")}
 
 
-def check(zip_path: Path, required: Sequence[str]) -> list[str]:
-    """檢查免安裝版的 zip；回傳每一個問題的說明，沒有問題時是空的。"""
+def contents(zip_path: Path) -> dict[str, tuple[bool, int]]:
+    """zip 裡每一個項目：路徑（用 /，去掉結尾的 /）對應到（是不是資料夾，大小）。"""
     with zipfile.ZipFile(zip_path) as archive:
         infos = archive.infolist()
-        batch_files = {info.filename.replace("\\", "/"): archive.read(info) for info in infos
-                       if info.filename.lower().endswith(".bat")}
     # Windows PowerShell 5.1 的 Compress-Archive 用 \ 當分隔符號（zip 規格是 /），兩種都認
     entries = {}
     for info in infos:
         name = info.filename.replace("\\", "/")
         entries[name.rstrip("/")] = (name.endswith("/"), info.file_size)
+    return entries
+
+
+def check(zip_path: Path, required: Sequence[str], backend: Sequence[str]) -> list[str]:
+    """檢查免安裝版的 zip；回傳每一個問題的說明，沒有問題時是空的。
+
+    required 是必要的檔案，backend 是後端白名單；兩者都是最上層資料夾以下的路徑，用 /。
+    """
+    entries = contents(zip_path)
     if not entries:
         return ["zip 是空的"]
 
@@ -142,13 +183,16 @@ def check(zip_path: Path, required: Sequence[str]) -> list[str]:
     for name in sorted(entries):
         if name == top:
             continue
-        reason = runtime_data(name.split("/", 1)[1])
+        rel = name.split("/", 1)[1]
+        reason = runtime_data(rel)
         if reason:
             leaked.append(f"不該打包：{name}（{reason}）")
+        elif not _in_backend_whitelist(rel, backend):
+            leaked.append(f"不該打包：{name}（不在後端白名單 $BackendPaths 裡）")
     problems += leaked[:MAX_LISTED]
     if len(leaked) > MAX_LISTED:
         problems.append(f"不該打包的還有 {len(leaked) - MAX_LISTED} 個，沒有列出")
-    for name, data in sorted(batch_files.items()):
+    for name, data in sorted(_batch_files(zip_path).items()):
         problems += [f"批次檔 {name} {problem}" for problem in batch_file_problems(data)]
     return problems
 
@@ -185,14 +229,19 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"  {path.relative_to(ROOT).as_posix()}")
         return 0
 
-    required = required_files(BUILD_SCRIPT.read_text(encoding="utf-8-sig"))
-    problems = check(args.zip, required)
+    script = BUILD_SCRIPT.read_text(encoding="utf-8-sig")
+    required = required_files(script)
+    problems = check(args.zip, required, backend_paths(script))
+    files = sorted((name, size) for name, (is_dir, size) in contents(args.zip).items() if not is_dir)
+    print(f"{args.zip} 的內容（{len(files)} 個檔案，位元組）：")
+    for name, size in files:
+        print(f"  {size:>12}  {name}")
     if problems:
         print(f"{args.zip} 有 {len(problems)} 個問題：")
         for problem in problems:
             print(f"  {problem}")
         return 1
-    print(f"{args.zip}：必要的 {len(required)} 個檔案都在，沒有執行期資料")
+    print(f"{args.zip}：必要的 {len(required)} 個檔案都在，後端只有白名單裡的檔案，沒有執行期資料")
     return 0
 
 

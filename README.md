@@ -411,8 +411,10 @@ git config core.hooksPath .githooks
 產出 `build\AI_Translate-v1.2.3-win64.zip`（約 150 MB —— Python 依賴不進 zip，
 由使用者首次啟動時以隨包 `uv` 依 `backend/requirements-standalone.txt` 自動下載）。
 發布包裡給使用者看的 `README.txt` 與手動啟動用的 `start.bat` 放在 `tools/portable/`，建置時複製進去（`README.txt` 的 `{VERSION}` 換成版本號）。
+要在 git 的工作目錄裡、裝好 git 才能建置：後端只用 `git archive` 取白名單（腳本裡的 `$BackendPaths`）已經 commit 的檔案，沒進版控的東西不會被打包；白名單裡有還沒 commit 的改動或新檔時，建置會停下來，請先 commit 或 stash。
+Python embeddable、`uv` 與 ffmpeg 都釘版並驗 SHA-256，下載快取在 `build\cache\`；快取裡的檔案雜湊不符時會刪掉重新下載。
 推 `v*` tag 時 GitHub Actions（`.github/workflows/release.yml`）會先跑一次完整的 CI，通過後自動建置並發布 Release。
-CI 的 `portable` job 在每個 PR 上也用 Windows 建置一次（不上傳、不發布），並用 `tools/portable_zip.py` 檢查 zip：第 7 步清單裡的檔案都在，而且沒有使用者的音檔、資料庫、`.env` 等執行期資料。
+CI 的 `portable` job 在每個 PR 上也用 Windows 建置一次（不上傳、不發布），並用 `tools/portable_zip.py` 檢查 zip：第 7 步清單裡的檔案都在、`backend\` 只有白名單裡的檔案，而且沒有使用者的音檔、資料庫、`.env` 等執行期資料；日誌裡會列出 zip 的完整內容。
 
 ---
 
