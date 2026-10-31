@@ -209,6 +209,40 @@ class TestCheck:
         assert problems[-1] == "不該打包的還有 5 個，沒有列出"
 
 
+class TestBatchFiles:
+    """start.bat（#267）：只有 ASCII、CRLF、不帶 BOM；在 zip 裡檢查，換了寫法也抓得到。"""
+
+    def _with_bat(self, tmp_path, data: bytes) -> Path:
+        names = [n for n in _good() if n != f"{TOP}/start.bat"]
+        archive = _zip(tmp_path / "bat.zip", names)
+        with zipfile.ZipFile(archive, "a") as z:
+            z.writestr(f"{TOP}/start.bat", data)
+        return archive
+
+    def test_crlf_without_bom_passes(self, tmp_path):
+        archive = self._with_bat(tmp_path, b"@echo off\r\nchcp 65001 > nul\r\n")
+
+        assert _check(archive) == []
+
+    @pytest.mark.parametrize("data, problem", [
+        (b"\xef\xbb\xbf@echo off\r\n", "開頭有 BOM"),
+        (b"@echo off\nchcp 65001 > nul\n", "換行不是 CRLF"),
+        (b"@echo off\r\nchcp 65001 > nul\n", "換行不是 CRLF"),
+        ("@echo off\r\necho 首次啟動\r\n".encode("utf-8"), "ASCII 以外的字元"),
+    ])
+    def test_bom_or_lf_fails(self, tmp_path, data, problem):
+        archive = self._with_bat(tmp_path, data)
+
+        (found,) = _check(archive)
+
+        assert found.startswith(f"批次檔 {TOP}/start.bat ")
+        assert problem in found
+
+    def test_start_bat_is_required(self):
+        # CI 的 zip 檢查照這份清單：少了 start.bat 就紅燈
+        assert "start.bat" in _required()
+
+
 class TestPlant:
     def test_creates_every_planted_file(self, tmp_path):
         created = portable_zip.plant(tmp_path)
