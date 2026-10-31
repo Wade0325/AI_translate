@@ -25,6 +25,8 @@ $Root = $PSScriptRoot
 $BuildDir = Join-Path $Root "build"
 $CacheDir = Join-Path $BuildDir "cache"
 $StageDir = Join-Path $BuildDir "AI_Translate"
+# 發布包附的第三方授權全文（#274），說明在 tools\portable\THIRD_PARTY_NOTICES.txt
+$LicensesDir = Join-Path $Root "tools\portable\licenses"
 
 # 下載的檔案都釘版並驗 SHA-256（Get-Verified）；tests/unit/test_release_pins.py 檢查有釘住。
 # Python embeddable：3.11.9 是 3.11 最後一個有 Windows 檔案的版本（之後的 3.11.x 只發原始碼）。
@@ -49,6 +51,12 @@ $FfmpegBuild = "ffmpeg-n9.0.2-17-g2a571b6068"
 $FfmpegSha256 = "6b264b9e6019103f601d98c292bd332fd87acf1c5e941ddff4fb71760fe63432"
 $FfmpegAsset = "$FfmpegBuild-win64-lgpl-9.0.zip"
 $FfmpegUrl = "https://github.com/BtbN/FFmpeg-Builds/releases/download/$FfmpegTag/$FfmpegAsset"
+# 這個 build 的原始碼（#274）：FFmpeg 的 commit 就是 $FfmpegBuild 裡 -g 後面那一段的完整寫法；BtbN 建置腳本
+# 的 commit 是 $FfmpegTag 這個 tag 指向的 commit。建置不用，發版時 tools/ffmpeg_sources.py 讀這兩個值，
+# 把原始碼打包成 GitHub Release 的附件，tools/portable/THIRD_PARTY_NOTICES.txt 也寫著它們。
+# 升版時和上面一起換，並更新 THIRD_PARTY_NOTICES.txt（tests/unit/test_third_party_notices.py 檢查）
+$FfmpegCommit = "2a571b606854520cf89804d8030c8b328e621689"
+$BtbnCommit = "6c9aec5fc9a72ec3abedd1fa84db141fa18cf52b"
 
 # 後端只打包這些路徑（白名單），而且只從 git 取已經 commit 的版本（第 4 步的 git archive，#266）。
 # 執行需要的只有這些：Docker、型別檢查與開發用的檔案（Dockerfile、typings/、requirements-dev.txt
@@ -88,6 +96,17 @@ function Get-Verified($url, $name, $sha256) {
     return $path
 }
 
+# 下載來的元件自己附的授權檔，要和 tools\portable\licenses\ 裡 commit 的那份相同（#274）：升版後授權文字
+# 變了就停下來，更新 licenses\ 與 THIRD_PARTY_NOTICES.txt 再建置。不計換行（Windows 的 checkout 是 CRLF）；
+# 用 -cne：PowerShell 的 -ne 比較字串時不分大小寫
+function Assert-SameText($actual, $expected) {
+    $a = [IO.File]::ReadAllText($actual) -replace "`r`n", "`n"
+    $e = [IO.File]::ReadAllText($expected) -replace "`r`n", "`n"
+    if ($a -cne $e) {
+        throw "$actual 和 $expected 的內容不同：元件升版後授權文字變了，更新 tools\portable\licenses\ 與 THIRD_PARTY_NOTICES.txt"
+    }
+}
+
 function Copy-Tree($src, $dst, $extraArgs) {
     robocopy $src $dst /E /NFL /NDL /NJH /NJS @extraArgs | Out-Null
     if ($LASTEXITCODE -ge 8) { throw "robocopy $src -> $dst 失敗 (code $LASTEXITCODE)" }
@@ -121,6 +140,7 @@ Step "佈署 Python $PythonEmbedVersion embeddable runtime"
 $pyZip = Get-Verified $PythonEmbedUrl $PythonEmbedAsset $PythonEmbedSha256
 $runtime = Join-Path $StageDir "runtime"
 Expand-Archive -Path $pyZip -DestinationPath $runtime -Force
+Assert-SameText (Join-Path $runtime "LICENSE.txt") (Join-Path $LicensesDir "python\LICENSE.txt")
 # 啟用 site-packages（內容由首次啟動的 uv 佈建）；_pth 不可帶 BOM
 Set-Content -Path (Join-Path $runtime "python311._pth") -Encoding ascii -Value @(
     "python311.zip",
@@ -158,6 +178,8 @@ foreach ($exe in @("ffmpeg.exe", "ffprobe.exe")) {
     if (-not $src) { throw "ffmpeg 壓縮包中找不到 $exe" }
     Copy-Item $src.FullName (Join-Path $binDir $exe)
 }
+# BtbN 的 LGPL build 附的 LICENSE.txt 是 FFmpeg 的 COPYING.LGPLv3
+Assert-SameText (Join-Path $ffTmp "$([IO.Path]::GetFileNameWithoutExtension($FfmpegAsset))\LICENSE.txt") (Join-Path $LicensesDir "ffmpeg\COPYING.LGPLv3.txt")
 
 # ── 4. 後端源碼與前端 dist ────────────────────────────────────────────────
 Step "複製 backend 源碼與 frontend/dist"
@@ -185,6 +207,18 @@ Copy-Tree (Join-Path $Root "frontend\dist") (Join-Path $StageDir "frontend\dist"
 # 版本號只在建置時注入（#85）：寫進發布包的 backend\VERSION，後端讀它（backend/app/core/version.py）。
 # PowerShell 5.1 的 utf8 會加 BOM；版本號只有 ASCII，所以用 ascii
 Set-Content -Path (Join-Path $StageDir "backend\VERSION") -Value $Version -Encoding ascii
+
+# 授權（#274）：Mimiji 自己的 LICENSE 與 NOTICE，以及第三方元件的聲明與授權全文（tools\portable\）。
+# 加上 .txt，使用者雙擊就能用記事本開。THIRD_PARTY_NOTICES.txt 的 {VERSION} 換成版本號（指向這一版的
+# GitHub Release，ffmpeg 的原始碼附在那裡），寫成帶 BOM、CRLF 的 UTF-8，舊版記事本才不會當成系統碼頁
+Step "複製授權文件（LICENSE、NOTICE、THIRD_PARTY_NOTICES、licenses）"
+Copy-Item (Join-Path $Root "LICENSE") (Join-Path $StageDir "LICENSE.txt")
+Copy-Item (Join-Path $Root "NOTICE") (Join-Path $StageDir "NOTICE.txt")
+$notices = [IO.File]::ReadAllText((Join-Path $Root "tools\portable\THIRD_PARTY_NOTICES.txt"), [Text.Encoding]::UTF8)
+if (-not $notices.Contains("{VERSION}")) { throw "tools\portable\THIRD_PARTY_NOTICES.txt 沒有 {VERSION}" }
+$notices = $notices.Replace("{VERSION}", $Version) -replace "`r?`n", "`r`n"
+[IO.File]::WriteAllText((Join-Path $StageDir "THIRD_PARTY_NOTICES.txt"), $notices, (New-Object Text.UTF8Encoding $true))
+Copy-Tree $LicensesDir (Join-Path $StageDir "licenses") @()
 
 # ── 5. 編譯 C# launcher ───────────────────────────────────────────────────
 Step "編譯 AI_Translate.exe（內建 csc）"
@@ -247,7 +281,19 @@ $required = @(
     "backend\main.py",
     "backend\VERSION",
     "backend\requirements-standalone.txt",
-    "frontend\dist\index.html"
+    "frontend\dist\index.html",
+    "LICENSE.txt",
+    "NOTICE.txt",
+    "THIRD_PARTY_NOTICES.txt",
+    "licenses\ffmpeg\COPYING.LGPLv3.txt",
+    "licenses\ffmpeg\COPYING.GPLv3.txt",
+    "licenses\ffmpeg\libraries.txt",
+    "licenses\ffmpeg\rust-crates.txt",
+    "licenses\python\LICENSE.txt",
+    "licenses\uv\LICENSE-MIT.txt",
+    "licenses\uv\LICENSE-APACHE.txt",
+    "licenses\uv\crates.txt",
+    "licenses\frontend\npm-packages.txt"
 )
 foreach ($rel in $required) {
     if (-not (Test-Path (Join-Path $StageDir $rel))) { throw "發布包缺少 $rel" }
