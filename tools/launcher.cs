@@ -8,7 +8,7 @@
 // 職責：
 //   1. 只允許單一實例：同一個資料夾的 exe 已在執行時，打開那個網址，不再起第二個伺服器（#268）
 //   2. 首次啟動時以隨包 uv.exe 佈建 Python 依賴（含 torch，約 3.5 GB 下載）
-//   3. 設定免安裝模式的環境變數 → 以隨包 Python 啟動 uvicorn
+//   3. 設定免安裝模式的環境變數 → 以隨包 Python 啟動 uvicorn（不載入使用者自己裝的套件，#301）
 //   4. 探活 /api/v1/health 後開啟預設瀏覽器
 //   5. 以 Job Object 綁定子行程：關閉視窗（或啟動器被殺）時 uvicorn 一併結束
 //   6. 出錯時不讓視窗直接消失：說明原因、下一步與日誌位置，按任意鍵才關（#268）
@@ -119,8 +119,11 @@ static class Launcher
 
         var psi = new ProcessStartInfo();
         psi.FileName = python;
+        // -s：不載入使用者自己裝的套件（%APPDATA%\Python\Python311\site-packages 與那裡的 .pth，
+        // #301）。python311._pth 只開了隔離模式，沒有關掉使用者的 site-packages。不用 -I：它會
+        // 連 PYTHON* 環境變數一起忽略，下面設的 PYTHONIOENCODING 就失效了。旗標要放在 -m 前面
         psi.Arguments = string.Format(CultureInfo.InvariantCulture,
-            "-m uvicorn main:app --host 127.0.0.1 --port {0}", port);
+            "-s -m uvicorn main:app --host 127.0.0.1 --port {0}", port);
         psi.WorkingDirectory = backend;
         psi.UseShellExecute = false; // 子行程直接沿用本 console 輸出日誌
         psi.EnvironmentVariables["APP_MODE"] = "standalone";
