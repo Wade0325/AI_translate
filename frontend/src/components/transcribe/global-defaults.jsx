@@ -3,7 +3,7 @@ import { Select, Switch, Typography, Input, Tooltip } from "antd"
 import { Languages, Users, MessageSquareText, ChevronDown, CopyCheck } from "lucide-react"
 import { useState } from "react"
 import { ReasonText } from "@/components/disabled-reason"
-import { languages } from "@/constants/languages"
+import { languages, formatLang } from "@/constants/languages"
 
 const { Text } = Typography
 const { TextArea } = Input
@@ -32,7 +32,9 @@ export function GlobalDefaults({ config, onChange, onApplyAll, fileCount = 0, pr
                         value={config.language}
                         onChange={(v) => update({ language: v })}
                         options={languages}
-                        style={{ width: 160 }}
+                        labelRender={({ value }) => formatLang(value)}
+                        aria-label="Language"
+                        style={{ width: 200 }}
                         size="small"
                     />
                 </div>
