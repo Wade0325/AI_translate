@@ -324,6 +324,128 @@ test('伺服器還沒回應就關掉連線時，檔案卡顯示提交失敗，�
     await expect(page.getByRole('button', { name: 'Start' })).toBeEnabled()
 })
 
+/** 一個之後才會放行的關卡：open() 之前，等它的地方都停住。 */
+function gate() {
+    let open
+    const opened = new Promise((resolve) => { open = resolve })
+    return { opened, open }
+}
+
+test('排隊中之後連線斷了：檔案卡寫出連線中斷，不再停在排隊中；接回之後接著顯示進度與結果（#280）', async ({ page, mockBackend }) => {
+    let messages
+    const reconnected = gate()
+    const backend = await mockBackend({
+        routes: { 'POST /upload': { filename: 'meeting_1.wav' } },
+        transcribe: async (request, send, close) => {
+            messages = transcriptionMessages(request)
+            send(messages.queued)
+            close()
+        },
+        // 接回時任務還在排隊；等畫面上看到連線中斷，才回狀態、之後輪到它轉完
+        reattach: async (task, send) => {
+            await reconnected.opened
+            send(messages.queued)
+            send(messages.processing)
+            send(messages.completed)
+        },
+    })
+    await page.goto('/transcribe')
+
+    await addAudio(page)
+    await page.getByRole('button', { name: 'Start' }).click()
+
+    const notice = page.getByTestId('connection-notice')
+    await expect(notice.getByText('和伺服器的連線中斷了')).toBeVisible()
+    await expect(notice.getByText(/連線中斷不會停止任務，不必重新轉錄/)).toBeVisible()
+    await expect(page.getByText('連線中斷，正在重新連線...')).toBeVisible()
+    await expect(page.getByText(QUEUED_TEXT)).toHaveCount(0)
+    // 接回的是同一個檔案送出的同一個任務
+    expect(backend.reattachments).toEqual([{ file_uid: messages.queued.file_uid, task_uuid: messages.queued.task_uuid }])
+
+    reconnected.open()
+    await expect(page.getByText('轉錄完成')).toBeVisible()
+    await expect(notice).toHaveCount(0)
+    await expect(page.getByText('1 個任務已完成')).toBeVisible()
+})
+
+test('斷線期間任務完成了：接回之後顯示結果，Result 頁看得到也下載得到（#280）', async ({ page, mockBackend }) => {
+    let messages
+    await mockBackend({
+        routes: { 'POST /upload': { filename: 'meeting_1.wav' } },
+        transcribe: async (request, send, close) => {
+            messages = transcriptionMessages(request)
+            send(messages.queued)
+            send(messages.processing)
+            close()
+        },
+        // 伺服器照任務紀錄補上結束時的宣告，和完成時廣播的一樣帶著結果
+        reattach: async (task, send) => send({ ...messages.completed, status_text: '任務完成' }),
+    })
+    await page.goto('/transcribe')
+
+    await addAudio(page)
+    await page.getByRole('button', { name: 'Start' }).click()
+
+    await expect(page.getByText('任務完成', { exact: true })).toBeVisible()
+    await expect(page.getByTestId('connection-notice')).toHaveCount(0)
+    await expect(page.getByText('1 個任務已完成')).toBeVisible()
+
+    // 結果和連線沒斷時一樣：Result 頁看得到、下載得到
+    await page.getByRole('link', { name: 'Result Viewer' }).click()
+    await expect(page.getByText('2 speaker(s)')).toBeVisible()
+    await page.getByRole('button', { name: 'Download', exact: true }).hover()
+    expect(await download(page, () => page.getByText('SRT (Subtitles)').click()))
+        .toEqual({ filename: 'meeting.srt', text: TRANSCRIPTS.srt })
+})
+
+test('連不上伺服器時說明要重新開啟 Mimiji；重新開啟之後自動接回，任務沒做完就顯示要重新轉錄（#280）', async ({ page, mockBackend }) => {
+    let messages
+    const restarted = gate()
+    let attempts = 0
+    await mockBackend({
+        routes: { 'POST /upload': { filename: 'meeting_1.wav' } },
+        transcribe: async (request, send, close) => {
+            messages = transcriptionMessages(request)
+            send(messages.queued)
+            send(messages.processing)
+            close()
+        },
+        reattach: async (task, send, close) => {
+            attempts += 1
+            // 第一次：伺服器已經停了，一則都沒回就斷了
+            if (attempts === 1) return close()
+            // 之後：重新開啟了。免安裝模式重新啟動時，伺服器上已經沒有這個任務
+            await restarted.opened
+            send({
+                ...messages.processing,
+                status_code: 'FAILED',
+                status_text: '任務失敗: 伺服器上已經沒有這個任務：任務還沒做完，應用程式就關閉或重新啟動了',
+                error_code: 'INTERRUPTED',
+                error_message: '伺服器上已經沒有這個任務：任務還沒做完，應用程式就關閉或重新啟動了',
+            })
+        },
+    })
+    await page.goto('/transcribe')
+
+    await addAudio(page)
+    await page.getByRole('button', { name: 'Start' }).click()
+
+    const notice = page.getByTestId('connection-notice')
+    await expect(notice.getByText('連不上伺服器，Mimiji 可能已經關閉')).toBeVisible()
+    await expect(notice.getByText(/請重新開啟 Mimiji（免安裝版是 AI_Translate.exe/)).toBeVisible()
+    await expect(notice.getByRole('link', { name: '任務頁' })).toHaveAttribute('href', '/tasks')
+    await expect(notice.getByRole('link', { name: '歷史紀錄' })).toHaveAttribute('href', '/history')
+    await expect(page.getByText('連線中斷，連不上伺服器')).toBeVisible()
+    await expect(page.getByText('轉錄中...')).toHaveCount(0)
+
+    restarted.open()
+    const failure = page.getByTestId('failure-notice')
+    await expect(failure.getByText('應用程式在處理途中關閉了')).toBeVisible()
+    await expect(failure.getByText('任務沒有做完，重新轉錄一次即可。')).toBeVisible()
+    await expect(notice).toHaveCount(0)
+    await expect(page.getByText('1 個任務失敗')).toBeVisible()
+})
+
 test('整批沒有送出時，這批的檔案都標成失敗（#24 門檻 4）', async ({ page, mockBackend }) => {
     const uploads = []
     await mockBackend({
