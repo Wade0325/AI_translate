@@ -47,7 +47,7 @@ def test_standalone_app_writes_its_log_into_the_data_folder(tmp_path):
     [log] = (tmp_path / "data" / "logs").iterdir()
     assert re.fullmatch(r"app-\d{4}-\d{2}-\d{2}\.log", log.name)
     text = log.read_text(encoding="utf-8")
-    assert "正在啟動 AI Voice Transcription API" in text
+    assert "正在啟動 Mimiji API" in text
     assert "應用程式正在關閉" in text
     # 主控台照寫完整路徑；日誌檔裡使用者家目錄寫成 ~（Windows 的暫存資料夾就在家目錄底下）
     assert f"日誌檔寫在 {(tmp_path / 'data' / 'logs').resolve()}" in result.stdout
