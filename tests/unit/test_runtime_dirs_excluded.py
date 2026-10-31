@@ -6,6 +6,8 @@ Docker 模式與從原始碼執行時，上傳暫存、去靜音的除錯產物�
 任一份排除清單漏掉其中一個，重建映像或打包時，使用者的音檔就會被一起打包進去。
 
 資料夾名稱一律從 config.py 的預設值取得，改名時兩份排除清單要跟著改，這裡會紅燈提醒。
+CI 建置免安裝版之後的 zip 檢查（tools/portable_zip.py，#256）也要認得這些名稱，而且建置前
+要真的放一份進 backend/，排除清單漏掉時 CI 才會紅燈。
 """
 import re
 from pathlib import Path
@@ -13,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from app.core.config import Settings
+from tools import portable_zip
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -63,3 +66,19 @@ def test_release_package_excludes_runtime_dir(field):
     name = Settings.model_fields[field].default
     assert name in _release_backend_excluded_dirs(), (
         f"build_release.ps1 複製 backend/ 時沒有用 /XD 排除 {name}")
+
+
+@pytest.mark.parametrize("field", RUNTIME_DIR_FIELDS)
+def test_portable_zip_check_rejects_runtime_dir(field):
+    name = Settings.model_fields[field].default
+    assert name in portable_zip.RUNTIME_DIRS, (
+        f"tools/portable_zip.py 的 RUNTIME_DIRS 沒有 {name}：CI 檢查 zip 時認不出來")
+
+
+@pytest.mark.parametrize("field", RUNTIME_DIR_FIELDS)
+def test_ci_plants_runtime_dir_before_building(field):
+    name = Settings.model_fields[field].default
+    planted = [p for p in portable_zip.PLANTED if p.startswith(f"backend/{name}/")]
+    assert planted, (
+        f"tools/portable_zip.py 的 PLANTED 沒有 backend/{name}/ 底下的檔案：CI 建置前沒放，"
+        "排除清單漏掉它也不會紅燈")
