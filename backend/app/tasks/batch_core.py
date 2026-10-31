@@ -535,7 +535,7 @@ class _Run:
         return build_prompt(
             source_lang=item.source_lang or params.source_lang,
             target_lang=item.target_lang or params.target_lang,
-            multi_speaker=params.multi_speaker if item.multi_speaker is None else item.multi_speaker,
+            multi_speaker=_multi_speaker(item, params),
             template=params.prompt_template,
             supplement=item.prompt or params.prompt,
         )
@@ -786,10 +786,16 @@ def _task(item: BatchFileItemParams, params: BatchTranscriptionTaskParams) -> Ta
         provider=params.provider,
         model=params.model,
         source_lang=item.source_lang or params.source_lang,
+        multi_speaker=_multi_speaker(item, params),
         target_lang=item.target_lang or params.target_lang,
         session_id=params.session_id or params.batch_id,
         batch_id=params.batch_id,
     )
+
+
+def _multi_speaker(item: BatchFileItemParams, params: BatchTranscriptionTaskParams) -> bool:
+    """這個檔案的 Multi-Speaker 開關：個別檔案的設定優先，沒設定的用批次的。"""
+    return params.multi_speaker if item.multi_speaker is None else item.multi_speaker
 
 
 def _create_record(db: Session, params: BatchTranscriptionTaskParams, files: Sequence[_File], *,

@@ -54,6 +54,7 @@ def _task(params: TranscriptionTaskParams) -> Task:
         provider=params.provider,
         model=params.model,
         source_lang=params.source_lang,
+        multi_speaker=params.multi_speaker,
         target_lang=params.target_lang,
         session_id=params.session_id,
     )

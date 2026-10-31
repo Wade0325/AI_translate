@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { loadLastSelection, saveLastSelection } from './lastSelection.js';
+import {
+  loadLastMultiSpeaker,
+  loadLastSelection,
+  saveLastMultiSpeaker,
+  saveLastSelection,
+} from './lastSelection.js';
 
 const NOTHING_CHOSEN = { provider: null, model: null };
 
@@ -63,5 +68,56 @@ describe('轉錄頁記住上次選的供應商與模型', () => {
 
     expect(loadLastSelection()).toEqual(NOTHING_CHOSEN);
     expect(() => saveLastSelection({ provider: 'local', model: null })).not.toThrow();
+  });
+});
+
+describe('轉錄頁記住上次的 Multi-Speaker 開關（#13 Q1）', () => {
+  it('第一次開頁是關', () => {
+    stubStorage();
+
+    expect(loadLastMultiSpeaker()).toBe(false);
+  });
+
+  it('打開之後讀回開，再關掉讀回關', () => {
+    stubStorage();
+
+    saveLastMultiSpeaker(true);
+    expect(loadLastMultiSpeaker()).toBe(true);
+
+    saveLastMultiSpeaker(false);
+    expect(loadLastMultiSpeaker()).toBe(false);
+  });
+
+  it('和供應商與模型分開存，互不影響', () => {
+    const items = stubStorage();
+
+    saveLastSelection({ provider: 'local', model: 'moss-align' });
+    saveLastMultiSpeaker(true);
+
+    expect(items).toEqual({
+      ai_translate_last_selection: JSON.stringify({ provider: 'local', model: 'moss-align' }),
+      ai_translate_last_multi_speaker: 'true',
+    });
+    expect(loadLastSelection()).toEqual({ provider: 'local', model: 'moss-align' });
+  });
+
+  it('存的內容壞掉或不是開關時當成關', () => {
+    for (const saved of ['{壞掉', '"true"', '1', '{"on":true}', 'null']) {
+      stubStorage({ ai_translate_last_multi_speaker: saved });
+      expect(loadLastMultiSpeaker()).toBe(false);
+    }
+  });
+
+  it('瀏覽器擋下儲存空間或沒有儲存空間時，讀不到就是關，存不進去也不影響轉錄', () => {
+    vi.stubGlobal('localStorage', {
+      getItem: () => { throw new Error('SecurityError'); },
+      setItem: () => { throw new Error('QuotaExceededError'); },
+    });
+    expect(loadLastMultiSpeaker()).toBe(false);
+    expect(() => saveLastMultiSpeaker(true)).not.toThrow();
+
+    vi.stubGlobal('localStorage', undefined);
+    expect(loadLastMultiSpeaker()).toBe(false);
+    expect(() => saveLastMultiSpeaker(true)).not.toThrow();
   });
 });

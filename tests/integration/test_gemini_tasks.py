@@ -12,6 +12,7 @@ import threading
 import pytest
 from fastapi.testclient import TestClient
 
+from app.core.default_prompt import SPEAKER_INSTRUCTION
 from app.core.error_codes import ErrorCode
 from app.core.task_status import TaskStatus
 from app.provider import registry
@@ -120,10 +121,11 @@ def test_gemini_gets_neither_the_original_filename_nor_does_the_log(
 
 
 def test_single_file_stores_segments_labelled_like_the_local_provider(api, in_process_run_mode, genai):
-    # Gemini 的 LRC 在轉接器裡解析一次就變成片段：任務存下片段，字幕的說話者標記和本機一樣
+    # Gemini 的 LRC 在轉接器裡解析一次就變成片段：任務存下片段，Multi-Speaker 開著時字幕的說話者
+    # 標記和本機一樣
     genai.replies = [Reply(text="[00:00.50]Speaker 1: おはよう。\n[00:03.00]Speaker 2: こんにちは。")]
 
-    end = transcribe(api, in_process_run_mode, "gemini-single-speakers.wav")[-1]
+    end = transcribe(api, in_process_run_mode, "gemini-single-speakers.wav", multi_speaker=True)[-1]
 
     assert end["status_code"] == TaskStatus.COMPLETED
     segments = api.get(f"/api/v1/transcripts/{end['task_uuid']}").json()["segments"]
@@ -133,6 +135,26 @@ def test_single_file_stores_segments_labelled_like_the_local_provider(api, in_pr
     srt = api.get(f"/api/v1/history/{end['task_uuid']}/download/srt").text
     assert "[S0] おはよう。" in srt and "[S1] こんにちは。" in srt
     assert "Speaker" not in srt
+
+
+def test_speaker_codes_gemini_writes_with_multi_speaker_off_are_not_output(
+        api, in_process_run_mode, genai):
+    # Multi-Speaker 關（預設）：提示詞不要求標說話者，Gemini 自己寫了「Speaker 1:」也不輸出；片段照樣
+    # 存說話者編號（#13 Q1）
+    genai.replies = [Reply(text="[00:00.50]Speaker 1: おはよう。\n[00:03.00]Speaker 2: こんにちは。")]
+
+    end = transcribe(api, in_process_run_mode, "gemini-single-speakers-off.wav")[-1]
+
+    assert end["status_code"] == TaskStatus.COMPLETED
+    assert SPEAKER_INSTRUCTION not in genai.prompts[0]
+    task_uuid = end["task_uuid"]
+    segments = api.get(f"/api/v1/transcripts/{task_uuid}").json()["segments"]
+    assert [(s["speaker"], s["text"]) for s in segments] == [("S0", "おはよう。"), ("S1", "こんにちは。")]
+    assert api.get(f"/api/v1/history/{task_uuid}/download/txt").text == "おはよう。\nこんにちは。"
+    for fmt in ("lrc", "srt", "vtt", "txt"):
+        content = api.get(f"/api/v1/history/{task_uuid}/download/{fmt}").text
+        assert "[S" not in content and "Speaker" not in content
+        assert content == end["result"]["transcripts"][fmt]
 
 
 def test_subtitles_end_where_gemini_wrote_it_and_otherwise_follow_the_old_rule(
