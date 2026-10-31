@@ -245,6 +245,8 @@ jobs:
         with:
           python-version: "3.11"
       - name: 安裝 uv
+        # 和免安裝版隨包的 uv（build_release.ps1 的 $UvVersion）同一版：升版時一起換，
+        # tests/unit/test_release_pins.py 檢查兩邊一致
         run: python -m pip install uv==0.12.23
       - name: 解析完整依賴（只解析、不安裝）
         env:
@@ -269,9 +271,10 @@ jobs:
     # 執行 build_release.ps1 -SkipFrontend；不上傳、不發布。打包的改動（build_release.ps1、
     # tools/launcher.cs）因此每個 PR 都在 Windows 上實際建置過一次，不必等維護者在本機建置。
     # - 建置前先在 backend/ 與 data/ 放進用過的開發環境會有的執行期資料（tools/portable_zip.py plant），
-    #   build_release.ps1 排除執行期資料的那一步才真的被考到
+    #   build_release.ps1 取後端檔案的那一步（只取已 commit 的白名單路徑）才真的被考到
     # - 啟動器在 build_release.ps1 第 5 步編譯，編譯失敗時那一步就失敗
-    # - 建好後檢查 zip：第 7 步清單裡的檔案都在、沒有執行期資料（tools/portable_zip.py check）
+    # - 建好後檢查 zip：第 7 步清單裡的檔案都在、backend/ 只有白名單裡的檔案、沒有執行期資料，
+    #   並在日誌列出 zip 的內容（tools/portable_zip.py check）
     # 每個 PR 都跑（只改文件時跳過）：Python embeddable、uv 與 ffmpeg 每次重新下載，不用快取
     needs: changes
     if: needs.changes.outputs.docs_only != 'true'
@@ -301,11 +304,8 @@ jobs:
         run: python tools/portable_zip.py plant
       - name: 建置免安裝版
         shell: powershell # 和 release.yml 一樣用 Windows PowerShell 5.1，不是 pwsh
-        run: |
-          # Windows PowerShell 5.1 的 Invoke-WebRequest 畫進度條時下載很慢：ffmpeg 的 zip 要 4 分鐘，
-          # 關掉之後和 curl 差不多。腳本沿用呼叫端的這個設定，build_release.ps1 本身不用改
-          $ProgressPreference = 'SilentlyContinue'
-          .\build_release.ps1 -Version ci -SkipFrontend
+        # 不在這裡關進度條：build_release.ps1 自己關（#266），release.yml 呼叫時一樣快
+        run: .\build_release.ps1 -Version ci -SkipFrontend
       - name: 檢查 zip
         run: python tools/portable_zip.py check build/AI_Translate-ci-win64.zip
 
