@@ -37,6 +37,7 @@ from starlette.websockets import WebSocketDisconnect
 
 import main
 from app.api.transcription import SUBMISSION_FAILED_TEXT
+from app.core.error_codes import ErrorCode
 from app.core.task_status import TaskStatus
 from app.database import session
 from app.database.models import BatchJob, ModelConfiguration, TranscriptionLog
@@ -188,19 +189,20 @@ def run_task(uploads, fake: FakeProvider, task_uuid: str | None = None) -> None:
     run_transcription(task_params(uploads), task_uuid or str(uuid.uuid4()))
 
 
-def failure_shown(broadcasts: list[dict]) -> str:
-    """畫面上看到的失敗原因：宣告失敗時的狀態文字。"""
+def failure_shown(broadcasts: list[dict]) -> dict:
+    """畫面拿到的失敗：宣告失敗的那則狀態廣播。"""
     [failed] = [m for m in broadcasts if m["status_code"] == TaskStatus.FAILED]
-    return failed["status_text"]
+    return failed
 
 
-def assert_fixed_message(shown: str) -> None:
-    """給使用者看的是看得懂、告訴他怎麼做的固定訊息：不轉述例外，SQL 與原因只在 log。"""
-    assert "INSERT" not in shown
-    assert "UPDATE" not in shown
-    assert NOT_NULL not in shown
-    assert DISK_FULL not in shown
-    assert "重新轉錄" in shown
+def assert_only_the_error_code(status_text: str, error_code, error_message) -> None:
+    """給使用者看的只有錯誤碼：畫面照 DATABASE 說「轉錄結果沒有存進資料庫」與下一步（前端的
+    constants/errorCodes.js），細節是空的，狀態文字也不轉述例外；SQL 與原因只在 log。"""
+    assert (error_code, error_message) == (ErrorCode.DATABASE, None)
+    assert "INSERT" not in status_text
+    assert "UPDATE" not in status_text
+    assert NOT_NULL not in status_text
+    assert DISK_FULL not in status_text
 
 
 class TestTaskRecordCannotBeWritten:
@@ -248,7 +250,9 @@ class TestTaskRecordCannotBeWritten:
             with pytest.raises(TaskDatabaseError):
                 run_task(uploads, fake)
 
-        assert_fixed_message(failure_shown(broadcasts))
+        failed = failure_shown(broadcasts)
+        assert_only_the_error_code(
+            failed["status_text"], failed["error_code"], failed["error_message"])
 
     def test_task_that_never_started_logs_the_reason_but_not_the_row(
             self, uploads, task_db, in_process_run_mode, test_engine, app_log):
@@ -293,9 +297,11 @@ class TestSegmentsCannotBeWritten:
 
         record = db_session.get(TranscriptionLog, uuid.UUID(task_uuid))
         assert record.status == TaskStatus.FAILED
-        for shown in (failure_shown(broadcasts), record.error_message):
-            assert TRANSCRIPT not in shown
-            assert_fixed_message(shown)
+        failed = failure_shown(broadcasts)
+        assert TRANSCRIPT not in failed["status_text"]
+        assert_only_the_error_code(
+            failed["status_text"], failed["error_code"], failed["error_message"])
+        assert_only_the_error_code("", record.error_code, record.error_message)
 
 
 # ─── 往上拋給執行模式的例外 ──────────────────────────────────────────────────

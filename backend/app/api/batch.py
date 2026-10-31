@@ -10,9 +10,10 @@ from fastapi import (
 from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session
 from app.celery.models import BatchTranscriptionTaskParams, BatchFileItemParams
-from app.api.transcription import SUBMISSION_FAILED_TEXT
+from app.api.transcription import SUBMISSION_FAILED, SUBMISSION_FAILED_TEXT
 from app.runtime import run_mode
 from app.core.config import get_settings
+from app.core.error_codes import describe
 from app.core.task_status import TaskStatus
 from app.database.session import SessionLocal, get_db, traceback_without_db_details
 from app.provider.registry import UnsupportedModelError, check_request
@@ -195,6 +196,7 @@ def _submit_batch(request_data: WebSocketBatchRequest, batch_id: str) -> list[di
             "file_uid": f.file_uid,
             "status_code": TaskStatus.FAILED,
             "status_text": str(e),
+            **describe(e).fields(),
         } for f in request_data.files]
 
     file_items = []
@@ -213,6 +215,7 @@ def _submit_batch(request_data: WebSocketBatchRequest, batch_id: str) -> list[di
                 "file_uid": f.file_uid,
                 "status_code": TaskStatus.FAILED,
                 "status_text": str(e),
+                **describe(e).fields(),
             })
             continue
 
@@ -290,6 +293,7 @@ async def batch_websocket_endpoint(
                 "client_id": batch_id,
                 "status_code": TaskStatus.FAILED,
                 "status_text": SUBMISSION_FAILED_TEXT,
+                **SUBMISSION_FAILED.fields(),
             })
             # 只關、只移除這條連線：同一個 batch_id 的新連線可能已經登記上來（#203）
             await manager.close(batch_id, websocket, code=1011)

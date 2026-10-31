@@ -410,16 +410,6 @@
                 }
             }
         ],
-        "./backend/app/provider/google/provider.py": [
-            {
-                "code": "reportCallIssue",
-                "range": {
-                    "startColumn": 15,
-                    "endColumn": 38,
-                    "lineCount": 3
-                }
-            }
-        ],
         "./backend/app/provider/registry.py": [
             {
                 "code": "reportReturnType",
@@ -659,40 +649,6 @@
                     "startColumn": 33,
                     "endColumn": 45,
                     "lineCount": 1
-                }
-            }
-        ],
-        "./backend/app/services/chunked_transcription.py": [
-            {
-                "code": "reportCallIssue",
-                "range": {
-                    "startColumn": 19,
-                    "endColumn": 80,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportCallIssue",
-                "range": {
-                    "startColumn": 31,
-                    "endColumn": 69,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportCallIssue",
-                "range": {
-                    "startColumn": 16,
-                    "endColumn": 96,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportCallIssue",
-                "range": {
-                    "startColumn": 11,
-                    "endColumn": 5,
-                    "lineCount": 8
                 }
             }
         ],
@@ -1040,16 +996,6 @@
                 "range": {
                     "startColumn": 17,
                     "endColumn": 53,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./backend/app/tasks/transcribe_core.py": [
-            {
-                "code": "reportCallIssue",
-                "range": {
-                    "startColumn": 15,
-                    "endColumn": 86,
                     "lineCount": 1
                 }
             }

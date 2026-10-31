@@ -431,7 +431,7 @@ export default function TranscribePage() {
                             tokens_used: file.tokens_used,
                             cost: file.cost,
                             result: file.result,
-                            error: file.error,
+                            failure: file.failure,
                             userSuppliedText: file.userSuppliedText,
                         }}
                         globalConfig={globalConfig}

@@ -6,6 +6,7 @@ import { registerTranscribeSession } from '../utils/transcribeSessions';
 import { randomId } from '../utils/id';
 import { buildBatchPayload, buildSinglePayload } from '../utils/transcribeRequest';
 import { applyFileResult } from '../utils/fileResult';
+import { uploadFailure } from '../utils/failure';
 import { TASK_STATUS } from '../constants/taskStatus';
 
 /**
@@ -29,6 +30,8 @@ import { TASK_STATUS } from '../constants/taskStatus';
 const SUBMISSION_LOST = {
   status_code: TASK_STATUS.FAILED,
   status_text: '提交任務失敗：伺服器還沒回應，連線就中斷了。請重新轉錄',
+  error_code: 'SUBMIT_FAILED',
+  error_message: '伺服器還沒回應，連線就中斷了',
 };
 
 const isRestartable = (f) =>
@@ -72,6 +75,8 @@ export function useUploadQueue({ fileList, setFileList, socketManager, onBatchSu
               ...f,
               status: 'processing',
               statusText: '正在上傳檔案...',
+              // 失敗過的檔案可以直接再送：上一次的失敗原因不能留到這一次
+              failure: null,
               sessionId,
               transcribeMode,
             }
@@ -155,6 +160,7 @@ export function useUploadQueue({ fileList, setFileList, socketManager, onBatchSu
           status: 'error',
           statusText: '上傳失敗',
           percent: 100,
+          failure: uploadFailure(error),
         });
       }
     }
@@ -186,6 +192,7 @@ export function useUploadQueue({ fileList, setFileList, socketManager, onBatchSu
           status: 'error',
           statusText: '上傳失敗',
           percent: 100,
+          failure: uploadFailure(error),
         });
       }
     }

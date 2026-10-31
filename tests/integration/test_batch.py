@@ -14,6 +14,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.core.default_prompt import build_prompt
+from app.core.error_codes import ErrorCode
 from app.core.task_status import TaskStatus
 from app.exceptions import TransientError
 from app.runtime import run_mode
@@ -466,7 +467,8 @@ def test_database_errors_are_not_passed_on(api, in_process_run_mode, batch_fake,
 
     end = of_file(messages, "twice-b.wav")[-1]
     assert end["status_code"] == TaskStatus.FAILED
-    assert "轉錄結果沒有存進資料庫" in end["status_text"]
+    # 畫面照錯誤碼說「轉錄結果沒有存進資料庫」；細節是空的，原因只記在 log
+    assert (end["error_code"], end["error_message"]) == (ErrorCode.DATABASE, None)
     assert "資料庫出錯了" in messages[-1]["status_text"]
     assert not any("INSERT" in m["status_text"] for m in messages)
     assert not any("INSERT INTO" in entry for entry in app_log)
@@ -496,8 +498,10 @@ def test_a_file_whose_result_cannot_be_stored_fails_alone_without_passing_on_the
     first, failed, third = ends(messages, NAMES)
     assert codes([first, failed, third]) == [
         TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.COMPLETED]
-    assert "轉錄結果沒有存進資料庫" in failed["status_text"]
-    shown = [m["status_text"] for m in messages] + [record(api, failed["task_uuid"])["error_message"]]
+    assert (failed["error_code"], failed["error_message"]) == (ErrorCode.DATABASE, None)
+    saved = record(api, failed["task_uuid"])
+    assert (saved["error_code"], saved["error_message"]) == (ErrorCode.DATABASE, None)
+    shown = [m["status_text"] for m in messages]
     for text in shown:
         for leaked in (secret, NOT_NULL, "INSERT"):
             assert leaked not in text

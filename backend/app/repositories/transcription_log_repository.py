@@ -2,6 +2,7 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Dict, Any, Optional
 from sqlalchemy.orm import Session
+from app.core.error_codes import ErrorCode
 from app.core.task_status import TaskStatus
 from app.database.models import TranscriptionLog
 from app.utils.identifiers import coerce_uuid
@@ -159,9 +160,9 @@ class TranscriptionLogRepository:
             .update(
                 {
                     TranscriptionLog.status: TaskStatus.FAILED,
+                    TranscriptionLog.error_code: ErrorCode.INTERRUPTED,
                     TranscriptionLog.error_message:
-                        f"任務逾時未完成（超過 {max_age_hours} 小時，worker 可能已中斷），"
-                        "由啟動清掃標記為失敗",
+                        f"超過 {max_age_hours} 小時仍在處理中，轉錄途中程式可能關閉或重新啟動了",
                     TranscriptionLog.completed_at: datetime.now(),
                 },
                 synchronize_session=False,

@@ -12,6 +12,7 @@ import threading
 import pytest
 from fastapi.testclient import TestClient
 
+from app.core.error_codes import ErrorCode
 from app.core.task_status import TaskStatus
 from app.provider import registry
 from app.provider.google.provider import GeminiProvider
@@ -156,6 +157,9 @@ def test_single_file_failure_still_deletes_its_remote_file(api, in_process_run_m
 
     assert end["status_code"] == TaskStatus.FAILED
     assert "音檔無法解碼" in end["status_text"]
+    # 錯誤碼照 Gemini 回報的 HTTP 狀態碼歸類，細節是狀態碼、狀態與訊息，不是整份錯誤內容
+    assert (end["error_code"], end["error_message"]) == (
+        ErrorCode.GEMINI_REQUEST_FAILED, "400 INVALID_ARGUMENT: 音檔無法解碼")
     assert genai.stored == {}
 
 
@@ -168,8 +172,10 @@ def test_reply_without_any_line_fails_but_its_usage_is_recorded(api, in_process_
     end = transcribe(api, in_process_run_mode, "gemini-single-no-line.wav")[-1]
 
     assert end["status_code"] == TaskStatus.FAILED
+    assert end["error_code"] == ErrorCode.NO_TRANSCRIPT
     record = history(api, "gemini-single-no-line.wav")
     assert record["status"] == TaskStatus.FAILED
+    assert record["error_code"] == ErrorCode.NO_TRANSCRIPT
     assert record["total_tokens"] == 1200
     assert record["cost"] == pytest.approx(0.0015)
 

@@ -148,7 +148,8 @@ class HistoryLogResponse(BaseModel):
     source_language: Optional[str] = None
     total_tokens: Optional[int] = None
     cost: Optional[float] = None
-    error_message: Optional[str] = None
+    error_code: Optional[str] = None  # 失敗的錯誤碼（app.core.error_codes）；畫面照它顯示原因與下一步
+    error_message: Optional[str] = None  # 失敗時是錯誤碼的細節，取消時是取消的說明
     is_batch: Optional[bool] = None
     session_id: Optional[str] = None
     file_uid: Optional[str] = None
