@@ -245,6 +245,21 @@ class TestProvisioning:
         assert server[0] == "python"
 
 
+class TestServerCommand:
+    def test_server_does_not_load_the_users_own_packages(self, app):
+        # -s：使用者自己裝的套件（%APPDATA%\Python\Python311\site-packages）不進 sys.path，那裡的 .pth
+        # 也不執行（#301）；python311._pth 只開了隔離模式，沒有關掉它。旗標要在 -m 前面，之後的參數
+        # 都交給 uvicorn。-I 與 -E 會連 PYTHON* 環境變數一起忽略，啟動器設的 PYTHONIOENCODING 就失效
+        app.run(server="exit:3")
+
+        [server] = app.calls()
+        args = server[2:]
+        flags = args[:args.index("-m")]
+        assert "-s" in flags
+        assert not {"-I", "-E"} & set(flags)
+        assert args[args.index("-m") + 1:][:2] == ["uvicorn", "main:app"]
+
+
 class TestIoErrors:
     def test_data_folder_that_cannot_be_created_names_the_path(self, app):
         app.data.write_text("佔住 data 這個名稱的檔案", encoding="utf-8")
