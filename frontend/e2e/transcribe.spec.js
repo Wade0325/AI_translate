@@ -51,6 +51,39 @@ test('費用估算只給按 token 計費的模型：選本機時只顯示檔案�
     await expect(page.getByRole('button', { name: 'Start' })).toBeEnabled()
 })
 
+test('語言選單分官方支援與未驗證，沒有簡體中文；選了未驗證的語言，選單與檔案卡都標未驗證（ADR-0002、#14 Q2）', async ({ page, mockBackend }) => {
+    await mockBackend()
+    await page.goto('/transcribe')
+    await addAudio(page)
+
+    // 選單是虛擬清單，只畫看得到的前幾列：Auto Detect、官方支援兩種、未驗證開頭的幾種
+    await page.getByRole('combobox', { name: 'Language', exact: true }).click()
+    const menu = page.locator('.ant-select-dropdown:visible')
+    await expect(menu.locator('.ant-select-item').first()).toHaveText('Auto Detect')
+    await expect(menu.locator('.ant-select-item-group')).toHaveText(['官方支援', '未驗證'])
+    await expect(menu.locator('.ant-select-item').nth(1)).toHaveText('官方支援')
+    await expect(menu.locator('.ant-select-item').nth(2)).toHaveText('Japanese')
+    await expect(menu.locator('.ant-select-item').nth(3)).toHaveText('Chinese (Traditional)')
+    await expect(menu.locator('.ant-select-item').nth(4)).toHaveText('未驗證')
+    await expect(menu.getByText('Chinese (Simplified)')).toHaveCount(0)
+
+    // 選了未驗證的語言：全域選單收起來的值與檔案卡的標籤都標出來，每檔設定的選單也一樣
+    // （antd 另有一個看不到的無障礙區塊也寫選到的值，只數看得到的）
+    const shown = (text) => page.getByText(text, { exact: true }).filter({ visible: true })
+    await menu.locator('.ant-select-item-option[title="French"]').click()
+    await expect(shown('French（未驗證）')).toHaveCount(2)
+    await page.getByRole('button', { name: '每檔設定' }).click()
+    await expect(shown('French（未驗證）')).toHaveCount(3)
+
+    // 選回官方支援語言就不標。再打開時清單捲在選到的 French，先捲回頂端才畫得出 Japanese
+    await page.getByRole('combobox', { name: 'Language', exact: true }).click()
+    await menu.locator('.rc-virtual-list-holder').evaluate((el) => { el.scrollTop = 0 })
+    await menu.locator('.ant-select-item-option[title="Japanese"]').click()
+    await page.getByRole('button', { name: /Apply to All/ }).click()
+    await expect(page.getByText(/未驗證/).filter({ visible: true })).toHaveCount(0)
+    await expect(shown('Japanese')).toHaveCount(3)
+})
+
 test('Multi-Speaker 只有開關：沒有人數滑桿，也沒有 Timestamps 開關（#13 Q1、Q2）', async ({ page, mockBackend }) => {
     await mockBackend()
     await page.goto('/transcribe')
