@@ -110,6 +110,7 @@ Mimiji 只發布 Windows 免安裝版：下載 zip、解壓縮就能用，不必
 ### 步驟 3️⃣ — 開始轉錄
 
 - 按 **Start** 開始轉錄，畫面即時顯示每個檔案的進度。
+- 任務送出之後和伺服器的連線中斷時（例如關掉了免安裝版的黑色視窗），檔案卡會寫出「連線中斷」，畫面自動重新連線、接回任務：任務還在跑就接著顯示進度，斷線期間做完的照樣顯示結果。連不上伺服器時，重新開啟應用程式，畫面會自己接回；應用程式在轉錄途中關閉時任務沒有做完，檔案卡標成失敗，重新轉錄即可。
 - **處理模式**預設是「標準」，結果直接回到轉錄頁。只有 Gemini 的模型支援 Flex 與批次，選本機的模型時這兩個選項會停用並註明原因，已經選了的會退回標準。
 - **批次（Gemini）**：改選「批次（50% 費用．非同步）」後送出，可關閉視窗稍後在 **Tasks** 頁面查看。批次還在等 Gemini 的結果時關掉應用程式（例如關掉免安裝版的黑色視窗），重新開啟後任務頁會把它標成「已中斷」；等結果時網路斷了，批次會標成「失敗」。兩種都按「恢復」接著等，不必重新上傳（要先在 Settings 設定 Gemini 的 API 金鑰）。還在上傳時就關掉的批次沒有送出給 Gemini，重新開啟後標成「失敗」，要重新送出。失敗的批次在任務頁留 24 小時。
 
@@ -408,8 +409,10 @@ git config core.hooksPath .githooks
 
 產出 `build\AI_Translate-v1.2.3-win64.zip`（約 150 MB —— Python 依賴不進 zip，
 由使用者首次啟動時以隨包 `uv` 依 `backend/requirements-standalone.txt` 自動下載）。
+要在 git 的工作目錄裡、裝好 git 才能建置：後端只用 `git archive` 取白名單（腳本裡的 `$BackendPaths`）已經 commit 的檔案，沒進版控的東西不會被打包；白名單裡有還沒 commit 的改動或新檔時，建置會停下來，請先 commit 或 stash。
+Python embeddable、`uv` 與 ffmpeg 都釘版並驗 SHA-256，下載快取在 `build\cache\`；快取裡的檔案雜湊不符時會刪掉重新下載。
 推 `v*` tag 時 GitHub Actions（`.github/workflows/release.yml`）會先跑一次完整的 CI，通過後自動建置並發布 Release。
-CI 的 `portable` job 在每個 PR 上也用 Windows 建置一次（不上傳、不發布），並用 `tools/portable_zip.py` 檢查 zip：第 7 步清單裡的檔案都在，而且沒有使用者的音檔、資料庫、`.env` 等執行期資料。
+CI 的 `portable` job 在每個 PR 上也用 Windows 建置一次（不上傳、不發布），並用 `tools/portable_zip.py` 檢查 zip：第 7 步清單裡的檔案都在、`backend\` 只有白名單裡的檔案，而且沒有使用者的音檔、資料庫、`.env` 等執行期資料；日誌裡會列出 zip 的完整內容。
 
 ---
 
