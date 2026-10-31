@@ -1,12 +1,28 @@
 """
 整合測試：檔案上傳 API
-測試範圍：POST /api/v1/upload
+測試範圍：POST /api/v1/upload、GET /api/v1/upload/limits
+
+收不收的規則本身在 tests/unit/test_upload_formats.py；這裡經端點看瀏覽器給的 MIME 類型不影響結果、
+不收的原因原樣回給畫面，以及影片上傳後只留下抽出的音訊（#258）。影片用真的 ffmpeg 處理。
 """
 import shutil
 from unittest.mock import patch
+
+import pytest
 from fastapi.testclient import TestClient
 
 from app.api import upload  # noqa: F401  app_log 只收得到已經建立的 logger
+from app.core.upload_formats import listed
+from tests.support.synthetic_video import stream_types, synthetic_video
+
+
+def post(client: TestClient, tmp_path, name: str, content: bytes, content_type: str):
+    with patch("app.api.upload.TEMP_UPLOADS_DIR", tmp_path):
+        return client.post("/api/v1/upload", files={"file": (name, content, content_type)})
+
+
+def saved_files(folder) -> list[str]:
+    return sorted(p.name for p in folder.iterdir())
 
 
 # ─── 上傳成功 ────────────────────────────────────────────────────────────────
@@ -23,15 +39,6 @@ class TestUploadSuccess:
         data = response.json()
         assert "filename" in data
         assert data["filename"].endswith(".mp3")
-
-    def test_upload_valid_mp4(self, client: TestClient, tmp_path):
-        """上傳有效的 MP4 影片應回傳 200"""
-        with patch("app.api.upload.TEMP_UPLOADS_DIR", tmp_path):
-            response = client.post(
-                "/api/v1/upload",
-                files={"file": ("video.mp4", b"\x00" * 1024, "video/mp4")},
-            )
-        assert response.status_code == 200
 
     def test_upload_valid_wav(self, client: TestClient, tmp_path):
         """上傳有效的 WAV 檔案應回傳 200"""
@@ -91,18 +98,128 @@ class TestUploadSuccess:
         assert not any("王小明" in entry for entry in app_log)
 
 
+# ─── 瀏覽器給的 MIME 類型不影響結果 ─────────────────────────────────────────
+
+class TestMimeTypeIsNotTrusted:
+    """Windows 上的瀏覽器照登錄檔給 MIME：常常是空的或對不上，收不收只看副檔名。"""
+
+    @pytest.mark.parametrize("name, content_type", [
+        ("meeting.m4a", ""),
+        ("meeting.m4a", "audio/x-m4a"),
+        ("meeting.FLAC", "application/octet-stream"),
+        ("meeting.wav", "audio/x-wav"),
+        ("meeting.mp3", "video/mp4"),
+    ])
+    def test_audio_with_any_mime_type_is_accepted(self, client: TestClient, tmp_path,
+                                                  name, content_type):
+        response = post(client, tmp_path, name, b"\x00" * 512, content_type)
+
+        assert response.status_code == 200, response.text
+        assert response.json()["filename"].lower().endswith(name[name.rindex("."):].lower())
+
+    @pytest.mark.parametrize("name, content_type", [
+        ("notes.txt", "audio/mpeg"),
+        ("recording", "audio/wav"),
+        ("photo.jpg", "image/jpeg"),
+    ])
+    def test_other_files_are_rejected_even_with_an_audio_mime_type(
+            self, client: TestClient, tmp_path, name, content_type):
+        response = post(client, tmp_path, name, b"\x00" * 512, content_type)
+
+        assert response.status_code == 400
+        assert response.json()["detail"].startswith("不支援這種檔案格式")
+        assert saved_files(tmp_path) == []
+
+
+# ─── 影片 ────────────────────────────────────────────────────────────────────
+
+class TestVideo:
+    """影片在上傳時就抽出音訊：回傳的是 FLAC 的檔名，影片本身不留（#258）。"""
+
+    @pytest.fixture
+    def source(self, tmp_path):
+        """做合成影片的資料夾，和上傳的暫存資料夾分開。"""
+        folder = tmp_path / "source"
+        folder.mkdir()
+        return folder
+
+    def test_only_the_extracted_audio_is_kept(self, client: TestClient, tmp_path, source):
+        video = synthetic_video(source / "meeting.mp4")
+        uploads = tmp_path / "uploads"
+
+        response = post(client, uploads, "王小明的會議.mp4", video.read_bytes(), "video/mp4")
+
+        assert response.status_code == 200, response.text
+        saved = response.json()["filename"]
+        assert saved.endswith(".flac")
+        assert "王小明" not in saved
+        assert saved_files(uploads) == [saved]
+        assert stream_types(uploads / saved) == ["audio"]
+
+    @pytest.mark.parametrize("content_type", ["video/quicktime", "", "application/octet-stream"])
+    def test_video_with_any_mime_type_is_extracted(self, client: TestClient, tmp_path, source,
+                                                   content_type):
+        video = synthetic_video(source / "clip.mov")
+        uploads = tmp_path / "uploads"
+
+        response = post(client, uploads, "clip.mov", video.read_bytes(), content_type)
+
+        assert response.status_code == 200, response.text
+        assert response.json()["filename"].endswith(".flac")
+
+    def test_video_without_sound_is_rejected_and_not_kept(self, client: TestClient, tmp_path, source):
+        video = synthetic_video(source / "screen.mp4", with_audio=False)
+        uploads = tmp_path / "uploads"
+
+        response = post(client, uploads, "screen.mp4", video.read_bytes(), "video/mp4")
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "這個影片沒有聲音，沒有可以轉錄的內容"
+        assert saved_files(uploads) == []
+
+    def test_unreadable_video_is_rejected_and_not_kept(self, client: TestClient, tmp_path):
+        response = post(client, tmp_path, "broken.mp4", b"\x00" * 1024, "video/mp4")
+
+        assert response.status_code == 400
+        assert response.json()["detail"].startswith("沒辦法從這個影片抽出聲音")
+        assert saved_files(tmp_path) == []
+
+
+# ─── 格式與大小的清單 ────────────────────────────────────────────────────────
+
+def test_limits_list_the_formats_and_the_maximum_size(client: TestClient):
+    response = client.get("/api/v1/upload/limits")
+
+    assert response.status_code == 200
+    assert response.json() == listed()
+
+
 # ─── 上傳失敗 ────────────────────────────────────────────────────────────────
 
 class TestUploadFailure:
-    def test_unsupported_mime_type_returns_400(self, client: TestClient, tmp_path):
-        """不支援的 MIME 類型應回傳 400"""
+    def test_unsupported_format_returns_400_with_what_can_be_uploaded(
+            self, client: TestClient, tmp_path):
+        """不支援的格式回 400，原因列出可以上傳的格式（顯示在轉錄頁的檔案卡上）"""
         with patch("app.api.upload.TEMP_UPLOADS_DIR", tmp_path):
             response = client.post(
                 "/api/v1/upload",
                 files={"file": ("image.jpg", b"\xff\xd8\xff" + b"\x00" * 512, "image/jpeg")},
             )
         assert response.status_code == 400
-        assert response.json()["detail"].startswith("不支援這種檔案格式（image/jpeg）")
+        assert response.json()["detail"] == (
+            "不支援這種檔案格式（.jpg）。可以上傳的音檔：MP3、WAV、M4A、FLAC；"
+            "影片：MP4、MOV、MKV、WebM、AVI、WMV、M4V、MPG、MPEG")
+
+    def test_file_over_the_limit_returns_400_and_is_not_kept(
+            self, client: TestClient, tmp_path, monkeypatch):
+        """超過上限回 400；上限照 app/core/upload_formats.py，這裡改小，不必真的傳 2 GB"""
+        monkeypatch.setattr("app.core.upload_formats.MAX_UPLOAD_BYTES", 1000)
+
+        response = post(client, tmp_path, "long.wav", b"\x00" * 1001, "audio/wav")
+
+        assert response.status_code == 400
+        assert response.json()["detail"].startswith("檔案太大")
+        assert saved_files(tmp_path) == []
 
     def test_text_file_returns_400(self, client: TestClient, tmp_path):
         """文字檔案應回傳 400"""

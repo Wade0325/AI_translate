@@ -12,7 +12,7 @@ from __future__ import annotations
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 from app.provider.base import (
     LOCAL_QUEUE,
@@ -107,6 +107,10 @@ class FakeProvider:
         self.calls: List[Path] = []
         # 每一段轉錄收到的音檔有多長（秒）：看得出送進來的是只剩語音的音檔還是原音檔，以及切在哪裡
         self.durations: List[Optional[float]] = []
+        # 設定後，每一段轉錄（與批次的上傳）收到的檔案當場交給它檢查，結果依序記在 examined；任務結束後
+        # 暫存檔就清掉了，事後看不到。例如看送進來的檔案有哪些串流（#258）
+        self.examine: Optional[Callable[[Path], Any]] = None
+        self.examined: List[Any] = []
         self.released = 0
         # 看到使用者取消而停下的次數
         self.cancelled = 0
@@ -168,8 +172,7 @@ class FakeProvider:
     def transcribe(
         self, audio_path: Path, request: TranscribeRequest, progress: ProgressAndCancel,
     ) -> TranscriptionTaskResult:
-        self.calls.append(audio_path)
-        self.durations.append(get_audio_duration(audio_path))
+        self._received(audio_path)
         self.prompts.append(request.prompt)
         self.started.set()
         for text in self.reports:
@@ -199,8 +202,7 @@ class FakeProvider:
     # ── BatchProvider ────────────────────────────────────────────
     def upload(self, audio_path: Path) -> Any:
         """批次的上傳：和轉錄一樣記下收到的音檔與它的長度；hold 設定後停在這裡直到放行。"""
-        self.calls.append(audio_path)
-        self.durations.append(get_audio_duration(audio_path))
+        self._received(audio_path)
         self.started.set()
         if self.hold is not None:
             self.hold.wait(30)
@@ -235,6 +237,13 @@ class FakeProvider:
             return BatchStatus(state=f"JOB_STATE_{step}", done=True, succeeded=True,
                                results=results[:len(results) - self.missing_results])
         return BatchStatus(state=f"JOB_STATE_{step}", done=step in BATCH_DONE)
+
+    def _received(self, audio_path: Path) -> None:
+        """記下收到的音檔、它的長度，以及設定了 examine 時的檢查結果。"""
+        self.calls.append(audio_path)
+        self.durations.append(get_audio_duration(audio_path))
+        if self.examine is not None:
+            self.examined.append(self.examine(audio_path))
 
     def _result(self, step: Union[Sequence[Line], Fail],
                 service_tier: Optional[str]) -> TranscriptionTaskResult:
