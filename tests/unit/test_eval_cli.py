@@ -141,6 +141,31 @@ def test_vs_compares_two_transcripts(tmp_path, lab, transcript, capsys):
     assert "ΔMER -12.50 pp" in out
 
 
+def test_global_mapping_is_shared_by_the_excerpts_of_one_transcript(tmp_path, lab, capsys):
+    # 同一個音檔切成兩段標準答案，代號一致（A 都是同一個人）；轉錄結果前一段把 A 標成 S0、
+    # 後一段標成 S1。每段各自配對都全對，共用一組對應時有一段配錯：這就是全域對應要量的（#93）
+    _reference(lab, "demo_A", "# demo_A  00:00.00-00:10.00\nA: 我們下週二\nB: 去爬山\n")
+    _reference(lab, "demo_B", "# demo_B  00:10.00-00:20.00\nA: 要帶水嗎\nB: 當然記得\n")
+    lrc = _write(tmp_path / "demo.lrc", """
+        [00:01.00][S0] 我們下週二
+        [00:05.00][S1] 去爬山
+        [00:11.00][S1] 要帶水嗎
+        [00:15.00][S0] 當然記得
+    """)
+    out_json = tmp_path / "eval.json"
+
+    assert cli.main(["eval", "--reference", "demo_A", "demo_B", "--transcript", str(lrc),
+                     "--json", str(out_json)]) == 0
+
+    out = capsys.readouterr().out
+    [system] = json.loads(out_json.read_text(encoding="utf-8"))["systems"]
+    assert [e["cp_mer_local"] for e in system["per_excerpt"]] == [0.0, 0.0]
+    assert system["global_mapping"] == {"S0": "A", "S1": "B"}
+    # 後一段照全域對應：A 對到 S0、B 對到 S1，兩組的 4 個字各錯 4 個，8 個錯 ÷ 8 個 token
+    assert [e["cp_mer_global"] for e in system["per_excerpt"]] == [0.0, 1.0]
+    assert "← 說話者標記在這幾段之間不一致" in out
+
+
 def test_never_writes_into_the_reference_dir(lab, transcript, capsys):
     reference = _reference(lab, "demo_A", "# demo_A  00:00.00-00:30.00\nA: 我們下週二去爬山\n")
     before = reference.read_bytes()

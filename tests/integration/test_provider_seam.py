@@ -32,6 +32,7 @@ from app.runtime import run_mode
 from tests.support.db_faults import writes_fail
 from tests.support.fake_provider import FAKE_MODEL, Fail, ServedAs
 from tests.support.synthetic_audio import VOICED, synthetic_audio
+from tests.support.synthetic_video import stream_types
 from tests.support.task_api import (
     download,
     flat_times,
@@ -591,6 +592,41 @@ class TestSpeechView:
 
         assert codes(messages)[-1] == TaskStatus.COMPLETED
         assert leftovers(data_dir) == []
+
+
+class TestVideo:
+    """影片在上傳時就在本機抽出音訊（#258）：送進供應商的、保留下來的都只有音訊。"""
+
+    def test_video_is_transcribed_from_its_audio_only(self, api, fake, data_dir):
+        # 幾乎全是語音的聲音不去靜音，送進供應商的就是上傳時存下的檔案本身：抽出的 FLAC，不是影片
+        fake.examine = stream_types
+        fake.script = [[(0.5, 2.0, 0, "おはよう。"), (12.0, 13.5, 1, "こんにちは。")]]
+        messages = transcribe(api, "uid-video", name="meeting.mp4", voiced=MOSTLY_VOICED)
+
+        assert codes(messages)[-1] == TaskStatus.COMPLETED
+        assert fake.examined == [["audio"]]
+        assert [path.suffix for path in fake.calls] == [".flac"]
+        assert fake.durations == [pytest.approx(21.5, abs=0.1)]
+        # 時間軸和影片相同：字幕疊回影片時對得上
+        task_uuid = messages[-1]["task_uuid"]
+        assert flat_times(stored_segments(api, task_uuid)) == pytest.approx([0.5, 2.0, 12.0, 13.5])
+        # 保留音檔也是抽出的音訊，影片沒有留在電腦上
+        retained = api.get(f"/api/v1/transcripts/{task_uuid}/audio")
+        assert retained.headers["content-type"] == "audio/flac"
+        assert 'filename="meeting.flac"' in retained.headers["content-disposition"]
+        assert retained_files(data_dir) == [f"{task_uuid}.flac"]
+        assert leftovers(data_dir) == []
+
+    def test_video_with_silences_sends_only_the_speech(self, api, fake):
+        # 語音佔比低、會去靜音的影片：送進供應商的是只剩語音的音檔，一樣只有音訊
+        fake.examine = stream_types
+        fake.script = [[(0.2, 1.5, 0, "おはよう。")]]
+        messages = transcribe(api, "uid-video-speech-only", name="meeting.mp4")
+
+        assert codes(messages)[-1] == TaskStatus.COMPLETED
+        assert fake.examined == [["audio"]]
+        # 12 秒的聲音剪掉約 4.8 秒靜音（見 VOICED）；AAC 的編解碼讓長度差一點點，差多少看 ffmpeg 的版本
+        assert fake.durations == [pytest.approx(7.2, abs=0.3)]
 
 
 class TestVadTestEndpoint:

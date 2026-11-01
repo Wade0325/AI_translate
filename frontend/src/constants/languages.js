@@ -6,13 +6,17 @@
  * - 未驗證語言：可以選，但沒有評測集把關品質。選了之後，選單收起來的值與檔案卡的標籤也標「未驗證」，
  *   不只在展開的選單裡看得到。
  *
- * Auto Detect 不是一種語言，放在最上面、不屬於任一組（#13 Q5 保留）。
+ * Auto Detect 不是一種語言，放在最上面、不屬於任一組（#13 Q5 保留）。它是預設語言，轉錄頁記住上次選的
+ * （utils/lastSelection.js）；選它時送給 Gemini 的提示詞不寫語言，由模型自己判斷（#261）。
  *
  * 選單沒有 zh-CN（#14 Q2）：中文一律輸出繁體。後端照收舊紀錄與直接呼叫 API 帶的 zh-CN，當成中文、
  * 一樣輸出繁體（backend/app/services/traditional_output.py）；歷史紀錄照常顯示舊任務存的語言代碼。
  */
 
 export const AUTO_DETECT = { value: 'auto', label: 'Auto Detect' };
+
+/** 轉錄頁第一次開頁、或記住的語言已經不在選單上時用的語言（#261）。*/
+export const DEFAULT_LANGUAGE = AUTO_DETECT.value;
 
 /** 官方支援語言（officially supported languages）：有評測集把關品質。*/
 export const OFFICIAL_LANGUAGES = [
@@ -48,6 +52,17 @@ export const languages = [
   { label: UNVERIFIED_MARK, options: UNVERIFIED_LANGUAGES },
 ];
 
+/** Auto Detect 與兩組裡的語言，攤平成一層。*/
+const MENU_OPTIONS = [AUTO_DETECT, ...OFFICIAL_LANGUAGES, ...UNVERIFIED_LANGUAGES];
+
+/**
+ * 選單上選得到的值：Auto Detect 或兩組裡的語言。舊紀錄的 zh-CN 不算。
+ * @param {unknown} value
+ */
+export function isMenuLanguage(value) {
+  return MENU_OPTIONS.some((option) => option.value === value);
+}
+
 /** @param {string} value 語言 value（例：'fr'） */
 export function isUnverifiedLanguage(value) {
   return UNVERIFIED_LANGUAGES.some((option) => option.value === value);
@@ -59,8 +74,7 @@ export function isUnverifiedLanguage(value) {
  * @param {string} value
  */
 export function formatLang(value) {
-  const option = [AUTO_DETECT, ...OFFICIAL_LANGUAGES, ...UNVERIFIED_LANGUAGES]
-    .find((o) => o.value === value);
+  const option = MENU_OPTIONS.find((o) => o.value === value);
   if (!option) return value;
   return isUnverifiedLanguage(value) ? `${option.label}（${UNVERIFIED_MARK}）` : option.label;
 }

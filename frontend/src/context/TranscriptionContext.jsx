@@ -19,8 +19,10 @@ import {
   withProvider,
 } from '../utils/providerList';
 import {
+  loadLastLanguage,
   loadLastMultiSpeaker,
   loadLastSelection,
+  saveLastLanguage,
   saveLastMultiSpeaker,
   saveLastSelection,
 } from '../utils/lastSelection';
@@ -40,7 +42,13 @@ export const useTranscription = () => {
 
 export const TranscriptionProvider = ({ children }) => {
   const [fileList, setFileList] = useState([]);
-  const [sourceLang, setSourceLang] = useState('zh-TW');
+  // 全域的語言：第一次開頁是 Auto Detect，之後照上次的選擇（#261）。使用者切換時才記下，
+  // 沒動過就不寫進儲存空間（utils/lastSelection.js）
+  const [sourceLang, setChosenSourceLang] = useState(loadLastLanguage);
+  const setSourceLang = useCallback((next) => {
+    setChosenSourceLang(next);
+    saveLastLanguage(next);
+  }, []);
   const [isProcessing, setIsProcessing] = useState(false);
   // 使用者選的處理模式：'standard' | 'flex' | 'batch'。實際用的是下面的 processingMode。
   // 預設標準：結果直接回到這一頁，批次要到 Tasks 頁取回（#18）

@@ -474,9 +474,15 @@ def paired_delta_ci(a: Sequence[int], b: Sequence[int], lens: Sequence[int],
 
 # ----------------------------------------------------------------- 全域對應
 def global_mapping(results: Sequence[Result]) -> tuple[dict[str, str], float | None]:
-    """評測集的所有音檔共用同一組說話者對應時的最佳解與 cpMER。
+    """同一份轉錄結果的幾段標準答案共用同一組說話者對應時的最佳解與 cpMER。
 
-    與每段音檔各自最佳（cp_mer_local）的差距，就是說話者標記在音檔之間不一致的代價。
+    ``eval`` 一次只拿一份轉錄結果（一個音檔）去比幾段標準答案。轉錄結果的說話者標記在整個音檔裡
+    代表同一個人，所以這幾段共用一組對應；與每段各自最佳（cp_mer_local）的差距，就是說話者標記在
+    同一個音檔的幾段之間不一致的代價。這幾段的標準答案也要用同一套代號。
+
+    只能給同一份轉錄結果的結果（#298）：不同音檔裡同名的標記（S0、S1）不是同一個人，一起配對會把
+    cpMER 灌高。一種語言的 cpMER 由 summary 把每個音檔各自配對的錯誤數加起來（照 token 數加權）。
+
     標準答案註明「cpMER 不計」的片段不參與對應，它的 cp_mer_global 只列出局部對應的值；
     每一段都不計時，cpMER 是 None。
     """
@@ -550,7 +556,7 @@ def format_report(results: Sequence[Result], transcript_label: str,
     if len(scored) > 1:
         out.append(f"      cpMER 局部對應 {local*100:.2f}%"
                    f"   差距 {gap*100:+.2f} pp"
-                   + ("   ← 說話者標記在音檔之間不一致" if gap > 0.01 else ""))
+                   + ("   ← 說話者標記在這幾段之間不一致" if gap > 0.01 else ""))
     return "\n".join(out)
 
 
