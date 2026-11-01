@@ -4,10 +4,10 @@ build_release.ps1 把它放在發布包的 bin\\start.py；start.bat 用隨包�
 
     runtime\\python.exe -I -X utf8 bin\\start.py [埠號]
 
-做的事和啟動器（tools/launcher.cs）相同：第一次執行時用同一個指令佈建執行環境、寫同一個完成標記，
-再以同樣的環境變數啟動伺服器（tests/unit/test_portable_start.py 檢查兩邊一致）。有 NVIDIA 驅動、卻
-沒裝 Microsoft Visual C++ 可轉散發套件（或太舊）時，也一樣在佈建之前提示安裝（#304）。不同的是不會
-自動改用空的埠，也不會自動開啟瀏覽器。
+做的事和啟動器（tools/launcher.cs）相同：第一次執行時用同一個指令佈建執行環境、刪掉 torch 執行時用不到的
+.lib、寫同一個完成標記，再以同樣的環境變數啟動伺服器（tests/unit/test_portable_start.py 檢查兩邊一致）。
+有 NVIDIA 驅動、卻沒裝 Microsoft Visual C++ 可轉散發套件（或太舊）時，也一樣在佈建之前提示安裝（#304）。
+不同的是不會自動改用空的埠，也不會自動開啟瀏覽器。
 
 單一實例也和啟動器共用：同名的 mutex 與 data\\launcher-url.txt，所以同一個資料夾的 AI_Translate.exe
 與 start.bat 合起來只會跑一個伺服器（tests/integration/test_launcher.py 在 Windows 上兩個方向都測）。
@@ -63,6 +63,34 @@ def python_exe(root: Path) -> Path:
 def provisioned_marker(root: Path) -> Path:
     """首次佈建完成的標記，和啟動器的相同：用哪一個啟動，另一個都認得已經佈建好。"""
     return root / "runtime" / ".provisioned"
+
+
+def torch_lib(root: Path) -> Path:
+    """torch 的 .lib 靜態庫所在的資料夾，和啟動器的 RemoveStaticLibraries 相同。"""
+    return root / "runtime" / "Lib" / "site-packages" / "torch" / "lib"
+
+
+def remove_static_libraries(root: Path) -> None:
+    """刪掉 torch\\lib 的 .lib 靜態庫（約 2.8 GB），和啟動器相同（#305）。
+
+    只有編譯要連結 torch 的 C++ 擴充時才用得到，app 執行時用不到：#239 實測刪掉前後，本機轉錄的
+    每種輸出與 Silero 的切點都逐位元組相同。首次佈建成功後刪，之後每次啟動也補刪（首次佈建時被
+    防毒軟體鎖住沒刪掉的）。刪不掉時照樣啟動；start.py 沒有日誌檔，寫在視窗裡。
+    """
+    try:
+        files = [path for path in torch_lib(root).iterdir()
+                 if path.suffix.lower() == ".lib" and path.is_file()]
+    except OSError:  # 沒有 torch\lib，例如還沒佈建
+        return
+    failed: list[str] = []
+    for path in files:
+        try:
+            path.unlink()
+        except OSError as e:
+            failed.append(f"{path.name}（{type(e).__name__}：{e.strerror or e}）")
+    if failed:
+        print(f"注意：torch\\lib 裡有 {len(failed)} 個用不到的 .lib 刪不掉，不影響使用，下次啟動再試："
+              + "、".join(failed), flush=True)
 
 
 def provision_command(root: Path) -> list[str]:
@@ -220,6 +248,7 @@ def provision(root: Path, run: Callable[..., int]) -> bool:
               "已下載的部分會保留，")
         print("重新執行 start.bat 即可續傳。")
         return False
+    remove_static_libraries(root)
     provisioned_marker(root).write_text(datetime.now().isoformat(), encoding="utf-8")
     print("執行環境佈建完成。", flush=True)
     return True
@@ -431,7 +460,9 @@ def _start(root: Path, port: int, run: Callable[..., int],
     problem = vc_problem()
     if problem is not None:
         warn_vc_runtime(problem)
-    if not provisioned_marker(root).exists():
+    if provisioned_marker(root).exists():
+        remove_static_libraries(root)  # 每次啟動補刪，和啟動器相同
+    else:
         if not provision(root, run):
             return False
         if problem is not None:
