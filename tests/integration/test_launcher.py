@@ -2,9 +2,10 @@
 
 和 build_release.ps1 一樣用 Windows 內建的 csc 編譯啟動器，放進一個假的程式資料夾；
 runtime\\python.exe 與 bin\\uv.exe 換成替身（tests/fixtures/launcher_stub.cs），照環境變數假裝
-伺服器提早結束、一直沒就緒、就緒後崩潰，或首次佈建失敗。每種情況都檢查視窗印出的訊息、結束代碼，
-以及 data\\logs 裡啟動器的日誌（去識別：不寫使用者名稱與家目錄）。System32 也換成假的資料夾
-（AIT_LAUNCHER_SYSTEM_DIR），由測試決定有沒有 NVIDIA 驅動與 VC++ 可轉散發套件的 DLL（#304）。
+伺服器提早結束、一直沒就緒、就緒後崩潰，或首次佈建失敗（預先下載 torch 或 uv）。每種情況都檢查
+視窗印出的訊息、結束代碼，以及 data\\logs 裡啟動器的日誌（去識別：不寫使用者名稱與家目錄）。
+System32 也換成假的資料夾（AIT_LAUNCHER_SYSTEM_DIR），由測試決定有沒有 NVIDIA 驅動與 VC++ 可轉散發
+套件的 DLL（#304）。
 
 沒有 C# 編譯器時跳過：CI 的 Windows 腿會跑。其他平台裝了 Mono（mcs 與 mono）時也會跑，用
 -langversion:5 擋下內建 csc 不支援的語法；單一實例與 Windows 的結束代碼只在 Windows 測。
@@ -94,11 +95,17 @@ class App:
     def sentinel(self) -> Path:
         return self.root / "runtime" / ".provisioned"
 
-    def env(self, server: str, uv_exit: int, timeout: int) -> dict[str, str]:
+    @property
+    def downloads(self) -> Path:
+        """首次佈建時預先下載的 torch 放在這裡（#303）。"""
+        return self.root / "runtime" / "downloads"
+
+    def env(self, server: str, uv_exit: int, timeout: int, prefetch_exit: int = 0) -> dict[str, str]:
         env = {**os.environ,
                "USERPROFILE": str(self.home), "USERNAME": USER,
                "AIT_LAUNCHER_NO_BROWSER": "1", "AIT_LAUNCHER_HEALTH_TIMEOUT": str(timeout),
                "LAUNCHER_STUB_SERVER": server, "LAUNCHER_STUB_UV_EXIT": str(uv_exit),
+               "LAUNCHER_STUB_PREFETCH_EXIT": str(prefetch_exit),
                "AIT_LAUNCHER_SYSTEM_DIR": str(self.system), **self.extra_env}
         return env
 
@@ -107,19 +114,19 @@ class App:
         return [exe] if WINDOWS else ["mono", exe]
 
     def start(self, server: str = "serve", uv_exit: int = 0, timeout: int = 30,
-              name: str = "first") -> tuple[subprocess.Popen, Path]:
+              name: str = "first", prefetch_exit: int = 0) -> tuple[subprocess.Popen, Path]:
         """在背景啟動；輸出寫進檔案（替身沿用啟動器的輸出，接管線的話要等替身也結束才讀得完）。"""
         output = self.root.parent / f"{name}-output.txt"
         with output.open("wb") as out:
             process = subprocess.Popen(
-                self.cmd(), cwd=self.root, env=self.env(server, uv_exit, timeout),
+                self.cmd(), cwd=self.root, env=self.env(server, uv_exit, timeout, prefetch_exit),
                 stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT)
         return process, output
 
     def run(self, server: str = "serve", uv_exit: int = 0, timeout: int = 30,
-            name: str = "run") -> Result:
+            name: str = "run", prefetch_exit: int = 0) -> Result:
         """執行到結束：輸入接到空的地方，「按任意鍵關閉」直接過。"""
-        process, output = self.start(server, uv_exit, timeout, name)
+        process, output = self.start(server, uv_exit, timeout, name, prefetch_exit)
         try:
             returncode = process.wait(timeout=60)
         finally:
@@ -153,6 +160,8 @@ def _make_app(base: Path, binaries: tuple[Path, Path], home: Path) -> App:
     shutil.copy(launcher, root / "AI_Translate.exe")
     shutil.copy(stub, root / "runtime" / "python.exe")
     shutil.copy(stub, root / "bin" / "uv.exe")
+    # 替身看到這個檔名就假裝是預先下載 torch，不讀它的內容
+    (root / "bin" / "prefetch_wheels.py").write_text("# 替身\n", encoding="utf-8")
     (root / "backend" / "requirements-standalone.txt").write_text("fastapi\n", encoding="utf-8")
     (root / "backend" / "VERSION").write_text("v0.0.0-test", encoding="ascii")
     (root / "runtime" / ".provisioned").write_text("", encoding="ascii")
@@ -232,6 +241,10 @@ class TestServerFailures:
         assert "結束代碼 0xC0000005，記憶體存取違規" in result.output
 
 
+def _is_prefetch(call: list[str]) -> bool:
+    return call[0] == "python" and call[-2].endswith("prefetch_wheels.py")
+
+
 class TestProvisioning:
     def test_failure_lists_common_causes_and_the_log_folder(self, app):
         app.sentinel.unlink()
@@ -242,10 +255,13 @@ class TestProvisioning:
         assert "執行環境佈建失敗（uv 結束代碼 2）" in result.output
         for cause in ("網路中斷", "磁碟空間不足", "防毒軟體", "防火牆", "路徑太長"):
             assert cause in result.output
+        assert "PyTorch 與已下載完的套件會保留" in result.output
         assert f"{LOG_FOLDER_HINT}{app.data / 'logs'}" in result.output
         assert not app.sentinel.exists()
-        # 佈建失敗就不啟動伺服器
-        assert [call[0] for call in app.calls()] == ["uv"]
+        # 佈建失敗就不啟動伺服器；下載好的 torch 留著，重新執行時不用再下載
+        prefetch, uv = app.calls()
+        assert _is_prefetch(prefetch) and uv[0] == "uv"
+        assert (app.downloads / "torch-stub.whl").exists()
 
     def test_success_marks_the_runtime_and_starts_the_server(self, app):
         app.sentinel.unlink()
@@ -253,9 +269,57 @@ class TestProvisioning:
         app.run(server="exit:3")
 
         assert app.sentinel.exists()
-        uv, server = app.calls()
+        prefetch, uv, server = app.calls()
+        # 先預先下載 torch，uv 再從那個資料夾找 torch 的 wheel
+        assert prefetch[2:] == ["-I", "-X", "utf8", str(app.root / "bin" / "prefetch_wheels.py"),
+                                str(app.downloads)]
         assert uv[0] == "uv" and uv[2:4] == ["pip", "install"]
-        assert server[0] == "python"
+        assert uv[-2:] == ["--find-links", str(app.downloads)]
+        assert server[0] == "python" and not _is_prefetch(server)
+        # 裝好之後刪掉下載的檔案
+        assert not app.downloads.exists()
+
+    @pytest.mark.parametrize(("code", "message", "kept"), [
+        (2, "PyTorch 沒有下載完", "已下載的部分會保留：網路恢復後重新執行 AI_Translate.exe，會從中斷的地方接著下載"),
+        (3, "下載的 PyTorch 和預期的不同，已經刪掉", "請重新執行 AI_Translate.exe 再下載一次"),
+        (4, "PyTorch 下載到一半時寫不進資料夾", "清出磁碟空間後重新執行 AI_Translate.exe，會從中斷的地方接著下載"),
+    ], ids=["interrupted", "mismatch", "disk"])
+    def test_torch_download_that_stops_says_what_to_do(self, app, code, message, kept):
+        app.sentinel.unlink()
+
+        result = app.run(prefetch_exit=code)
+
+        assert result.returncode == 1
+        assert message in result.output and kept in result.output
+        assert f"{LOG_FOLDER_HINT}{app.data / 'logs'}" in result.output
+        assert result.output.rstrip().endswith("按任意鍵關閉...")
+        # 不執行 uv、不啟動伺服器；下載到一半的部分留著，下次接著下載
+        [prefetch] = app.calls()
+        assert _is_prefetch(prefetch)
+        assert not app.sentinel.exists()
+        assert (app.downloads / "torch-stub.whl.part").exists()
+        assert f"下載 PyTorch 結束，代碼 {code}" in result.log
+
+    @pytest.mark.parametrize("code", [5, 1])
+    def test_torch_that_cannot_be_prefetched_is_left_to_uv(self, app, code):
+        # 5：來源下載不到（例如伺服器上沒有這個檔案）；1：prefetch_wheels.py 自己出錯
+        app.sentinel.unlink()
+
+        app.run(server="exit:3", prefetch_exit=code)
+
+        assert app.sentinel.exists()
+        assert [call[0] for call in app.calls()] == ["python", "uv", "python"]
+        assert not app.downloads.exists()
+
+    def test_leftover_downloads_are_removed_on_the_next_start(self, app):
+        # 上次佈建成功、但下載的檔案沒刪掉（例如防毒軟體正在掃描）
+        app.downloads.mkdir(parents=True)
+        (app.downloads / "torch-stub.whl").write_text("stub", encoding="utf-8")
+
+        app.run(server="exit:3")
+
+        assert not app.downloads.exists()
+        assert [call[0] for call in app.calls()] == ["python"]
 
 
 class TestServerCommand:
@@ -304,7 +368,8 @@ class TestStaticLibraries:
         assert {p.name for p in torch_lib.iterdir()} == KEPT
         assert other.exists()  # 只刪 torch 的
         assert app.sentinel.exists()
-        assert [call[0] for call in app.calls()] == ["uv", "python"]
+        # 預先下載 PyTorch、uv、伺服器
+        assert [call[0] for call in app.calls()] == ["python", "uv", "python"]
         assert "刪掉 torch\\lib 裡執行時用不到的 .lib：3 個，600 位元組" in result.log
 
     def test_provisioned_runtime_removes_what_is_left_at_the_next_start(self, app):
@@ -340,7 +405,8 @@ class TestStaticLibraries:
 
         assert {p.name for p in torch_lib.iterdir()} == KEPT | {"dnnl.lib"}
         assert app.sentinel.exists()
-        assert [call[0] for call in app.calls()] == ["uv", "python"]
+        # 預先下載 PyTorch、uv、伺服器
+        assert [call[0] for call in app.calls()] == ["python", "uv", "python"]
         assert "佈建失敗" not in result.output
         assert "刪掉 torch\\lib 裡執行時用不到的 .lib：2 個，300 位元組" in result.log
         assert "torch\\lib 裡有 1 個 .lib 刪不掉，下次啟動再試：dnnl.lib（IOException：" in result.log
@@ -574,7 +640,8 @@ class TestVcRuntime:
         assert "只用 Gemini 的話可以不裝" in output
         # 不擋啟動：伺服器照樣起來
         assert "伺服器已就緒：http://127.0.0.1:" in output
-        assert [call[0] for call in nvidia.calls()] == ["uv", "python"]
+        # 預先下載 PyTorch、uv、伺服器
+        assert [call[0] for call in nvidia.calls()] == ["python", "uv", "python"]
         assert VC_MISSING in result.log
         assert "System32 沒有 msvcp140.dll" in result.log
 

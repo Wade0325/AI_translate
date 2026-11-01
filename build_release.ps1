@@ -159,6 +159,10 @@ foreach ($exe in @("ffmpeg.exe", "ffprobe.exe")) {
     Copy-Item $src.FullName (Join-Path $binDir $exe)
 }
 
+# 首次佈建時，啟動器先用 runtime\python.exe 執行它把 torch 下載到本機（斷線後可以接著下載，#303），
+# 再讓 uv 從那裡安裝
+Copy-Item (Join-Path $Root "tools\portable\prefetch_wheels.py") (Join-Path $binDir "prefetch_wheels.py")
+
 # ── 4. 後端源碼與前端 dist ────────────────────────────────────────────────
 Step "複製 backend 源碼與 frontend/dist"
 # 後端從 git 取 $BackendPaths 已 commit 的版本（git archive），不從工作目錄複製（#266）：
@@ -223,6 +227,7 @@ $required = @(
     "runtime\python.exe",
     "runtime\python311._pth",
     "bin\uv.exe",
+    "bin\prefetch_wheels.py",
     "bin\ffmpeg.exe",
     "bin\ffprobe.exe",
     "backend\main.py",
