@@ -7,7 +7,8 @@
 //
 // 職責：
 //   1. 只允許單一實例：同一個資料夾的 exe 已在執行時，打開那個網址，不再起第二個伺服器（#268）
-//   2. 首次啟動時以隨包 uv.exe 佈建 Python 依賴（含 torch，約 3.5 GB 下載）
+//   2. 首次啟動時以隨包 uv.exe 佈建 Python 依賴（含 torch，約 3.5 GB 下載）；有 NVIDIA 驅動、
+//      卻沒裝 Microsoft Visual C++ 可轉散發套件（或太舊）時，佈建之前先提示安裝（#304）
 //   3. 設定免安裝模式的環境變數 → 以隨包 Python 啟動 uvicorn
 //   4. 探活 /api/v1/health 後開啟預設瀏覽器
 //   5. 以 Job Object 綁定子行程：關閉視窗（或啟動器被殺）時 uvicorn 一併結束
@@ -21,6 +22,7 @@
 // 測試用的環境變數（tests/integration/test_launcher.py，使用者不必設）：
 //   AIT_LAUNCHER_HEALTH_TIMEOUT  等伺服器就緒的秒數，預設 180
 //   AIT_LAUNCHER_NO_BROWSER=1    不開瀏覽器，網址照樣印在視窗裡
+//   AIT_LAUNCHER_SYSTEM_DIR      查 VC++ 可轉散發套件與 NVIDIA 驅動時，用這個資料夾代替 System32
 
 using System;
 using System.Collections.Generic;
@@ -44,6 +46,13 @@ static class Launcher
     const string IssuesUrl = "https://github.com/Wade0325/AI_translate/issues";
     const int DefaultHealthTimeoutSeconds = 180; // 首次啟動 torch import 很慢
     const int SecondInstanceCloseSeconds = 5;
+    const string VcRedistUrl = "https://aka.ms/vc14/vc_redist.x64.exe";
+    // 本機轉錄要從 System32 載入的 VC++ 可轉散發套件 DLL，以及第一個（msvcp140.dll）至少要的版本。
+    // 依據寫在 backend/app/provider/local/weights.py 的 VC_RUNTIME_DLLS 與 VC_RUNTIME_MIN_VERSION，
+    // 兩邊要相同（tests/unit/test_vc_runtime.py 比對）
+    static readonly string[] VcRuntimeDlls = { "msvcp140.dll", "vcomp140.dll" };
+    const int VcRuntimeMinMajor = 14;
+    const int VcRuntimeMinMinor = 38;
 
     static Process _server;
     static Mutex _instance;
@@ -106,7 +115,9 @@ static class Launcher
         if (!AcquireInstance(root))
             return ShowRunningInstance();
 
-        Provision(root, python);
+        bool vcWarned = WarnVcRuntime();
+        if (Provision(root, python) && vcWarned)
+            RecheckVcRuntime();
 
         int port = PickPort(8000);
         string baseUrl = string.Format(CultureInfo.InvariantCulture, "http://127.0.0.1:{0}", port);
@@ -358,11 +369,12 @@ static class Launcher
 
     // ─── 首次佈建 ─────────────────────────────────────────────────────────
 
-    static void Provision(string root, string python)
+    // 回傳這次有沒有佈建（已經佈建過時是 false）
+    static bool Provision(string root, string python)
     {
         string sentinel = Path.Combine(root, "runtime", ".provisioned");
         if (File.Exists(sentinel))
-            return;
+            return false;
 
         string uv = Path.Combine(root, "bin", "uv.exe");
         string requirements = Path.Combine(root, "backend", "requirements-standalone.txt");
@@ -407,6 +419,81 @@ static class Launcher
 
         WriteFile(sentinel, DateTime.Now.ToString("o", CultureInfo.InvariantCulture));
         Log.Info("執行環境佈建完成。");
+        return true;
+    }
+
+    // ─── Microsoft Visual C++ 可轉散發套件（#304） ───────────────────────
+    // torch 從 System32 載入 msvcp140.dll 等 DLL，免安裝版只附 vcruntime140*.dll。缺了伺服器照樣
+    // 起得來、Gemini 照樣能用，只有本機轉錄不能用，所以只提示、不擋。伺服器啟動時才第一次載入
+    // torch：首次佈建之前就說，使用者趁下載時裝好，就不必重新開啟。沒有 NVIDIA 驅動時不說：本機轉錄
+    // 本來就不能用，轉錄頁會說明（weights.py 的 _torch_load_failed 也先說顯卡）。
+
+    // 有問題時提示安裝，回傳有沒有提示
+    static bool WarnVcRuntime()
+    {
+        string problem = VcRuntimeProblem(SystemFolder());
+        if (problem == null)
+            return false;
+        Log.Info("───────────────────────────────────────────────────────");
+        Log.Info(" " + problem + "，本機轉錄不能用。");
+        Log.Info(" 請下載安裝（需要系統管理員權限）：" + VcRedistUrl);
+        Log.Info(" 在伺服器啟動之前裝好就不必重新開啟；之後才裝的話，裝好後關閉這個視窗，");
+        Log.Info(" 再執行一次 " + ExeName + "。只用 Gemini 的話可以不裝。");
+        Log.Info("───────────────────────────────────────────────────────");
+        return true;
+    }
+
+    // 佈建前提示過、佈建完再查一次：還沒裝就再說一次（uv 的輸出把前一次推上去了），裝好了就說一聲
+    static void RecheckVcRuntime()
+    {
+        if (VcRuntimeProblem(SystemFolder()) == null)
+            Log.Info("已經裝好 Microsoft Visual C++ 可轉散發套件。");
+        else
+            WarnVcRuntime();
+    }
+
+    // 給使用者看的原因；沒有 NVIDIA 驅動，或都沒問題時是 null。讀不到版本時不當成太舊
+    static string VcRuntimeProblem(string system)
+    {
+        if (!File.Exists(Path.Combine(system, "nvcuda.dll")))
+            return null;
+        foreach (string dll in VcRuntimeDlls)
+        {
+            if (!File.Exists(Path.Combine(system, dll)))
+            {
+                Log.Detail("System32 沒有 " + dll);
+                return "這台電腦沒有 Microsoft Visual C++ 可轉散發套件";
+            }
+        }
+        string path = Path.Combine(system, VcRuntimeDlls[0]);
+        FileVersionInfo info;
+        try
+        {
+            info = FileVersionInfo.GetVersionInfo(path);
+        }
+        catch (Exception e)
+        {
+            Log.Detail("讀不到 " + VcRuntimeDlls[0] + " 的版本：" + e.Message);
+            return null;
+        }
+        int major = info.FileMajorPart, minor = info.FileMinorPart;
+        Log.Detail(string.Format(CultureInfo.InvariantCulture, "{0} 的版本：{1}",
+            VcRuntimeDlls[0], info.FileVersion));
+        if (major == 0 && minor == 0)
+            return null;
+        if (major > VcRuntimeMinMajor || (major == VcRuntimeMinMajor && minor >= VcRuntimeMinMinor))
+            return null;
+        return string.Format(CultureInfo.InvariantCulture,
+            "這台電腦的 Microsoft Visual C++ 可轉散發套件太舊（目前 {0}.{1}，需要 {2}.{3} 以上）",
+            major, minor, VcRuntimeMinMajor, VcRuntimeMinMinor);
+    }
+
+    // 64 位元的 System32：啟動器以 AnyCPU 編譯，在 64 位元的 Windows 上是 64 位元的行程，
+    // 不會被轉到 SysWOW64
+    static string SystemFolder()
+    {
+        string folder = Environment.GetEnvironmentVariable("AIT_LAUNCHER_SYSTEM_DIR");
+        return string.IsNullOrEmpty(folder) ? Environment.SystemDirectory : folder;
     }
 
     // 程式資料夾所在的磁碟，以及 uv 放下載快取的磁碟（%LOCALAPPDATA%\uv\cache）
