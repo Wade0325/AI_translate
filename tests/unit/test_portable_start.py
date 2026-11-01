@@ -412,6 +412,7 @@ class _FakeProcess:
     """假的 subprocess.Popen：wait() 依序丟出或回傳 results 裡的東西。"""
 
     instances: list["_FakeProcess"] = []
+    pid = 4242
 
     def __init__(self, cmd, cwd, env):
         self.cmd, self.cwd, self.env = cmd, cwd, env
@@ -430,9 +431,15 @@ class TestRunServer:
     @pytest.fixture(autouse=True)
     def _fake_popen(self, monkeypatch):
         _FakeProcess.instances = []
+        self.jobs: list[str] = []
         monkeypatch.setattr(subprocess, "Popen", _FakeProcess)
+        monkeypatch.setattr(start, "stop_with_this_process", self._fake_job)
         monkeypatch.setenv("PATH", "/usr/bin")
         monkeypatch.setenv("APP_MODE", "docker")
+
+    def _fake_job(self, pid: int):
+        self.jobs.append(f"bind {pid}")
+        return lambda: self.jobs.append("close")
 
     def test_runs_in_backend_with_the_launcher_env(self):
         _FakeProcess.results = [0]
@@ -451,11 +458,32 @@ class TestRunServer:
 
         assert start.run_server(PKG, 8267) == 3221225477
 
+    def test_server_is_bound_to_start_py_while_it_runs(self):
+        # start.py 被單獨結束時伺服器跟著結束（Windows 上真的結束，在 tests/integration 測）
+        _FakeProcess.results = [KeyboardInterrupt(), 0]
+
+        start.run_server(PKG, 8267)
+
+        assert self.jobs == ["bind 4242", "close"]
+
+    def test_unexpected_error_while_waiting_also_closes_the_job(self):
+        _FakeProcess.results = [RuntimeError("壞掉")]
+
+        with pytest.raises(RuntimeError):
+            start.run_server(PKG, 8267)
+
+        assert self.jobs == ["bind 4242", "close"]
+
     def test_ctrl_c_waits_for_the_server_and_is_not_a_failure(self):
         # Ctrl+C 也送到了伺服器：等它自己收尾，不當成失敗（不停下來等按鍵）
         _FakeProcess.results = [KeyboardInterrupt(), 3221225786]
 
         assert start.run_server(PKG, 8267) == 0
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows 上建立真的 Job Object，在整合測試測")
+def test_other_platforms_do_not_bind_the_server():
+    assert start.stop_with_this_process(4242) is None
 
 
 class TestFiles:

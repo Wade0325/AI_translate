@@ -12,7 +12,8 @@ build_release.ps1 把它放在發布包的 bin\\start.py；start.bat 用隨包�
 與 start.bat 合起來只會跑一個伺服器（tests/integration/test_launcher.py 在 Windows 上兩個方向都測）。
 這不只是避免開兩個視窗：伺服器啟動時會先把資料庫裡「處理中」的任務記成失敗（backend/main.py 的
 啟動清掃），之後才綁埠，所以第二個實例就算綁不到埠，也已經把第一個實例正在轉錄的任務記成失敗
-（#267 在 Windows 10 上實測到）。
+（#267 在 Windows 10 上實測到）。伺服器也和啟動器一樣放進「關閉時結束全部」的 Job Object：只有
+start.py 被結束時（例如在工作管理員），伺服器跟著結束，不會留著跑而單一實例已經讓出。
 
 為什麼不寫在 start.bat 裡：cmd 讀批次檔時，遇到多位元組字元（chcp 65001 下的 UTF-8 中文）會算錯
 下一行的位置，把中文行切斷、當成指令執行（#267 在 Windows 10 上實測）。start.bat 只留 ASCII，
@@ -216,17 +217,85 @@ def provision(root: Path, run: Callable[..., int]) -> bool:
     return True
 
 
+def stop_with_this_process(pid: int) -> Callable[[], None] | None:
+    """把行程 pid 放進「關閉時結束全部」的 Job Object，和啟動器相同：start.py 被結束（例如在工作
+    管理員只結束它）時系統關掉這個 handle，伺服器跟著結束。否則伺服器留著跑、單一實例卻已讓出，
+    下一個 start.bat 會把它正在轉錄的任務記成失敗（#267 實測）。回傳關閉 handle 的函式；
+    Windows 以外的平台或建立失敗時回傳 None，照樣啟動（啟動器也是）。"""
+    if sys.platform != "win32":
+        return None
+    import ctypes
+    from ctypes import wintypes
+
+    class BasicLimit(ctypes.Structure):
+        _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64),
+                    ("PerJobUserTimeLimit", ctypes.c_int64),
+                    ("LimitFlags", wintypes.DWORD),
+                    ("MinimumWorkingSetSize", ctypes.c_size_t),
+                    ("MaximumWorkingSetSize", ctypes.c_size_t),
+                    ("ActiveProcessLimit", wintypes.DWORD),
+                    ("Affinity", ctypes.c_size_t),
+                    ("PriorityClass", wintypes.DWORD),
+                    ("SchedulingClass", wintypes.DWORD)]
+
+    class ExtendedLimit(ctypes.Structure):
+        _fields_ = [("BasicLimitInformation", BasicLimit),
+                    ("IoInfo", ctypes.c_uint64 * 6),  # IO_COUNTERS
+                    ("ProcessMemoryLimit", ctypes.c_size_t),
+                    ("JobMemoryLimit", ctypes.c_size_t),
+                    ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                    ("PeakJobMemoryUsed", ctypes.c_size_t)]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+    kernel32.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+    kernel32.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p,
+                                                 wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+
+    job = kernel32.CreateJobObjectW(None, None)
+    if not job:
+        return None
+    info = ExtendedLimit()
+    info.BasicLimitInformation.LimitFlags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+    extended_limit_information = 9  # JobObjectExtendedLimitInformation
+    process = kernel32.OpenProcess(0x0100 | 0x0001, False, pid)  # PROCESS_SET_QUOTA | TERMINATE
+    assigned = bool(
+        process
+        and kernel32.SetInformationJobObject(job, extended_limit_information,
+                                             ctypes.byref(info), ctypes.sizeof(info))
+        and kernel32.AssignProcessToJobObject(job, process))
+    if process:
+        kernel32.CloseHandle(process)
+    if not assigned:
+        kernel32.CloseHandle(job)
+        return None
+
+    def close() -> None:
+        kernel32.CloseHandle(job)
+
+    return close
+
+
 def run_server(root: Path, port: int) -> int:
     """啟動伺服器並等它結束；回傳結束代碼。按 Ctrl+C 時伺服器也收到，等它自己收尾，回傳 0。"""
     env = {**os.environ, **server_env(root)}
     proc = subprocess.Popen(server_command(root, port), cwd=root / "backend", env=env)
+    close_job = stop_with_this_process(proc.pid)
     interrupted = False
-    while True:
-        try:
-            code = proc.wait()
-            break
-        except KeyboardInterrupt:
-            interrupted = True
+    try:
+        while True:
+            try:
+                code = proc.wait()
+                break
+            except KeyboardInterrupt:
+                interrupted = True
+    finally:
+        if close_job is not None:
+            close_job()  # 伺服器已經結束；沒結束（start.py 出了例外）時也一併結束它
     return 0 if interrupted else code
 
 
