@@ -124,7 +124,8 @@ class TestMatchesLauncher:
 
     def test_same_server_command(self):
         launcher = _launcher()
-        args = re.search(r'"(-m uvicorn [^"]*)\{0\}"', launcher)
+        # 從第一個參數取到埠號之前：連 -m 前面的 python 旗標（-s，#301）一起比
+        args = re.search(r'"((?:-\S+ )*-m uvicorn [^"]*)\{0\}"', launcher)
         assert args, "tools/launcher.cs 裡找不到啟動 uvicorn 的參數"
         assert "psi.WorkingDirectory = backend;" in launcher
 
