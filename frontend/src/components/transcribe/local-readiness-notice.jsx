@@ -1,5 +1,6 @@
 import { Button, Space, Typography } from "antd"
 import { Link } from "react-router-dom"
+import { TextWithLinks } from "@/components/text-with-links"
 
 const { Text } = Typography
 
@@ -15,7 +16,7 @@ export function LocalReadinessNotice({ view, alternative, onSwitch }) {
         <Space direction="vertical" size={4}>
             {view.blockedReason && (
                 <Space size={8} wrap>
-                    <Text style={{ fontSize: 12, color: "#d46a2d" }}>{view.blockedReason}</Text>
+                    <Text style={{ fontSize: 12, color: "#d46a2d" }}><TextWithLinks text={view.blockedReason} /></Text>
                     {view.nextStep === "switch" && alternative && (
                         <Button size="small" onClick={() => onSwitch(alternative.value)}>
                             改用 {alternative.label}

@@ -10,7 +10,8 @@
 //   hang               一直不回應就緒檢查（等啟動器逾時後停掉它）
 //   serve              回應 /api/v1/health，一直跑到被停掉
 //   serve-then-exit:N  回應第一次就緒檢查之後，以代碼 N 結束（就緒後崩潰）
-// uv 以 LAUNCHER_STUB_UV_EXIT 的代碼結束，沒設時是 0。
+// uv 以 LAUNCHER_STUB_UV_EXIT 的代碼結束，沒設時是 0。設了 LAUNCHER_STUB_UV_COPY_FROM 與
+// LAUNCHER_STUB_UV_COPY_TO 時，先把前一個資料夾裡的檔案複製到後一個（假裝使用者趁佈建時裝了東西）。
 // 預先下載在最後一個參數（下載的資料夾）放一個檔案，以 LAUNCHER_STUB_PREFETCH_EXIT 的代碼結束，
 // 沒設時是 0：0 時放下載好的 wheel，其他的放下載到一半的 .part。
 // 輸出只用 ASCII，不受主控台碼頁影響。替身最多跑 60 秒，測試出錯時也不會一直留著。
@@ -49,6 +50,11 @@ static class LauncherStub
 
         if (name == "uv")
         {
+            string from = Environment.GetEnvironmentVariable("LAUNCHER_STUB_UV_COPY_FROM");
+            string to = Environment.GetEnvironmentVariable("LAUNCHER_STUB_UV_COPY_TO");
+            if (!string.IsNullOrEmpty(from) && !string.IsNullOrEmpty(to))
+                foreach (string file in Directory.GetFiles(from))
+                    File.Copy(file, Path.Combine(to, Path.GetFileName(file)), true);
             int code = ParseInt(Environment.GetEnvironmentVariable("LAUNCHER_STUB_UV_EXIT"), 0);
             Console.Error.WriteLine("stub uv: exit " + code);
             return code;

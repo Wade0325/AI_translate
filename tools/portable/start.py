@@ -7,7 +7,8 @@ build_release.ps1 把它放在發布包的 bin\\start.py；start.bat 用隨包�
 做的事和啟動器（tools/launcher.cs）相同：第一次執行時用同樣的步驟佈建執行環境（先以
 bin\\prefetch_wheels.py 下載 PyTorch，斷線時可以接著下載；再以 uv 安裝；#303）、刪掉 torch 執行時
 用不到的 .lib（#305）、寫同一個完成標記，再以同樣的環境變數啟動伺服器（tests/unit/test_portable_start.py
-檢查兩邊一致）。不同的是不會自動改用空的埠，也不會自動開啟瀏覽器。
+檢查兩邊一致）。有 NVIDIA 驅動、卻沒裝 Microsoft Visual C++ 可轉散發套件（或太舊）時，也一樣在佈建之前
+提示安裝（#304）。不同的是不會自動改用空的埠，也不會自動開啟瀏覽器。
 
 單一實例也和啟動器共用：同名的 mutex 與 data\\launcher-url.txt，所以同一個資料夾的 AI_Translate.exe
 與 start.bat 合起來只會跑一個伺服器（tests/integration/test_launcher.py 在 Windows 上兩個方向都測）。
@@ -48,6 +49,13 @@ PROVISION_BANNER = """\
  過程視網速需要數分鐘到數十分鐘；中斷後重新執行，會從中斷的地方接著下載。
  沒有 NVIDIA 顯卡的電腦也會下載這些，只用 Gemini 時大部分用不到。
 ═══════════════════════════════════════════════════════"""
+
+# Microsoft Visual C++ 可轉散發套件（#304）：本機轉錄要從 System32 載入的 DLL，以及第一個
+# （msvcp140.dll）至少要的版本。依據寫在 backend/app/provider/local/weights.py 的同名常數；
+# 這裡、weights.py 與啟動器三邊要相同（tests/unit/test_vc_runtime.py 比對）
+VC_REDIST_URL = "https://aka.ms/vc14/vc_redist.x64.exe"
+VC_RUNTIME_DLLS = ("msvcp140.dll", "vcomp140.dll")
+VC_RUNTIME_MIN_VERSION = (14, 38)
 
 
 def python_exe(root: Path) -> Path:
@@ -317,6 +325,80 @@ def remove_downloads(root: Path) -> None:
     shutil.rmtree(downloads_dir(root), ignore_errors=True)
 
 
+# ─── Microsoft Visual C++ 可轉散發套件（#304），和啟動器的 WarnVcRuntime 相同 ─────────────
+# torch 從 System32 載入 msvcp140.dll 等 DLL，免安裝版只附 vcruntime140*.dll。缺了伺服器照樣起得來、
+# Gemini 照樣能用，只有本機轉錄不能用，所以只提示、不擋。伺服器啟動時才第一次載入 torch：首次佈建
+# 之前就說，使用者趁下載時裝好，就不必重新開啟。沒有 NVIDIA 驅動時不說：本機轉錄本來就不能用，
+# 轉錄頁會說明。
+
+
+def system_folder() -> Path:
+    """System32。隨包的 Python 是 64 位元，不會被轉到 SysWOW64。"""
+    return Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32"
+
+
+def file_version(path: Path) -> tuple[int, int] | None:
+    """Windows 檔案的「檔案版本」的主、次版號（例如 msvcp140.dll 的 14.44）；不是 Windows 或讀不到
+    時是 None。和 weights.py 的 _file_version 相同（只用標準函式庫，這時還沒佈建，不能 import 後端）。"""
+    if sys.platform != "win32":
+        return None
+    import ctypes
+
+    version_dll = ctypes.WinDLL("version")
+    size = version_dll.GetFileVersionInfoSizeW(str(path), None)
+    if not size:
+        return None
+    data = ctypes.create_string_buffer(size)
+    if not version_dll.GetFileVersionInfoW(str(path), 0, size, data):
+        return None
+    fixed, length = ctypes.c_void_p(), ctypes.c_uint()
+    if not version_dll.VerQueryValueW(data, "\\", ctypes.byref(fixed), ctypes.byref(length)):
+        return None
+    if length.value < 16 or not fixed.value:
+        return None
+    # VS_FIXEDFILEINFO 的前四個 DWORD：dwSignature、dwStrucVersion、dwFileVersionMS、dwFileVersionLS
+    words = ctypes.cast(fixed, ctypes.POINTER(ctypes.c_uint32 * 4)).contents
+    if words[0] != 0xFEEF04BD:
+        return None
+    return words[2] >> 16, words[2] & 0xFFFF
+
+
+def vc_runtime_problem(system: Path,
+                       version: Callable[[Path], tuple[int, int] | None] = file_version) -> str | None:
+    """給使用者看的原因；沒有 NVIDIA 驅動（System32 沒有 nvcuda.dll），或都沒問題時是 None。
+    讀不到版本時不當成太舊。"""
+    if not (system / "nvcuda.dll").is_file():
+        return None
+    if not all((system / dll).is_file() for dll in VC_RUNTIME_DLLS):
+        return "這台電腦沒有 Microsoft Visual C++ 可轉散發套件"
+    current = version(system / VC_RUNTIME_DLLS[0])
+    if current is not None and current < VC_RUNTIME_MIN_VERSION:
+        return ("這台電腦的 Microsoft Visual C++ 可轉散發套件太舊"
+                f"（目前 {current[0]}.{current[1]}，"
+                f"需要 {VC_RUNTIME_MIN_VERSION[0]}.{VC_RUNTIME_MIN_VERSION[1]} 以上）")
+    return None
+
+
+def check_vc_runtime() -> str | None:
+    """這台電腦的 vc_runtime_problem；Windows 以外的平台不查（只有開發時的測試會在那裡執行）。
+    查的時候出錯（例如沒有權限讀）就不提示：只是提示，不能因此擋住啟動（和啟動器相同）。"""
+    if sys.platform != "win32":
+        return None
+    try:
+        return vc_runtime_problem(system_folder())
+    except OSError:
+        return None
+
+
+def warn_vc_runtime(problem: str) -> None:
+    print("───────────────────────────────────────────────────────")
+    print(f" {problem}，本機轉錄不能用。")
+    print(f" 請下載安裝（需要系統管理員權限）：{VC_REDIST_URL}")
+    print(" 在伺服器啟動之前裝好就不必重新開啟；之後才裝的話，裝好後關閉這個視窗，")
+    print(" 再執行一次 start.bat。只用 Gemini 的話可以不裝。")
+    print("───────────────────────────────────────────────────────", flush=True)
+
+
 def stop_with_this_process(pid: int) -> Callable[[], None] | None:
     """把行程 pid 放進「關閉時結束全部」的 Job Object，和啟動器相同：start.py 被結束（例如在工作
     管理員只結束它）時系統關掉這個 handle，伺服器跟著結束。否則伺服器留著跑、單一實例卻已讓出，
@@ -407,7 +489,8 @@ def main(argv: Sequence[str], root: Path = ROOT, *,
          run: Callable[..., int] = _call,
          serve: Callable[[Path, int], int] = run_server,
          acquire: Callable[[Path], Callable[[], None] | None] = acquire_instance,
-         probe: Callable[[str], bool] = probe_health) -> int:
+         probe: Callable[[str], bool] = probe_health,
+         vc_problem: Callable[[], str | None] | None = None) -> int:
     port = parse_port(argv)
     if port is None:
         print(f"埠號要是 1 到 65535 的數字，例如 start.bat 8001（收到的是：{argv[0]}）。")
@@ -428,7 +511,7 @@ def main(argv: Sequence[str], root: Path = ROOT, *,
         pause()
         return 0
     try:
-        started = _start(root, port, run, serve)
+        started = _start(root, port, run, serve, vc_problem or check_vc_runtime)
     finally:
         # 先讓出單一實例再停下來等按鍵：視窗還停著時再雙擊，可以直接重新啟動（和啟動器相同）
         try:
@@ -443,13 +526,25 @@ def main(argv: Sequence[str], root: Path = ROOT, *,
 
 
 def _start(root: Path, port: int, run: Callable[..., int],
-           serve: Callable[[Path, int], int]) -> bool:
+           serve: Callable[[Path, int], int], vc_problem: Callable[[], str | None]) -> bool:
     """第一次執行時佈建，再啟動伺服器並等它結束；失敗時印出原因，回傳 False。"""
+    problem = vc_problem()
+    if problem is not None:
+        warn_vc_runtime(problem)
     if provisioned_marker(root).exists():
         remove_downloads(root)  # 上次佈建成功、但刪不掉時再刪一次（和啟動器相同）
         remove_static_libraries(root)  # 每次啟動補刪，和啟動器相同
-    elif not provision(root, run):
-        return False
+    else:
+        if not provision(root, run):
+            return False
+        if problem is not None:
+            # 佈建前提示過、佈建完再查一次：還沒裝就再說一次（uv 的輸出把前一次推上去了），
+            # 裝好了就說一聲（和啟動器的 RecheckVcRuntime 相同）
+            problem = vc_problem()
+            if problem is None:
+                print("已經裝好 Microsoft Visual C++ 可轉散發套件。", flush=True)
+            else:
+                warn_vc_runtime(problem)
 
     url = f"http://127.0.0.1:{port}"
     write_url_file(root, url)
