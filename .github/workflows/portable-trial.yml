@@ -35,7 +35,7 @@ jobs:
         with:
           persist-credentials: false
       - name: 建置前確認來源裡沒有 backend/audio_store 與執行期資料
-        shell: powershell
+        # 預設的 pwsh：Windows PowerShell 5.1 把沒有 BOM 的暫存腳本當成 ANSI 讀，中文會壞掉
         run: |
           $found = @("backend\audio_store", "backend\temp_uploads", "backend\vad_artifacts", "backend\.env", "data") | Where-Object { Test-Path $_ }
           if ($found) { Write-Host "來源裡有：$($found -join ', ')"; exit 1 }
