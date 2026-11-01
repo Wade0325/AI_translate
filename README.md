@@ -59,7 +59,7 @@
 | 顯卡驅動（本機轉錄） | NVIDIA 驅動 572.61 以上：免安裝版的 PyTorch 帶的是 CUDA 12.8 Update 1，版本照 [NVIDIA 的對照表](https://docs.nvidia.com/cuda/cuda-toolkit-release-notes/)。驅動太舊時，畫面會寫出目前的版本與需要的版本 |
 | Microsoft Visual C++ 可轉散發套件（本機轉錄） | 要裝 x64 的[最新版](https://aka.ms/vc14/vc_redist.x64.exe)（14.38 以上，[Microsoft 的說明](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist)），安裝要系統管理員權限。有 NVIDIA 驅動、卻沒裝或太舊時，黑色視窗在下載執行環境之前會提醒，轉錄頁也會寫出下載網址 |
 | 顯卡（Gemini） | 不需要，但要自備 Gemini API 金鑰 |
-| 磁碟空間 | 首次啟動下載的執行環境約 3.5 GB；本機的預設模型權重約 3.7 GB，選用模型另需約 21 GB |
+| 磁碟空間 | 首次啟動下載約 3.5 GB 的執行環境，裝好後在解壓資料夾裡約佔 8 GB；下載的檔案另外解開存在 `%LOCALAPPDATA%\uv\cache`（通常在 C 槽）約 8 GB，和解壓資料夾不在同一個磁碟時另外佔空間，佈建完成後可以刪掉。本機的預設模型權重約 3.7 GB，選用模型另需約 21 GB |
 | 網路 | 首次啟動與下載模型權重時需要；用 Gemini 轉錄時也需要 |
 
 ---
@@ -202,7 +202,7 @@ Issue 是公開的，任何人都看得到：
 
 不會改變的設計：
 
-- **執行檔沒有數位簽章**（[ADR 0010](docs/adr/0010-no-code-signing.md)）：第一次執行 `AI_Translate.exe` 時，Windows 可能跳出 SmartScreen 的「Windows 已保護您的電腦」，按「其他資訊」→「仍要執行」即可。開著 Smart App Control 的電腦可能直接擋下、沒有「仍要執行」可以按。
+- **執行檔沒有數位簽章**（[ADR 0010](docs/adr/0010-no-code-signing.md)）：第一次執行 `AI_Translate.exe` 時，Windows 可能跳出 SmartScreen 的「Windows 已保護您的電腦」，按「其他資訊」→「仍要執行」即可。開著 Smart App Control 的電腦可能直接擋下、沒有「仍要執行」可以按。防毒軟體攔下 `AI_Translate.exe` 時，可以改雙擊同一個資料夾裡的 `start.bat`：做的事一樣，只是不會自動開啟瀏覽器，用法見資料夾裡的 `README.txt`。
 
 ---
 
@@ -228,6 +228,8 @@ cd backend
 ```
 
 要看前端的畫面，先在 `frontend/` 執行 `npm run build`。帶環境變數 `AIT_DATA_DIR=<資料夾>` 可以把資料寫到別的資料夾，不動到既有的紀錄。
+
+模型權重放在 `HF_HOME`；沒設時，免安裝模式用資料目錄（`AIT_DATA_DIR`，沒設時是 repo 的 `data\`）底下的 `models\hf_cache`，和免安裝版相同。要沿用 `local_worker.bat` 那份權重，設 `$env:HF_HOME='D:\AI_translate\models\hf_cache'`。
 
 免安裝模式比 Docker 模式多三項限制（#16）：
 
@@ -418,6 +420,7 @@ git config core.hooksPath .githooks
 
 產出 `build\AI_Translate-v1.2.3-win64.zip`（約 150 MB —— Python 依賴不進 zip，
 由使用者首次啟動時以隨包 `uv` 依 `backend/requirements-standalone.txt` 自動下載）。
+發布包裡給使用者看的 `README.txt`，以及手動啟動用的 `start.bat` 與 `start.py` 放在 `tools/portable/`，建置時複製進去（`README.txt` 的 `{VERSION}` 換成版本號，`start.py` 放進 `bin\`）。`start.bat` 只能有 ASCII：cmd 遇到中文會讀錯下一行，所以它只用隨包的 Python 執行 `bin\start.py`，佈建、啟動與訊息都寫在 `start.py`。`start.py` 和啟動器用同名的 mutex 與 `data\launcher-url.txt` 互相擋住，同一個資料夾合起來只跑一個伺服器：伺服器啟動時會先把「處理中」的任務記成失敗才綁埠，第二個實例就算綁不到埠也已經記了。伺服器也和啟動器一樣放進 Job Object，只結束 `start.py` 時伺服器跟著結束。
 要在 git 的工作目錄裡、裝好 git 才能建置：後端只用 `git archive` 取白名單（腳本裡的 `$BackendPaths`）已經 commit 的檔案，沒進版控的東西不會被打包；白名單裡有還沒 commit 的改動或新檔時，建置會停下來，請先 commit 或 stash。
 Python embeddable、`uv` 與 ffmpeg 都釘版並驗 SHA-256，下載快取在 `build\cache\`；快取裡的檔案雜湊不符時會刪掉重新下載。
 推 `v*` tag 時 GitHub Actions（`.github/workflows/release.yml`）會先跑一次完整的 CI，通過後自動建置並發布 Release。
