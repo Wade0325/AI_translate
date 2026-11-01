@@ -22,6 +22,8 @@ from pathlib import Path
 
 import pytest
 
+from tools.portable import start
+
 ROOT = Path(__file__).resolve().parents[2]
 LAUNCHER_SOURCE = ROOT / "tools" / "launcher.cs"
 STUB_SOURCE = ROOT / "tests" / "fixtures" / "launcher_stub.cs"
@@ -341,6 +343,54 @@ class TestSingleInstance:
         finally:
             first.kill()
             first.wait()
+
+
+@windows_only
+class TestSharedWithStartBat:
+    """start.bat（tools/portable/start.py）和啟動器共用單一實例（#267）：同一個資料夾合起來只跑一個
+    伺服器。伺服器啟動時會先把「處理中」的任務記成失敗才綁埠，第二個綁不到埠也已經記了。
+    兩邊各自實作 mutex 的名稱，這裡用真的 mutex 確認對得上（路徑裡有中文的帳號名稱）。"""
+
+    def test_launcher_does_not_start_a_server_while_start_bat_runs(self, app):
+        release = start.acquire_instance(app.root)
+        assert release is not None
+        try:
+            second = app.run(name="second")
+        finally:
+            release()
+
+        assert second.returncode == 0
+        assert "已經在另一個視窗啟動中" in second.output
+        assert app.calls() == []
+
+    def test_start_bat_does_not_start_a_server_while_the_launcher_runs(self, app, capsys):
+        (app.root / "backend" / "main.py").write_text("", encoding="utf-8")
+        first, output = app.start(server="serve")
+        try:
+            _wait(lambda: "伺服器已就緒：" in _read(output))
+            url = _read(output).split("伺服器已就緒：", 1)[1].split()[0]
+
+            def serve(root: Path, port: int) -> int:
+                raise AssertionError("不該啟動第二個伺服器")
+
+            assert start.main([], app.root, serve=serve) == 0
+        finally:
+            first.kill()
+            first.wait()
+
+        out = capsys.readouterr().out
+        assert "AI_Translate 已經在執行，不會再啟動第二個" in out
+        assert f"請用瀏覽器開啟 {url}" in out
+
+    def test_launcher_starts_once_start_bat_has_released(self, app):
+        release = start.acquire_instance(app.root)
+        assert release is not None
+        release()
+
+        result = app.run(server="exit:3")
+
+        assert "已經在" not in result.output
+        assert [call[0] for call in app.calls()] == ["python"]
 
 
 class TestLog:
