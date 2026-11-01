@@ -108,8 +108,11 @@ def run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
 
 def powershell(script: str, timeout: float = 1800) -> str:
     prefix = "[Console]::OutputEncoding = [Text.Encoding]::UTF8; $ProgressPreference = 'SilentlyContinue'; "
+    # workflow 的步驟在 pwsh 7 裡執行，PSModulePath 指向 pwsh 7 的模組；Windows PowerShell 5.1 沿用時
+    # 載不進 Microsoft.PowerShell.Security（Get-AuthenticodeSignature 每個都失敗），所以拿掉
+    env = {k: v for k, v in os.environ.items() if k.upper() != "PSMODULEPATH"}
     result = run(["powershell", "-NoProfile", "-NonInteractive", "-Command", prefix + script],
-                 timeout=timeout)
+                 timeout=timeout, env=env)
     if result.returncode != 0:
         raise RuntimeError(f"PowerShell 失敗（{result.returncode}）：{result.stderr.strip()[-2000:]}")
     return result.stdout.strip()
@@ -425,6 +428,19 @@ def tree_stats(path: Path) -> dict[str, Any]:
     return {"bytes": total, "files": files, "longest_path": longest, "longest_len": longest_len}
 
 
+def breakdown(path: Path, depth: int, top: int = 15) -> list[list[Any]]:
+    """``path`` 底下第 ``depth`` 層的每個資料夾（或檔案）佔多少，由大到小取前 ``top`` 個。"""
+    sizes: dict[str, int] = {}
+    base = len(long(path)) + 1
+    for dirpath, _dirs, names in os.walk(long(path)):
+        for name in names:
+            full = os.path.join(dirpath, name)
+            key = "\\".join(full[base:].split("\\")[:depth])
+            with contextlib.suppress(OSError):
+                sizes[key] = sizes.get(key, 0) + os.path.getsize(full)
+    return [[k, v] for k, v in sorted(sizes.items(), key=lambda kv: -kv[1])[:top]]
+
+
 def uv_cache() -> Path:
     return Path(os.environ["LOCALAPPDATA"]) / "uv" / "cache"
 
@@ -592,8 +608,7 @@ def summary_markdown() -> str:
         lines.append(f"## {title}")
         lines.append("")
         lines.append(f"- 事件（秒）：{events}")
-        lines.append(f"- 經過代理的下載量：{mb((run_.get('proxy') or {}).get('down'))}；網卡收到："
-                     f"{mb(run_.get('nic_received_bytes'))}")
+        lines.append(f"- 經過代理的下載量：{mb((run_.get('proxy') or {}).get('down'))}")
         lines.append(f"- 啟動器日誌：uv {log.get('uv_exit')}；health 就緒 {log.get('ready_seconds')} 秒")
         if run_.get("exit_code") is not None:
             lines.append(f"- 啟動器結束代碼：{run_.get('exit_code')}")
@@ -631,12 +646,18 @@ def summary_markdown() -> str:
               f"- uv 快取：{gib((sizes.get('uv_cache') or {}).get('bytes'))}",
               f"- 最長的路徑：{(sizes.get('root') or {}).get('longest_len')} 字元，"
               f"程式資料夾以下 {sizes.get('longest_relative_len')} 字元：`{(sizes.get('root') or {}).get('longest_path')}`",
-              f"- 程式資料夾的路徑最多可以 {sizes.get('max_root_len_for_max_path')} 字元（MAX_PATH 259）", ""]
+              f"- 程式資料夾的路徑最多可以 {sizes.get('max_root_len_for_max_path')} 字元（MAX_PATH 259）",
+              f"- data\\models：{[(k, gib(v)) for k, v in sizes.get('models_breakdown') or []]}",
+              f"- site-packages 前幾大：{[(k, gib(v)) for k, v in (sizes.get('site_packages_breakdown') or [])[:8]]}",
+              f"- uv 快取：{[(k, gib(v)) for k, v in sizes.get('uv_cache_breakdown') or []]}", ""]
     package_sig = r.get("extract", {}).get("signatures") or {}
     lines += ["## 簽章", "", f"- 發布包：{package_sig.get('by_status')}",
               f"- 佈建後：{(r.get('signatures_provisioned') or {}).get('by_status')}"]
     for row in package_sig.get("top_level", []):
         lines.append(f"  - {row['p']}：{row['s']}（{row['c']}）")
+    by_package = (r.get("signatures_provisioned") or {}).get("by_package") or {}
+    for package, counts in sorted(by_package.items(), key=lambda kv: -sum(kv[1].values()))[:25]:
+        lines.append(f"  - {package}：{counts}")
     lines.append("")
     vc = r.get("vcrt", {})
     lines += ["## VC++ 執行階段", "", f"- 靜態分析：{json.dumps((vc.get('static') or {}).get('summary'), ensure_ascii=False)[:3000]}",
@@ -754,6 +775,9 @@ def main() -> int:
         record["site_packages"] = tree_stats(root / "runtime" / "Lib" / "site-packages")
         record["models"] = tree_stats(root / "data" / "models")
         record["uv_cache"] = tree_stats(uv_cache())
+        record["models_breakdown"] = breakdown(root / "data" / "models", 3)
+        record["site_packages_breakdown"] = breakdown(root / "runtime" / "Lib" / "site-packages", 1)
+        record["uv_cache_breakdown"] = breakdown(uv_cache(), 1)
         record["longest_relative_len"] = record["root"]["longest_len"] - len(str(root)) - 1
         record["max_root_len_for_max_path"] = 259 - record["longest_relative_len"] - 1
         record["root_path_len"] = len(str(root))
