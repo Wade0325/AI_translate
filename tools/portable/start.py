@@ -280,10 +280,14 @@ def vc_runtime_problem(system: Path,
 
 
 def check_vc_runtime() -> str | None:
-    """這台電腦的 vc_runtime_problem；Windows 以外的平台不查（只有開發時的測試會在那裡執行）。"""
+    """這台電腦的 vc_runtime_problem；Windows 以外的平台不查（只有開發時的測試會在那裡執行）。
+    查的時候出錯（例如沒有權限讀）就不提示：只是提示，不能因此擋住啟動（和啟動器相同）。"""
     if sys.platform != "win32":
         return None
-    return vc_runtime_problem(system_folder())
+    try:
+        return vc_runtime_problem(system_folder())
+    except OSError:
+        return None
 
 
 def warn_vc_runtime(problem: str) -> None:

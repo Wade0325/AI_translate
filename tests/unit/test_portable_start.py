@@ -293,6 +293,15 @@ class TestVcRuntime:
 
         assert start.check_vc_runtime() == MISSING_VC
 
+    def test_an_error_while_checking_does_not_stop_the_start(self, tmp_path, monkeypatch):
+        # 只是提示：讀不到 System32 或版本時不提示，照樣佈建與啟動（和啟動器相同）
+        def denied(path: Path, version=None):
+            raise PermissionError("拒絕存取")
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setattr(start, "vc_runtime_problem", denied)
+
+        assert start.check_vc_runtime() is None
+
     def test_other_platforms_do_not_check(self, tmp_path, monkeypatch):
         monkeypatch.setattr(sys, "platform", "linux")
         monkeypatch.setattr(start, "system_folder", lambda: _system32(tmp_path))
