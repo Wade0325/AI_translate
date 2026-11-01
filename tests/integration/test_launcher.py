@@ -247,6 +247,80 @@ class TestProvisioning:
         assert server[0] == "python"
 
 
+SITE_PACKAGES = ("runtime", "Lib", "site-packages")
+# 替身 uv 不裝東西：先放好 uv 裝完的樣子。名稱取自 #239 實測的 torch\lib（KINETO.LIB 換成大寫）
+TORCH_LIB_FILES = {"dnnl.lib": 300, "KINETO.LIB": 200, "torch_cpu.lib": 100,
+                   "torch_cpu.dll": 7, "c10.dll": 5,
+                   "notes.libx": 3}  # 檔名比對 *.lib 時會被誤刪的副檔名
+KEPT = {"torch_cpu.dll", "c10.dll", "notes.libx"}
+
+
+def _install_torch(app: App) -> tuple[Path, Path]:
+    torch_lib = app.root.joinpath(*SITE_PACKAGES, "torch", "lib")
+    torch_lib.mkdir(parents=True)
+    for name, size in TORCH_LIB_FILES.items():
+        (torch_lib / name).write_bytes(b"x" * size)
+    other = app.root.joinpath(*SITE_PACKAGES, "numpy", "_core", "lib", "npymath.lib")
+    other.parent.mkdir(parents=True)
+    other.write_bytes(b"x")
+    return torch_lib, other
+
+
+class TestStaticLibraries:
+    """首次佈建後刪掉 torch\\lib 的 .lib（#305）：執行時用不到，約 2.8 GB。"""
+
+    def test_first_provisioning_removes_them_and_keeps_the_dlls(self, app):
+        app.sentinel.unlink()
+        torch_lib, other = _install_torch(app)
+
+        result = app.run(server="exit:3")
+
+        assert {p.name for p in torch_lib.iterdir()} == KEPT
+        assert other.exists()  # 只刪 torch 的
+        assert app.sentinel.exists()
+        assert [call[0] for call in app.calls()] == ["uv", "python"]
+        assert "刪掉 torch\\lib 裡執行時用不到的 .lib：3 個，600 位元組" in result.log
+
+    def test_provisioned_runtime_removes_what_is_left_at_the_next_start(self, app):
+        # 首次佈建時刪不掉的，或這個版本之前佈建的
+        marked = app.sentinel.read_bytes()
+        torch_lib, _ = _install_torch(app)
+
+        result = app.run(server="exit:3")
+
+        assert {p.name for p in torch_lib.iterdir()} == KEPT
+        assert [call[0] for call in app.calls()] == ["python"]  # 不重新佈建
+        assert app.sentinel.read_bytes() == marked
+        assert "刪掉 torch\\lib 裡執行時用不到的 .lib：3 個" in result.log
+
+        again = app.run(server="exit:3", name="again")
+
+        assert "torch\\lib" not in again.log[len(result.log):]  # 沒東西可刪時不寫
+
+    def test_runtime_without_torch_starts_as_usual(self, app):
+        result = app.run(server="exit:3")
+
+        assert "伺服器還沒就緒就結束了（結束代碼 3）" in result.output
+        assert "torch\\lib" not in result.log
+
+    @windows_only
+    def test_one_that_cannot_be_removed_does_not_stop_provisioning(self, app):
+        # 防毒軟體掃描時開著檔案：Python 的 open 不帶 FILE_SHARE_DELETE，DeleteFile 會失敗
+        app.sentinel.unlink()
+        torch_lib, _ = _install_torch(app)
+
+        with (torch_lib / "dnnl.lib").open("rb"):
+            result = app.run(server="exit:3")
+
+        assert {p.name for p in torch_lib.iterdir()} == KEPT | {"dnnl.lib"}
+        assert app.sentinel.exists()
+        assert [call[0] for call in app.calls()] == ["uv", "python"]
+        assert "佈建失敗" not in result.output
+        assert "刪掉 torch\\lib 裡執行時用不到的 .lib：2 個，300 位元組" in result.log
+        assert "torch\\lib 裡有 1 個 .lib 刪不掉，下次啟動再試：dnnl.lib（IOException：" in result.log
+        assert USER not in result.log  # 例外訊息裡的路徑也去識別
+
+
 class TestIoErrors:
     def test_data_folder_that_cannot_be_created_names_the_path(self, app):
         app.data.write_text("佔住 data 這個名稱的檔案", encoding="utf-8")
