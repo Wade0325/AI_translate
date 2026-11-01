@@ -2,27 +2,20 @@ import { useState, useCallback, useRef } from "react"
 import { Upload, Button, Alert } from "antd"
 import { InboxOutlined, PlusOutlined } from "@ant-design/icons"
 import { AlertCircle } from "lucide-react"
+import { useUploadLimits } from "@/hooks/useUploadLimits"
+import { acceptAttribute, formatLabels, maxSizeLabel, rejectionOf } from "@/utils/uploadLimits"
 
 const { Dragger } = Upload
 
-// 都要在伺服器收的格式裡（backend/app/api/upload.py 的 SUPPORTED_MIME_TYPES）：伺服器不收 OGG，
-// 這裡收了也只會在上傳時失敗
-const ACCEPTED_TYPES = [
-    "audio/mpeg",
-    "audio/wav",
-    "audio/mp4",
-    "audio/x-m4a",
-    "audio/flac",
-    "audio/webm",
-]
-
-const ACCEPTED_LABEL = "MP3、WAV、M4A、FLAC、WebM"
-
-const MAX_FILE_SIZE = 1000 * 1024 * 1024
+// 收哪些格式、最大多大由伺服器決定（GET /upload/limits）。還沒讀到、讀不到時檔案選擇器列出所有音訊
+// 與影片，加入時不先擋，交給伺服器上傳時檢查
+const FALLBACK_ACCEPT = "audio/*,video/*"
 
 export function UploadZone({ hasFiles, onFilesAdded }) {
     const [error, setError] = useState(null)
     const inputRef = useRef(null)
+    const limits = useUploadLimits()
+    const accept = limits ? acceptAttribute(limits) : FALLBACK_ACCEPT
 
     const handleFiles = useCallback(
         (fileList) => {
@@ -31,19 +24,16 @@ export function UploadZone({ hasFiles, onFilesAdded }) {
             const files = Array.from(fileList)
 
             for (const file of files) {
-                if (!ACCEPTED_TYPES.includes(file.type)) {
-                    setError(`不支援這種格式：${file.name}（可以用 ${ACCEPTED_LABEL}）`)
-                    continue
-                }
-                if (file.size > MAX_FILE_SIZE) {
-                    setError(`檔案太大：${file.name}（上限 1000 MB）`)
+                const rejection = limits && rejectionOf(file, limits)
+                if (rejection) {
+                    setError(rejection)
                     continue
                 }
                 valid.push(file)
             }
             if (valid.length > 0) onFilesAdded(valid)
         },
-        [onFilesAdded]
+        [onFilesAdded, limits]
     )
 
     // 已有檔案時縮成單顆按鈕，避免佔版面
@@ -60,7 +50,7 @@ export function UploadZone({ hasFiles, onFilesAdded }) {
                 <input
                     ref={inputRef}
                     type="file"
-                    accept="audio/*"
+                    accept={accept}
                     multiple
                     onChange={(e) => {
                         if (e.target.files) handleFiles(e.target.files)
@@ -85,7 +75,8 @@ export function UploadZone({ hasFiles, onFilesAdded }) {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             <Dragger
                 multiple
-                accept="audio/*"
+                // 拖進來的檔案不照 accept 先濾掉（antd 預設會默默丟掉）：交給 handleFiles，不收的說明原因
+                accept={{ format: accept, filter: "native" }}
                 showUploadList={false}
                 beforeUpload={(file, fileList) => {
                     // antd 對每個檔案都呼叫一次 beforeUpload，只在最後一個檔案時處理整批
@@ -105,11 +96,17 @@ export function UploadZone({ hasFiles, onFilesAdded }) {
                     <InboxOutlined style={{ color: '#2dd4a8', fontSize: 40 }} />
                 </p>
                 <p style={{ color: '#e8e8e8', fontSize: 14, fontWeight: 500, marginBottom: 4 }}>
-                    Drag audio files here or click to browse
+                    Drag audio or video files here or click to browse
                 </p>
-                <p style={{ color: '#8888a8', fontSize: 12, margin: 0 }}>
-                    MP3, WAV, M4A, FLAC, WebM (max 1000MB)
-                </p>
+                {limits && (<>
+                    <p style={{ color: '#8888a8', fontSize: 12, margin: 0 }}>
+                        音檔 {formatLabels(limits, "audio")}，影片 {formatLabels(limits, "video")}
+                        （上限 {maxSizeLabel(limits)}）
+                    </p>
+                    <p style={{ color: '#8888a8', fontSize: 12, margin: '2px 0 0' }}>
+                        影片會先在這台電腦抽出聲音，只轉錄聲音，畫面不會送出
+                    </p>
+                </>)}
             </Dragger>
             {error && (
                 <Alert

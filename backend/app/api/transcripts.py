@@ -7,6 +7,9 @@
 音檔用 FileResponse 直接服務；Starlette 會處理 Range 請求，播放器才能拖曳。
 """
 
+from pathlib import Path
+from typing import Optional, cast
+
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
@@ -91,6 +94,14 @@ def get_transcript_audio(task_uuid: str, db: Session = Depends(get_db)):
     return FileResponse(
         path,
         media_type=get_mime_type(path) or "application/octet-stream",
-        filename=log.original_filename or path.name,
+        filename=_retained_name(cast(Optional[str], log.original_filename), path),
         content_disposition_type="inline",
     )
+
+
+def _retained_name(original_filename: Optional[str], path: Path) -> str:
+    """保留音檔下載時的檔名：原檔名換上保留音檔的副檔名。影片上傳時抽成了 FLAC（#258），照原檔名
+    存成 .mp4 會打不開。"""
+    if not original_filename:
+        return path.name
+    return f"{Path(original_filename).stem}{path.suffix}"
