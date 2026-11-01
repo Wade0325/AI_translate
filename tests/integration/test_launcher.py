@@ -378,7 +378,8 @@ class TestStaticLibraries:
 
         assert {p.name for p in torch_lib.iterdir()} == KEPT | {"dnnl.lib"}
         assert app.sentinel.exists()
-        assert [call[0] for call in app.calls()] == ["uv", "python"]
+        # 預先下載 PyTorch、uv、伺服器
+        assert [call[0] for call in app.calls()] == ["python", "uv", "python"]
         assert "佈建失敗" not in result.output
         assert "刪掉 torch\\lib 裡執行時用不到的 .lib：2 個，300 位元組" in result.log
         assert "torch\\lib 裡有 1 個 .lib 刪不掉，下次啟動再試：dnnl.lib（IOException：" in result.log
