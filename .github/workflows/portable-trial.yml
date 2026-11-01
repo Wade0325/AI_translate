@@ -4,8 +4,8 @@
 #
 # 只在這個試發布的分支上跑，不進 main、不是 `check` 的一部分；不推 tag、不發布 Release。
 # 建好的 zip 以 Actions 的 artifact 保留，給維護者下載後在自己的 Windows 雙擊（SmartScreen、
-# Smart App Control 只能在真的 Windows 桌面版上看）。
-# 注意：upload-artifact 用主版本的 tag，不是 commit SHA；要搬進 main 時改成釘 SHA（zizmor 會擋）。
+# Smart App Control 只能在真的 Windows 桌面版上看）。zip 用 archive: false 原樣上傳，下載下來就是
+# 發布時的那個 zip，不會再包一層。
 
 name: 試發布（#35）
 
@@ -64,16 +64,15 @@ jobs:
         run: python tools/portable_trial/run_trial.py --zip build/AI_Translate-trial1-win64.zip --out trial-results --commit ${{ github.sha }}
       - name: 保留量測結果
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: trial-results
           path: trial-results
           retention-days: 90
       - name: 保留 zip（給維護者下載後雙擊）
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: AI_Translate-trial1-win64
           path: build/AI_Translate-trial1-win64.zip
-          compression-level: 0
+          archive: false # 只能一個檔案；artifact 的名稱就是檔名
           retention-days: 90
