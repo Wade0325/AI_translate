@@ -412,6 +412,7 @@ git config core.hooksPath .githooks
 
 產出 `build\AI_Translate-v1.2.3-win64.zip`（約 150 MB —— Python 依賴不進 zip，
 由使用者首次啟動時以隨包 `uv` 依 `backend/requirements-standalone.txt` 自動下載）。
+其中佔九成下載量的 torch 由啟動器先以 `bin\prefetch_wheels.py`（`tools/portable/prefetch_wheels.py`）下載到 `runtime\downloads\`：斷線時可以從中斷的地方接著下載，網址、大小與 SHA-256 釘在那支程式裡，換 torch 的版本時一起換（測試會檢查）。uv 再以 `--find-links` 從那裡安裝，裝好後刪掉。
 要在 git 的工作目錄裡、裝好 git 才能建置：後端只用 `git archive` 取白名單（腳本裡的 `$BackendPaths`）已經 commit 的檔案，沒進版控的東西不會被打包；白名單裡有還沒 commit 的改動或新檔時，建置會停下來，請先 commit 或 stash。
 Python embeddable、`uv` 與 ffmpeg 都釘版並驗 SHA-256，下載快取在 `build\cache\`；快取裡的檔案雜湊不符時會刪掉重新下載。
 推 `v*` tag 時 GitHub Actions（`.github/workflows/release.yml`）會先跑一次完整的 CI，通過後自動建置並發布 Release。
