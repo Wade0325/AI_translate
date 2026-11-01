@@ -240,6 +240,80 @@ def test_higher_cpmer_alone_is_a_regression(lab, tmp_path, capsys):
         "- 判定：回歸（中文）：代理不合併，等使用者明確接受並在 PR 上記下理由")
 
 
+SAME_SCRIPT = "A: 我們下週二\nB: 我們下週二\n"
+SKIP_REASON = "兩位說話者唸同一份台本、依序接成區塊"
+
+
+def _same_script_runs(lab, tmp_path):
+    """兩位說話者依序唸同一份台本，模型只分出一位（像 JVNV）：PR 補回基準漏掉的字，錯字率變好，
+    但多轉對的字全落在同一個標記裡，cpMER 反而變高（基準 9 個錯 → PR 10 個錯）。"""
+    _write(lab / "data" / "eval" / "demo_J.txt",
+           f"# demo_J  00:00.00-00:30.00\n# cpMER 不計：{SKIP_REASON}\n{SAME_SCRIPT}")
+    _write(lab / "data" / "eval" / "demo_K.txt", f"# demo_K  00:00.00-00:30.00\n{SAME_SCRIPT}")
+    base = _write(tmp_path / "runs" / "main" / "same.lrc",
+                  "[00:01.00][S0] 我們下週二\n[00:02.00][S0] 我們下週\n")
+    head = _write(tmp_path / "runs" / "pr" / "same.lrc",
+                  "[00:01.00][S0] 我們下週二\n[00:02.00][S0] 我們下週二\n")
+    for lrc in (base, head):
+        _manifest(lrc, "1" * 40, audio="same.wav")
+    return base, head
+
+
+def test_a_reference_marked_cpmer_skip_counts_mer_only(lab, tmp_path, capsys):
+    base, head = _same_script_runs(lab, tmp_path)
+    plain = _eval(capsys, tmp_path / "plain.json", base, head, reference="demo_K")
+    marked = _eval(capsys, tmp_path / "marked.json", base, head, reference="demo_J")
+
+    _, without_mark, _ = _summary(capsys, plain)
+    _, out, _ = _summary(capsys, marked)
+
+    assert ("| 中文 | demo_K | 10 | 10.00%（1 個錯） → 0.00%（0 個錯） "
+            "| 90.00%（9 個錯） → 100.00%（10 個錯） | 回歸 |") in without_mark
+    assert "| cpMER（全域對應） | 不計 | 不計 |" in out
+    assert f"- cpMER 不計（只算錯字率，ADR 0009）：demo_J（{SKIP_REASON}）" in out
+    assert "| 中文 | demo_J | 10 | 10.00%（1 個錯） → 0.00%（0 個錯） | 不計 | 通過 |" in out
+    assert out.rstrip().endswith("- 判定：通過（中文）")
+
+
+def test_a_reference_marked_cpmer_skip_still_counts_its_mer(lab, tmp_path, capsys):
+    # 反過來：PR 漏字，錯字率變高，照樣是回歸
+    base, head = _same_script_runs(lab, tmp_path)
+    marked = _eval(capsys, tmp_path / "marked.json", head, base, reference="demo_J")
+
+    _, out, _ = _summary(capsys, marked)
+
+    assert "| 中文 | demo_J | 10 | 0.00%（0 個錯） → 10.00%（1 個錯） | 不計 | 回歸 |" in out
+
+
+def test_cpmer_of_a_language_leaves_out_the_marked_references(lab, tmp_path, capsys):
+    base, head = _same_script_runs(lab, tmp_path)
+    marked = _eval(capsys, tmp_path / "marked.json", base, head, reference="demo_J")
+    other = _other_audio(lab, tmp_path, capsys, base_text="東京大学図", head_text="東京大学図書館",
+                         language="zh-CN")
+
+    _, out, _ = _summary(capsys, marked, other)
+
+    # 錯字率兩段合起來（17 個 token），cpMER 只算 other_A（7 個 token）
+    assert ("| 中文 | demo_J、other_A | 17 | 17.65%（3 個錯） → 0.00%（0 個錯） "
+            "| 28.57%（2 個錯） → 0.00%（0 個錯） | 通過 |") in out
+
+
+def test_eval_marks_the_skipped_cpmer(lab, tmp_path, capsys):
+    base, _ = _same_script_runs(lab, tmp_path)
+    path = _eval(capsys, tmp_path / "marked.json", base, reference="demo_J")
+
+    assert cli.main(["eval", "--reference", "demo_J", "--transcript", str(base)]) == 0
+    report = capsys.readouterr().out
+    result = json.loads(path.read_text(encoding="utf-8"))
+
+    [excerpt] = result["systems"][0]["per_excerpt"]
+    assert (excerpt["cp_mer_scored"], excerpt["cp_mer_skip"]) == (False, SKIP_REASON)
+    assert result["systems"][0]["cp_mer_global"] is None
+    assert result["global_mapping"]["cp_mer"] is None
+    assert f"cpMER          不計（{SKIP_REASON}）" in report
+    assert "cpMER 不計：每一段的標準答案都註明「cpMER 不計」" in report
+
+
 def _other_audio(lab, tmp_path, capsys, *, base_text, head_text, language):
     """評測集的另一個音檔：自己的標準答案、兩份轉錄結果與 eval 的 JSON。"""
     _write(lab / "data" / "eval" / "other_A.txt", "# other_A  00:00.00-00:30.00\nA: 東京大学図書館\n")

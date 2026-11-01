@@ -6,11 +6,24 @@
 句子的案例和 ``python -m tools.eval selftest`` 共用，見 ``tools/eval/selftest.py``；斷成哪些
 token、「着」併成「著」的方向與附和的計分只在這裡測。
 """
+import itertools
+import random
+
 import pytest
 
 from tools.eval import selftest
 from tools.eval.custom_vocabulary import CustomVocabulary
-from tools.eval.mer import UNK, evaluate, score_text, tokenize
+from tools.eval.mer import (
+    UNK,
+    Result,
+    best_mapping,
+    evaluate,
+    global_mapping,
+    mapping_cost,
+    score_text,
+    speaker_distances,
+    tokenize,
+)
 from tools.eval.reference_set import Excerpt, Utterance
 
 
@@ -82,3 +95,76 @@ def test_japanese_backchannel_is_scored_and_listed_separately():
     assert (result.ref_len, result.dels) == (12, 2)
     assert result.mer == pytest.approx(2 / 12)
     assert result.mer_no_overlap == 0.0
+
+
+# ----------------------------------------------------------------- 說話者對應
+def _random_speakers(rng, prefix, count, vocabulary="甲乙丙丁戊"):
+    return {f"{prefix}{k}": [rng.choice(vocabulary) for _ in range(rng.randint(0, 6))]
+            for k in range(count)}
+
+
+def _brute_force_cost(ref_spk, hyp_spk):
+    """cpWER 的定義：列舉所有一對一對應（配不到的算全刪或全插），取最小的總編輯距離。"""
+    dist = speaker_distances(ref_spk, hyp_spk)
+    refs = sorted(ref_spk)
+    hyps = sorted(hyp_spk)
+    n = max(len(refs), len(hyps))
+    refs += [""] * (n - len(refs))
+    hyps += [""] * (n - len(hyps))
+    return min((sum(dist.get((r, h), 0) for r, h in zip(refs, perm, strict=True) if r or h)
+                for perm in itertools.permutations(hyps)), default=0)
+
+
+@pytest.mark.parametrize("seed", range(40))
+def test_best_mapping_finds_the_cheapest_one_to_one_mapping(seed):
+    rng = random.Random(seed)
+    ref_spk = _random_speakers(rng, "R", rng.randint(0, 5))
+    hyp_spk = _random_speakers(rng, "S", rng.randint(0, 5))
+
+    cost, mapping = best_mapping(ref_spk, hyp_spk)
+
+    assert cost == _brute_force_cost(ref_spk, hyp_spk)
+    assert cost == mapping_cost(ref_spk, hyp_spk, mapping)
+    matched = [r for r in mapping.values() if r]
+    assert len(matched) == len(set(matched))  # 一對一
+
+
+@pytest.mark.parametrize("seed", range(20))
+def test_global_mapping_finds_the_cheapest_shared_mapping(seed):
+    # 同一份轉錄結果的幾段：每段的代號與標記不一定都出現，共用一組對應
+    rng = random.Random(seed)
+    results = []
+    for k in range(rng.randint(1, 3)):
+        refs = _random_speakers(rng, "R", 4)
+        hyps = _random_speakers(rng, "S", 4)
+        result = Result(name=f"r{k}", window=(0.0, 1.0), n_utts=1, ref_len=1, transcript_len=1)
+        result.ref_spk = {key: v for key, v in refs.items() if rng.random() < 0.7}
+        result.transcript_spk = {key: v for key, v in hyps.items() if rng.random() < 0.7}
+        results.append(result)
+    labels_ref = sorted({k for r in results for k in r.ref_spk})
+    labels_hyp = sorted({k for r in results for k in r.transcript_spk})
+    n = max(len(labels_ref), len(labels_hyp))
+    candidates = [{h: r for h, r in zip(labels_hyp + [""] * (n - len(labels_hyp)), perm, strict=True) if h}
+                  for perm in itertools.permutations(labels_ref + [""] * (n - len(labels_ref)))]
+    brute = min(sum(mapping_cost(r.ref_spk, r.transcript_spk, m) for r in results) for m in candidates)
+    denom = sum(sum(len(v) for v in r.ref_spk.values()) for r in results) or 1
+
+    mapping, cp = global_mapping(results)
+
+    assert cp == pytest.approx(brute / denom)
+    assert sum(mapping_cost(r.ref_spk, r.transcript_spk, mapping) for r in results) == brute
+
+
+def test_many_speakers_do_not_enumerate_every_permutation():
+    # JVS 耳語：20 位說話者依序唸，模型只分出 2 個標記。列舉全排列是 20!，永遠算不完
+    utterances = [Utterance(f"P{k:02d}", "甲乙丙丁" * (k % 3 + 1)) for k in range(20)]
+    transcript = [Utterance("S0" if k < 10 else "S1", u.text) for k, u in enumerate(utterances)]
+    excerpt = Excerpt(name="jvs", start=0.0, end=60.0, utterances=utterances)
+
+    result = evaluate(excerpt, transcript, CustomVocabulary(), bootstrap=10)
+    mapping, cp = global_mapping([result])
+
+    assert result.mer == 0
+    # 20 位裡只配得到 2 位：其餘 18 位的字算刪除，又在那 2 個標記裡算插入
+    assert result.cp_mer_local == pytest.approx(cp) and 1.5 < cp < 2
+    assert len([r for r in mapping.values() if r]) == 2
