@@ -22,6 +22,8 @@ from pathlib import Path
 
 import pytest
 
+from tools.portable import start
+
 ROOT = Path(__file__).resolve().parents[2]
 LAUNCHER_SOURCE = ROOT / "tools" / "launcher.cs"
 STUB_SOURCE = ROOT / "tests" / "fixtures" / "launcher_stub.cs"
@@ -308,6 +310,81 @@ class TestProvisioning:
         assert [call[0] for call in app.calls()] == ["python"]
 
 
+SITE_PACKAGES = ("runtime", "Lib", "site-packages")
+# 替身 uv 不裝東西：先放好 uv 裝完的樣子。名稱取自 #239 實測的 torch\lib（KINETO.LIB 換成大寫）
+TORCH_LIB_FILES = {"dnnl.lib": 300, "KINETO.LIB": 200, "torch_cpu.lib": 100,
+                   "torch_cpu.dll": 7, "c10.dll": 5,
+                   "notes.libx": 3}  # 檔名比對 *.lib 時會被誤刪的副檔名
+KEPT = {"torch_cpu.dll", "c10.dll", "notes.libx"}
+
+
+def _install_torch(app: App) -> tuple[Path, Path]:
+    torch_lib = app.root.joinpath(*SITE_PACKAGES, "torch", "lib")
+    torch_lib.mkdir(parents=True)
+    for name, size in TORCH_LIB_FILES.items():
+        (torch_lib / name).write_bytes(b"x" * size)
+    other = app.root.joinpath(*SITE_PACKAGES, "numpy", "_core", "lib", "npymath.lib")
+    other.parent.mkdir(parents=True)
+    other.write_bytes(b"x")
+    return torch_lib, other
+
+
+class TestStaticLibraries:
+    """首次佈建後刪掉 torch\\lib 的 .lib（#305）：執行時用不到，約 2.8 GB。"""
+
+    def test_first_provisioning_removes_them_and_keeps_the_dlls(self, app):
+        app.sentinel.unlink()
+        torch_lib, other = _install_torch(app)
+
+        result = app.run(server="exit:3")
+
+        assert {p.name for p in torch_lib.iterdir()} == KEPT
+        assert other.exists()  # 只刪 torch 的
+        assert app.sentinel.exists()
+        # 預先下載 PyTorch、uv、伺服器
+        assert [call[0] for call in app.calls()] == ["python", "uv", "python"]
+        assert "刪掉 torch\\lib 裡執行時用不到的 .lib：3 個，600 位元組" in result.log
+
+    def test_provisioned_runtime_removes_what_is_left_at_the_next_start(self, app):
+        # 首次佈建時刪不掉的，或這個版本之前佈建的
+        marked = app.sentinel.read_bytes()
+        torch_lib, _ = _install_torch(app)
+
+        result = app.run(server="exit:3")
+
+        assert {p.name for p in torch_lib.iterdir()} == KEPT
+        assert [call[0] for call in app.calls()] == ["python"]  # 不重新佈建
+        assert app.sentinel.read_bytes() == marked
+        assert "刪掉 torch\\lib 裡執行時用不到的 .lib：3 個" in result.log
+
+        again = app.run(server="exit:3", name="again")
+
+        assert "torch\\lib" not in again.log[len(result.log):]  # 沒東西可刪時不寫
+
+    def test_runtime_without_torch_starts_as_usual(self, app):
+        result = app.run(server="exit:3")
+
+        assert "伺服器還沒就緒就結束了（結束代碼 3）" in result.output
+        assert "torch\\lib" not in result.log
+
+    @windows_only
+    def test_one_that_cannot_be_removed_does_not_stop_provisioning(self, app):
+        # 防毒軟體掃描時開著檔案：Python 的 open 不帶 FILE_SHARE_DELETE，DeleteFile 會失敗
+        app.sentinel.unlink()
+        torch_lib, _ = _install_torch(app)
+
+        with (torch_lib / "dnnl.lib").open("rb"):
+            result = app.run(server="exit:3")
+
+        assert {p.name for p in torch_lib.iterdir()} == KEPT | {"dnnl.lib"}
+        assert app.sentinel.exists()
+        assert [call[0] for call in app.calls()] == ["uv", "python"]
+        assert "佈建失敗" not in result.output
+        assert "刪掉 torch\\lib 裡執行時用不到的 .lib：2 個，300 位元組" in result.log
+        assert "torch\\lib 裡有 1 個 .lib 刪不掉，下次啟動再試：dnnl.lib（IOException：" in result.log
+        assert USER not in result.log  # 例外訊息裡的路徑也去識別
+
+
 class TestIoErrors:
     def test_data_folder_that_cannot_be_created_names_the_path(self, app):
         app.data.write_text("佔住 data 這個名稱的檔案", encoding="utf-8")
@@ -389,6 +466,54 @@ class TestSingleInstance:
         finally:
             first.kill()
             first.wait()
+
+
+@windows_only
+class TestSharedWithStartBat:
+    """start.bat（tools/portable/start.py）和啟動器共用單一實例（#267）：同一個資料夾合起來只跑一個
+    伺服器。伺服器啟動時會先把「處理中」的任務記成失敗才綁埠，第二個綁不到埠也已經記了。
+    兩邊各自實作 mutex 的名稱，這裡用真的 mutex 確認對得上（路徑裡有中文的帳號名稱）。"""
+
+    def test_launcher_does_not_start_a_server_while_start_bat_runs(self, app):
+        release = start.acquire_instance(app.root)
+        assert release is not None
+        try:
+            second = app.run(name="second")
+        finally:
+            release()
+
+        assert second.returncode == 0
+        assert "已經在另一個視窗啟動中" in second.output
+        assert app.calls() == []
+
+    def test_start_bat_does_not_start_a_server_while_the_launcher_runs(self, app, capsys):
+        (app.root / "backend" / "main.py").write_text("", encoding="utf-8")
+        first, output = app.start(server="serve")
+        try:
+            _wait(lambda: "伺服器已就緒：" in _read(output))
+            url = _read(output).split("伺服器已就緒：", 1)[1].split()[0]
+
+            def serve(root: Path, port: int) -> int:
+                raise AssertionError("不該啟動第二個伺服器")
+
+            assert start.main([], app.root, serve=serve) == 0
+        finally:
+            first.kill()
+            first.wait()
+
+        out = capsys.readouterr().out
+        assert "AI_Translate 已經在執行，不會再啟動第二個" in out
+        assert f"請用瀏覽器開啟 {url}" in out
+
+    def test_launcher_starts_once_start_bat_has_released(self, app):
+        release = start.acquire_instance(app.root)
+        assert release is not None
+        release()
+
+        result = app.run(server="exit:3")
+
+        assert "已經在" not in result.output
+        assert [call[0] for call in app.calls()] == ["python"]
 
 
 class TestLog:

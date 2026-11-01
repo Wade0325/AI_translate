@@ -58,7 +58,7 @@
 | 顯卡（本機轉錄） | NVIDIA 顯卡，顯卡記憶體 12 GB 以上，建議 16 GB。8–12 GB 沒有測過；低於 8 GB 可能很慢，長音檔的說話者編號也比較容易對不上，畫面會提示，但照樣能用。GTX 900 系列（Maxwell）以前的顯卡不支援；GTX 10 系列（Pascal）沒有測過 |
 | 顯卡驅動（本機轉錄） | NVIDIA 驅動 572.61 以上：免安裝版的 PyTorch 帶的是 CUDA 12.8 Update 1，版本照 [NVIDIA 的對照表](https://docs.nvidia.com/cuda/cuda-toolkit-release-notes/)。驅動太舊時，畫面會寫出目前的版本與需要的版本 |
 | 顯卡（Gemini） | 不需要，但要自備 Gemini API 金鑰 |
-| 磁碟空間 | 首次啟動下載的執行環境約 3.5 GB；本機的預設模型權重約 3.7 GB，選用模型另需約 21 GB |
+| 磁碟空間 | 首次啟動下載約 3.5 GB 的執行環境，安裝時在解壓資料夾裡最多約佔 11.7 GB（其中約 3.5 GB 是暫存在 `runtime\downloads\` 的 PyTorch 安裝檔），裝好後刪掉安裝檔與執行時用不到的 PyTorch 靜態庫（約 2.8 GB），剩約 5.4 GB。下載的檔案另外解開存在 `%LOCALAPPDATA%\uv\cache`（通常在 C 槽）約 8 GB，佈建完成後可以刪掉：和解壓資料夾不在同一個磁碟時另外佔空間；在同一個磁碟時兩邊共用同一份檔案、不另外佔空間，但刪掉的那 2.8 GB 要等刪掉 `uv\cache` 才會真的空出來。本機的預設模型權重約 3.7 GB，選用模型另需約 21 GB |
 | 網路 | 首次啟動與下載模型權重時需要；用 Gemini 轉錄時也需要 |
 
 ---
@@ -70,7 +70,7 @@ Mimiji 只發布 Windows 免安裝版：下載 zip、解壓縮就能用，不必
 1. 到 [**Releases**](https://github.com/Wade0325/AI_translate/releases) 下載最新的 `AI_Translate-vX.Y.Z-win64.zip`。
 2. 解壓到任意位置（建議路徑不含中文與空白）。
 3. 雙擊 **`AI_Translate.exe`**，會開一個黑色視窗。
-   - 首次啟動會自動下載執行環境（約 3.5 GB，含 PyTorch），視網速需要數分鐘到數十分鐘；中斷後重開會接著下載。沒有 NVIDIA 顯卡的電腦也一樣會下載這些，只用 Gemini 時其中大部分用不到。
+   - 首次啟動會自動下載執行環境（約 3.5 GB，含 PyTorch），視網速需要數分鐘到數十分鐘；中斷後重新執行，會從中斷的地方接著下載。沒有 NVIDIA 顯卡的電腦也一樣會下載這些，只用 Gemini 時其中大部分用不到。
    - 就緒後自動開啟瀏覽器。網址以黑色視窗顯示的為準：預設是 `http://127.0.0.1:8000`，8000 埠被占用時會改用其他埠。
    - 關閉黑色視窗就停止程式。再雙擊一次 `AI_Translate.exe` 不會啟動第二個，而是打開已經在跑的那個網址。
    - 出錯時黑色視窗會停住，寫出原因、下一步與日誌檔所在的資料夾，按任意鍵才關。
@@ -196,7 +196,10 @@ Issue 是公開的，任何人都看得到：
 - **長音檔的說話者編號**：本機一次能處理的長度約 70 分鐘，顯卡記憶體較小時更短；更長的音檔分段轉錄，每一段各自分離說話者，段與段之間的說話者編號可能對不上（例如前一段的 `[S0]` 到下一段變成 `[S1]`）。
 - **介面語言**：介面中英夾雜，例如左側選單、頁面標題與部分按鈕是英文。
 - **API 金鑰沒有加密**：Gemini 的 API 金鑰照原樣存在 `data\app.db`，不要把 `data\` 資料夾或 `app.db` 交給別人。
-- **執行檔沒有數位簽章**：第一次執行 `AI_Translate.exe` 時，Windows 可能跳出 SmartScreen 的警告。
+
+不會改變的設計：
+
+- **執行檔沒有數位簽章**（[ADR 0010](docs/adr/0010-no-code-signing.md)）：第一次執行 `AI_Translate.exe` 時，Windows 可能跳出 SmartScreen 的「Windows 已保護您的電腦」，按「其他資訊」→「仍要執行」即可。開著 Smart App Control 的電腦可能直接擋下、沒有「仍要執行」可以按。防毒軟體攔下 `AI_Translate.exe` 時，可以改雙擊同一個資料夾裡的 `start.bat`：做的事一樣，只是不會自動開啟瀏覽器，用法見資料夾裡的 `README.txt`。
 
 ---
 
@@ -222,6 +225,8 @@ cd backend
 ```
 
 要看前端的畫面，先在 `frontend/` 執行 `npm run build`。帶環境變數 `AIT_DATA_DIR=<資料夾>` 可以把資料寫到別的資料夾，不動到既有的紀錄。
+
+模型權重放在 `HF_HOME`；沒設時，免安裝模式用資料目錄（`AIT_DATA_DIR`，沒設時是 repo 的 `data\`）底下的 `models\hf_cache`，和免安裝版相同。要沿用 `local_worker.bat` 那份權重，設 `$env:HF_HOME='D:\AI_translate\models\hf_cache'`。
 
 免安裝模式比 Docker 模式多三項限制（#16）：
 
@@ -412,7 +417,9 @@ git config core.hooksPath .githooks
 
 產出 `build\AI_Translate-v1.2.3-win64.zip`（約 150 MB —— Python 依賴不進 zip，
 由使用者首次啟動時以隨包 `uv` 依 `backend/requirements-standalone.txt` 自動下載）。
-其中佔九成下載量的 torch 由啟動器先以 `bin\prefetch_wheels.py`（`tools/portable/prefetch_wheels.py`）下載到 `runtime\downloads\`：斷線時可以從中斷的地方接著下載，網址、大小與 SHA-256 釘在那支程式裡，換 torch 的版本時一起換（測試會檢查）。uv 再以 `--find-links` 從那裡安裝，裝好後刪掉。
+其中佔九成下載量的 torch 由啟動器與 `start.py` 先以 `bin\prefetch_wheels.py`（`tools/portable/prefetch_wheels.py`）下載到 `runtime\downloads\`：斷線時可以從中斷的地方接著下載，網址、大小與 SHA-256 釘在那支程式裡，換 torch 的版本時一起換（測試會檢查）。uv 再以 `--find-links` 從那裡安裝，裝好後刪掉。
+發布包裡給使用者看的 `README.txt`，以及手動啟動用的 `start.bat` 與 `start.py` 放在 `tools/portable/`，建置時複製進去（`README.txt` 的 `{VERSION}` 換成版本號，`start.py` 放進 `bin\`）。`start.bat` 只能有 ASCII：cmd 遇到中文會讀錯下一行，所以它只用隨包的 Python 執行 `bin\start.py`，佈建、啟動與訊息都寫在 `start.py`。`start.py` 和啟動器用同名的 mutex 與 `data\launcher-url.txt` 互相擋住，同一個資料夾合起來只跑一個伺服器：伺服器啟動時會先把「處理中」的任務記成失敗才綁埠，第二個實例就算綁不到埠也已經記了。伺服器也和啟動器一樣放進 Job Object，只結束 `start.py` 時伺服器跟著結束。
+首次佈建成功後，啟動器與 `start.py` 都刪掉 `runtime\Lib\site-packages\torch\lib\*.lib`（約 2.8 GB，只有編譯要連結 torch 的 C++ 擴充時才用得到，#239 實測刪掉前後輸出相同），已佈建時每次啟動也補刪；刪不掉時照樣啟動。
 要在 git 的工作目錄裡、裝好 git 才能建置：後端只用 `git archive` 取白名單（腳本裡的 `$BackendPaths`）已經 commit 的檔案，沒進版控的東西不會被打包；白名單裡有還沒 commit 的改動或新檔時，建置會停下來，請先 commit 或 stash。
 Python embeddable、`uv` 與 ffmpeg 都釘版並驗 SHA-256，下載快取在 `build\cache\`；快取裡的檔案雜湊不符時會刪掉重新下載。
 推 `v*` tag 時 GitHub Actions（`.github/workflows/release.yml`）會先跑一次完整的 CI，通過後自動建置並發布 Release。
