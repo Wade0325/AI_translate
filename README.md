@@ -199,7 +199,10 @@ Issue 是公開的，任何人都看得到：
 - **本機轉錄要另外裝 Microsoft Visual C++ 可轉散發套件**：免安裝版沒有附這些 DLL（Microsoft [建議](https://learn.microsoft.com/cpp/windows/choosing-a-deployment-method)用可轉散發套件集中安裝，Windows Update 才更新得到），沒裝或太舊的電腦要先裝好才能用本機轉錄；Gemini 照樣能用。
 - **介面語言**：介面中英夾雜，例如左側選單、頁面標題與部分按鈕是英文。
 - **API 金鑰沒有加密**：Gemini 的 API 金鑰照原樣存在 `data\app.db`，不要把 `data\` 資料夾或 `app.db` 交給別人。
-- **執行檔沒有數位簽章**：第一次執行 `AI_Translate.exe` 時，Windows 可能跳出 SmartScreen 的警告。
+
+不會改變的設計：
+
+- **執行檔沒有數位簽章**（[ADR 0010](docs/adr/0010-no-code-signing.md)）：第一次執行 `AI_Translate.exe` 時，Windows 可能跳出 SmartScreen 的「Windows 已保護您的電腦」，按「其他資訊」→「仍要執行」即可。開著 Smart App Control 的電腦可能直接擋下、沒有「仍要執行」可以按。
 
 ---
 

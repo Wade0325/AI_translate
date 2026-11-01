@@ -35,7 +35,6 @@
 
 from __future__ import annotations
 
-import itertools
 import random
 import re
 import unicodedata
@@ -250,24 +249,67 @@ def speaker_distances(ref_spk: dict[str, list[str]],
     return d
 
 
+def _cheapest_assignment(cost: Sequence[Sequence[int]]) -> list[int]:
+    """方陣的最小成本指派（匈牙利演算法，O(n³)）：回傳每一列配到的欄。
+
+    說話者對應原本列舉全排列，20 位說話者就是 20!，永遠算不完（JVS 耳語，#273）。
+    """
+    n = len(cost)
+    inf = float("inf")
+    u = [0.0] * (n + 1)
+    v = [0.0] * (n + 1)
+    row_of = [0] * (n + 1)  # 第 j 欄配到的列（1 起算，0 表示還沒配）
+    way = [0] * (n + 1)
+    for i in range(1, n + 1):
+        row_of[0] = i
+        j0 = 0
+        min_v = [inf] * (n + 1)
+        used = [False] * (n + 1)
+        while True:
+            used[j0] = True
+            i0, delta, j1 = row_of[j0], inf, 0
+            for j in range(1, n + 1):
+                if not used[j]:
+                    cur = cost[i0 - 1][j - 1] - u[i0] - v[j]
+                    if cur < min_v[j]:
+                        min_v[j], way[j] = cur, j0
+                    if min_v[j] < delta:
+                        delta, j1 = min_v[j], j
+            for j in range(n + 1):
+                if used[j]:
+                    u[row_of[j]] += delta
+                    v[j] -= delta
+                else:
+                    min_v[j] -= delta
+            j0 = j1
+            if row_of[j0] == 0:
+                break
+        while j0:
+            j1 = way[j0]
+            row_of[j0] = row_of[j1]
+            j0 = j1
+    col_of = [0] * n
+    for j in range(1, n + 1):
+        col_of[row_of[j] - 1] = j - 1
+    return col_of
+
+
 def best_mapping(ref_spk, hyp_spk, dist=None) -> tuple[int, dict[str, str]]:
-    """列舉一對一對應，取總編輯距離最小者（cpWER 的標準做法）。"""
+    """一對一對應裡總編輯距離最小的一組（cpWER 的標準做法）。
+
+    配不到的說話者算全部刪除、配不到的標記算全部插入（對到空字串）。用指派問題的解法，不列舉全排列；
+    幾組對應平手時取哪一組沒有保證，總編輯距離（cpMER）相同。
+    """
     dist = dist or speaker_distances(ref_spk, hyp_spk)
     rk = sorted(ref_spk)
     hk = sorted(hyp_spk)
     n = max(len(rk), len(hk))
     rk_p = rk + [""] * (n - len(rk))
     hk_p = hk + [""] * (n - len(hk))
-    best = None
-    for perm in itertools.permutations(hk_p):
-        total = 0
-        for r, h in zip(rk_p, perm, strict=True):
-            if not r and not h:
-                continue
-            total += dist.get((r, h), 0)
-        if best is None or total < best[0]:
-            best = (total, {h: r for r, h in zip(rk_p, perm, strict=True) if h})
-    return best if best else (0, {})
+    cost = [[dist.get((r, h), 0) if r or h else 0 for h in hk_p] for r in rk_p]
+    cols = _cheapest_assignment(cost)
+    total = sum(cost[i][j] for i, j in enumerate(cols))
+    return total, {hk_p[j]: rk_p[i] for i, j in enumerate(cols) if hk_p[j]}
 
 
 def mapping_cost(ref_spk, hyp_spk, mapping: dict[str, str], dist=None) -> int:
@@ -500,13 +542,24 @@ def global_mapping(results: Sequence[Result]) -> tuple[dict[str, str], float | N
     dists = [speaker_distances(r.ref_spk, r.transcript_spk) for r in results]
     denom = sum(sum(len(v) for v in r.ref_spk.values()) for r in results) or 1
 
-    best: tuple[int, dict[str, str]] = (0, {})
-    for i, perm in enumerate(itertools.permutations(ref_p)):
-        mapping = {h: r for h, r in zip(hyp_p, perm, strict=True) if h}
-        total = sum(mapping_cost(r.ref_spk, r.transcript_spk, mapping, d)
-                    for r, d in zip(results, dists, strict=True))
-        if i == 0 or total < best[0]:
-            best = (total, mapping)
+    def pair_cost(rk: str, hk: str) -> int:
+        # 和 mapping_cost 同一套算法，拆成每一對的成本：標記配到這一段沒有的代號（或空字串）算全部
+        # 插入；這一段的代號沒有被這一段出現的標記配到，算全部刪除
+        total = 0
+        for r, d in zip(results, dists, strict=True):
+            in_ref, in_hyp = rk in r.ref_spk, hk in r.transcript_spk
+            if in_ref and in_hyp:
+                total += d[(rk, hk)]
+            elif in_hyp:
+                total += len(r.transcript_spk[hk])
+            elif in_ref:
+                total += len(r.ref_spk[rk])
+        return total
+
+    cost = [[pair_cost(r, h) for h in hyp_p] for r in ref_p]
+    mapping = {hyp_p[j]: r for r, j in zip(ref_p, _cheapest_assignment(cost), strict=True) if hyp_p[j]}
+    best = (sum(mapping_cost(r.ref_spk, r.transcript_spk, mapping, d)
+                for r, d in zip(results, dists, strict=True)), mapping)
     for r, d in zip(results, dists, strict=True):
         r.cp_mer_global = mapping_cost(r.ref_spk, r.transcript_spk, best[1], d) / (
             sum(len(v) for v in r.ref_spk.values()) or 1)
