@@ -1,0 +1,384 @@
+<!doctype html>
+<!--
+  三方對照的試聽頁（python -m tools.eval three-way compare 產生，見 tools/eval/three_way.py）。
+  只在使用者的電腦上用瀏覽器打開，不連網路、不上傳任何東西；資料由 compare 嵌在下面的
+  <script id="data">。決定存在瀏覽器（localStorage），按「下載決定」存成 JSON，交給
+  python -m tools.eval three-way apply。
+-->
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>三方對照 __TITLE__</title>
+<style>
+  :root {
+    --bg: #fbfbf9; --fg: #1d1d1b; --muted: #6b6b66; --card: #ffffff; --line: #e2e1dc;
+    --accent: #2f6fdf; --mark: #ffe08a; --chosen: #e7f0ff; --warn: #a3471f;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #161615; --fg: #ecebe6; --muted: #a09f99; --card: #20201e; --line: #34332f;
+      --accent: #7aa7ff; --mark: #6b5a1c; --chosen: #22324f; --warn: #f0a07a;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+         font: 16px/1.6 system-ui, "Noto Sans TC", "Noto Sans JP", "Microsoft JhengHei", sans-serif; }
+  header { position: sticky; top: 0; z-index: 1; background: var(--bg); border-bottom: 1px solid var(--line);
+           padding: 12px 16px; }
+  h1 { font-size: 18px; margin: 0 0 8px; }
+  audio { width: 100%; }
+  .bar { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; margin-top: 8px; font-size: 14px; }
+  .bar select, .bar button, .bar label { font: inherit; }
+  button { cursor: pointer; border: 1px solid var(--line); background: var(--card); color: var(--fg);
+           border-radius: 6px; padding: 4px 10px; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  main { max-width: 900px; margin: 0 auto; padding: 16px; }
+  details { font-size: 14px; color: var(--muted); }
+  .spot { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px;
+          margin-bottom: 12px; outline: none; }
+  .spot.current { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent); }
+  .spot.decided { opacity: .75; }
+  .meta { font-size: 13px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: center; }
+  .meta .cat { font-weight: 600; color: var(--fg); }
+  .context { margin: 8px 0; }
+  mark { background: var(--mark); color: inherit; padding: 0 1px; border-radius: 2px; }
+  mark.empty::before { content: "▲"; font-size: 11px; }
+  .opt { display: flex; gap: 8px; align-items: baseline; padding: 4px 6px; border-radius: 6px; }
+  .opt:has(input:checked) { background: var(--chosen); }
+  .opt .key { font-size: 12px; color: var(--muted); min-width: 1.2em; }
+  .opt .who { font-size: 13px; color: var(--muted); white-space: nowrap; }
+  .opt .text { font-weight: 600; }
+  .opt .ctx { display: block; font-size: 13px; color: var(--muted); }
+  .opt input[type=text] { font: inherit; width: 100%; min-width: 12em; }
+  .none { color: var(--muted); font-weight: 400; }
+  .warn { color: var(--warn); }
+  @media (max-width: 600px) { .opt { flex-wrap: wrap; } }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title"></h1>
+  <audio id="audio" controls preload="metadata"></audio>
+  <p id="no-audio" class="warn" hidden>沒有音檔：compare 時沒有給 --audio，或瀏覽器找不到檔案。</p>
+  <div class="bar">
+    <span id="progress"></span>
+    <label>顯示 <select id="filter"></select></label>
+    <label><input type="checkbox" id="autoplay"> 選完自動播下一處</label>
+    <button id="export" class="primary">下載決定</button>
+    <label>載入決定 <input type="file" id="import" accept=".json,application/json"></label>
+  </div>
+  <div class="bar" id="bulk"></div>
+  <details>
+    <summary>怎麼用</summary>
+    <p>每一處列出底稿和兩個模型的寫法，黃色是不一致的部分。按「播放」聽前後幾秒，選正確的寫法；三個都不對就選「自己輸入」，
+      聽不出來就選「聽不清」（那裡不計分）。鍵盤：J／K 下一處／上一處，空白鍵播放，1～5 選第幾個選項。</p>
+    <p>決定會存在這個瀏覽器裡，關掉再開還在。全部做完（或要換電腦）時按「下載決定」，把 JSON 交給
+      <code>python -m tools.eval three-way apply</code>。</p>
+  </details>
+</header>
+<main id="list"></main>
+<script id="data" type="application/json">__DATA__</script>
+<script>
+"use strict";
+const data = JSON.parse(document.getElementById("data").textContent);
+const storeKey = `three-way:${data.name}:${data.digest}`;
+const PAD = 1.5;          // 播放時前後多放幾秒
+const MIN_WINDOW = 4;     // 至少播幾秒
+let decisions = {};
+let current = 0;
+let stopAt = null;
+
+function load() {
+  try {
+    const raw = localStorage.getItem(storeKey);
+    if (raw) decisions = JSON.parse(raw) || {};
+  } catch (e) { decisions = {}; }
+}
+function save() {
+  try { localStorage.setItem(storeKey, JSON.stringify(decisions)); } catch (e) { /* 存不了就只留在這一頁 */ }
+}
+
+function fmt(sec) {
+  if (sec === null || sec === undefined) return "—";
+  const m = Math.floor(sec / 60), s = Math.floor(sec % 60);
+  return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+}
+
+// 文字放進元素：start..end 用 <mark> 標出來；空的範圍標成插入點
+function marked(text, start, end) {
+  const span = document.createElement("span");
+  span.append(text.slice(0, start));
+  const m = document.createElement("mark");
+  if (end > start) m.textContent = text.slice(start, end); else m.className = "empty";
+  span.append(m, text.slice(end));
+  return span;
+}
+
+function variantText(v) {
+  const s = document.createElement("span");
+  s.className = "text";
+  if (v.text) s.textContent = v.text; else { s.textContent = "（沒有這段）"; s.classList.add("none"); }
+  return s;
+}
+
+const labels = data.systems.map(s => s.label);
+
+function optionsFor(spot) {
+  // 正規化後相同的寫法併成一個選項
+  const opts = [];
+  const srcWho = ["底稿"];
+  if (spot.same.source_first) srcWho.push(labels[0]);
+  if (spot.same.source_second) srcWho.push(labels[1]);
+  opts.push({ choice: "source", who: srcWho.join("＝"), v: spot.source });
+  if (!spot.same.source_first) {
+    const who = [labels[0]];
+    if (spot.same.first_second) who.push(labels[1]);
+    opts.push({ choice: "first", who: who.join("＝"), v: spot.first });
+  }
+  if (!spot.same.source_second && !spot.same.first_second) {
+    opts.push({ choice: "second", who: labels[1], v: spot.second });
+  }
+  opts.push({ choice: "custom", who: "自己輸入" });
+  opts.push({ choice: "unclear", who: "聽不清（不計分）" });
+  return opts;
+}
+
+const cards = [];
+
+function render() {
+  document.getElementById("title").textContent =
+    `三方對照：${data.name}（不一致 ${data.spots.length} 處；${labels.join("、")}）`;
+  const audio = document.getElementById("audio");
+  if (data.audio) audio.src = data.audio.src;
+  else { audio.hidden = true; document.getElementById("no-audio").hidden = false; }
+  audio.addEventListener("error", () => { document.getElementById("no-audio").hidden = false; });
+  audio.addEventListener("timeupdate", () => {
+    if (stopAt !== null && audio.currentTime >= stopAt) { audio.pause(); stopAt = null; }
+  });
+
+  const filter = document.getElementById("filter");
+  const counts = {};
+  for (const s of data.spots) counts[s.category] = (counts[s.category] || 0) + 1;
+  const choices = [["all", `全部（${data.spots.length}）`], ["undecided", "還沒決定的"]];
+  for (const [key, label] of Object.entries(data.category_labels)) {
+    if (counts[key]) choices.push([key, `${label}（${counts[key]}）`]);
+  }
+  for (const [value, label] of choices) filter.append(new Option(label, value));
+  filter.addEventListener("change", applyFilter);
+
+  const bulk = document.getElementById("bulk");
+  for (const [key, label] of Object.entries(data.category_labels)) {
+    if (!counts[key]) continue;
+    const b = document.createElement("button");
+    b.textContent = `「${label}」沒決定的全部採用底稿`;
+    b.addEventListener("click", () => {
+      const todo = data.spots.filter(s => s.category === key && !decisions[s.id]);
+      if (!todo.length) return;
+      if (!confirm(`把 ${todo.length} 處「${label}」直接採用底稿的寫法？之後還是可以一處一處改。`)) return;
+      for (const s of todo) decisions[s.id] = { choice: "source" };
+      save(); refreshAll();
+    });
+    bulk.append(b);
+  }
+
+  const list = document.getElementById("list");
+  data.spots.forEach((spot, index) => {
+    const card = document.createElement("article");
+    card.className = "spot";
+    card.tabIndex = 0;
+    card.dataset.category = spot.category;
+    const line = data.lines[spot.line];
+
+    const meta = document.createElement("div");
+    meta.className = "meta";
+    const cat = document.createElement("span");
+    cat.className = "cat";
+    cat.textContent = data.category_labels[spot.category];
+    const play = document.createElement("button");
+    play.textContent = "▶ 播放";
+    play.addEventListener("click", ev => { ev.stopPropagation(); select(index); playSpot(spot); });
+    meta.append(`#${spot.id}`, ` ${fmt(spot.seconds)}`, cat, `說話者 ${line.speaker}`, play);
+
+    const ctx = document.createElement("div");
+    ctx.className = "context";
+    ctx.append("底稿這一句：", marked(line.text, spot.source.start, spot.source.end));
+
+    const fieldset = document.createElement("div");
+    optionsFor(spot).forEach((opt, k) => {
+      const row = document.createElement("label");
+      row.className = "opt";
+      const key = document.createElement("span");
+      key.className = "key";
+      key.textContent = String(k + 1);
+      const input = document.createElement("input");
+      input.type = "radio";
+      input.name = `spot-${spot.id}`;
+      input.value = opt.choice;
+      const who = document.createElement("span");
+      who.className = "who";
+      who.textContent = opt.who;
+      const body = document.createElement("span");
+      if (opt.choice === "custom") {
+        const text = document.createElement("input");
+        text.type = "text";
+        text.placeholder = "正確的寫法（只寫這一段）";
+        text.addEventListener("focus", () => { input.checked = true; });
+        text.addEventListener("input", () => {
+          input.checked = true;
+          decisions[spot.id] = { choice: "custom", text: text.value };
+          save(); refresh(index);
+        });
+        body.append(text);
+      } else if (opt.v) {
+        body.append(variantText(opt.v));
+        if (opt.choice !== "source" && opt.v.context) {
+          const c = document.createElement("span");
+          c.className = "ctx";
+          c.append(marked(opt.v.context, opt.v.start, opt.v.end));
+          body.append(c);
+        }
+      }
+      input.addEventListener("change", () => choose(index, opt.choice));
+      row.append(key, input, who, body);
+      fieldset.append(row);
+    });
+
+    card.append(meta, ctx, fieldset);
+    card.addEventListener("click", () => select(index));
+    list.append(card);
+    cards.push(card);
+  });
+  refreshAll();
+  select(0, false);
+}
+
+function choose(index, choice) {
+  const spot = data.spots[index];
+  if (choice === "custom") {
+    const text = cards[index].querySelector('input[type="text"]');
+    decisions[spot.id] = { choice, text: text.value };
+    text.focus();
+  } else {
+    decisions[spot.id] = { choice };
+  }
+  save(); refresh(index);
+  if (choice !== "custom" && document.getElementById("autoplay").checked) next(true);
+}
+
+function refresh(index) {
+  const spot = data.spots[index];
+  const card = cards[index];
+  const d = decisions[spot.id];
+  card.classList.toggle("decided", Boolean(d));
+  for (const input of card.querySelectorAll('input[type="radio"]')) {
+    input.checked = Boolean(d) && input.value === d.choice;
+  }
+  const text = card.querySelector('input[type="text"]');
+  if (d && d.choice === "custom" && document.activeElement !== text) text.value = d.text || "";
+  updateProgress();
+}
+
+function refreshAll() { data.spots.forEach((_, i) => refresh(i)); applyFilter(); }
+
+function updateProgress() {
+  const done = data.spots.filter(s => decisions[s.id]).length;
+  document.getElementById("progress").textContent = `已決定 ${done}／${data.spots.length}`;
+}
+
+function visible(index) {
+  const f = document.getElementById("filter").value;
+  const spot = data.spots[index];
+  if (f === "all") return true;
+  if (f === "undecided") return !decisions[spot.id];
+  return spot.category === f;
+}
+
+function applyFilter() { cards.forEach((card, i) => { card.hidden = !visible(i); }); }
+
+function select(index, scroll = true) {
+  if (!cards.length) return;
+  cards[current].classList.remove("current");
+  current = index;
+  cards[current].classList.add("current");
+  if (scroll) cards[current].scrollIntoView({ block: "center", behavior: "smooth" });
+}
+
+function next(play) {
+  for (let i = current + 1; i < cards.length; i++) {
+    if (visible(i) && (!play || !decisions[data.spots[i].id])) {
+      select(i);
+      if (play) playSpot(data.spots[i]);
+      return;
+    }
+  }
+}
+function prev() {
+  for (let i = current - 1; i >= 0; i--) if (visible(i)) { select(i); return; }
+}
+
+function playSpot(spot) {
+  const audio = document.getElementById("audio");
+  if (!data.audio || spot.seconds === null) return;
+  const start = Math.max(0, spot.seconds - PAD);
+  const end = Math.max(spot.end_seconds + PAD, start + MIN_WINDOW);
+  audio.currentTime = start;
+  stopAt = end;
+  audio.play();
+}
+
+document.addEventListener("keydown", ev => {
+  if (ev.target instanceof HTMLInputElement && ev.target.type === "text") {
+    if (ev.key === "Escape") ev.target.blur();
+    return;
+  }
+  if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
+  if (ev.key === "j") { next(false); ev.preventDefault(); }
+  else if (ev.key === "k") { prev(); ev.preventDefault(); }
+  else if (ev.key === " ") { playSpot(data.spots[current]); ev.preventDefault(); }
+  else if (/^[1-5]$/.test(ev.key)) {
+    const radios = cards[current].querySelectorAll('input[type="radio"]');
+    const r = radios[Number(ev.key) - 1];
+    if (r) { r.checked = true; choose(current, r.value); }
+    ev.preventDefault();
+  }
+});
+
+document.getElementById("export").addEventListener("click", () => {
+  const payload = {
+    name: data.name,
+    digest: data.digest,
+    exported_at: new Date().toISOString(),
+    decisions,
+  };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `${data.name}.decisions.json`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+});
+
+document.getElementById("import").addEventListener("change", async ev => {
+  const file = ev.target.files[0];
+  if (!file) return;
+  try {
+    const payload = JSON.parse(await file.text());
+    if (payload.digest !== data.digest) {
+      alert("這份決定不是對這份清單做的（重跑過比對），沒有載入。");
+      return;
+    }
+    decisions = payload.decisions || {};
+    save(); refreshAll();
+  } catch (e) {
+    alert("讀不懂這個檔案，沒有載入。");
+  } finally {
+    ev.target.value = "";
+  }
+});
+
+load();
+render();
+</script>
+</body>
+</html>

@@ -318,7 +318,7 @@ class TestWeights:
         assert weights.repo_is_ready(weights.ALIGNER_MODEL_ID)
 
     def test_ensure_local_ready_requires_gpu(self, monkeypatch):
-        monkeypatch.setattr(weights, "detect_gpu", lambda: None)
+        monkeypatch.setattr(weights, "detect_gpu", lambda: weights.NO_GPU)
         with pytest.raises(ValueError, match="NVIDIA 顯卡"):
             weights.ensure_local_ready()
 
@@ -361,7 +361,8 @@ class TestVramNotice:
         monkeypatch.setattr(weights, "detect_gpu", lambda: weights.Gpu("GPU", 8.0, True))
         assert "約 26 分鐘一段" in vram_notice("moss-align")
 
-    @pytest.mark.parametrize("gpu", [None, weights.Gpu("NVIDIA GeForce GTX 980", 4.0, False)])
+    @pytest.mark.parametrize("gpu", [weights.NO_GPU,
+                                     weights.Gpu("NVIDIA GeForce GTX 980", 4.0, False)])
     def test_no_notice_without_a_usable_card(self, monkeypatch, gpu):
         # 不能用的原因另外說（沒有顯卡、顯卡不支援），不再疊一段記憶體提示
         monkeypatch.setattr(weights, "detect_gpu", lambda: gpu)
@@ -484,7 +485,7 @@ class TestLocalCapabilities:
 
 class TestLocalReadiness:
     def test_missing_gpu_fails_before_any_transcription(self, monkeypatch):
-        monkeypatch.setattr(weights, "detect_gpu", lambda: None)
+        monkeypatch.setattr(weights, "detect_gpu", lambda: weights.NO_GPU)
         with pytest.raises(ValueError, match="NVIDIA 顯卡"):
             LocalProvider("moss-align")
 

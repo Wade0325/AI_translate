@@ -25,6 +25,17 @@ describe('轉錄頁選本機時，這台電腦能不能轉錄（#11）', () => {
       .toBe('switch');
   });
 
+  it.each(['driver_too_old', 'cuda_init_failed', 'torch_load_failed'])(
+    'PyTorch 用不了顯卡（%s，#262）：照後端寫的原因與下一步擋下，另外可以改用別的供應商',
+    (reason) => {
+      const message = 'NVIDIA 顯卡驅動太舊（目前 472.12，需要 572.61 以上），本機轉錄不能用，'
+        + '更新驅動後重新開啟 Mimiji，或改用 Gemini';
+      expect(readinessView(answer({ ready: false, reason, message }))).toEqual({
+        blockedReason: message, nextStep: 'switch', warning: null,
+      });
+    },
+  );
+
   it('缺模型權重：擋下 Start，下一步是到設定頁下載', () => {
     expect(readinessView(answer({ ready: false, reason: 'missing_weights', message: '缺權重' })))
       .toEqual({ blockedReason: '缺權重', nextStep: 'settings', warning: null });

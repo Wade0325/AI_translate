@@ -13,6 +13,7 @@ from app.celery.models import TranscriptionTaskParams
 from app.runtime import run_mode
 from app.runtime.run_mode import publish_status
 from app.core.config import get_settings
+from app.core.error_codes import ErrorCode, Failure, describe
 from app.core.task_status import TaskStatus
 from app.database.session import SessionLocal, traceback_without_db_details
 from app.provider.base import ModelCapabilities
@@ -21,6 +22,7 @@ from app.repositories.model_manager_repository import stored_prompt_template
 from app.repositories.transcription_log_repository import TranscriptionLogRepository
 from app.services import audio_store
 from app.services.api_keys import PlaintextApiKeyError, refuse_plaintext_api_keys, resolve_api_key
+from app.tasks.lifecycle import ended_status
 from app.utils.logger import setup_logger
 from app.utils.paths import MissingUploadError, UnsafeUploadFilenameError, existing_upload_path
 from app.websocket.manager import manager
@@ -43,6 +45,16 @@ QUEUED_TEXT = "排隊中，輪到時開始轉錄..."
 
 SUBMISSION_FAILED_TEXT = "提交任務失敗，任務沒有開始。請重新轉錄；一直失敗時，請到設定頁回報問題並附上日誌"
 """派送前出了非預期的錯誤（例如讀不到設定、應用程式正在關閉）時給使用者看的原因；原因只記在 log。"""
+
+SUBMISSION_FAILED = Failure(ErrorCode.SUBMIT_FAILED)
+"""派送前出了非預期的錯誤時的錯誤碼；細節是空的，原因只記在 log。"""
+
+REATTACHED_TEXT = "重新連上了，任務還在處理中..."
+"""接回任務時任務已經開始、還沒結束：給畫面看的狀態文字，之後的進度與結果照樣由任務廣播（#280）。"""
+
+TASK_GONE = Failure(
+    ErrorCode.INTERRUPTED, "伺服器上已經沒有這個任務：任務還沒做完，應用程式就關閉或重新啟動了")
+"""接回任務時，伺服器上已經沒有這個任務（沒有登記，任務紀錄也沒有結束）時的錯誤碼與細節。"""
 
 
 def start_transcription_task_sync(
@@ -211,7 +223,7 @@ async def websocket_endpoint(
                 logger.error(f"檔案不存在 (file_uid: {file_uid}): {e.filename!r}")
             else:  # 訊息固定，不含金鑰或檔名
                 logger.warning(f"拒絕轉錄請求 (file_uid: {file_uid}): {e}")
-            await _not_submitted(websocket, file_uid, str(e), code=1008)
+            await _not_submitted(websocket, file_uid, str(e), describe(e), code=1008)
             return
         except WebSocketDisconnect:
             raise
@@ -219,7 +231,8 @@ async def websocket_endpoint(
             # 例外不轉述（資料庫例外帶著 SQL 原文）：log 只記類型與原因，traceback 留著出錯的位置
             logger.error(f"提交轉錄任務失敗 (file_uid: {file_uid}):\n"
                          f"{traceback_without_db_details(e)}")
-            await _not_submitted(websocket, file_uid, SUBMISSION_FAILED_TEXT, code=1011)
+            await _not_submitted(
+                websocket, file_uid, SUBMISSION_FAILED_TEXT, SUBMISSION_FAILED, code=1011)
             return
 
         # 保持連線開啟以接收來自客戶端的訊息
@@ -236,18 +249,83 @@ async def websocket_endpoint(
         await manager.close(file_uid, websocket)
 
 
+@router.websocket("/ws/{file_uid}/tasks/{task_uuid}", name="WebSocket Reattach Transcription")
+async def reattach_endpoint(websocket: WebSocket, file_uid: str, task_uuid: str):
+    """連線中斷之後，接回這個檔案已經送出的單檔任務（#280）。
+
+    連線斷了不會停止任務：任務照樣在伺服器上跑，結果寫進任務紀錄。畫面重新連上這裡，先收到一則任務現在
+    的狀態（:func:`task_state`），之後和送出任務的那條連線一樣收這個任務的廣播。
+
+    連線先登記、再查狀態：查完之後才宣告的結束一定送得到這條連線。查狀態時出錯就以 1011 關閉，
+    畫面稍後再連一次。
+    """
+    await manager.connect(websocket, file_uid)
+    try:
+        await websocket.send_json(await run_in_threadpool(task_state, file_uid, task_uuid))
+        # 保持連線開啟，收任務之後的廣播；畫面送來的只有心跳
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        logger.info(f"接回任務的 WebSocket 連線關閉: {file_uid}")
+        manager.disconnect(file_uid, websocket)
+    except Exception as e:
+        logger.error(f"接回任務時發生錯誤 (file_uid: {file_uid}):\n"
+                     f"{traceback_without_db_details(e)}")
+        # 只關、只移除這條連線：同一個檔案可能已經有新的連線登記上來（#203）
+        await manager.close(file_uid, websocket, code=1011)
+
+
+def task_state(file_uid: str, task_uuid: str) -> dict:
+    """這個檔案送出的單檔任務現在的狀態，寫成和任務廣播一樣的狀態訊息；接回任務時第一則送給畫面。
+
+    - 任務還在排隊或處理中（這個檔案登記的就是這個任務，也還活著）：處理中。還沒有任務紀錄（還沒開始）
+      時是排隊中，和派送前送的那一則相同。紀錄已經被取消端點記成已取消、任務還在收尾時例外，照紀錄說
+      已取消：取消端點當下就宣告了已取消，任務之後也不會蓋掉它。
+    - 任務已經結束：照任務紀錄補上結束時的宣告（完成帶結果，失敗帶錯誤碼與細節，見
+      :func:`~app.tasks.lifecycle.ended_status`）。
+    - 都不是：伺服器上已經沒有這個任務，例如任務還沒做完，應用程式就重新啟動了（登記只在記憶體裡，
+      還在排隊的任務也沒有紀錄）。記成失敗，錯誤碼是 INTERRUPTED，畫面請使用者重新轉錄。
+
+    先看登記，再看紀錄：任務結束時先寫好紀錄、清掉登記，最後才宣告。所以登記說任務還在時，結束的宣告
+    還沒送出，會送到已經登記的連線；登記說任務不在時，紀錄已經寫好了。Docker 模式的 Celery 回不知道
+    （None）時，和取消端點一樣當成還在。
+    """
+    mode = run_mode.get()
+    registered = mode.registered_task(file_uid)
+    running = (registered is not None and registered.task_id == task_uuid
+               and mode.is_alive(task_uuid) is not False)
+    with SessionLocal() as db:
+        if running:
+            recorded = TranscriptionLogRepository().current_status(db, task_uuid)
+            if recorded != TaskStatus.CANCELLED:
+                return _status(file_uid, TaskStatus.PROCESSING,
+                               QUEUED_TEXT if recorded is None else REATTACHED_TEXT,
+                               task_uuid=task_uuid)
+        ended = ended_status(db, task_uuid)
+    if ended is None:
+        return _status(file_uid, TaskStatus.FAILED, f"任務失敗: {TASK_GONE.detail}",
+                       task_uuid=task_uuid, failure=TASK_GONE)
+    return {**_status(file_uid, ended["status_code"], ended["status_text"], task_uuid=task_uuid),
+            **ended}
+
+
 def _status(file_uid: str, status_code: TaskStatus, status_text: str, *,
-            task_uuid: str | None = None) -> dict:
-    """端點自己送給畫面的狀態訊息，欄位和任務的狀態廣播（:func:`publish_status`）相同。"""
+            task_uuid: str | None = None, failure: Failure | None = None) -> dict:
+    """端點自己送給畫面的狀態訊息，欄位和任務的狀態廣播（:func:`publish_status`）相同；失敗時一樣
+    帶錯誤碼與細節。"""
     message = {"client_id": file_uid, "file_uid": file_uid,
                "status_code": status_code, "status_text": status_text}
     if task_uuid:
         message["task_uuid"] = task_uuid
+    if failure is not None:
+        message.update(failure.fields())
     return message
 
 
-async def _not_submitted(websocket: WebSocket, file_uid: str, reason: str, *, code: int) -> None:
-    """告訴畫面任務沒有送出與原因，再關掉這條連線。"""
-    await websocket.send_json(_status(file_uid, TaskStatus.FAILED, reason))
+async def _not_submitted(websocket: WebSocket, file_uid: str, reason: str, failure: Failure, *,
+                         code: int) -> None:
+    """告訴畫面任務沒有送出與原因（``reason`` 是狀態文字，``failure`` 是錯誤碼與細節），再關掉這條
+    連線。"""
+    await websocket.send_json(_status(file_uid, TaskStatus.FAILED, reason, failure=failure))
     # 只關、只移除這條連線：重新轉錄的新連線可能已經登記在同一個 file_uid 底下（#203）
     await manager.close(file_uid, websocket, code=code)

@@ -27,7 +27,8 @@
 用量是這個任務每一次呼叫供應商的總和，包括失敗後被切段重試取代的那次：供應商照樣收費。拋出例外的
 那次沒有回應，不算用量。處理模式每一次都相同才照記，不然算標準。失敗時回傳失敗的轉錄結果，取消時
 把到目前為止的用量附在取消上。非預期的例外（程式錯誤，例如合併時出錯）也當成失敗：例外連同 traceback
-記進 log，回傳帶著用量的失敗結果。
+記進 log，回傳帶著用量的失敗結果。轉接器拋出的例外在這裡換成失敗的轉錄結果，錯誤碼與給使用者看的
+原因照 :func:`app.core.error_codes.describe` 對應；轉接器自己回報的失敗照它寫的錯誤碼。
 
 自己產生的暫存檔（切出的段、為了 Silero 轉成的 wav）不論完成、失敗或取消都清掉，段的音檔等合併做完
 才刪；語音視圖的暫存檔與轉接器由呼叫端清理與釋放。
@@ -40,6 +41,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from app.core.config import get_settings
+from app.core.error_codes import ErrorCode, Failure, describe
 from app.exceptions import TranscriptionCancelledError, TransientError
 from app.provider.base import ProgressAndCancel, Provider, TranscribeRequest
 from app.services.silence_removal import SpeechView
@@ -67,7 +69,8 @@ def transcribe(
     original_filename: str,
 ) -> TranscriptionTaskResult:
     """轉錄語音視圖：回傳在原音檔時間軸上的轉錄結果，片段依開始時間排好、序號連續，用量是每一次
-    呼叫供應商的總和。失敗時（包括非預期的例外）回傳失敗的轉錄結果，``text`` 是給使用者看的原因。
+    呼叫供應商的總和。失敗時（包括非預期的例外）回傳失敗的轉錄結果，``text`` 是給使用者看的原因，
+    ``error_code`` 是錯誤碼。
 
     切出的段放在 ``temp_dir``；``task_id`` 與 ``original_filename`` 只用來替 vad_artifacts/ 底下的
     資料夾命名（見 :func:`persist_split`）。
@@ -142,11 +145,11 @@ class _TranscribedChunk:
 
 
 class _Failed(Exception):
-    """分段轉錄以失敗結束；``text`` 是給使用者看的原因。"""
+    """分段轉錄以失敗結束；``failure`` 是錯誤碼與給使用者看的原因。"""
 
-    def __init__(self, text: str):
-        super().__init__(text)
-        self.text = text
+    def __init__(self, failure: Failure):
+        super().__init__(failure.detail)
+        self.failure = failure
 
 
 class _ChunkedTranscription:
@@ -184,8 +187,8 @@ class _ChunkedTranscription:
         try:
             self._transcribe_in_order(whole)
             return self._merged()
-        except _Failed as failure:
-            return self._result(success=False, text=failure.text)
+        except _Failed as failed:
+            return self._failed_result(failed.failure)
         except TranscriptionCancelledError as cancelled:
             # 取消前已經轉完的段，供應商照樣收費：用量交給任務生命週期記在已取消的紀錄上
             cancelled.billed_usage = self._usage
@@ -194,7 +197,7 @@ class _ChunkedTranscription:
             # 非預期的例外（程式錯誤，例如合併時出錯）：前面每一次呼叫供應商照樣收費，和其他失敗一樣
             # 回傳帶著用量的失敗結果，由任務生命週期記成失敗
             logger.error(f"分段轉錄發生非預期的錯誤: {e}", exc_info=True)
-            return self._result(success=False, text=f"[[轉錄錯誤: {e}]]")
+            return self._failed_result(describe(e))
         finally:
             # 段的音檔在合併之後才刪
             delete_temp_files(self._temp_files)
@@ -208,7 +211,8 @@ class _ChunkedTranscription:
         self._progress.raise_if_cancelled()
         halves = self._split(chunk, ("a", "b"))
         if halves is None:
-            raise _Failed(self._failure(chunk, "音檔較長，卻切不開，無法分段轉錄"))
+            raise _Failed(self._failure(
+                chunk, ErrorCode.AUDIO_UNREADABLE, "音檔較長，卻切不開，無法分段轉錄"))
         self._progress.report(f"音檔較長（{chunk.duration / 60:.1f} 分鐘），分段轉錄...")
         for half in halves:
             self._transcribe_in_order(half)
@@ -220,12 +224,13 @@ class _ChunkedTranscription:
         if result.success:
             self._transcribed.append(_TranscribedChunk(chunk, result))
             return
+        code = result.error_code or ErrorCode.INTERNAL
         if not self._may_split_retry(chunk):
-            raise _Failed(self._failure(chunk, result.text))
+            raise _Failed(self._failure(chunk, code, result.text))
         self._progress.raise_if_cancelled()
         halves = self._split(chunk, ("s0", "s1"))
         if halves is None:
-            raise _Failed(self._failure(chunk, result.text))
+            raise _Failed(self._failure(chunk, code, result.text))
         logger.info(f"轉錄失敗，把 {chunk.duration:.1f} 秒的段切成兩段重試")
         for half in halves:
             self._transcribe_chunk(half)
@@ -240,11 +245,11 @@ class _ChunkedTranscription:
             return False
         return True
 
-    def _failure(self, chunk: _Chunk, reason: str) -> str:
-        """給使用者看的失敗原因：分段轉錄時寫明是第幾段、在原音檔的哪裡。"""
+    def _failure(self, chunk: _Chunk, code: ErrorCode, reason: str) -> Failure:
+        """這一段讓分段轉錄失敗：錯誤碼照這一段的，給使用者看的原因寫明是第幾段、在原音檔的哪裡。"""
         reason = reason.strip().removeprefix("[[").removesuffix("]]")
         which = self._which(chunk)
-        return f"[[{which}：{reason}]]" if which else f"[[{reason}]]"
+        return Failure(code, f"{which}：{reason}" if which else reason)
 
     def _which(self, chunk: _Chunk) -> str:
         """「分段轉錄的第幾段（在原音檔的起訖）」；沒有分段時是空的。依時間先後，前面的段都已經轉完。"""
@@ -269,7 +274,8 @@ class _ChunkedTranscription:
                 if retries >= get_settings().transient_error_retries:
                     logger.warning(f"暫時錯誤重試 {retries} 次仍失敗: {error}")
                     raise _Failed(self._failure(
-                        chunk, f"暫時錯誤重試 {retries} 次仍失敗（{_why(error)}）")) from error
+                        chunk, describe(error).code,
+                        f"暫時錯誤重試 {retries} 次仍失敗（{_why(error)}）")) from error
                 retries += 1
                 self._wait_before_retrying(chunk, error, retries)
 
@@ -298,7 +304,9 @@ class _ChunkedTranscription:
             raise
         except Exception as e:
             logger.error(f"轉錄過程發生錯誤: {e}")
-            return TranscriptionTaskResult(success=False, text=f"[[轉錄錯誤: {e}]]")
+            failure = describe(e)
+            return TranscriptionTaskResult(
+                success=False, text=failure.detail, error_code=failure.code)
         self._usage = _add_usage(self._usage, result)
         return result
 
@@ -365,16 +373,23 @@ class _ChunkedTranscription:
         if self._view.removed_silence:
             self._progress.report("時間還原回原音檔...")
             logger.info("片段的時間還原回原音檔的時間軸")
-        return self._result(success=True, text=_why_no_segments(segments, self._transcribed),
+        why = _why_no_segments(segments, self._transcribed)
+        return self._result(success=True, text=why.text if why else "",
+                            error_code=why.error_code if why else None,
                             segments=self._view.timeline.in_original_order(segments))
 
-    def _result(self, *, success: bool, text: str,
+    def _failed_result(self, failure: Failure) -> TranscriptionTaskResult:
+        """以失敗結束的轉錄結果，帶著錯誤碼與到目前為止的用量。"""
+        return self._result(success=False, text=failure.detail, error_code=failure.code)
+
+    def _result(self, *, success: bool, text: str, error_code: Optional[ErrorCode] = None,
                 segments: Sequence[Dict[str, Any]] = ()) -> TranscriptionTaskResult:
         """帶著到目前為止的用量的轉錄結果。"""
         usage = self._usage or TranscriptionTaskResult(success=False)
         return TranscriptionTaskResult(
             success=success,
             text=text,
+            error_code=error_code,
             input_tokens=usage.input_tokens,
             output_tokens=usage.output_tokens,
             total_tokens=usage.total_tokens,
@@ -432,12 +447,12 @@ def _shifted(span: Mapping[str, Any], chunk: _Chunk) -> Dict[str, Any]:
 
 
 def _why_no_segments(segments: Sequence[Mapping[str, Any]],
-                     transcribed: Sequence[_TranscribedChunk]) -> str:
-    """合併之後的 text：有片段時是空的；一段都沒有時，取第一個寫了原因的段的說明，整個任務都沒有
-    片段時由任務生命週期拿它回報失敗。"""
+                     transcribed: Sequence[_TranscribedChunk]) -> Optional[TranscriptionTaskResult]:
+    """合併之後為什麼沒有片段：有片段時是 None；一段都沒有時，是第一個寫了原因的段的轉錄結果，
+    整個任務都沒有片段時由任務生命週期拿它的說明（``text``）與錯誤碼回報失敗。"""
     if segments:
-        return ""
-    return next((piece.result.text for piece in transcribed if piece.result.text), "")
+        return None
+    return next((piece.result for piece in transcribed if piece.result.text), None)
 
 
 def _add_usage(

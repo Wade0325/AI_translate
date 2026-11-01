@@ -4,7 +4,8 @@ import { useCallback, useEffect, useRef } from 'react';
  * 集中管理轉錄相關 WebSocket 連線：
  *  - 自動清理：hook 卸載時所有 socket 都會關閉
  *  - 心跳：每 30s 送一次 ping，避免代理層因閒置而中斷連線
- *  - 重連：非正常斷線 (close code !== 1000) 時依指數 backoff 重連，最多 N 次
+ *  - 重連：開了 autoReconnect 的連線非正常斷線 (close code !== 1000) 時依指數 backoff 重連，
+ *    預設最多 N 次，可以用 maxReconnectAttempts 改（Infinity 是一直重連，直到這一端自己關掉）
  *
  * 設計成低階 API，呼叫者透過 ``openSocket(id, url, handlers)`` 啟動連線，並收到
  * 事件 callback；同一個 ``id`` 第二次呼叫時舊連線會先被關閉。
@@ -57,7 +58,8 @@ export function useTranscriptionSocket() {
    *   - onError(event):         連線錯誤
    *   - onClose(event, { byClient }): 連線關閉（不論正常或異常）。byClient 是這一端自己關的：
    *                             closeSocket、closeAll、同一個 id 再開一條，或 hook 卸載
-   *   - autoReconnect:          非正常關閉時是否自動重連，預設 false
+   *   - autoReconnect:          非正常關閉時是否自動重連，預設 false。重連時開新的連線，onOpen 會再呼叫一次
+   *   - maxReconnectAttempts:   連續重連幾次都沒連上就放棄，預設 RECONNECT_MAX_ATTEMPTS；連上就重新計算
    */
   const openSocket = useCallback((id, url, handlers = {}) => {
     const {
@@ -66,6 +68,7 @@ export function useTranscriptionSocket() {
       onError,
       onClose,
       autoReconnect = false,
+      maxReconnectAttempts = RECONNECT_MAX_ATTEMPTS,
     } = handlers;
 
     if (slotsRef.current[id]) {
@@ -117,7 +120,7 @@ export function useTranscriptionSocket() {
           autoReconnect &&
           stillRegistered &&
           event.code !== 1000 &&
-          slot.attempts < RECONNECT_MAX_ATTEMPTS;
+          slot.attempts < maxReconnectAttempts;
 
         if (shouldReconnect) {
           const delay = Math.min(

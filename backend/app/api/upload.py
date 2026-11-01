@@ -46,11 +46,14 @@ async def upload_file(
     上傳檔案到臨時目錄，供後續處理使用
     """
     if not file.filename:
-        raise HTTPException(status_code=400, detail="No filename provided.")
+        raise HTTPException(status_code=400, detail="檔案沒有檔名，請重新選擇檔案")
 
     if file.content_type not in SUPPORTED_MIME_TYPES:
+        # 訊息會顯示在轉錄頁的檔案卡上（錯誤碼 UPLOAD_FAILED 的細節）
         raise HTTPException(
-            status_code=400, detail=f"Unsupported file format: {file.content_type}."
+            status_code=400,
+            detail=f"不支援這種檔案格式（{file.content_type or '瀏覽器沒有告知類型'}），"
+                   "請改用常見的音訊或影片格式，例如 MP3、WAV、M4A、MP4",
         )
 
     TEMP_UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
@@ -68,7 +71,7 @@ async def upload_file(
 
         if size == 0:
             temp_file_path.unlink()
-            raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+            raise HTTPException(status_code=400, detail="檔案是空的（0 位元組），請確認檔案沒有損壞")
 
         saved_filename = temp_file_path.name
         logger.info(f"臨時檔案已保存: {temp_file_path}")

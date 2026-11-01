@@ -23,8 +23,9 @@ import soundfile as sf
 from gevent import GreenletExit
 from starlette.websockets import WebSocketDisconnect
 
-from app.api.transcription import QUEUED_TEXT, SUBMISSION_FAILED_TEXT
+from app.api.transcription import QUEUED_TEXT, REATTACHED_TEXT, SUBMISSION_FAILED_TEXT, TASK_GONE
 from app.core.default_prompt import build_prompt
+from app.core.error_codes import ErrorCode
 from app.core.task_status import TaskStatus
 from app.exceptions import TransientError
 from app.runtime import run_mode
@@ -529,7 +530,7 @@ class TestSpeechView:
         fake.script = [[(1.0, junction, 0, "前半。", [("前", 1.0, 3.0), ("半", 3.0, junction)]),
                         (junction, 8.0, 1, "後半。",
                          [("後", junction, junction), ("半", junction, 8.0)])]]
-        task_uuid = transcribe(api, "uid-junction", voiced=LONG_GAP)[-1]["task_uuid"]
+        task_uuid = transcribe(api, "uid-junction", voiced=LONG_GAP, multi_speaker=True)[-1]["task_uuid"]
 
         first, second = stored_segments(api, task_uuid)
         assert flat_times([first, second]) == pytest.approx([1.0, 6.3, 13.7, 15.4])
@@ -557,7 +558,7 @@ class TestSpeechView:
         fake.script = [[(1.0, junction, 0, "今日は、ありがとう。",
                          [("今", 1.0, 1.2), ("日", 1.2, 1.4), ("は", 1.4, 1.8),
                           ("ありがとう", 5.3, junction)])]]
-        task_uuid = transcribe(api, "uid-junction-end", voiced=LONG_GAP)[-1]["task_uuid"]
+        task_uuid = transcribe(api, "uid-junction-end", voiced=LONG_GAP, multi_speaker=True)[-1]["task_uuid"]
 
         assert download(api, task_uuid, "lrc") == "[00:01.00][S0] 今日は、ありがとう。"
         assert download(api, task_uuid, "srt") == (
@@ -814,6 +815,15 @@ class TestSplitRetryAfterFailure:
 
 # ─── 輸出格式從片段產生 ─────────────────────────────────────────────────────
 
+INTERJECTION = [
+    (0.5, 6.5, 1, "你拉不拉货。但是。",
+     [("你", 0.5, 1.0), ("拉", 1.0, 1.5), ("不", 1.5, 2.0), ("拉", 2.0, 2.5),
+      ("货", 2.5, 3.5), ("但", 4.0, 4.5), ("是", 4.5, 6.5)]),
+    (3.0, 3.25, 0, "对", [("对", 3.0, 3.0)]),
+]
+"""像 AISHELL-4 會議錄音 4:07.6 的插話（ADR-0008）：S1 講到 3.5 秒，S0 在 3.0 秒插一句「对」；
+「对」的詞是零長度。"""
+
 class TestOutputFormatsFromSegments:
     @pytest.fixture
     def completed(self, api, fake):
@@ -822,7 +832,7 @@ class TestOutputFormatsFromSegments:
         # 一個片段兩句，逐字時間讓下載在句尾斷行
         fake.script = [[(0.2, 2.6, 0, "おはよう。こんにちは。",
                          [("おはよう", 0.24, 0.9), ("こんにちは", 1.5, 2.56)])]]
-        messages = transcribe(api, "uid-words")
+        messages = transcribe(api, "uid-words", multi_speaker=True)
         assert codes(messages)[-1] == TaskStatus.COMPLETED
         return messages[-1]
 
@@ -846,7 +856,7 @@ class TestOutputFormatsFromSegments:
         assert broadcast == download(api, completed["task_uuid"], fmt)
 
     def test_frozen_original_transcription_is_the_lrc_download(self, api, completed, test_engine):
-        # 凍結的原始轉錄副本和下載的 LRC 一樣，由輸出格式模組從轉錄結果產生
+        # 凍結的原始轉錄副本和 Multi-Speaker 開著時下載的 LRC 一樣，由輸出格式模組從轉錄結果產生
         task_uuid = completed["task_uuid"]
         assert frozen_original(test_engine, task_uuid) == download(api, task_uuid, "lrc")
 
@@ -860,7 +870,7 @@ class TestOutputFormatsFromSegments:
         fake.script = [[(0.8, 8.2, 0, "今日は、ありがとう。",
                          [("今", 1.0, 1.2), ("日", 1.2, 1.4), ("は", 1.4, 1.8),
                           ("ありがとう", 7.0, 8.0)])]]
-        messages = transcribe(api, "uid-gap", voiced=LONG_GAP)
+        messages = transcribe(api, "uid-gap", voiced=LONG_GAP, multi_speaker=True)
         assert codes(messages)[-1] == TaskStatus.COMPLETED
         return messages[-1]
 
@@ -892,11 +902,8 @@ class TestOutputFormatsFromSegments:
         # 「对」，兩行同時顯示；「对」的詞是零長度，顯示最短的 0.8 秒。字幕依開始時間排序，
         # S1 的片段斷成的第二行排在「对」後面
         fake.model_capabilities = replace(fake.model_capabilities, remove_silence=False)
-        fake.script = [[(0.5, 6.5, 1, "你拉不拉货。但是。",
-                         [("你", 0.5, 1.0), ("拉", 1.0, 1.5), ("不", 1.5, 2.0), ("拉", 2.0, 2.5),
-                          ("货", 2.5, 3.5), ("但", 4.0, 4.5), ("是", 4.5, 6.5)]),
-                        (3.0, 3.25, 0, "对", [("对", 3.0, 3.0)])]]
-        messages = transcribe(api, "uid-interjection")
+        fake.script = [list(INTERJECTION)]
+        messages = transcribe(api, "uid-interjection", multi_speaker=True)
 
         assert codes(messages)[-1] == TaskStatus.COMPLETED
         assert download(api, messages[-1]["task_uuid"], fmt) == expected
@@ -912,7 +919,7 @@ class TestOutputFormatsFromSegments:
         # 供應商只給開始時間：照以前，下一行的開始，最後一行加 5 秒
         fake.model_capabilities = replace(fake.model_capabilities, remove_silence=False)
         fake.script = [[(0.25, None, 0, "おはよう。"), (2.5, None, 1, "こんにちは。")]]
-        messages = transcribe(api, "uid-no-end")
+        messages = transcribe(api, "uid-no-end", multi_speaker=True)
 
         assert codes(messages)[-1] == TaskStatus.COMPLETED
         assert download(api, messages[-1]["task_uuid"], fmt) == expected
@@ -923,11 +930,56 @@ class TestOutputFormatsFromSegments:
         fake.script = [[(0.2, 0.9, 0, None),
                         (1.0, 2.6, 1, "おはよう。こんにちは。",
                          [("おはよう", 1.04, 1.6), ("こんにちは", None, 2.56)])]]
-        messages = transcribe(api, "uid-untimed")
+        messages = transcribe(api, "uid-untimed", multi_speaker=True)
 
         assert codes(messages)[-1] == TaskStatus.COMPLETED
         assert download(api, messages[-1]["task_uuid"], "lrc") == (
             "[00:01.00][S1] おはよう。こんにちは。")
+
+
+# ─── Multi-Speaker 開關（#13 Q1） ───────────────────────────────────────────
+
+class TestMultiSpeakerOff:
+    """關掉時四種輸出格式都不帶說話者標記；片段與凍結的原始轉錄副本照樣有說話者編號。開著時的
+    輸出見上面 :class:`TestOutputFormatsFromSegments` 的插話。"""
+
+    @pytest.fixture
+    def interjection(self, api, fake):
+        """沒帶 Multi-Speaker 的任務（請求的預設是關）：S0 在 S1 講話時插話。"""
+        fake.model_capabilities = replace(fake.model_capabilities, remove_silence=False)
+        fake.script = [list(INTERJECTION)]
+        messages = transcribe(api, "uid-multi-speaker-off")
+        assert codes(messages)[-1] == TaskStatus.COMPLETED
+        return messages[-1]
+
+    @pytest.mark.parametrize("fmt, expected", [
+        # LRC、TXT 照片段的順序；行首沒有說話者標記，時間戳後面直接接文字
+        ("lrc", "[00:00.50]你拉不拉货。\n[00:04.00]但是。\n[00:03.00]对"),
+        ("txt", "你拉不拉货。\n但是。\n对"),
+        # 沒有標記的行都算同一位說話者（ADR-0008）：不重疊，S1 的字幕在「对」開始時結束；也不上色
+        ("srt", "1\n00:00:00,500 --> 00:00:03,000\n你拉不拉货。\n\n"
+                "2\n00:00:03,000 --> 00:00:03,800\n对\n\n"
+                "3\n00:00:04,000 --> 00:00:06,500\n但是。\n"),
+        ("vtt", "WEBVTT\n\n00:00:00.500 --> 00:00:03.000\n你拉不拉货。\n\n"
+                "00:00:03.000 --> 00:00:03.800\n对\n\n"
+                "00:00:04.000 --> 00:00:06.500\n但是。\n"),
+    ])
+    def test_downloads_have_no_speaker_labels_and_do_not_overlap(
+            self, api, interjection, fmt, expected):
+        assert download(api, interjection["task_uuid"], fmt) == expected
+
+    @pytest.mark.parametrize("fmt", ["lrc", "srt", "vtt", "txt"])
+    def test_completion_broadcast_matches_the_download(self, api, interjection, fmt):
+        broadcast = interjection["result"]["transcripts"][fmt]
+        assert broadcast == download(api, interjection["task_uuid"], fmt)
+
+    def test_segments_and_the_frozen_original_keep_the_speakers(
+            self, api, interjection, test_engine):
+        # 原始轉錄不少資訊（ADR-0007）：只在產生輸出格式時省略標記
+        task_uuid = interjection["task_uuid"]
+        assert [s["speaker"] for s in stored_segments(api, task_uuid)] == ["S1", "S0"]
+        assert frozen_original(test_engine, task_uuid) == (
+            "[00:00.50][S1] 你拉不拉货。\n[00:04.00][S1] 但是。\n[00:03.00][S0] 对")
 
 
 # ─── 模型不屬於供應商 ───────────────────────────────────────────────────────
@@ -1115,6 +1167,7 @@ class TestQueuedAndNotSubmitted:
         assert queued["status_text"] == QUEUED_TEXT
         assert (failed["status_code"], failed["status_text"]) == (
             TaskStatus.FAILED, SUBMISSION_FAILED_TEXT)
+        assert (failed["error_code"], failed["error_message"]) == (ErrorCode.SUBMIT_FAILED, None)
         assert closed.value.code == 1011
         # 沒有任務：上傳檔不留在電腦上，取消端點也查不到任務
         assert leftovers(data_dir) == []
@@ -1157,9 +1210,138 @@ class TestQueuedAndNotSubmitted:
 
         # 沒有 file_uid：畫面把這批還在處理中的檔案都標成失敗
         assert message == {"client_id": "batch-not-handed-over", "status_code": TaskStatus.FAILED,
-                           "status_text": SUBMISSION_FAILED_TEXT}
+                           "status_text": SUBMISSION_FAILED_TEXT,
+                           "error_code": ErrorCode.SUBMIT_FAILED, "error_message": None}
         assert closed.value.code == 1011
         assert leftovers(data_dir) == []
+
+
+# ─── 連線中斷之後接回任務（#280） ───────────────────────────────────────────
+
+class NothingRegistered:
+    """登記裡一個任務都沒有，像應用程式剛重新啟動（免安裝模式的登記只在記憶體裡）；其餘照轉。
+    用 ``run_mode.use`` 換上。"""
+
+    def __init__(self, inner):
+        self._inner = inner
+
+    def registered_task(self, file_uid):
+        return None
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
+def reattach(api, file_uid: str, task_uuid: str):
+    """畫面在連線中斷之後重新連上，接回這個檔案送出的任務。"""
+    return api.websocket_connect(f"/api/v1/ws/{file_uid}/tasks/{task_uuid}")
+
+
+class TestReattachAfterTheConnectionDrops:
+    """送出任務之後連線斷了：任務照樣在伺服器上跑。畫面重新連上時，先收到任務現在的狀態，
+    之後照樣收到任務的進度與結果，檔案卡不會停在斷線前的那一則。"""
+
+    @pytest.fixture(autouse=True)
+    def _script(self, fake):
+        fake.script = list(SCRIPT) * 2
+
+    @pytest.mark.parametrize("step", [None, Fail("模型壞掉了")], ids=["completed", "failed"])
+    def test_task_that_ended_while_disconnected_is_reported_as_it_was_announced(
+            self, api, fake, step):
+        if step is not None:
+            fake.script = [step]
+        announced = transcribe(api, "uid-ended-offline")[-1]
+
+        with reattach(api, "uid-ended-offline", announced["task_uuid"]) as ws:
+            # 完成時連同結果（四種輸出格式、計價、說話者人數），失敗時連同錯誤碼與細節
+            assert receive(ws) == announced
+
+    def test_cancelled_task_is_reported_as_cancelled(self, api, fake):
+        fake.hold = threading.Event()
+        filename = upload(api)
+        with api.websocket_connect("/api/v1/ws/uid-cancelled-offline") as ws:
+            submit(ws, filename)
+            task_uuid = receive(ws)["task_uuid"]
+            assert fake.started.wait(TIMEOUT)
+        cancel_when_dispatched(api, "uid-cancelled-offline")
+
+        with reattach(api, "uid-cancelled-offline", task_uuid) as ws:
+            state = receive(ws)
+        assert (state["status_code"], state["status_text"]) == (TaskStatus.CANCELLED, "任務已取消")
+
+    def test_running_task_keeps_reporting_to_the_new_connection(self, api, fake):
+        fake.hold = threading.Event()
+        filename = upload(api)
+        with api.websocket_connect("/api/v1/ws/uid-running-offline") as ws:
+            submit(ws, filename)
+            task_uuid = receive(ws)["task_uuid"]
+            assert fake.started.wait(TIMEOUT)
+
+        with reattach(api, "uid-running-offline", task_uuid) as ws:
+            state = receive(ws)
+            fake.hold.set()
+            rest = receive_until_terminal(ws)
+
+        assert (state["status_code"], state["status_text"]) == (TaskStatus.PROCESSING, REATTACHED_TEXT)
+        assert codes(rest)[-1] == TaskStatus.COMPLETED
+        assert {m["task_uuid"] for m in [state, *rest]} == {task_uuid}
+
+    def test_queued_task_reports_queued_then_its_turn(self, api, fake):
+        fake.hold = threading.Event()
+        ahead_file, waiting_file = upload(api, "a.wav"), upload(api, "b.wav")
+        with api.websocket_connect("/api/v1/ws/uid-ahead-offline") as ahead:
+            submit(ahead, ahead_file)
+            assert fake.started.wait(TIMEOUT)
+            # GPU 佇列只有一個 worker：第二個任務排在佇列裡，排隊中的時候連線就斷了
+            with api.websocket_connect("/api/v1/ws/uid-queued-offline") as waiting:
+                submit(waiting, waiting_file)
+                task_uuid = receive(waiting)["task_uuid"]
+
+            with reattach(api, "uid-queued-offline", task_uuid) as ws:
+                state = receive(ws)
+                fake.hold.set()
+                turn = receive_until_terminal(ws)
+            receive_until_terminal(ahead)
+
+        assert (state["status_code"], state["status_text"]) == (TaskStatus.PROCESSING, QUEUED_TEXT)
+        assert codes(turn)[-1] == TaskStatus.COMPLETED
+        assert {m["task_uuid"] for m in turn} == {task_uuid}
+
+    def test_task_unknown_to_the_server_is_reported_as_interrupted(self, api):
+        # 例如還在排隊時應用程式被強制關掉、又重新啟動：沒有登記，也沒有任務紀錄
+        task_uuid = "4f6c1b0e-6d1a-4a8e-9a43-3f0a2f1d7c55"
+        with reattach(api, "uid-unknown", task_uuid) as ws:
+            state = receive(ws)
+
+        assert state == {
+            "client_id": "uid-unknown", "file_uid": "uid-unknown", "task_uuid": task_uuid,
+            "status_code": TaskStatus.FAILED, "status_text": f"任務失敗: {TASK_GONE.detail}",
+            "error_code": ErrorCode.INTERRUPTED, "error_message": TASK_GONE.detail,
+        }
+
+    @pytest.mark.parametrize("swept", [True, False], ids=["after-startup-sweep", "record-left-processing"])
+    def test_task_lost_in_a_restart_is_reported_as_interrupted(self, api, fake, test_engine, swept):
+        fake.hold = threading.Event()
+        filename = upload(api)
+        previous = None
+        try:
+            with api.websocket_connect("/api/v1/ws/uid-restarted") as ws:
+                submit(ws, filename)
+                task_uuid = receive(ws)["task_uuid"]
+                assert fake.started.wait(TIMEOUT)
+            # 應用程式重新啟動了：登記是空的；免安裝模式啟動時把還在處理中的紀錄記成失敗
+            previous = run_mode.use(NothingRegistered(run_mode.get()))
+            if swept:
+                run_startup_sweep(test_engine)
+            with reattach(api, "uid-restarted", task_uuid) as ws:
+                state = receive(ws)
+        finally:
+            if previous is not None:
+                run_mode.use(previous)
+            fake.hold.set()
+
+        assert (state["status_code"], state["error_code"]) == (TaskStatus.FAILED, ErrorCode.INTERRUPTED)
+        assert state["task_uuid"] == task_uuid
 
 
 # ─── 模型能力端點（#108） ───────────────────────────────────────────────────
@@ -1495,7 +1677,7 @@ class TestTraditionalOutput:
         # 本機的模型寫簡體：存下的片段、四種下載、完成時的廣播與凍結的原始轉錄副本都是繁體，
         # 字形與用詞都換成台灣的（「软件的信息」→「軟體的資訊」），「台」不寫成「臺」
         fake.script = [[(0.2, 1.5, 0, "我们在台湾开会。"), (3.0, 3.6, 1, "软件的信息。")]]
-        end = transcribe(api, "uid-traditional", source_lang="zh-TW")[-1]
+        end = transcribe(api, "uid-traditional", source_lang="zh-TW", multi_speaker=True)[-1]
 
         assert end["status_code"] == TaskStatus.COMPLETED
         task_uuid = end["task_uuid"]
@@ -2032,7 +2214,7 @@ class TestTransientError:
                               "0.01 秒後第 1 次重試（最多 3 次）...")
         assert codes(messages)[-1] == TaskStatus.FAILED
         assert messages[-1]["status_text"].endswith(
-            "分段轉錄的第 2 段（00:09–00:12）：暫時錯誤重試 3 次仍失敗（429 RESOURCE_EXHAUSTED）]]")
+            "分段轉錄的第 2 段（00:09–00:12）：暫時錯誤重試 3 次仍失敗（429 RESOURCE_EXHAUSTED）")
 
     def test_cancel_while_waiting_stops_at_once(self, api, fake, settings, monkeypatch):
         # 等待重試的期間按下取消：不必等退避結束就停下，任務記成已取消，不再送出。等待調得比

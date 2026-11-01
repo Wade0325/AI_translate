@@ -305,6 +305,18 @@ class TestTranscriptionLogRepositoryStaleSweep:
         assert stale.error_message
         assert stale.completed_at is not None
 
+    def test_sweeping_everything_says_the_app_was_closed(self, db_session: Session):
+        """免安裝模式啟動時全掃（0 小時）：細節照實寫應用程式在轉錄途中關閉了，不寫「超過 0 小時」"""
+        running = _create_transcription_log(
+            db_session, status="PROCESSING", request_timestamp=datetime.now() - timedelta(seconds=5))
+
+        swept = self.repo.mark_stale_processing_failed(db_session, max_age_hours=0)
+
+        assert swept == 1
+        db_session.refresh(running)
+        assert (running.status, running.error_code) == ("FAILED", "INTERRUPTED")
+        assert running.error_message == "應用程式在轉錄途中關閉或重新啟動了，任務沒有做完"
+
     def test_recent_processing_untouched(self, db_session: Session):
         """未超過時限的 PROCESSING 紀錄不應被動到"""
         recent = _create_transcription_log(

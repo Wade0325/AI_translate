@@ -5,15 +5,18 @@ import { AlertCircle } from "lucide-react"
 
 const { Dragger } = Upload
 
+// 都要在伺服器收的格式裡（backend/app/api/upload.py 的 SUPPORTED_MIME_TYPES）：伺服器不收 OGG，
+// 這裡收了也只會在上傳時失敗
 const ACCEPTED_TYPES = [
     "audio/mpeg",
     "audio/wav",
     "audio/mp4",
     "audio/x-m4a",
-    "audio/ogg",
     "audio/flac",
     "audio/webm",
 ]
+
+const ACCEPTED_LABEL = "MP3、WAV、M4A、FLAC、WebM"
 
 const MAX_FILE_SIZE = 1000 * 1024 * 1024
 
@@ -29,11 +32,11 @@ export function UploadZone({ hasFiles, onFilesAdded }) {
 
             for (const file of files) {
                 if (!ACCEPTED_TYPES.includes(file.type)) {
-                    setError(`Unsupported format: ${file.name}`)
+                    setError(`不支援這種格式：${file.name}（可以用 ${ACCEPTED_LABEL}）`)
                     continue
                 }
                 if (file.size > MAX_FILE_SIZE) {
-                    setError(`File too large: ${file.name} (max 1000MB)`)
+                    setError(`檔案太大：${file.name}（上限 1000 MB）`)
                     continue
                 }
                 valid.push(file)
@@ -105,7 +108,7 @@ export function UploadZone({ hasFiles, onFilesAdded }) {
                     Drag audio files here or click to browse
                 </p>
                 <p style={{ color: '#8888a8', fontSize: 12, margin: 0 }}>
-                    MP3, WAV, M4A, OGG, FLAC, WebM (max 1000MB)
+                    MP3, WAV, M4A, FLAC, WebM (max 1000MB)
                 </p>
             </Dragger>
             {error && (

@@ -57,7 +57,7 @@ async def lifespan(app: FastAPI):
             logger.info(f"日誌檔寫在 {logs.resolve()}")
         except OSError as e:
             logger.warning(f"無法建立日誌檔，log 只輸出到主控台: {e}")
-    logger.info(f"正在啟動 AI Voice Transcription API（版本 {APP_VERSION}）...")
+    logger.info(f"正在啟動 Mimiji API（版本 {APP_VERSION}）...")
 
     init_db()
 
@@ -119,7 +119,7 @@ async def lifespan(app: FastAPI):
         stop_log_file()
 
 
-app = FastAPI(title="AI Voice Transcription API",
+app = FastAPI(title="Mimiji API",
               version=APP_VERSION, lifespan=lifespan, **api_docs_urls(get_settings()))
 
 

@@ -846,3 +846,108 @@ class TestLongSubtitles:
         assert [text for _, text in srt_cues({**LONG_JAPANESE, "speaker": None})] == [
             "今日はゆっくり休んでくださいね、", "ずっと頑張ってきたんだから、",
             "少しくらい甘えてもいいんですよ。"]
+
+
+# ─── Multi-Speaker 開關（#13 Q1） ────────────────────────────────────────────
+
+def switched(*segments, labels: bool) -> output_format.OutputFiles:
+    return output_format.for_result(
+        TranscriptionTaskResult(success=True, segments=list(segments)), speaker_labels=labels)
+
+
+GEMINI_LINES = [
+    {"start": 0.5, "end": None, "speaker": "S0", "text": "おはよう。"},
+    {"start": 3.0, "end": 4.0, "speaker": "S1", "text": "こんにちは。"},
+]
+"""Gemini 的片段：一行一段，沒有逐字時間；只有寫明結束的行才有結束時間。說話者編號由轉接器從
+「Speaker 1:」換來，Multi-Speaker 關著時 Gemini 自己寫了也一樣。"""
+
+
+class TestMultiSpeakerSwitch:
+    """開時四種格式都帶說話者標記，關時都不帶，兩個供應商的片段都一樣：本機的片段有逐字時間，
+    Gemini 的沒有。片段照樣有說話者編號，只在產生輸出格式時省略標記。"""
+
+    def test_on_local_lines_are_labelled_in_every_format(self):
+        result = switched(*SENTENCES, labels=True)
+        assert result.lrc.split("\n") == [
+            "[00:10.08][S0] おはようございます。", "[00:11.60][S0] 今日は、いい天気ですね！",
+            "[00:14.08][S1] ラーメン食べた？", "[00:15.84][S1] 人々も来た。"]
+        assert result.txt.split("\n") == [
+            "[S0] おはようございます。", "[S0] 今日は、いい天気ですね！",
+            "[S1] ラーメン食べた？", "[S1] 人々も来た。"]
+        assert '<font color="#FFDD55">[S1] ラーメン食べた？</font>' in result.srt
+        assert "<c.color1>[S1] ラーメン食べた？</c>" in result.vtt
+
+    def test_off_local_lines_have_no_labels_or_colors(self):
+        result = switched(*SENTENCES, labels=False)
+        assert result.lrc.split("\n") == [
+            "[00:10.08]おはようございます。", "[00:11.60]今日は、いい天気ですね！",
+            "[00:14.08]ラーメン食べた？", "[00:15.84]人々も来た。"]
+        assert result.txt.split("\n") == [
+            "おはようございます。", "今日は、いい天気ですね！", "ラーメン食べた？", "人々も来た。"]
+        assert result.vtt == (
+            "WEBVTT\n\n"
+            "00:00:10.080 --> 00:00:11.200\nおはようございます。\n\n"
+            "00:00:11.600 --> 00:00:13.600\n今日は、いい天気ですね！\n\n"
+            "00:00:14.080 --> 00:00:15.360\nラーメン食べた？\n\n"
+            "00:00:15.840 --> 00:00:16.800\n人々も来た。\n")
+        assert result.srt == (
+            "1\n00:00:10,080 --> 00:00:11,200\nおはようございます。\n\n"
+            "2\n00:00:11,600 --> 00:00:13,600\n今日は、いい天気ですね！\n\n"
+            "3\n00:00:14,080 --> 00:00:15,360\nラーメン食べた？\n\n"
+            "4\n00:00:15,840 --> 00:00:16,800\n人々も来た。\n")
+
+    def test_on_gemini_lines_are_labelled_in_every_format(self):
+        result = switched(*GEMINI_LINES, labels=True)
+        assert result.lrc == "[00:00.50][S0] おはよう。\n[00:03.00][S1] こんにちは。"
+        assert result.txt == "[S0] おはよう。\n[S1] こんにちは。"
+        assert result.srt == (
+            "1\n00:00:00,500 --> 00:00:03,000\n[S0] おはよう。\n\n"
+            '2\n00:00:03,000 --> 00:00:04,000\n<font color="#FFDD55">[S1] こんにちは。</font>\n')
+        assert result.vtt == (
+            "WEBVTT\n\nSTYLE\n::cue(.color1) { color: #FFDD55; }\n\n"
+            "00:00:00.500 --> 00:00:03.000\n[S0] おはよう。\n\n"
+            "00:00:03.000 --> 00:00:04.000\n<c.color1>[S1] こんにちは。</c>\n")
+
+    def test_off_gemini_lines_have_no_labels_or_colors(self):
+        # 沒有結束時間的行照以前，顯示到下一行開始
+        result = switched(*GEMINI_LINES, labels=False)
+        assert result.lrc == "[00:00.50]おはよう。\n[00:03.00]こんにちは。"
+        assert result.txt == "おはよう。\nこんにちは。"
+        assert result.srt == (
+            "1\n00:00:00,500 --> 00:00:03,000\nおはよう。\n\n"
+            "2\n00:00:03,000 --> 00:00:04,000\nこんにちは。\n")
+        assert result.vtt == (
+            "WEBVTT\n\n00:00:00.500 --> 00:00:03.000\nおはよう。\n\n"
+            "00:00:03.000 --> 00:00:04.000\nこんにちは。\n")
+
+    def test_off_lines_of_different_speakers_do_not_overlap(self):
+        # 標記在產生行的時候就拿掉，所有行算同一位說話者（ADR-0008）：S0 插話時，S1 的字幕在插話
+        # 開始時結束。先產生標記再拿掉的話，兩行會重疊，畫面上卻看不出是誰
+        segments = [{"start": 0.5, "end": 3.5, "speaker": "S1", "text": "你拉不拉货。"},
+                    {"start": 3.0, "end": 3.25, "speaker": "S0", "text": "对"}]
+        assert srt_times(*segments) == [
+            "00:00:00,500 --> 00:00:03,500", "00:00:03,000 --> 00:00:03,800"]
+        assert switched(*segments, labels=False).srt == (
+            "1\n00:00:00,500 --> 00:00:03,000\n你拉不拉货。\n\n"
+            "2\n00:00:03,000 --> 00:00:03,800\n对\n")
+
+    def test_off_long_subtitles_are_split_like_lines_without_a_speaker(self):
+        # 拆開的每一則都不帶標記、不上色，和沒有說話者編號的片段一樣（字寬不算標記）
+        off = switched({**LONG_JAPANESE, "speaker": "S1"}, labels=False)
+        assert off == formats({**LONG_JAPANESE, "speaker": None})
+        assert off.srt.count("\n\n") == 2
+        assert "[S1]" not in off.srt and "<font" not in off.srt
+
+    def test_frozen_copy_keeps_the_labels(self):
+        # 凍結的原始轉錄副本不論開關都帶說話者標記：和開著時的 LRC 相同（ADR-0007）
+        result = TranscriptionTaskResult(success=True, segments=list(SENTENCES + GEMINI_LINES))
+        assert output_format.frozen_copy(result) == output_format.for_result(result).lrc
+        assert "[S1] こんにちは。" in output_format.frozen_copy(result)
+        assert output_format.frozen_copy(TranscriptionTaskResult(success=True)) == ""
+
+    @pytest.mark.parametrize("multi_speaker, labels", [(True, True), (False, False), (None, True)],
+                             ids=["on", "off", "before-the-switch"])
+    def test_tasks_from_before_the_switch_count_as_on(self, multi_speaker, labels):
+        # 開關做出來之前的任務沒有這個值，當成開：下載結果不變（本機的舊任務一直都帶標記）
+        assert output_format.shows_speaker_labels(multi_speaker) is labels

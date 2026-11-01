@@ -102,7 +102,7 @@ class TestUploadFailure:
                 files={"file": ("image.jpg", b"\xff\xd8\xff" + b"\x00" * 512, "image/jpeg")},
             )
         assert response.status_code == 400
-        assert "Unsupported file format" in response.json()["detail"]
+        assert response.json()["detail"].startswith("不支援這種檔案格式（image/jpeg）")
 
     def test_text_file_returns_400(self, client: TestClient, tmp_path):
         """文字檔案應回傳 400"""
@@ -121,7 +121,7 @@ class TestUploadFailure:
                 files={"file": ("empty.mp3", b"", "audio/mpeg")},
             )
         assert response.status_code == 400
-        assert "empty" in response.json()["detail"].lower()
+        assert response.json()["detail"].startswith("檔案是空的")
 
     def test_save_failure_returns_500_without_the_exception_text(
             self, client: TestClient, tmp_path, monkeypatch, app_log):

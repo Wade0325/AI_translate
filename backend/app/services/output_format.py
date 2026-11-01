@@ -5,9 +5,10 @@
 * 有片段的任務從片段產生。
 * 沒有片段的任務（片段上線前的任務、#110 之前的 Gemini 任務、#115 之前批次裡的任務）退回解析
   存下來的 LRC：LRC、TXT 和以前相同，SRT／VTT 的結束時間照下面同一套規則。
-* 存下來的 LRC 是凍結的原始轉錄副本（ADR-0007）：任務完成時從轉錄結果產生（:func:`for_result`），
-  和下載的 LRC 相同；有片段時下載不讀它。#154 之前存的副本差在一點：秒數取到 0.01 是 60 的行
-  寫成 [00:60.00] 這種時間戳，下載寫成下一分鐘的 [01:00.00]（見 :func:`_lrc_timestamp`）。
+* 存下來的 LRC 是凍結的原始轉錄副本（ADR-0007）：任務完成時從轉錄結果產生（:func:`frozen_copy`），
+  不論 Multi-Speaker 開關都帶說話者標記，和開關開著時下載的 LRC 相同；有片段時下載不讀它。
+  #154 之前存的副本差在一點：秒數取到 0.01 是 60 的行寫成 [00:60.00] 這種時間戳，下載寫成
+  下一分鐘的 [01:00.00]（見 :func:`_lrc_timestamp`）。
 
 #110 之前的副本是供應商自己寫的 LRC。Gemini 任務的副本就是 Gemini 寫的 LRC（「Speaker 1:」、
 三位小數的時間戳、沒有時間戳的行都在）。本機任務的副本和這裡斷行相同（見 :func:`_segment_lines`），
@@ -29,7 +30,9 @@
 
 版本目前只有原始轉錄，校正後版本留給 v0.2。
 
-四種格式由同一串行產生，說話者標記一律「[S0] 文字」：LRC 一行一個時間戳；TXT 只留文字；
+四種格式由同一串行產生，說話者標記跟著任務的 Multi-Speaker 開關（#13 Q1，見
+:func:`shows_speaker_labels`）：開時寫成「[S0] 文字」；關時四種格式都不寫，片段照樣存說話者編號，
+沒有標記的行都算同一位說話者，不重疊也不上色（ADR-0008）。LRC 一行一個時間戳；TXT 只留文字；
 SRT／VTT 另有結束時間，照實際說話的時間顯示（ADR-0008，規則見 :func:`_subtitles`）：不同說話者
 的字幕可以重疊，同一位說話者的不疊，每一行至少 0.8 秒，字幕依開始時間排序。有片段的任務和沒有
 片段的任務（從存下來的 LRC 轉換）用同一套規則。SRT／VTT 的開始時間取 LRC 時間戳的值（0.01 秒），
@@ -51,7 +54,7 @@ from bisect import bisect_right
 from dataclasses import dataclass, replace
 from decimal import ROUND_HALF_EVEN, Decimal
 from enum import StrEnum
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple, cast
 
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -98,25 +101,47 @@ def for_task(
 
     任務沒有轉錄結果（沒有片段，也沒有存下來的 LRC）時回傳 None；沒有片段的任務，存下來的
     LRC 解析不出任何一行時，SRT／VTT／TXT 是空字串。版本目前只有原始轉錄一種。
+
+    說話者標記照任務記下的 Multi-Speaker 開關（:func:`shows_speaker_labels`）。沒有片段的任務都在
+    開關做出來之前，照以前從存下來的 LRC 轉換：任務完成時一定存了片段（見
+    :mod:`app.tasks.lifecycle`）。
     """
     segments = TranscriptSegmentRepository.segments_for_task(db, task.task_uuid)
     if segments:
-        return _render(_lines(segments), fmt)
+        labels = shows_speaker_labels(cast(Optional[bool], task.multi_speaker))
+        return _render(_lines(segments, labels=labels), fmt)
     stored_lrc = HistoryRepository().resolve_lrc_content(db, task, backfill=True)
     if not stored_lrc:
         return None
     return getattr(convert_from_lrc(stored_lrc), fmt.value)
 
 
-def for_result(result: TranscriptionTaskResult) -> OutputFiles:
-    """一份轉錄結果的四種輸出格式：任務完成時送給畫面，凍結的原始轉錄副本也是這裡的 LRC。
+def for_result(result: TranscriptionTaskResult, *, speaker_labels: bool = True) -> OutputFiles:
+    """一份轉錄結果的四種輸出格式，任務完成時送給畫面。
 
-    從片段產生，和之後下載的內容相同；轉錄結果的 text 不讀。沒有任何一行時四種都是空的。
+    從片段產生，``speaker_labels`` 給任務的 Multi-Speaker 開關換算的值（:func:`shows_speaker_labels`）
+    時和之後下載的內容相同；是 False 時四種格式都不帶說話者標記。轉錄結果的 text 不讀。沒有任何
+    一行時四種都是空的。
     """
-    lines = _lines(result.segments)
+    lines = _lines(result.segments, labels=speaker_labels)
     if not lines:
         return OutputFiles(lrc="", srt="", vtt="", txt="")
     return OutputFiles(**{fmt.value: _render(lines, fmt) for fmt in OutputFormat})
+
+
+def frozen_copy(result: TranscriptionTaskResult) -> str:
+    """凍結的原始轉錄副本（ADR-0007）：從片段產生的 LRC，不論 Multi-Speaker 開關都帶說話者標記，
+    原始轉錄不少資訊（#13 Q1）；和開關開著時下載的 LRC 相同。沒有任何一行時是空字串。"""
+    return _render(_lines(result.segments, labels=True), OutputFormat.LRC)
+
+
+def shows_speaker_labels(multi_speaker: Optional[bool]) -> bool:
+    """任務記下的 Multi-Speaker 開關換成輸出格式帶不帶說話者標記（#13 Q1）。
+
+    開關做出來之前（#259）的任務沒有這個值（None），當成開：下載結果和以前一樣，本機的舊任務
+    一直都帶標記。
+    """
+    return multi_speaker is not False
 
 
 def convert_from_lrc(lrc_text: str) -> OutputFiles:
@@ -177,9 +202,14 @@ class _Line:
     """這一行的逐字時間，依序對應 text 斷出來的詞；整段一行（沒有逐字時間）時是 None。"""
 
 
-def _lines(segments: Sequence[Mapping[str, Any]]) -> List[_Line]:
+def _lines(segments: Sequence[Mapping[str, Any]], *, labels: bool) -> List[_Line]:
     """依開始時間排序（和存下來的片段順序相同）後，逐段斷行。本機寫 LRC 時照模型給的順序，
     模型給的片段不照時間時，兩者的行序才會不同。沒有文字的片段不產生行。
+
+    ``labels`` 是 False 時（Multi-Speaker 關）每一行都不帶說話者，從這裡起就沒有說話者標記：
+    SRT／VTT 的結束時間看行首的標記分辨說話者（:func:`_subtitles`），所有行因此算同一位說話者、
+    不重疊，也不上色（ADR-0008）。先產生標記再拿掉的話，不同說話者的字幕會重疊，畫面上卻看不出
+    是誰。
 
     逐字時間對不上文字的片段整段一行（見 :func:`_words_match`），一個任務只記一條警告。
     """
@@ -193,8 +223,8 @@ def _lines(segments: Sequence[Mapping[str, Any]]) -> List[_Line]:
         if words and not _words_match(text, words):
             unmatched.append(segment["start"])
             words = None
-        lines.extend(_segment_lines(segment["start"], segment.get("end"),
-                                    segment.get("speaker"), text, words))
+        speaker = segment.get("speaker") if labels else None
+        lines.extend(_segment_lines(segment["start"], segment.get("end"), speaker, text, words))
     if unmatched:
         logger.warning(f"{len(unmatched)} 個片段的逐字時間對不上文字，這些片段整段一行"
                        f"（第一個從 {unmatched[0]:.2f} 秒開始）")

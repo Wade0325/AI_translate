@@ -3,7 +3,7 @@
 
 - 提示詞範本：設定頁為供應商存的範本；沒存過（或只有空白）時用 DEFAULT_PROMPT_TEMPLATE，裡面要求
   輸出 LRC 與時間戳。範本代入下面三個變數，其他大括號（例如 JSON）照寫的送出，見 _fill：
-    {source_lang}           — 音訊語言名稱（如 "日文"）
+    {source_lang}           — 音訊語言名稱（如 "日文"）；選 Auto Detect 時是空字串，不寫語言（#261）
     {speaker_instruction}   — 多人模式指令（可為空）
     {translate_instruction} — 翻譯指令（可為空）
 - 補充說明：轉錄頁填的提示詞（每個檔案自己的，沒有就是全域的），空一行接在範本後面，照寫的送出、
@@ -15,12 +15,33 @@ DEFAULT_PROMPT_TEMPLATE 是系統內建範本的唯一真實來源：設定頁�
 import re
 from typing import Optional
 
-# 語言代碼 → 顯示名稱對照表
+# 語言代碼 → 寫進提示詞的語言名稱。轉錄頁語言選單（frontend/src/constants/languages.js）上的
+# 每一種都要有，由 tests/unit/test_default_prompt.py 對齊。ja-JP、en-US、zh-CN 是舊紀錄與直接呼叫
+# API 會帶的代碼（重新轉錄沿用任務當初的語言）；zh-CN 照 ADR-0002 當成中文，一樣輸出繁體
 LANG_MAP = {
+    "ja": "日文",
     "zh-TW": "繁體中文",
-    "en-US": "英文",
+    "en": "英文",
+    "ko": "韓文",
+    "fr": "法文",
+    "de": "德文",
+    "es": "西班牙文",
+    "pt": "葡萄牙文",
+    "it": "義大利文",
+    "nl": "荷蘭文",
+    "ru": "俄文",
+    "ar": "阿拉伯文",
+    "hi": "印地文",
+    "th": "泰文",
+    "vi": "越南文",
+    "id": "印尼文",
     "ja-JP": "日文",
+    "en-US": "英文",
+    "zh-CN": "中文",
 }
+
+# 轉錄頁的 Auto Detect：不是一種語言，提示詞不寫語言，由模型自己判斷
+AUTO_DETECT = "auto"
 
 DEFAULT_PROMPT_TEMPLATE = (
     "你是一位專業的逐字稿專家。請將以下{source_lang}音檔精確轉錄為 LRC 格式。\n"
@@ -52,7 +73,7 @@ def build_prompt(
     組出送給模型的提示詞：提示詞範本代入變數，再空一行接上補充說明（規則見檔頭）。
 
     Args:
-        source_lang:   音訊語言代碼 (如 "ja-JP")
+        source_lang:   音訊語言代碼 (如 "ja")；"auto" 或空字串時提示詞不寫語言
         target_lang:   翻譯目標語言代碼 (如 "zh-TW")，None 表示不翻譯
         multi_speaker: 是否為多人對話模式
         template:      設定頁存的提示詞範本；None 或只有空白時用 DEFAULT_PROMPT_TEMPLATE
@@ -60,7 +81,7 @@ def build_prompt(
     """
     base_template = template if template and template.strip() else DEFAULT_PROMPT_TEMPLATE
 
-    source_name = LANG_MAP.get(source_lang, source_lang)
+    source_name = _language_name(source_lang)
 
     speaker_instruction = SPEAKER_INSTRUCTION if multi_speaker else ""
 
@@ -82,6 +103,17 @@ def build_prompt(
     if supplement and supplement.strip():
         prompt = f"{prompt}\n\n{supplement.strip()}"
     return prompt
+
+
+def _language_name(source_lang: str) -> str:
+    """寫進提示詞的語言名稱：Auto Detect（不分大小寫）或沒指定時是空字串，不認得的代碼照寫。
+
+    提示詞範本寫成「請將以下{source_lang}音檔」，空字串代入後就是「請將以下音檔」（#261）。
+    """
+    code = (source_lang or "").strip()
+    if code.lower() in ("", AUTO_DETECT):
+        return ""
+    return LANG_MAP.get(code, code)
 
 
 def _fill(template: str, values: dict[str, str]) -> str:

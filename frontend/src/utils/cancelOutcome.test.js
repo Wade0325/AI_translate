@@ -126,10 +126,10 @@ describe('檔案卡停在處理中、任務其實已經結束時按取消：照�
     });
   });
 
-  it('任務已經失敗：檔案卡改成失敗，顯示失敗原因，不叫使用者稍後再試', async () => {
+  it('任務已經失敗：檔案卡改成失敗，照紀錄的錯誤碼與細節顯示原因，不叫使用者稍後再試', async () => {
     const api = fakeApi({
       cancelled: notCancelled('not-started'),
-      records: [recordOf('FAILED', { error_message: '模型壞掉了' })],
+      records: [recordOf('FAILED', { error_code: 'LOCAL_OUT_OF_MEMORY', error_message: 'CUDA out of memory' })],
     });
 
     expect(await afterCancel(stuck, api)).toEqual({
@@ -138,8 +138,9 @@ describe('檔案卡停在處理中、任務其實已經結束時按取消：照�
         ...stuck,
         status: 'error',
         percent: 100,
-        statusText: '任務失敗: 模型壞掉了',
-        error: '任務失敗: 模型壞掉了',
+        statusText: '任務失敗: CUDA out of memory',
+        error: '任務失敗: CUDA out of memory',
+        failure: { code: 'LOCAL_OUT_OF_MEMORY', detail: 'CUDA out of memory' },
       },
     });
   });

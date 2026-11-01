@@ -10,6 +10,7 @@ from contextlib import suppress
 import pytest
 from google.genai import types
 
+from app.core.error_codes import ErrorCode
 from app.exceptions import GeminiPermanentError, GeminiTransientError, TranscriptionCancelledError
 from app.provider.base import ProgressAndCancel, TranscribeRequest
 from app.provider.google.provider import FLEX_MAX_RETRIES, GeminiProvider
@@ -84,6 +85,7 @@ class TestTranscribe:
 
         assert not result.success
         assert "PROHIBITED_CONTENT" in result.text
+        assert result.error_code == ErrorCode.GEMINI_BLOCKED
 
 
 class TestLrcIsParsedOnce:
@@ -229,15 +231,22 @@ class TestLrcIsParsedOnce:
         assert [(s["text"], s["end"]) for s in result.segments] == [
             ("おはよう。", 2.5), ("はい。", None), ("またね。", None)]
 
-    @pytest.mark.parametrize("reason", [types.FinishReason.SAFETY, types.FinishReason.RECITATION])
-    def test_empty_response_that_stopped_early_is_a_failure(self, gemini, genai, audio, reason):
-        # 沒有內容但不是正常結束：不是「那段沒人說話」，當成功的話那一段會默默不見
+    @pytest.mark.parametrize("reason, code", [
+        (types.FinishReason.SAFETY, ErrorCode.GEMINI_BLOCKED),
+        (types.FinishReason.RECITATION, ErrorCode.GEMINI_BLOCKED),
+        (types.FinishReason.MAX_TOKENS, ErrorCode.NO_TRANSCRIPT),
+    ])
+    def test_empty_response_that_stopped_early_is_a_failure(
+            self, gemini, genai, audio, reason, code):
+        # 沒有內容但不是正常結束：不是「那段沒人說話」，當成功的話那一段會默默不見。因為安全或版權
+        # 停下的是 Gemini 擋下了內容，其他原因是沒有轉錄出內容
         genai.replies = [Reply(text="", finish_reason=reason)]
 
         result = gemini.transcribe(audio, request(), PROGRESS)
 
         assert not result.success
         assert reason.name in result.text
+        assert result.error_code == code
 
     def test_dropped_lines_are_logged_as_a_count_without_their_content(
             self, gemini, genai, audio, app_log):
@@ -539,6 +548,8 @@ class TestBatch:
         assert [r.success for r in results] == [False, False, True]
         assert "音檔無法解碼" in results[0].text
         assert "PROHIBITED_CONTENT" in results[1].text
+        assert [r.error_code for r in results] == [
+            ErrorCode.GEMINI_REQUEST_FAILED, ErrorCode.GEMINI_BLOCKED, None]
         assert transcript(results[2]) == [(0.0, None, "轉錄 C")]
 
     @pytest.mark.parametrize("operation", ["batches.create", "batches.get"])

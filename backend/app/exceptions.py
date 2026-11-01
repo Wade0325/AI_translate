@@ -53,6 +53,18 @@ class GeminiPermanentError(AppError):
     """Gemini API 永久性錯誤（API key 無效、prompt 被阻擋、quota 永久耗盡）。不應重試。"""
 
 
+class GeminiFileRejectedError(GeminiPermanentError):
+    """Gemini 處理不了上傳的音檔（上傳之後檔案的狀態是 FAILED）；訊息給使用者看。"""
+
+
+class ApiKeyMissingError(AppError, ValueError):
+    """要 API 金鑰的供應商沒有金鑰；訊息給使用者看。
+
+    也是 ValueError：和其他「供應商還不能轉錄」的原因一樣（見
+    :func:`app.provider.registry.open_provider`），接 ValueError 的地方照樣接得到。
+    """
+
+
 class TaskDatabaseError(AppError):
     """讀寫資料庫時出錯，訊息只有資料庫例外的類型與資料庫回報的原因
     （:func:`~app.database.session.describe_db_error`）。

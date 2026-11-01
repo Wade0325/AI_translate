@@ -3,6 +3,8 @@ import { LoadingOutlined } from "@ant-design/icons"
 import { AlertCircle, CheckCircle2, FileAudio, Loader2 } from "lucide-react"
 import { formatDateTime } from "@/utils/formatters"
 import { TASK_STATUS } from "@/constants/taskStatus"
+import { FailureSummary } from "@/components/FailureNotice"
+import { failureOf } from "@/utils/failure"
 
 const { Text } = Typography
 
@@ -87,13 +89,12 @@ export default function SingleTaskRow({ task }) {
                                 · ${task.cost.toFixed(4)}
                             </Text>
                         )}
-                        {task.status === TASK_STATUS.FAILED && task.error_message && (
-                            <Text
-                                ellipsis={{ tooltip: task.error_message }}
-                                style={{ fontSize: 11, color: "#e05252", maxWidth: 360 }}
-                            >
-                                · {task.error_message}
-                            </Text>
+                        {/* 原因照錯誤碼寫出來，滑過去看下一步、錯誤碼與細節 */}
+                        {task.status === TASK_STATUS.FAILED && (task.error_code || task.error_message) && (
+                            <>
+                                <Text style={{ fontSize: 11, color: "#e05252" }}>·</Text>
+                                <FailureSummary failure={failureOf(task)} style={{ maxWidth: 360 }} />
+                            </>
                         )}
                     </div>
                 </div>

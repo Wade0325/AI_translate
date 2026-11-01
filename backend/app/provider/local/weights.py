@@ -8,11 +8,14 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass
+import platform
+import re
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, TypeVar
 
 from app.core.config import get_settings
+from app.utils.commands import command_output
 from app.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -198,26 +201,205 @@ class Gpu:
 
 class LocalNotReady(ValueError):
     """本機現在不能轉錄；訊息可直接顯示給使用者。``reason`` 讓轉錄頁決定下一步（#11 Q1）：
-    ``no_gpu``、``unsupported_gpu`` 是這台電腦跑不了，建議改用別的供應商；``missing_weights``
-    到設定頁下載模型權重就能用。"""
+    ``missing_weights`` 到設定頁下載模型權重就能用；其餘是這台電腦現在跑不了，訊息寫出原因與
+    下一步，轉錄頁另外建議改用別的供應商：
+
+    - ``no_gpu``、``driver_too_old``、``cuda_init_failed``、``torch_load_failed``：PyTorch 用不了
+      顯卡，見 :class:`GpuUnavailable`（#262）
+    - ``unsupported_gpu``：目前的 PyTorch 不支援這張顯卡的架構（#11 Q4）
+    """
 
     def __init__(self, reason: str, message: str):
         super().__init__(message)
         self.reason = reason
 
 
-def detect_gpu() -> Gpu | None:
-    """這個行程看得到的第一張顯卡；沒有 torch、沒有可用的 CUDA 裝置時是 None。"""
+@dataclass(frozen=True)
+class GpuUnavailable:
+    """PyTorch 用不了顯卡（:func:`detect_gpu`）：為什麼，以及下一步（#262）。
+
+    ``reason`` 是 :class:`LocalNotReady` 的 ``reason`` 之一：
+
+    - ``no_gpu``：沒有 NVIDIA 顯卡，或沒有裝 NVIDIA 驅動
+    - ``driver_too_old``：驅動比 PyTorch 帶的 CUDA 舊
+    - ``cuda_init_failed``：驅動在，CUDA 卻初始化失敗
+    - ``torch_load_failed``：PyTorch 本身載入失敗，或裝到不支援 CUDA 的版本
+    """
+    reason: str
+    problem: str
+    """原因，例如「NVIDIA 顯卡驅動太舊（目前 472.12，需要 572.61 以上）」；診斷資訊也寫這句。"""
+    next_step: str
+    """下一步，例如「更新驅動後重新開啟 Mimiji，或改用 Gemini」。"""
+    detail: str = ""
+    """PyTorch 回報的原始錯誤（見 :func:`_error_summary`），寫進診斷資訊與日誌，不上轉錄頁。"""
+
+    @property
+    def message(self) -> str:
+        """給使用者看的一句話：轉錄頁的就緒提示、設定頁的本機卡片與任務失敗的細節都用它。"""
+        return f"{self.problem}，本機轉錄不能用，{self.next_step}"
+
+
+NO_GPU = GpuUnavailable("no_gpu", "這台電腦沒有可用的 NVIDIA 顯卡", "可以改用 Gemini")
+"""驅動在、卻看不到 NVIDIA 顯卡。"""
+
+WINDOWS_DRIVER_FOR_CUDA = {"12.8": "572.61"}
+"""PyTorch 帶的 CUDA（``torch.version.cuda``）→ 要裝的 Windows 顯卡驅動版本。
+
+照 NVIDIA CUDA Toolkit Release Notes（https://docs.nvidia.com/cuda/cuda-toolkit-release-notes/）的
+Table 3「CUDA Toolkit and Corresponding Driver Versions」，2026-10-31 查：免安裝版的 torch
+2.8.0+cu128（Windows）帶的 ``cudart64_12.dll`` 是 12.8.90，也就是 CUDA 12.8 Update 1，要 572.61 以上。
+
+同一頁的 Table 2 寫 CUDA 12.x 在相容模式（minor version compatibility）下最低是 528.33。告訴
+使用者的是 Table 3 的版本：NVIDIA 列給 CUDA 12.8 Update 1 的驅動，不必靠相容模式。
+"""
+DRIVER_TABLE_TORCH = "2.8.0+cu128"
+"""上表是照這版 torch 查的。``requirements-standalone.txt`` 換了 torch，測試會要求重查。"""
+
+VC_REDIST_URL = "https://aka.ms/vc14/vc_redist.x64.exe"
+"""Microsoft Visual C++ 可轉散發套件（x64）的固定連結，見
+https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist 。"""
+
+DETAIL_MAX_CHARS = 500
+"""原始錯誤最長幾個字，和任務失敗的細節（``error_codes.MAX_DETAIL_CHARS``）一樣。"""
+
+
+def detect_gpu() -> Gpu | GpuUnavailable:
+    """這個行程看得到的第一張顯卡；PyTorch 用不了顯卡時是原因與下一步。
+
+    看得到顯卡時和 #262 之前走同一段程式：只在用不了時才多問原因。
+    """
     try:
         import torch
-        if not torch.cuda.is_available():
-            return None
-        card = torch.cuda.get_device_properties(0)
-        return Gpu(name=str(card.name), vram_gb=round(card.total_memory / 2**30, 1),
-                   supported=arch_supported(torch.cuda.get_device_capability(0),
-                                            torch.cuda.get_arch_list()))
-    except Exception:
-        return None
+    except Exception as e:  # DLL 載入失敗是 OSError，套件壞掉時什麼例外都有可能
+        return _noted(_torch_load_failed(e))
+    cuda = getattr(torch.version, "cuda", None)
+    try:
+        if torch.cuda.is_available():
+            card = torch.cuda.get_device_properties(0)
+            return Gpu(name=str(card.name), vram_gb=round(card.total_memory / 2**30, 1),
+                       supported=arch_supported(torch.cuda.get_device_capability(0),
+                                                torch.cuda.get_arch_list()))
+        if cuda is None:
+            return _noted(GpuUnavailable(
+                "torch_load_failed",
+                f"PyTorch 載入失敗：裝的版本（{torch.__version__}）不支援 CUDA",
+                "請回報問題並附上診斷資訊，或改用 Gemini"))
+        # is_available() 把 CUDA 的錯誤吞掉、只回 False；再初始化一次，拿 PyTorch 的錯誤訊息來分
+        torch.cuda.init()
+    except Exception as e:
+        return _noted(_cuda_failed(e, cuda))
+    return _noted(NO_GPU)  # 初始化成功卻沒有顯卡
+
+
+def _cuda_failed(error: BaseException, cuda: str | None) -> GpuUnavailable:
+    """照 PyTorch 初始化 CUDA 的錯誤訊息分原因。訊息是 c10/cuda/CUDAFunctions.cpp 的
+    ``device_count_impl`` 與 ``device_count_ensure_non_zero`` 寫的（torch 2.8.0 的 c10_cuda.dll 裡
+    逐字相同）；認不得的都算初始化失敗。"""
+    detail = _error_summary(error)
+    text = str(error)
+    if "Found no NVIDIA driver" in text:
+        return GpuUnavailable(
+            "no_gpu", "這台電腦沒有可用的 NVIDIA 顯卡（找不到 NVIDIA 驅動）",
+            "可以改用 Gemini；有 NVIDIA 顯卡的話，裝好驅動後重新開啟 Mimiji", detail)
+    if "No CUDA GPUs are available" in text:
+        return replace(NO_GPU, detail=detail)
+    too_old = re.search(r"driver on your system is too old \(found version (\d+)\)", text)
+    if too_old:
+        versions = "，".join(filter(None, (_current_driver(too_old.group(1)), _required_driver(cuda))))
+        return GpuUnavailable(
+            "driver_too_old", f"NVIDIA 顯卡驅動太舊（{versions}）",
+            "更新驅動後重新開啟 Mimiji，或改用 Gemini", detail)
+    return GpuUnavailable(
+        "cuda_init_failed", "顯卡的 CUDA 初始化失敗",
+        "重新開機後再試；還是一樣的話，重新安裝最新的 NVIDIA 驅動，或改用 Gemini", detail)
+
+
+def _current_driver(cuda_driver_version: str) -> str:
+    """目前的驅動：nvidia-smi 回報的版本；問不到時寫 PyTorch 訊息裡的版本，那是驅動支援到哪一版
+    CUDA（``cuDriverGetVersion``，1000 × 主版號 + 10 × 次版號，例如 11040 是 11.4）。"""
+    version = nvidia_driver_version()
+    if version:
+        return f"目前 {version}"
+    number = int(cuda_driver_version)
+    return f"目前的驅動支援到 CUDA {number // 1000}.{number % 1000 // 10}"
+
+
+def _required_driver(cuda: str | None) -> str:
+    """要裝的驅動。Windows 上照 :data:`WINDOWS_DRIVER_FOR_CUDA` 寫版本；表上沒有的 CUDA，或不是
+    Windows（Docker 模式的 GPU worker），寫要支援哪一版 CUDA。"""
+    version = WINDOWS_DRIVER_FOR_CUDA.get(cuda or "") if platform.system() == "Windows" else None
+    if version:
+        return f"需要 {version} 以上"
+    return f"需要支援 CUDA {cuda} 的驅動" if cuda else "需要更新驅動"
+
+
+def _torch_load_failed(error: BaseException) -> GpuUnavailable:
+    detail = _error_summary(error)
+    if _missing_vc_runtime():
+        return GpuUnavailable(
+            "torch_load_failed", "PyTorch 載入失敗：這台電腦沒有 Microsoft Visual C++ 可轉散發套件",
+            f"從 {VC_REDIST_URL} 下載安裝後重新開啟 Mimiji，或改用 Gemini", detail)
+    return GpuUnavailable(
+        "torch_load_failed", "PyTorch 載入失敗",
+        "重新開機後再試；還是一樣的話，請回報問題並附上診斷資訊，或改用 Gemini", detail)
+
+
+def _missing_vc_runtime() -> bool:
+    """Windows 上缺 Microsoft Visual C++ 可轉散發套件的 DLL。torch 載入自己的 DLL 前也查這三個
+    （torch 2.8.0 的 ``torch/__init__.py``），缺了就載入失敗；免安裝版的 Python 沒有帶 msvcp140.dll。"""
+    if platform.system() != "Windows":
+        return False
+    import ctypes
+    try:
+        for dll in ("vcruntime140.dll", "msvcp140.dll", "vcruntime140_1.dll"):
+            ctypes.CDLL(dll)
+    except OSError:
+        return True
+    return False
+
+
+def nvidia_driver_version() -> str | None:
+    """nvidia-smi 回報的驅動版本（例如 ``576.02``）；沒裝 NVIDIA 驅動或問不到時是 None。"""
+    output = command_output("nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader")
+    lines = output.strip().splitlines() if output else []
+    return (lines[0].strip() or None) if lines else None  # 兩張卡時每張一行，驅動是同一個
+
+
+# 引號裡有斜線的字串、磁碟機代號或 UNC 開頭的路徑（可能有空白，到引號或行尾為止）、/ 開頭的路徑。
+# 網址的 // 與路徑段不算：前面是 : 或 / 或文字
+_QUOTED_PATH = re.compile(r"""(["'])([^"'\n]*[\\/][^"'\n]*)\1""")
+_WINDOWS_PATH = re.compile(r"""(?:\b[A-Za-z]:[\\/]|\\\\)[^"'\n]*""")
+_POSIX_PATH = re.compile(r"""(?<![\w:/.~-])/[^\s"']+""")
+
+
+def _basename(path: str) -> str:
+    return re.split(r"[\\/]", path.rstrip("\\/"))[-1]
+
+
+def _error_summary(error: BaseException) -> str:
+    """原始錯誤的摘要：例外類型與訊息的第一行，路徑只留檔名（診斷資訊會貼進公開的 Issue，路徑常帶
+    著帳號名稱），太長的只留開頭。"""
+    lines = str(error).strip().splitlines()
+    text = type(error).__name__
+    if lines:
+        first = _QUOTED_PATH.sub(lambda m: m.group(1) + _basename(m.group(2)) + m.group(1), lines[0])
+        first = _POSIX_PATH.sub(lambda m: _basename(m.group(0)), _WINDOWS_PATH.sub(
+            lambda m: _basename(m.group(0)), first))
+        text = f"{text}: {first}"
+    return text if len(text) <= DETAIL_MAX_CHARS else text[:DETAIL_MAX_CHARS] + "…"
+
+
+_noted_problems: set[GpuUnavailable] = set()
+
+
+def _noted(problem: GpuUnavailable) -> GpuUnavailable:
+    """每種原因在日誌寫一次（設定頁與轉錄頁每次問都會偵測一次）。寫 info 不寫 warning：沒有顯卡
+    的電腦本來就用不了本機轉錄，Docker 模式的 API 容器也本來就沒裝 torch。"""
+    if problem not in _noted_problems:
+        _noted_problems.add(problem)
+        logger.info(f"本機轉錄不能用：{problem.problem}"
+                    + (f"（{problem.detail}）" if problem.detail else ""))
+    return problem
 
 
 def arch_supported(capability: tuple[int, int], arch_list: list[str]) -> bool:
@@ -245,17 +427,21 @@ def arch_supported(capability: tuple[int, int], arch_list: list[str]) -> bool:
     return False
 
 
-def _unusable_gpu(gpu: Gpu | None) -> LocalNotReady:
-    if gpu is None:
-        return LocalNotReady("no_gpu", "這台電腦沒有可用的 NVIDIA 顯卡，本機轉錄不能用，可以改用 Gemini")
+def _unusable_gpu(gpu: Gpu | GpuUnavailable) -> LocalNotReady:
+    if isinstance(gpu, GpuUnavailable):
+        return LocalNotReady(gpu.reason, gpu.message)
     # 不在清單裡的通常是太舊的卡，也可能是比這版 torch 新一代的卡，所以不說「太舊」
     return LocalNotReady("unsupported_gpu", f"目前的 PyTorch 不支援這張顯卡（{gpu.name}），"
                          "本機轉錄不能用，可以改用 Gemini")
 
 
-def gpu_problem(gpu: Gpu | None) -> str | None:
-    """這張顯卡（:func:`detect_gpu` 的結果）跑不了本機轉錄的原因；跑得了時是 None。"""
-    return None if gpu is not None and gpu.supported else str(_unusable_gpu(gpu))
+def gpu_problem(gpu: Gpu | GpuUnavailable) -> str | None:
+    """這張顯卡（:func:`detect_gpu` 的結果）跑不了本機轉錄的原因與下一步；跑得了時是 None。
+
+    轉錄頁的就緒提示（經 :func:`ensure_local_ready`）與設定頁的本機卡片都照它；診斷資訊寫同一個
+    :class:`GpuUnavailable` 的 ``problem``。
+    """
+    return None if isinstance(gpu, Gpu) and gpu.supported else str(_unusable_gpu(gpu))
 
 
 def vram_notice(vram_gb: float, single_pass_seconds: float) -> str | None:
@@ -280,7 +466,7 @@ def ensure_local_ready(model: str | None = None) -> Gpu:
     """本機轉錄前的前置檢查（由本機轉接器呼叫）；不符合直接拋 :class:`LocalNotReady`，
     符合時回傳要用的顯卡。顯卡記憶體不足不在這裡擋（#11 Q2）。"""
     gpu = detect_gpu()
-    if gpu is None or not gpu.supported:
+    if not isinstance(gpu, Gpu) or not gpu.supported:
         raise _unusable_gpu(gpu)
     missing = missing_repos(model)
     if missing:

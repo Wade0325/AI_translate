@@ -1,13 +1,21 @@
 """錯字率（MER，混合錯誤率）、說話者歸屬與錯誤預算：所有品質比較的計分核心。
 
 **為什麼不用 CER**：主要錯誤是英文術語（Docker→doctor、Zoom→祖母），以字元計算會低估
-嚴重度（doctor 對 Docker 只差兩個字元）。改成「中文字 1 個 token、英文詞 1 個 token」的
-混合錯誤率，一個術語錯就是一個錯。
+嚴重度（doctor 對 Docker 只差兩個字元）。改成「漢字、平假名、片假名每字 1 個 token，英文詞
+1 個 token」的混合錯誤率，一個術語錯就是一個錯。日文和中文用同一套算法（ADR 0009），不斷詞、
+不維護日文的附和詞表；漢字與假名的寫法不同（ありがとう／有難う）照算錯，錯字率的絕對值因此
+偏高，但基準和 PR 對的是同一份標準答案，不影響判定（#15 Q2c）。
 
 **正規化兩邊同時做**，避免把聽打規範的差異算成模型的錯：
-  NFKC（全形→半形）→ [聽不清] 轉 wildcard → 去草稿標記 → 繁簡統一（t2s，再把「着」併成
-  「著」）→ 小寫 → 只保留中文字與英數 token → 去語助詞 → 逐字母縮寫合併（S Q L → sql）
-  → 個位數字轉中文（9 ↔ 九）
+  NFKC（全形→半形）→ [聽不清] 轉 wildcard → 去草稿標記 → 刪括號標註的非語言聲 → 繁簡統一
+  （t2s，再把「着」併成「著」）→ 小寫 → 只保留漢字、假名與英數 token → 去語助詞 → 逐字母
+  縮寫合併（S Q L → sql）→ 個位數字轉中文（9 ↔ 九）
+
+**非語言聲不計分**（#15 Q2c）：標準答案不寫笑聲、啜泣這類聲音；轉錄結果用括號標註的
+（「（笑）」「[拍手]」「【笑い】」）連同括號整段刪掉，中文的「[掌聲]」也一樣。判斷只看括號，不看
+裡面寫什麼，所以真的說出口、卻被寫在括號裡的話也會被刪；目前看到的轉錄結果拿括號標的都是
+非語音的聲音（MOSS 的「[笑]」，Gemini 的提示詞範本要求的「[耳語]」），所以沒有另外處理。「」『』《》〈〉裡是說出口的
+話或書名，照算。[聽不清] 也是方括號，要在這一步之前換成 wildcard。
 
 繁簡統一用 ``t2s`` 而非 ``tw2sp``：前者只合併字形（檔/档、裡/里），後者會做詞彙替換
 （程式→程序），那會把真正的辨識錯誤洗掉。``opencc`` 來自 ``opencc-python-reimplemented``
@@ -45,7 +53,15 @@ _T2S = opencc.OpenCC("t2s")
 
 # [聽不清] 換成這個私用區字元，對齊時當成 wildcard
 UNK = ""
-TOKEN_RE = re.compile(rf"{UNK}|[一-鿿]|[A-Za-z0-9]+")
+# 每字 1 個 token 的字（ADR 0009）：漢字加上「々」，平假名與片假名加上長音「ー」與疊字符號
+# （ゝゞヽヾ）。片假名區塊裡的中黑「・」（U+30FB）與單獨的濁點「゛゜」是標點，和其他標點一樣
+# 不收：中文的人名也用「・」，收進來中文的分數就會變
+_HAN = "一-鿿々"
+_HIRAGANA = "ぁ-ゖゝ-ゟ"
+_KATAKANA = "ァ-ヺー-ヿㇰ-ㇿ"
+TOKEN_RE = re.compile(rf"{UNK}|[{_HAN}{_HIRAGANA}{_KATAKANA}]|[A-Za-z0-9]+")
+# 括號標註的非語言聲：（笑）、[拍手]、【笑】。NFKC 之後全形括號都成了半形，所以只列半形與【】
+NON_SPEECH_RE = re.compile(r"\([^()]*\)|\[[^\[\]]*\]|【[^【】]*】")
 # 只放純語助詞。兩邊同時刪除，所以寫不寫「嗯」不影響分數
 FILLERS = set("嗯呃啊喔哦欸誒唉呀哎唔")
 DIGIT_ZH = {"0": "零", "1": "一", "2": "二", "3": "三", "4": "四",
@@ -61,6 +77,7 @@ def tokenize(text: str, drop_fillers: bool = True) -> list[str]:
     s = unicodedata.normalize("NFKC", text)
     s = s.replace(UNCLEAR, UNK)
     s = DOUBT_RE.sub("", s).replace("(?)", "")
+    s = NON_SPEECH_RE.sub("", s)
     s = _T2S.convert(s).replace("着", "著").lower()
     toks = TOKEN_RE.findall(s)
     if drop_fillers:
@@ -454,9 +471,14 @@ def paired_delta_ci(a: Sequence[int], b: Sequence[int], lens: Sequence[int],
 
 # ----------------------------------------------------------------- 全域對應
 def global_mapping(results: Sequence[Result]) -> tuple[dict[str, str], float]:
-    """評測集的所有音檔共用同一組說話者對應時的最佳解與 cpMER。
+    """同一份轉錄結果的幾段標準答案共用同一組說話者對應時的最佳解與 cpMER。
 
-    與每段音檔各自最佳（cp_mer_local）的差距，就是說話者標記在音檔之間不一致的代價。
+    ``eval`` 一次只拿一份轉錄結果（一個音檔）去比幾段標準答案。轉錄結果的說話者標記在整個音檔裡
+    代表同一個人，所以這幾段共用一組對應；與每段各自最佳（cp_mer_local）的差距，就是說話者標記在
+    同一個音檔的幾段之間不一致的代價。這幾段的標準答案也要用同一套代號。
+
+    只能給同一份轉錄結果的結果（#298）：不同音檔裡同名的標記（S0、S1）不是同一個人，一起配對會把
+    cpMER 灌高。一種語言的 cpMER 由 summary 把每個音檔各自配對的錯誤數加起來（照 token 數加權）。
     """
     labels_hyp = sorted({k for r in results for k in r.transcript_spk})
     labels_ref = sorted({k for r in results for k in r.ref_spk})
@@ -518,7 +540,7 @@ def format_report(results: Sequence[Result], transcript_label: str,
     if len(results) > 1:
         out.append(f"      cpMER 局部對應 {local*100:.2f}%"
                    f"   差距 {gap*100:+.2f} pp"
-                   + ("   ← 說話者標記在音檔之間不一致" if gap > 0.01 else ""))
+                   + ("   ← 說話者標記在這幾段之間不一致" if gap > 0.01 else ""))
     return "\n".join(out)
 
 

@@ -14,6 +14,8 @@ import { downloadFormats } from "../constants/downloadFormats"
 import { downloadBlob, renameExtension } from "../utils/download"
 import { StatCard } from "../components/StatCard"
 import { STATUS_META, TASK_STATUS } from "../constants/taskStatus"
+import { FailureSummary } from "../components/FailureNotice"
+import { failureOf } from "../utils/failure"
 
 const { Text } = Typography
 
@@ -106,11 +108,20 @@ export default function HistoryPage() {
             dataIndex: "original_filename",
             key: "original_filename",
             ellipsis: true,
-            render: (v) => (
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <FileTextOutlined style={{ color: "#2dd4a8" }} />
-                    <Text ellipsis style={{ color: "#e8e8e8", maxWidth: 250 }}>{v || "—"}</Text>
-                </div>
+            render: (v, record) => (
+                <>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <FileTextOutlined style={{ color: "#2dd4a8" }} />
+                        <Text ellipsis style={{ color: "#e8e8e8", maxWidth: 250 }}>{v || "—"}</Text>
+                    </div>
+                    {/* 失敗的原因寫在檔名下面，滑過去看下一步、錯誤碼與細節 */}
+                    {record.status === TASK_STATUS.FAILED && (record.error_code || record.error_message) && (
+                        <FailureSummary
+                            failure={failureOf(record)}
+                            style={{ display: "block", maxWidth: 250, marginLeft: 22, fontSize: 12 }}
+                        />
+                    )}
+                </>
             ),
         },
         {

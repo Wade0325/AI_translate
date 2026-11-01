@@ -33,7 +33,13 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 from google.genai import types
 
 from app.core.config import get_settings
-from app.exceptions import GeminiPermanentError, GeminiTransientError
+from app.core.error_codes import ErrorCode
+from app.exceptions import (
+    ApiKeyMissingError,
+    GeminiFileRejectedError,
+    GeminiPermanentError,
+    GeminiTransientError,
+)
 from app.provider.base import (
     DEFAULT_QUEUE,
     BatchStatus,
@@ -242,15 +248,13 @@ def _transcription_result(
 
     # 被安全機制阻擋的回應沒有 candidates：回報失敗，不能把空結果當成功
     if not response.candidates:
-        error_text = "[[轉錄失敗：Gemini 回應被阻擋]]"
-        try:
-            error_text = f"[[轉錄失敗：請求被 Gemini 以 '{response.prompt_feedback.block_reason}' 原因阻擋。]]"
-        except Exception:
-            pass
+        reason = _block_reason(response)
+        error_text = f"Gemini 的回應被阻擋（{reason}）" if reason else "Gemini 的回應被阻擋"
         logger.warning(f"Gemini 沒有回傳任何內容: {error_text}")
         return TranscriptionTaskResult(
-            success=False, text=error_text, input_tokens=input_tokens,
-            output_tokens=output_tokens, total_tokens=total_tokens, service_tier_used=tier)
+            success=False, text=error_text, error_code=ErrorCode.GEMINI_BLOCKED,
+            input_tokens=input_tokens, output_tokens=output_tokens, total_tokens=total_tokens,
+            service_tier_used=tier)
 
     thoughts_tokens = response.usage_metadata.thoughts_token_count if response.usage_metadata else None
     logger.info("Token 使用統計:")
@@ -264,22 +268,38 @@ def _transcription_result(
     if not segments and stopped:
         # 沒有內容又不是正常結束（例如 SAFETY、RECITATION）：不是那段沒人說話，當成功的話
         # 那一段會默默不見
-        error_text = f"[[轉錄失敗：Gemini 沒有寫出任何內容就停止（{stopped}）]]"
+        error_text = f"Gemini 沒有寫出任何內容就停止（{stopped}）"
         logger.warning(error_text)
+        code = ErrorCode.GEMINI_BLOCKED if stopped in _BLOCKING_FINISH else ErrorCode.NO_TRANSCRIPT
         return TranscriptionTaskResult(
-            success=False, text=error_text, input_tokens=input_tokens,
+            success=False, text=error_text, error_code=code, input_tokens=input_tokens,
             output_tokens=output_tokens, total_tokens=total_tokens, service_tier_used=tier)
     # 正常結束卻沒有任何帶時間戳、有文字的行（例如這一段沒人說話）：算成功、沒有片段，不必切段
     # 重試；text 寫為什麼沒有，整個任務合併完都沒有片段時，任務用它回報失敗
-    reason = "" if segments else "[[Gemini 的回應沒有任何帶時間戳的文字]]"
-    if reason:
-        logger.warning("Gemini 的回應沒有任何帶時間戳的文字，這一段沒有片段")
+    if segments:
+        return TranscriptionTaskResult(
+            success=True, input_tokens=input_tokens, output_tokens=output_tokens,
+            total_tokens=total_tokens, service_tier_used=tier, segments=segments)
+    logger.warning("Gemini 的回應沒有任何帶時間戳的文字，這一段沒有片段")
     return TranscriptionTaskResult(
-        success=True, text=reason, input_tokens=input_tokens, output_tokens=output_tokens,
-        total_tokens=total_tokens, service_tier_used=tier, segments=segments)
+        success=True, text="Gemini 的回應沒有任何帶時間戳的文字",
+        error_code=ErrorCode.NO_TRANSCRIPT, input_tokens=input_tokens,
+        output_tokens=output_tokens, total_tokens=total_tokens, service_tier_used=tier)
+
+
+def _block_reason(response: Any) -> Optional[str]:
+    """請求被擋下的原因（prompt_feedback.block_reason，例如 PROHIBITED_CONTENT）；沒寫時是 None。"""
+    reason = getattr(getattr(response, "prompt_feedback", None), "block_reason", None)
+    if reason is None:
+        return None
+    return getattr(reason, "name", None) or str(reason)
 
 
 _NORMAL_FINISH = frozenset({"STOP", "FINISH_REASON_UNSPECIFIED"})
+_BLOCKING_FINISH = frozenset({
+    "SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII", "IMAGE_SAFETY"})
+"""因為安全或版權的理由停止（google-genai 的 FinishReason）：沒有內容是 Gemini 擋下了，不是這一段
+沒人說話。"""
 
 
 def _abnormal_finish(response: Any) -> Optional[str]:
@@ -419,8 +439,8 @@ def _batch_item_result(inline: Any) -> TranscriptionTaskResult:
     response = inline.response
     if not response:
         return TranscriptionTaskResult(
-            success=False, text=f"[[Gemini 回報這個請求失敗：{inline.error or '未知錯誤'}]]",
-            service_tier_used="batch")
+            success=False, text=f"Gemini 回報這個請求失敗：{inline.error or '未知錯誤'}",
+            error_code=ErrorCode.GEMINI_REQUEST_FAILED, service_tier_used="batch")
     return _transcription_result(response, "batch", _SpeakerIds())
 
 
@@ -436,10 +456,19 @@ class GeminiProvider:
         client: Any = None,
         sleep: Callable[[float], None] = time.sleep,
     ):
-        """client 沒給時用 api_key 建立 google-genai 用戶端；測試傳入假的用戶端與 sleep。"""
-        self._client: Any = client if client is not None else GeminiClient(api_key).client
-        if not self._client:
-            raise ValueError("Failed to initialize Gemini Client. Check API key.")
+        """client 沒給時用 api_key 建立 google-genai 用戶端；測試傳入假的用戶端與 sleep。
+
+        Raises:
+            ApiKeyMissingError: 沒有 API 金鑰。
+            ValueError: 用這把金鑰建立不了用戶端。
+        """
+        if client is None:
+            if not api_key:
+                raise ApiKeyMissingError("沒有設定 Gemini 的 API 金鑰")
+            client = GeminiClient(api_key).client
+            if not client:
+                raise ValueError("無法用這把 API 金鑰建立 Gemini 的用戶端，請到 Settings 確認金鑰")
+        self._client: Any = client
         self._model = model
         self._sleep = sleep
         self._uploaded: List[Any] = []
@@ -554,7 +583,7 @@ class GeminiProvider:
                 raise _classify(e) from e
 
         if gemini_file.state.name == "FAILED":
-            raise GeminiPermanentError(f"Gemini 檔案處理失敗: {gemini_file.state}")
+            raise GeminiFileRejectedError("Gemini 處理不了上傳的音檔（檔案狀態是 FAILED）")
 
         logger.info(f"檔案 '{audio_path.name}' 上傳並處理完畢")
         return gemini_file

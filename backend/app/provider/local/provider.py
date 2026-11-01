@@ -53,12 +53,12 @@ def _single_pass_seconds_on_this_gpu(model: str) -> float:
 
 def vram_notice(model: str | None) -> str | None:
     """用這張顯卡轉錄這個模型時，顯卡記憶體低於最低需求的提示（#11 Q2，見
-    :func:`weights.vram_notice`）；沒有顯卡、顯卡不支援或記憶體夠時是 None。
+    :func:`weights.vram_notice`）；PyTorch 用不了顯卡、顯卡不支援或記憶體夠時是 None。
 
     單次長度和轉錄時一樣依這張顯卡收斂。查顯卡會 import torch，只在轉錄那台機器的行程呼叫。
     """
     gpu = weights.detect_gpu()
-    if gpu is None or not gpu.supported:
+    if not isinstance(gpu, weights.Gpu) or not gpu.supported:
         return None
     if weights.is_moss_model(model):
         from app.provider.local import moss

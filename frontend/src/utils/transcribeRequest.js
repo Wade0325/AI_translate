@@ -31,6 +31,7 @@ export const forRetranscription = (file) => ({
   statusText: '等待處理',
   task_uuid: null,
   error: null,
+  failure: null,
   sentPrompt: undefined,
 });
 

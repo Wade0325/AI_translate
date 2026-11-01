@@ -12,8 +12,8 @@ const NOTHING = { blockedReason: null, nextStep: null, warning: null };
 /**
  * { blockedReason, nextStep, warning }：
  * - blockedReason：不能轉錄的原因，Start 停用並顯示它；能轉錄時是 null。
- * - nextStep：'switch'（這台電腦跑不了，改用別的供應商）、'settings'（到設定頁下載模型權重）
- *   或 null。
+ * - nextStep：'switch'（這台電腦現在跑不了：怎麼修寫在 blockedReason，例如更新驅動；另外給改用別的
+ *   供應商的按鈕）、'settings'（到設定頁下載模型權重）或 null。
  * - warning：顯卡記憶體的提示，只提示、不擋；沒有時是 null。
  *
  * 不知道的一律不擋，由轉錄時的檢查把關。

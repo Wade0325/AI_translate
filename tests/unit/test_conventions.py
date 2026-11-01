@@ -176,7 +176,8 @@ USER_FACING_ERRORS = {
         "訊息固定是 PLAINTEXT_API_KEY_MESSAGE，不帶金鑰（#16 Q8b）"),
     "LocalNotReady": (
         "backend/app/provider/local/weights.py",
-        "訊息是固定句子，只帶驅動回報的顯卡名稱與缺少的模型權重的 repo 名稱（#11）"),
+        "訊息是固定句子，只帶顯卡名稱、驅動與 PyTorch 的版本號，以及缺少的模型權重的 repo 名稱"
+        "（#11、#262）；PyTorch 的原始錯誤不放進訊息"),
 }
 
 # 刻意把例外的原文放進回應的 except。值是理由

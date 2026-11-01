@@ -6,14 +6,15 @@ const RECORDS = [
         task_uuid: 'task-1', request_timestamp: '2026-10-20T10:00:00', completed_at: '2026-10-20T10:03:00',
         status: 'COMPLETED', original_filename: 'meeting.wav', audio_duration_seconds: 300.0,
         model_used: 'moss-align', source_language: 'zh-TW', total_tokens: 0, cost: 0.0,
-        error_message: null, is_batch: false, session_id: 'session-1', file_uid: 'file-1',
+        error_code: null, error_message: null, is_batch: false, session_id: 'session-1', file_uid: 'file-1',
         service_tier_used: 'standard',
     },
     {
         task_uuid: 'task-2', request_timestamp: '2026-10-21T09:00:00', completed_at: null,
         status: 'FAILED', original_filename: 'interview.mp3', audio_duration_seconds: null,
         model_used: 'gemini-3.5-flash', source_language: 'ja-JP', total_tokens: 1200, cost: 0.0042,
-        error_message: '請求逾時', is_batch: false, session_id: 'session-2', file_uid: 'file-2',
+        error_code: 'GEMINI_UNAVAILABLE', error_message: '503 UNAVAILABLE: The model is overloaded.',
+        is_batch: false, session_id: 'session-2', file_uid: 'file-2',
         service_tier_used: 'standard',
     },
 ]
@@ -50,6 +51,21 @@ test('列出任務紀錄，從已完成的那一列下載 SRT', async ({ page, m
     await openDownloadMenu(page, 'meeting.wav')
     expect(await download(page, () => page.getByRole('menuitem', { name: 'SRT' }).click()))
         .toEqual({ filename: 'meeting.srt', text: TRANSCRIPTS.srt })
+})
+
+test('失敗的那一列在檔名下面寫出原因，滑過去看下一步與錯誤碼（#24 門檻 4）', async ({ page, mockBackend }) => {
+    await mockBackend({ routes: HISTORY_ROUTES })
+    await page.goto('/history')
+
+    const reason = recordRow(page, 'interview.mp3').getByText('Gemini 暫時無法服務')
+    await expect(reason).toBeVisible()
+    // 完成的那一列沒有失敗原因
+    await expect(recordRow(page, 'meeting.wav').getByText('Gemini 暫時無法服務')).toHaveCount(0)
+
+    await reason.hover()
+    const tooltip = page.getByRole('tooltip')
+    await expect(tooltip).toContainText('已經自動重試過幾次')
+    await expect(tooltip).toContainText('錯誤碼 GEMINI_UNAVAILABLE · 503 UNAVAILABLE: The model is overloaded.')
 })
 
 test('成功率照後端算的數字顯示：處理中與已取消的任務不算進分母', async ({ page, mockBackend }) => {

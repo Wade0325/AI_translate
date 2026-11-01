@@ -18,7 +18,14 @@ import {
   withModel,
   withProvider,
 } from '../utils/providerList';
-import { loadLastSelection, saveLastSelection } from '../utils/lastSelection';
+import {
+  loadLastLanguage,
+  loadLastMultiSpeaker,
+  loadLastSelection,
+  saveLastLanguage,
+  saveLastMultiSpeaker,
+  saveLastSelection,
+} from '../utils/lastSelection';
 import { forRetranscription, requestDefaults } from '../utils/transcribeRequest';
 import { cancelFile } from '../utils/cancelOutcome';
 import { api } from '../services/api';
@@ -35,12 +42,24 @@ export const useTranscription = () => {
 
 export const TranscriptionProvider = ({ children }) => {
   const [fileList, setFileList] = useState([]);
-  const [sourceLang, setSourceLang] = useState('zh-TW');
+  // 全域的語言：第一次開頁是 Auto Detect，之後照上次的選擇（#261）。使用者切換時才記下，
+  // 沒動過就不寫進儲存空間（utils/lastSelection.js）
+  const [sourceLang, setChosenSourceLang] = useState(loadLastLanguage);
+  const setSourceLang = useCallback((next) => {
+    setChosenSourceLang(next);
+    saveLastLanguage(next);
+  }, []);
   const [isProcessing, setIsProcessing] = useState(false);
   // 使用者選的處理模式：'standard' | 'flex' | 'batch'。實際用的是下面的 processingMode。
   // 預設標準：結果直接回到這一頁，批次要到 Tasks 頁取回（#18）
   const [chosenProcessingMode, setChosenProcessingMode] = useState('standard');
-  const [multiSpeaker, setMultiSpeaker] = useState(false);
+  // Multi-Speaker 開關決定輸出格式帶不帶說話者標記（#13 Q1）：第一次開頁是關，之後照上次的選擇。
+  // 使用者切換時才記下，沒動過就不寫進儲存空間（utils/lastSelection.js）
+  const [multiSpeaker, setChosenMultiSpeaker] = useState(loadLastMultiSpeaker);
+  const setMultiSpeaker = useCallback((next) => {
+    setChosenMultiSpeaker(next);
+    saveLastMultiSpeaker(next);
+  }, []);
   // 轉錄頁的全域提示詞：補充說明，送給沒有每檔設定提示詞的檔案（不必先按 Apply to All），
   // 後端接在提示詞範本後面
   const [globalPrompt, setGlobalPrompt] = useState('');

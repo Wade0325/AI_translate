@@ -122,9 +122,10 @@ export function AppSidebar({ collapsed, onCollapse, sidebarWidth = 240, onSideba
                     <AudioWaveform size={16} color="#141428" />
                 </div>
                 {!collapsed && (
-                    <div style={{ display: 'flex', flexDirection: 'column', lineHeight: 1.2 }}>
-                        <Text strong style={{ color: '#e8e8e8', fontSize: 14 }}>AI_translate</Text>
-                        <Text style={{ color: '#8888a8', fontSize: 11 }}>AI Transcription</Text>
+                    // 產品名稱與副標（#26）：副標和 README、分頁標題（index.html）是同一句。側欄拉到最窄時副標換行
+                    <div style={{ display: 'flex', flexDirection: 'column', lineHeight: 1.2, minWidth: 0 }}>
+                        <Text strong style={{ color: '#e8e8e8', fontSize: 14 }}>Mimiji</Text>
+                        <Text style={{ color: '#8888a8', fontSize: 11 }}>日文、中文語音轉錄與字幕</Text>
                     </div>
                 )}
             </div>

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatLang, isUnverifiedLanguage, languages } from './languages';
+import { DEFAULT_LANGUAGE, formatLang, isMenuLanguage, isUnverifiedLanguage, languages } from './languages';
 
 const values = (options) => options.map((o) => o.value);
 const group = (label) => languages.find((o) => o.label === label);
@@ -17,6 +17,10 @@ describe('語言選單（ADR-0002、#14 Q2、#13 Q5）', () => {
   it('選單沒有 zh-CN：中文一律輸出繁體', () => {
     const all = [languages[0], ...group('官方支援').options, ...group('未驗證').options];
     expect(values(all)).not.toContain('zh-CN');
+  });
+
+  it('預設是 Auto Detect（#261）', () => {
+    expect(DEFAULT_LANGUAGE).toBe('auto');
   });
 
   it('每個語言只出現一次', () => {
@@ -49,5 +53,19 @@ describe('isUnverifiedLanguage', () => {
     expect(isUnverifiedLanguage('zh-TW')).toBe(false);
     expect(isUnverifiedLanguage('auto')).toBe(false);
     expect(isUnverifiedLanguage('zh-CN')).toBe(false);
+  });
+});
+
+describe('isMenuLanguage', () => {
+  it('Auto Detect 與兩組裡的語言都算', () => {
+    for (const value of ['auto', 'ja', 'zh-TW', 'fr', 'id']) {
+      expect(isMenuLanguage(value)).toBe(true);
+    }
+  });
+
+  it('選單裡沒有的值不算：舊紀錄的 zh-CN、語言名稱、分組標題、不是字串的值', () => {
+    for (const value of ['zh-CN', 'Japanese', '官方支援', '', null, undefined, 1, {}]) {
+      expect(isMenuLanguage(value)).toBe(false);
+    }
   });
 });
