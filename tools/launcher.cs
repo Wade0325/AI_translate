@@ -10,7 +10,7 @@
 //   2. 首次啟動時佈建 Python 依賴（含 torch，約 3.5 GB 下載）：先以 bin\prefetch_wheels.py 下載 torch，
 //      斷線時可以接著下載（#303）；再以隨包 uv.exe 安裝，最後刪掉 torch 執行時用不到的 .lib 靜態庫
 //      （約 2.8 GB，#305）
-//   3. 設定免安裝模式的環境變數 → 以隨包 Python 啟動 uvicorn
+//   3. 設定免安裝模式的環境變數 → 以隨包 Python 啟動 uvicorn（不載入使用者自己裝的套件，#301）
 //   4. 探活 /api/v1/health 後開啟預設瀏覽器
 //   5. 以 Job Object 綁定子行程：關閉視窗（或啟動器被殺）時 uvicorn 一併結束
 //   6. 出錯時不讓視窗直接消失：說明原因、下一步與日誌位置，按任意鍵才關（#268）
@@ -121,8 +121,11 @@ static class Launcher
 
         var psi = new ProcessStartInfo();
         psi.FileName = python;
+        // -s：不載入使用者自己裝的套件（%APPDATA%\Python\Python311\site-packages 與那裡的 .pth，
+        // #301）。python311._pth 只開了隔離模式，沒有關掉使用者的 site-packages。不用 -I：它會
+        // 連 PYTHON* 環境變數一起忽略，下面設的 PYTHONIOENCODING 就失效了。旗標要放在 -m 前面
         psi.Arguments = string.Format(CultureInfo.InvariantCulture,
-            "-m uvicorn main:app --host 127.0.0.1 --port {0}", port);
+            "-s -m uvicorn main:app --host 127.0.0.1 --port {0}", port);
         psi.WorkingDirectory = backend;
         psi.UseShellExecute = false; // 子行程直接沿用本 console 輸出日誌
         psi.EnvironmentVariables["APP_MODE"] = "standalone";

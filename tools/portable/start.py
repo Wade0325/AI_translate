@@ -132,8 +132,13 @@ def server_env(root: Path) -> dict[str, str]:
 
 
 def server_command(root: Path, port: int) -> list[str]:
-    """啟動伺服器的指令，和啟動器的相同（在 root\\backend 執行）。"""
-    return [str(python_exe(root)), "-m", "uvicorn", "main:app",
+    """啟動伺服器的指令，和啟動器的相同（在 root\\backend 執行）。
+
+    -s：不載入使用者自己裝的套件（%APPDATA%\\Python\\Python311\\site-packages 與那裡的 .pth，
+    #301）；python311._pth 只開了隔離模式，沒有關掉它。不用 -I：它會連 PYTHON* 環境變數一起
+    忽略，server_env() 設的 PYTHONIOENCODING 就失效了。
+    """
+    return [str(python_exe(root)), "-s", "-m", "uvicorn", "main:app",
             "--host", "127.0.0.1", "--port", str(port)]
 
 
