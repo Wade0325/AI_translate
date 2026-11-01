@@ -4,7 +4,7 @@ app 不自動回傳任何東西（ADR-0005），所以排查只能靠使用者�
 複製，自己決定貼不貼。
 
 只寫這台電腦與 app 的狀態：版本、執行模式、作業系統、Python 與主要套件、顯卡與驅動、本機模型
-權重、ffmpeg 與磁碟剩餘空間。去識別的做法和日誌檔相同（#231），是一開始就不拿：
+的套件與模型權重、ffmpeg 與磁碟剩餘空間。去識別的做法和日誌檔相同（#231），是一開始就不拿：
 
 - **不讀資料庫**：原檔名、提示詞、轉錄結果與 API 金鑰都在資料庫裡，這裡不碰它。
 - **不寫路徑**：data 資料夾、模型權重與 ffmpeg 的路徑常帶著帳號名稱。
@@ -20,7 +20,7 @@ from pathlib import Path
 
 from app.core.config import get_settings
 from app.core.version import APP_VERSION
-from app.provider.local import weights
+from app.provider.local import packages, weights
 from app.provider.local.provider import vram_notice
 from app.services.environment_manifest import PACKAGES, package
 from app.utils.binaries import ffmpeg_bin
@@ -89,7 +89,7 @@ def release(system: str, reported: str, version: str) -> str:
 
 
 def local_transcription() -> Iterator[Line]:
-    """本機轉錄要的東西：驅動、顯卡、顯卡記憶體的提示與模型權重（只在免安裝模式問）。
+    """本機轉錄要的東西：驅動、顯卡、顯卡記憶體的提示、本機模型的套件與模型權重（只在免安裝模式問）。
 
     驅動和顯卡分開問：PyTorch 用不了顯卡時，nvidia-smi 可能照樣找得到卡。用不了的原因和轉錄頁、
     設定頁是同一份判斷（:func:`weights.detect_gpu`，#262），另外附上 PyTorch 的原始錯誤。
@@ -106,12 +106,31 @@ def local_transcription() -> Iterator[Line]:
         notice = vram_notice(None)
         if notice:
             yield "顯卡記憶體", notice
+        if gpu.supported:
+            yield from local_packages()
 
     ready = {repo: weights.repo_is_ready(repo) for repo in weights.ALL_REPOS}
     for model, repos in weights.MODEL_REPOS.items():
         missing = [repo for repo in repos if not ready[repo]]
         label = f"模型權重 {model}" + ("（預設）" if model == weights.DEFAULT_LOCAL_MODEL else "（選用）")
         yield label, "已下載" if not missing else "缺少 " + "、".join(missing)
+
+
+def local_packages() -> Iterator[Line]:
+    """本機模型要用的套件匯入不匯入得了（#311），和轉錄頁的就緒檢查是同一份判斷
+    （:mod:`app.provider.local.packages`）；載入失敗時另外附上原始錯誤，和 PyTorch 的錯誤一樣。
+
+    和就緒檢查一樣排在顯卡之後：顯卡用不了時不問。匯入要載入 transformers 與模型的程式，沒有
+    顯卡的電腦（多半只用 Gemini）不必為了複製診斷資訊多花這些時間與記憶體。
+    """
+    every_package = dict.fromkeys(p for found in packages.MODEL_PACKAGES.values() for p in found)
+    unavailable = [result for result in map(packages.check, every_package)
+                   if isinstance(result, packages.PackageUnavailable)]
+    # transformers 列了兩組類別：兩組都匯入不了時原因同一句，只寫一次；錯誤一樣時也只寫一次
+    problems = dict.fromkeys(map(weights.package_problem, unavailable))
+    yield "本機模型的套件", "；".join(problems) or "都載入得了"
+    for name, detail in dict.fromkeys((u.package, u.detail) for u in unavailable if u.detail):
+        yield f"{name} 的錯誤", detail
 
 
 def ffmpeg_version() -> str | None:

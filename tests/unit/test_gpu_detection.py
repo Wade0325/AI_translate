@@ -211,10 +211,10 @@ class TestDetail:
         (TOO_OLD, TOO_OLD),
     ])
     def test_paths_in_other_messages(self, text, expected):
-        assert weights._error_summary(RuntimeError(text)) == f"RuntimeError: {expected}"
+        assert weights.error_summary(RuntimeError(text)) == f"RuntimeError: {expected}"
 
     def test_only_the_first_line_and_not_too_long(self):
-        detail = weights._error_summary(RuntimeError("x" * 1000 + "\nsecond line"))
+        detail = weights.error_summary(RuntimeError("x" * 1000 + "\nsecond line"))
         assert detail == "RuntimeError: " + ("x" * 1000)[:weights.DETAIL_MAX_CHARS - 14] + "…"
 
 

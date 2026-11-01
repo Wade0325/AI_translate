@@ -1,8 +1,9 @@
-"""本機不能用時，轉錄頁、設定頁與「複製診斷資訊」寫同一個原因（#262）。
+"""本機不能用時，轉錄頁、設定頁與「複製診斷資訊」寫同一個原因（#262、#311）。
 
 測試範圍（免安裝模式）：
   GET /api/v1/setting/local-models/readiness  轉錄頁選本機時的就緒提示
   GET /api/v1/setting/local-models/status     設定頁的本機卡片
+  POST /api/v1/setting/test                   設定頁的「測試」
   GET /api/v1/diagnostics                     複製診斷資訊
 
 torch 換成 tests/support/fake_torch.py 的假 torch，走真的 :func:`weights.detect_gpu`。
@@ -12,7 +13,7 @@ import platform
 import pytest
 
 from app.core.config import get_settings
-from app.provider.local import weights
+from app.provider.local import packages, weights
 from tests.support.fake_torch import (
     DLL_LOAD_FAILED,
     INIT_FAILED,
@@ -24,6 +25,7 @@ from tests.support.fake_torch import (
 )
 
 READINESS_URL = "/api/v1/setting/local-models/readiness"
+TEST_URL = "/api/v1/setting/test"
 STATUS_URL = "/api/v1/setting/local-models/status"
 DIAGNOSTICS_URL = "/api/v1/diagnostics"
 
@@ -84,3 +86,25 @@ def test_a_usable_gpu_is_ready_everywhere(client, monkeypatch):
     assert said["gpu_available"] is True
     assert said["diagnostics"] == "- 顯卡：NVIDIA GeForce RTX 4080 SUPER（16 GB）"
     assert said["torch_error"] is None
+
+
+def test_a_package_that_fails_to_load_is_not_ready_anywhere(client, monkeypatch):
+    # PR #306 在 Wade 的電腦上的情況：顯卡能用，import moss_transcribe_diarize 卻因為使用者自己裝的
+    # torchvision 失敗。以前轉錄頁說能轉錄、任務失敗時又說「缺少套件」（#311）
+    fake_torch(monkeypatch, card=RTX_4080)
+    packages._results[packages.MOSS] = packages.PackageUnavailable(
+        "package_load_failed", "moss-transcribe-diarize",
+        detail="RuntimeError: operator torchvision::nms does not exist")
+    problem = "moss-transcribe-diarize 套件載入失敗"
+
+    readiness = client.get(READINESS_URL).json()
+    test = client.post(TEST_URL, json={"provider": "local", "apiKeys": [], "model": "moss-align"})
+    lines = client.get(DIAGNOSTICS_URL).json()["text"].splitlines()
+
+    assert (readiness["ready"], readiness["reason"]) == (False, "package_load_failed")
+    assert readiness["message"] == (f"{problem}，本機轉錄不能用，"
+                                    "請回報問題並附上診斷資訊，或改用 Gemini")
+    assert test.json() == {"success": False, "message": readiness["message"]}
+    assert f"- 本機模型的套件：{problem}" in lines
+    assert ("- moss-transcribe-diarize 的錯誤：RuntimeError: operator torchvision::nms does not "
+            "exist") in lines
