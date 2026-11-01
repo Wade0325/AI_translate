@@ -13,7 +13,7 @@ on:
   # 不加 paths：把 main 合進這個分支再 push 就會重跑（#281 驗收時用），量的是合進來的 main。
   # workflow_dispatch 只在 workflow 放在預設分支時才能用，這裡沒有
   push:
-    branches: [claude/project-thread-7z1l48]
+    branches: [claude/project-thread-7z1l48, claude/trial-303-resume]  # 後者：#303 的驗收（PR #309）
 
 permissions:
   contents: read

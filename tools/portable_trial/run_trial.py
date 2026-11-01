@@ -302,6 +302,8 @@ def parse_launcher_logs(root: Path) -> dict[str, Any]:
     found: dict[str, Any] = {
         "uv_exit": [{"code": m.group(1), "seconds": int(m.group(2))}
                     for m in re.finditer(r"uv 結束，代碼 (\S+)，花了 (\d+) 秒", text)],
+        "prefetch_exit": [{"code": m.group(1), "seconds": int(m.group(2))}
+                          for m in re.finditer(r"下載 PyTorch 結束，代碼 (\S+)，花了 (\d+) 秒", text)],
         "ready_seconds": [int(m.group(1)) for m in re.finditer(r"伺服器在 (\d+) 秒後就緒", text)],
         "free_space": re.findall(r"可用空間：([^\n]+)", text),
     }
@@ -609,7 +611,8 @@ def summary_markdown() -> str:
         lines.append("")
         lines.append(f"- 事件（秒）：{events}")
         lines.append(f"- 經過代理的下載量：{mb((run_.get('proxy') or {}).get('down'))}")
-        lines.append(f"- 啟動器日誌：uv {log.get('uv_exit')}；health 就緒 {log.get('ready_seconds')} 秒")
+        lines.append(f"- 啟動器日誌：下載 PyTorch {log.get('prefetch_exit')}；uv {log.get('uv_exit')}；"
+                     f"health 就緒 {log.get('ready_seconds')} 秒")
         if run_.get("exit_code") is not None:
             lines.append(f"- 啟動器結束代碼：{run_.get('exit_code')}")
         hosts = (run_.get("proxy") or {}).get("hosts") or {}
@@ -667,7 +670,8 @@ def summary_markdown() -> str:
               f"- 拿掉之後 bin 的程式：{vc.get('binaries')}",
               f"- 拿掉之後啟動：{((vc.get('start') or {}).get('events'))}；health：{vc.get('health')}", ""]
     run_line("斷網（下載到一半）", "interrupted")
-    lines += [f"- 斷網後 uv 快取：{gib((r.get('interrupted', {}).get('uv_cache_after') or {}).get('bytes'))}", ""]
+    lines += [f"- 斷網後 uv 快取：{gib((r.get('interrupted', {}).get('uv_cache_after') or {}).get('bytes'))}",
+              f"- 斷網後 runtime\\downloads：{r.get('interrupted', {}).get('downloads_after')}", ""]
     run_line("恢復網路後再啟動（續傳）", "resumed")
     if r.get("errors"):
         lines += ["## 腳本的錯誤", ""]
@@ -831,6 +835,9 @@ def main() -> int:
         record["sentinel_exists"] = (root / "runtime" / ".provisioned").exists()
         record["uv_cache_after"] = tree_stats(uv_cache()) if uv_cache().exists() else None
         record["site_packages_after"] = tree_stats(root / "runtime" / "Lib" / "site-packages")
+        downloads = root / "runtime" / "downloads"
+        record["downloads_after"] = ({p.name: p.stat().st_size for p in downloads.iterdir()}
+                                     if downloads.is_dir() else None)
         copy_logs(root, "interrupted")
 
     with phase("resumed") as record:
@@ -843,6 +850,7 @@ def main() -> int:
         stop(process, root)
         proxy.stop()
         record["defender_after"] = defender_status()
+        record["downloads_exists_after"] = (root / "runtime" / "downloads").exists()
         copy_logs(root, "resumed")
 
     if original_long_paths is not None:
