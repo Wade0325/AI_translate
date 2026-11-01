@@ -19,7 +19,7 @@ import pytest
 
 from app.core.config import Settings
 from tools import portable_zip
-from tools.portable import start
+from tools.portable import prefetch_wheels, start
 
 ROOT = Path(__file__).resolve().parents[2]
 PORTABLE = ROOT / "tools" / "portable"
@@ -75,7 +75,7 @@ def _relative(value: str) -> str:
 
 def _package(tmp_path: Path, *, provisioned: bool = False, skip: tuple[str, ...] = ()) -> Path:
     """在 tmp_path 做一個解壓後的發布包：start.py 啟動前檢查的檔案都在（skip 裡的除外）。"""
-    for rel in ("runtime/python.exe", "bin/uv.exe", "backend/main.py",
+    for rel in ("runtime/python.exe", "bin/uv.exe", "bin/prefetch_wheels.py", "backend/main.py",
                 "backend/requirements-standalone.txt"):
         if rel not in skip:
             (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
@@ -95,6 +95,18 @@ class _Calls:
     def __call__(self, *args, **kwargs) -> int:
         self.calls.append((args, kwargs))
         return self.code
+
+
+class _Run:
+    """假的 run：先下載 PyTorch 與 uv 各回傳指定的結束代碼，並記下收到的指令。"""
+
+    def __init__(self, *, prefetch: int = 0, uv: int = 0):
+        self.codes = {"prefetch": prefetch, "uv": uv}
+        self.calls: list[tuple] = []
+
+    def __call__(self, cmd, **kwargs) -> int:
+        self.calls.append(((cmd,), kwargs))
+        return self.codes["prefetch" if cmd[-2].endswith("prefetch_wheels.py") else "uv"]
 
 
 class TestMatchesLauncher:
@@ -128,7 +140,8 @@ class TestMatchesLauncher:
     def test_same_provisioning(self):
         # 佈建的指令與完成標記相同：用哪一個啟動，另一個都認得已經佈建好
         launcher = _launcher()
-        assert r'"pip install --python \"{0}\" --target \"{1}\" -r \"{2}\""' in launcher
+        assert (r'"pip install --python \"{0}\" --target \"{1}\" -r \"{2}\" --find-links \"{3}\""'
+                in launcher)
         assert 'Path.Combine(root, "runtime", "Lib", "site-packages")' in launcher
         assert 'Path.Combine(root, "backend", "requirements-standalone.txt")' in launcher
         assert 'Path.Combine(root, "runtime", ".provisioned")' in launcher
@@ -137,19 +150,38 @@ class TestMatchesLauncher:
         assert [_relative(part) for part in start.provision_command(PKG)] == [
             r"bin\uv.exe", "pip", "install", "--python", r"runtime\python.exe",
             "--target", r"runtime\Lib\site-packages",
-            "-r", r"backend\requirements-standalone.txt"]
+            "-r", r"backend\requirements-standalone.txt",
+            "--find-links", r"runtime\downloads"]
         assert _relative(str(start.provisioned_marker(PKG))) == r"runtime\.provisioned"
+
+    def test_same_prefetch(self):
+        # 先下載 PyTorch 的指令、下載的資料夾與結束代碼都和啟動器相同（#303）
+        launcher = _launcher()
+        assert r'"-I -X utf8 \"{0}\" \"{1}\""' in launcher
+        assert 'Path.Combine(root, "bin", "prefetch_wheels.py")' in launcher
+        assert 'Path.Combine(root, "runtime", "downloads")' in launcher
+
+        assert [_relative(part) for part in start.prefetch_command(PKG)] == [
+            r"runtime\python.exe", "-I", "-X", "utf8", r"bin\prefetch_wheels.py", r"runtime\downloads"]
+        assert (start.PREFETCH_INTERRUPTED, start.PREFETCH_MISMATCH, start.PREFETCH_DISK,
+                start.PREFETCH_FALLBACK) == (prefetch_wheels.EXIT_INTERRUPTED,
+                                             prefetch_wheels.EXIT_MISMATCH, prefetch_wheels.EXIT_DISK,
+                                             prefetch_wheels.EXIT_FALLBACK)
 
 
 class TestMain:
     def test_first_run_provisions_then_starts_the_server(self, tmp_path, capsys):
         root = _package(tmp_path)
-        run, serve = _Calls(), _Calls()
+        start.downloads_dir(root).mkdir(parents=True)  # 預先下載的 PyTorch
+        (start.downloads_dir(root) / "torch.whl").write_bytes(b"x")
+        run, serve = _Run(), _Calls()
 
         assert start.main([], root, run=run, serve=serve) == 0
 
-        assert run.calls == [((start.provision_command(root),), {"cwd": root})]
+        assert run.calls == [((start.prefetch_command(root),), {"cwd": root}),
+                             ((start.provision_command(root),), {"cwd": root})]
         assert start.provisioned_marker(root).exists()
+        assert not start.downloads_dir(root).exists()  # 裝好後刪掉
         assert serve.calls == [((root, 8000), {})]
         out = capsys.readouterr().out
         assert "首次啟動：正在下載執行環境" in out
@@ -165,18 +197,67 @@ class TestMain:
         assert run.calls == []
         assert len(serve.calls) == 1
 
+    def test_leftover_downloads_are_removed_on_the_next_start(self, tmp_path):
+        # 上次佈建成功、但下載的檔案沒刪掉（例如防毒軟體正在掃描）
+        root = _package(tmp_path, provisioned=True)
+        start.downloads_dir(root).mkdir(parents=True)
+        (start.downloads_dir(root) / "torch.whl").write_bytes(b"x")
+
+        assert start.main([], root, run=_Calls(), serve=_Calls()) == 0
+
+        assert not start.downloads_dir(root).exists()
+
     def test_failed_provisioning_stops_without_the_marker(self, tmp_path, capsys):
         root = _package(tmp_path)
-        run, serve = _Calls(code=2), _Calls()
+        start.downloads_dir(root).mkdir(parents=True)
+        (start.downloads_dir(root) / "torch.whl").write_bytes(b"x")
+        run, serve = _Run(uv=2), _Calls()
 
         assert start.main([], root, run=run, serve=serve) == 1
 
         assert not start.provisioned_marker(root).exists()
+        assert (start.downloads_dir(root) / "torch.whl").exists()  # 下載好的 PyTorch 留著
         assert serve.calls == []
         out = capsys.readouterr().out
         assert "執行環境佈建失敗（結束代碼 2" in out
-        assert "重新執行 start.bat 即可續傳" in out
+        assert "PyTorch 與已下載完的套件會保留" in out
+        assert "重新執行 start.bat 會接著下載其餘的套件" in out
         assert "按任意鍵關閉" in out
+
+    @pytest.mark.parametrize("code, says", [
+        (prefetch_wheels.EXIT_INTERRUPTED, "網路恢復後重新執行 start.bat，會從中斷的地方接著下載"),
+        (prefetch_wheels.EXIT_MISMATCH, "請重新執行 start.bat 再下載一次"),
+        (prefetch_wheels.EXIT_DISK, "清出磁碟空間後重新執行 start.bat，會從中斷的地方接著下載"),
+    ], ids=["interrupted", "mismatch", "disk"])
+    def test_torch_download_that_stops_says_what_to_do(self, tmp_path, capsys, code, says):
+        root = _package(tmp_path)
+        start.downloads_dir(root).mkdir(parents=True)
+        (start.downloads_dir(root) / "torch.whl.part").write_bytes(b"x")
+        run, serve = _Run(prefetch=code), _Calls()
+
+        assert start.main([], root, run=run, serve=serve) == 1
+
+        assert run.calls == [((start.prefetch_command(root),), {"cwd": root})]  # 不執行 uv
+        assert serve.calls == []
+        assert not start.provisioned_marker(root).exists()
+        assert (start.downloads_dir(root) / "torch.whl.part").exists()  # 下次接著下載
+        out = capsys.readouterr().out
+        assert says in out
+        assert "按任意鍵關閉" in out
+
+    @pytest.mark.parametrize("code", [prefetch_wheels.EXIT_FALLBACK, 1])
+    def test_torch_that_cannot_be_prefetched_is_left_to_uv(self, tmp_path, capsys, code):
+        # 5：來源下載不到；1：prefetch_wheels.py 自己出錯。都照原本的方式由 uv 下載
+        root = _package(tmp_path)
+        run, serve = _Run(prefetch=code), _Calls()
+
+        assert start.main([], root, run=run, serve=serve) == 0
+
+        assert [call[0][0] for call in run.calls] == [start.prefetch_command(root),
+                                                      start.provision_command(root)]
+        assert start.provisioned_marker(root).exists()
+        out = capsys.readouterr().out
+        assert ("改由 uv 下載" in out) == (code == 1)  # 5 的原因 prefetch_wheels.py 自己印了
 
     @pytest.mark.parametrize("code, shown", [
         (1, "1"),

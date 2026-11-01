@@ -4,7 +4,8 @@ build_release.ps1 把它放在發布包的 bin\\start.py；start.bat 用隨包�
 
     runtime\\python.exe -I -X utf8 bin\\start.py [埠號]
 
-做的事和啟動器（tools/launcher.cs）相同：第一次執行時用同一個指令佈建執行環境、寫同一個完成標記，
+做的事和啟動器（tools/launcher.cs）相同：第一次執行時用同樣的步驟佈建執行環境（先以
+bin\\prefetch_wheels.py 下載 PyTorch，斷線時可以接著下載；再以 uv 安裝；#303）、寫同一個完成標記，
 再以同樣的環境變數啟動伺服器（tests/unit/test_portable_start.py 檢查兩邊一致）。不同的是不會自動改用
 空的埠，也不會自動開啟瀏覽器。
 
@@ -27,6 +28,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import shutil
 import subprocess
 import sys
 import urllib.request
@@ -43,7 +45,7 @@ URL_PATTERN = re.compile(r"http://127\.0\.0\.1:([0-9]{1,5})")
 PROVISION_BANNER = """\
 ═══════════════════════════════════════════════════════
  首次啟動：正在下載執行環境（約 3.5 GB，含 PyTorch）
- 過程視網速需要數分鐘到數十分鐘；中斷後重開會續傳。
+ 過程視網速需要數分鐘到數十分鐘；中斷後重新執行，會從中斷的地方接著下載。
  沒有 NVIDIA 顯卡的電腦也會下載這些，只用 Gemini 時大部分用不到。
 ═══════════════════════════════════════════════════════"""
 
@@ -57,12 +59,35 @@ def provisioned_marker(root: Path) -> Path:
     return root / "runtime" / ".provisioned"
 
 
+def downloads_dir(root: Path) -> Path:
+    """首次佈建時預先下載的 wheel（PyTorch）放在這裡，裝好後刪掉；和啟動器的相同。"""
+    return root / "runtime" / "downloads"
+
+
+# bin\prefetch_wheels.py 的結束代碼（定義在 tools/portable/prefetch_wheels.py，測試檢查兩邊一致）。
+# 這三種停下來說明怎麼辦；0、5（這個來源下載不到）與其他的（它自己出錯）接著執行 uv
+PREFETCH_INTERRUPTED = 2
+PREFETCH_MISMATCH = 3
+PREFETCH_DISK = 4
+PREFETCH_FALLBACK = 5
+
+
+def prefetch_command(root: Path) -> list[str]:
+    """先下載 PyTorch 的指令，和啟動器的相同（在 root 執行）。
+
+    -I：不讀使用者自己裝的套件與 PYTHON* 環境變數；-X utf8：輸出導向檔案時也是 UTF-8。
+    """
+    return [str(python_exe(root)), "-I", "-X", "utf8",
+            str(root / "bin" / "prefetch_wheels.py"), str(downloads_dir(root))]
+
+
 def provision_command(root: Path) -> list[str]:
-    """首次佈建的指令，和啟動器的相同（在 root 執行）。"""
+    """首次佈建的指令，和啟動器的相同（在 root 執行）：PyTorch 用 downloads_dir 裡預先下載的。"""
     return [str(root / "bin" / "uv.exe"), "pip", "install",
             "--python", str(python_exe(root)),
             "--target", str(root / "runtime" / "Lib" / "site-packages"),
-            "-r", str(root / "backend" / "requirements-standalone.txt")]
+            "-r", str(root / "backend" / "requirements-standalone.txt"),
+            "--find-links", str(downloads_dir(root))]
 
 
 def server_env(root: Path) -> dict[str, str]:
@@ -205,16 +230,57 @@ def pause() -> None:
 
 def provision(root: Path, run: Callable[..., int]) -> bool:
     print(PROVISION_BANNER, flush=True)
+    if not prefetch(root, run):
+        return False
     code = run(provision_command(root), cwd=root)
     if code != 0:
         print()
         print(f"執行環境佈建失敗（結束代碼 {exit_code_text(code)}，多半是網路中斷）。"
-              "已下載的部分會保留，")
-        print("重新執行 start.bat 即可續傳。")
+              "PyTorch 與已下載完的套件會保留，")
+        print("重新執行 start.bat 會接著下載其餘的套件。")
         return False
+    remove_downloads(root)
     provisioned_marker(root).write_text(datetime.now().isoformat(), encoding="utf-8")
     print("執行環境佈建完成。", flush=True)
     return True
+
+
+def prefetch(root: Path, run: Callable[..., int]) -> bool:
+    """先下載 PyTorch（和啟動器相同）。停在這裡時印出怎麼辦，回傳 False；可以接著執行 uv 時回傳 True。
+
+    原因 prefetch_wheels.py 自己印在視窗裡，這裡只說下一步。
+    """
+    code = run(prefetch_command(root), cwd=root)
+    reason = "原因在上方的最後幾行"
+    if code == PREFETCH_INTERRUPTED:
+        print()
+        print(f"PyTorch 沒有下載完（{reason}）。")
+        print("已下載的部分會保留：網路恢復後重新執行 start.bat，會從中斷的地方接著下載。")
+        print("一直如此的話，公司或學校的網路可能擋了下載（防火牆、代理伺服器）：換一個網路再試。")
+        return False
+    if code == PREFETCH_MISMATCH:
+        print()
+        print(f"下載的 PyTorch 和預期的不同，已經刪掉（{reason}）。")
+        print("請重新執行 start.bat 再下載一次；一直如此的話，可能是網路上的代理伺服器"
+              "改動了下載的內容，請換一個網路再試。")
+        return False
+    if code == PREFETCH_DISK:
+        print()
+        print(f"PyTorch 下載到一半時寫不進資料夾（{reason}）。")
+        print("已下載的部分會保留：清出磁碟空間後重新執行 start.bat，會從中斷的地方接著下載。")
+        print("防毒軟體攔下了下載的檔案時，請把這個資料夾加入防毒軟體的排除清單後再試。")
+        return False
+    if code not in (0, PREFETCH_FALLBACK):
+        # prefetch_wheels.py 自己出錯。預先下載只是讓中斷之後可以接著下載：做不到時照原本的方式
+        # 由 uv 下載，不讓首次佈建停在這裡（和啟動器相同）
+        print(f"沒有預先下載 PyTorch（結束代碼 {exit_code_text(code)}），改由 uv 下載；"
+              "這次中斷的話，PyTorch 要從頭下載。", flush=True)
+    return True
+
+
+def remove_downloads(root: Path) -> None:
+    """刪掉預先下載的檔案（約 3.5 GB）。刪不掉（例如防毒軟體正在掃描）不影響啟動，下次啟動再刪。"""
+    shutil.rmtree(downloads_dir(root), ignore_errors=True)
 
 
 def stop_with_this_process(pid: int) -> Callable[[], None] | None:
@@ -314,8 +380,8 @@ def main(argv: Sequence[str], root: Path = ROOT, *,
         pause()
         return 1
 
-    needed = [python_exe(root), root / "bin" / "uv.exe", root / "backend" / "main.py",
-              root / "backend" / "requirements-standalone.txt"]
+    needed = [python_exe(root), root / "bin" / "uv.exe", root / "bin" / "prefetch_wheels.py",
+              root / "backend" / "main.py", root / "backend" / "requirements-standalone.txt"]
     missing = [path.relative_to(root) for path in needed if not path.exists()]
     if missing:
         print("找不到 " + "、".join(str(path) for path in missing) + "，請確認 zip 已完整解壓。")
@@ -345,7 +411,9 @@ def main(argv: Sequence[str], root: Path = ROOT, *,
 def _start(root: Path, port: int, run: Callable[..., int],
            serve: Callable[[Path, int], int]) -> bool:
     """第一次執行時佈建，再啟動伺服器並等它結束；失敗時印出原因，回傳 False。"""
-    if not provisioned_marker(root).exists() and not provision(root, run):
+    if provisioned_marker(root).exists():
+        remove_downloads(root)  # 上次佈建成功、但刪不掉時再刪一次（和啟動器相同）
+    elif not provision(root, run):
         return False
 
     url = f"http://127.0.0.1:{port}"

@@ -20,7 +20,10 @@ AI_Translate {VERSION} — Windows 免安裝版
 
 1. 執行環境（含 PyTorch）：雙擊 AI_Translate.exe 後自動下載。
    - 下載約 3.5 GB，裝在本資料夾的 runtime\，裝好後約佔 8 GB
-   - 視網速需要數分鐘到數十分鐘；中斷後重開 AI_Translate.exe 會接著下載
+   - 視網速需要數分鐘到數十分鐘；中斷後重新執行 AI_Translate.exe，
+     會從中斷的地方接著下載
+   - 下載中的 PyTorch（約 3.5 GB）先存在本資料夾的 runtime\downloads\，
+     裝好後自動刪除
    - 沒有 NVIDIA 顯卡的電腦也會下載這些；只用 Gemini 時其中大部分用不到
    - 下載的檔案另外解開存在 %LOCALAPPDATA%\uv\cache（通常在 C 槽），約 8 GB。
      本資料夾和它不在同一個磁碟時，那個磁碟也要留這些空間；黑色視窗出現
@@ -32,7 +35,8 @@ AI_Translate {VERSION} — Windows 免安裝版
    - 只用 Gemini 時不必下載
 
 本資料夾所在的磁碟要留的空間（不含要轉錄的音檔）：只用 Gemini 約 9 GB；
-要用本機轉錄，加上預設模型的模型權重約 13 GB。
+要用本機轉錄，加上預設模型的模型權重約 13 GB。第一次啟動下載執行環境的期間，
+另外暫用約 3.5 GB（上面的 runtime\downloads\）。
 
 硬體需求
 --------
