@@ -196,10 +196,10 @@ Issue 是公開的，任何人都看得到：
 目前是測試版，下面這些還沒做，之後的版本處理：
 
 - **長音檔的說話者編號**：本機一次能處理的長度約 70 分鐘，顯卡記憶體較小時更短；更長的音檔分段轉錄，每一段各自分離說話者，段與段之間的說話者編號可能對不上（例如前一段的 `[S0]` 到下一段變成 `[S1]`）。
+- **本機轉錄要另外裝 Microsoft Visual C++ 可轉散發套件**：免安裝版沒有附這些 DLL（Microsoft [建議](https://learn.microsoft.com/cpp/windows/choosing-a-deployment-method)用可轉散發套件集中安裝，Windows Update 才更新得到），沒裝或太舊的電腦要先裝好才能用本機轉錄；Gemini 照樣能用。
 - **介面語言**：介面中英夾雜，例如左側選單、頁面標題與部分按鈕是英文。
 - **API 金鑰沒有加密**：Gemini 的 API 金鑰照原樣存在 `data\app.db`，不要把 `data\` 資料夾或 `app.db` 交給別人。
 - **執行檔沒有數位簽章**：第一次執行 `AI_Translate.exe` 時，Windows 可能跳出 SmartScreen 的警告。
-- **本機轉錄要另外裝 Microsoft Visual C++ 可轉散發套件**：免安裝版沒有附這些 DLL（Microsoft [建議](https://learn.microsoft.com/cpp/windows/choosing-a-deployment-method)用可轉散發套件集中安裝，Windows Update 才更新得到），沒裝或太舊的電腦要先裝好才能用本機轉錄；Gemini 照樣能用。
 
 ---
 

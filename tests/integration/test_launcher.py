@@ -256,121 +256,6 @@ class TestProvisioning:
         assert server[0] == "python"
 
 
-VC_MISSING = "這台電腦沒有 Microsoft Visual C++ 可轉散發套件，本機轉錄不能用。"
-VC_URL = "https://aka.ms/vc14/vc_redist.x64.exe"
-VC_INSTALLED = "已經裝好 Microsoft Visual C++ 可轉散發套件。"
-PROVISION_BANNER = "首次啟動：正在下載執行環境"
-VERSIONED_DLL = """[assembly: System.Reflection.AssemblyFileVersion("{version}")]
-public class Fake {{}}
-"""
-
-
-@pytest.fixture(scope="module")
-def msvcp140(tmp_path_factory) -> dict[str, Path]:
-    """帶檔案版本的假 msvcp140.dll：14.29（VS 2019 的最後一版）與 14.44。"""
-    folder = tmp_path_factory.mktemp("msvcp140")
-    dlls = {}
-    for version in ("14.29.30133.0", "14.44.35211.0"):
-        source = folder / f"{version}.cs"
-        source.write_text(VERSIONED_DLL.format(version=version), encoding="utf-8")
-        (folder / version).mkdir()
-        dlls[version] = folder / version / "msvcp140.dll"
-        _compile(source, dlls[version], library=True)
-    return dlls
-
-
-def _install_vc_runtime(folder: Path, msvcp140: Path) -> None:
-    folder.mkdir(exist_ok=True)
-    shutil.copy(msvcp140, folder / "msvcp140.dll")
-    (folder / "vcomp140.dll").write_bytes(b"")
-
-
-class TestVcRuntime:
-    """有 NVIDIA 驅動、卻沒裝 VC++ 可轉散發套件（或太舊）時提示安裝，但照樣啟動（#304）。"""
-
-    @pytest.fixture
-    def nvidia(self, app) -> App:
-        (app.system / "nvcuda.dll").write_bytes(b"")
-        return app
-
-    def test_missing_runtime_is_reported_before_the_download_and_again_after(self, nvidia):
-        nvidia.sentinel.unlink()
-
-        result = nvidia.run(server="serve-then-exit:7")
-
-        output = result.output
-        first = output.index(VC_MISSING)
-        assert first < output.index(PROVISION_BANNER) < output.index(VC_MISSING, first + 1)
-        assert output.count(VC_URL) == 2
-        assert "只用 Gemini 的話可以不裝" in output
-        # 不擋啟動：伺服器照樣起來
-        assert "伺服器已就緒：http://127.0.0.1:" in output
-        assert [call[0] for call in nvidia.calls()] == ["uv", "python"]
-        assert VC_MISSING in result.log
-        assert "System32 沒有 msvcp140.dll" in result.log
-
-    def test_installing_during_the_download_is_noticed(self, nvidia, msvcp140, tmp_path):
-        nvidia.sentinel.unlink()
-        installer = tmp_path / "vc_redist"
-        _install_vc_runtime(installer, msvcp140["14.44.35211.0"])
-        nvidia.extra_env.update(LAUNCHER_STUB_UV_COPY_FROM=str(installer),
-                                LAUNCHER_STUB_UV_COPY_TO=str(nvidia.system))
-
-        result = nvidia.run(server="exit:3")
-
-        assert result.output.count(VC_MISSING) == 1
-        assert result.output.index(PROVISION_BANNER) < result.output.index(VC_INSTALLED)
-
-    def test_already_provisioned_reports_once(self, nvidia):
-        result = nvidia.run(server="exit:3")
-
-        assert result.output.count(VC_MISSING) == 1
-        assert VC_INSTALLED not in result.output
-
-    def test_old_runtime_is_reported_with_both_versions(self, nvidia, msvcp140):
-        _install_vc_runtime(nvidia.system, msvcp140["14.29.30133.0"])
-
-        result = nvidia.run(server="exit:3")
-
-        assert ("這台電腦的 Microsoft Visual C++ 可轉散發套件太舊（目前 14.29，需要 14.38 以上），"
-                "本機轉錄不能用。") in result.output
-        assert VC_URL in result.output
-        assert "msvcp140.dll 的版本：14.29.30133.0" in result.log
-
-    def test_recent_runtime_is_not_mentioned(self, nvidia, msvcp140):
-        _install_vc_runtime(nvidia.system, msvcp140["14.44.35211.0"])
-
-        result = nvidia.run(server="exit:3")
-
-        assert "可轉散發套件" not in result.output
-
-    def test_missing_vcomp140_counts_as_missing(self, nvidia, msvcp140):
-        _install_vc_runtime(nvidia.system, msvcp140["14.44.35211.0"])
-        (nvidia.system / "vcomp140.dll").unlink()
-
-        result = nvidia.run(server="exit:3")
-
-        assert VC_MISSING in result.output
-        assert "System32 沒有 vcomp140.dll" in result.log
-
-    def test_unreadable_version_is_not_called_old(self, nvidia):
-        (nvidia.system / "msvcp140.dll").write_bytes(b"not a PE file")
-        (nvidia.system / "vcomp140.dll").write_bytes(b"")
-
-        result = nvidia.run(server="exit:3")
-
-        assert "可轉散發套件" not in result.output
-
-    def test_without_nvidia_driver_nothing_is_said(self, app):
-        # 本機轉錄本來就不能用，轉錄頁會說明是沒有顯卡
-        app.sentinel.unlink()
-
-        result = app.run(server="exit:3")
-
-        assert "可轉散發套件" not in result.output
-        assert "可轉散發套件" not in result.log
-
-
 class TestIoErrors:
     def test_data_folder_that_cannot_be_created_names_the_path(self, app):
         app.data.write_text("佔住 data 這個名稱的檔案", encoding="utf-8")
@@ -499,3 +384,118 @@ class TestLog:
         assert sorted(p.name for p in logs.iterdir()) == sorted(
             [f"launcher-{(date.today() - timedelta(days=d)).isoformat()}.log" for d in range(7)]
             + [old_app_log, "launcher-notes.log"])
+
+
+VC_MISSING = "這台電腦沒有 Microsoft Visual C++ 可轉散發套件，本機轉錄不能用。"
+VC_URL = "https://aka.ms/vc14/vc_redist.x64.exe"
+VC_INSTALLED = "已經裝好 Microsoft Visual C++ 可轉散發套件。"
+PROVISION_BANNER = "首次啟動：正在下載執行環境"
+VERSIONED_DLL = """[assembly: System.Reflection.AssemblyFileVersion("{version}")]
+public class Fake {{}}
+"""
+
+
+@pytest.fixture(scope="module")
+def msvcp140(tmp_path_factory) -> dict[str, Path]:
+    """帶檔案版本的假 msvcp140.dll：14.29（VS 2019 的最後一版）與 14.44。"""
+    folder = tmp_path_factory.mktemp("msvcp140")
+    dlls = {}
+    for version in ("14.29.30133.0", "14.44.35211.0"):
+        source = folder / f"{version}.cs"
+        source.write_text(VERSIONED_DLL.format(version=version), encoding="utf-8")
+        (folder / version).mkdir()
+        dlls[version] = folder / version / "msvcp140.dll"
+        _compile(source, dlls[version], library=True)
+    return dlls
+
+
+def _install_vc_runtime(folder: Path, msvcp140: Path) -> None:
+    folder.mkdir(exist_ok=True)
+    shutil.copy(msvcp140, folder / "msvcp140.dll")
+    (folder / "vcomp140.dll").write_bytes(b"")
+
+
+class TestVcRuntime:
+    """有 NVIDIA 驅動、卻沒裝 VC++ 可轉散發套件（或太舊）時提示安裝，但照樣啟動（#304）。"""
+
+    @pytest.fixture
+    def nvidia(self, app) -> App:
+        (app.system / "nvcuda.dll").write_bytes(b"")
+        return app
+
+    def test_missing_runtime_is_reported_before_the_download_and_again_after(self, nvidia):
+        nvidia.sentinel.unlink()
+
+        result = nvidia.run(server="serve-then-exit:7")
+
+        output = result.output
+        first = output.index(VC_MISSING)
+        assert first < output.index(PROVISION_BANNER) < output.index(VC_MISSING, first + 1)
+        assert output.count(VC_URL) == 2
+        assert "只用 Gemini 的話可以不裝" in output
+        # 不擋啟動：伺服器照樣起來
+        assert "伺服器已就緒：http://127.0.0.1:" in output
+        assert [call[0] for call in nvidia.calls()] == ["uv", "python"]
+        assert VC_MISSING in result.log
+        assert "System32 沒有 msvcp140.dll" in result.log
+
+    def test_installing_during_the_download_is_noticed(self, nvidia, msvcp140, tmp_path):
+        nvidia.sentinel.unlink()
+        installer = tmp_path / "vc_redist"
+        _install_vc_runtime(installer, msvcp140["14.44.35211.0"])
+        nvidia.extra_env.update(LAUNCHER_STUB_UV_COPY_FROM=str(installer),
+                                LAUNCHER_STUB_UV_COPY_TO=str(nvidia.system))
+
+        result = nvidia.run(server="exit:3")
+
+        assert result.output.count(VC_MISSING) == 1
+        assert result.output.index(PROVISION_BANNER) < result.output.index(VC_INSTALLED)
+
+    def test_already_provisioned_reports_once(self, nvidia):
+        result = nvidia.run(server="exit:3")
+
+        assert result.output.count(VC_MISSING) == 1
+        assert VC_INSTALLED not in result.output
+
+    def test_old_runtime_is_reported_with_both_versions(self, nvidia, msvcp140):
+        _install_vc_runtime(nvidia.system, msvcp140["14.29.30133.0"])
+
+        result = nvidia.run(server="exit:3")
+
+        assert ("這台電腦的 Microsoft Visual C++ 可轉散發套件太舊（目前 14.29，需要 14.38 以上），"
+                "本機轉錄不能用。") in result.output
+        assert VC_URL in result.output
+        assert "msvcp140.dll 的版本：14.29.30133.0" in result.log
+
+    def test_recent_runtime_is_not_mentioned(self, nvidia, msvcp140):
+        _install_vc_runtime(nvidia.system, msvcp140["14.44.35211.0"])
+
+        result = nvidia.run(server="exit:3")
+
+        assert "可轉散發套件" not in result.output
+
+    def test_missing_vcomp140_counts_as_missing(self, nvidia, msvcp140):
+        _install_vc_runtime(nvidia.system, msvcp140["14.44.35211.0"])
+        (nvidia.system / "vcomp140.dll").unlink()
+
+        result = nvidia.run(server="exit:3")
+
+        assert VC_MISSING in result.output
+        assert "System32 沒有 vcomp140.dll" in result.log
+
+    def test_unreadable_version_is_not_called_old(self, nvidia):
+        (nvidia.system / "msvcp140.dll").write_bytes(b"not a PE file")
+        (nvidia.system / "vcomp140.dll").write_bytes(b"")
+
+        result = nvidia.run(server="exit:3")
+
+        assert "可轉散發套件" not in result.output
+
+    def test_without_nvidia_driver_nothing_is_said(self, app):
+        # 本機轉錄本來就不能用，轉錄頁會說明是沒有顯卡
+        app.sentinel.unlink()
+
+        result = app.run(server="exit:3")
+
+        assert "可轉散發套件" not in result.output
+        assert "可轉散發套件" not in result.log

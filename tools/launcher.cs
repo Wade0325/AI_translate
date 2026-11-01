@@ -7,12 +7,13 @@
 //
 // 職責：
 //   1. 只允許單一實例：同一個資料夾的 exe 已在執行時，打開那個網址，不再起第二個伺服器（#268）
-//   2. 首次啟動時以隨包 uv.exe 佈建 Python 依賴（含 torch，約 3.5 GB 下載）；有 NVIDIA 驅動、
-//      卻沒裝 Microsoft Visual C++ 可轉散發套件（或太舊）時，佈建之前先提示安裝（#304）
+//   2. 首次啟動時以隨包 uv.exe 佈建 Python 依賴（含 torch，約 3.5 GB 下載）
 //   3. 設定免安裝模式的環境變數 → 以隨包 Python 啟動 uvicorn
 //   4. 探活 /api/v1/health 後開啟預設瀏覽器
 //   5. 以 Job Object 綁定子行程：關閉視窗（或啟動器被殺）時 uvicorn 一併結束
 //   6. 出錯時不讓視窗直接消失：說明原因、下一步與日誌位置，按任意鍵才關（#268）
+//   7. 有 NVIDIA 驅動、卻沒裝 Microsoft Visual C++ 可轉散發套件（或太舊）時，佈建之前先提示安裝，
+//      不擋啟動（#304）
 //
 // 日誌：啟動器自己的輸出寫進 data\logs\launcher-YYYY-MM-DD.log，留最近 7 天，和後端的
 // app-YYYY-MM-DD.log（backend/app/utils/logger.py）放在一起；寫之前去識別：使用者家目錄寫成 ~，
