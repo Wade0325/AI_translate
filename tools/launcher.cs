@@ -50,7 +50,7 @@ static class Launcher
     const string VcRedistUrl = "https://aka.ms/vc14/vc_redist.x64.exe";
     // 本機轉錄要從 System32 載入的 VC++ 可轉散發套件 DLL，以及第一個（msvcp140.dll）至少要的版本。
     // 依據寫在 backend/app/provider/local/weights.py 的 VC_RUNTIME_DLLS 與 VC_RUNTIME_MIN_VERSION，
-    // 兩邊要相同（tests/unit/test_vc_runtime.py 比對）
+    // 和它與 tools/portable/start.py 要相同（tests/unit/test_vc_runtime.py 比對）
     static readonly string[] VcRuntimeDlls = { "msvcp140.dll", "vcomp140.dll" };
     const int VcRuntimeMinMajor = 14;
     const int VcRuntimeMinMinor = 38;

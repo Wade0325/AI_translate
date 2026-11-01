@@ -266,7 +266,8 @@ VC_RUNTIME_DLLS = ("msvcp140.dll", "vcomp140.dll")
 免安裝版的 ``runtime\\`` 只附 Python 本來就帶的 vcruntime140.dll 與 vcruntime140_1.dll。#35 試發布
 讀了佈建後每個 exe、dll、pyd 的 import 表：torch 等 50 個檔案 import msvcp140.dll，torchaudio 的
 libtorchaudio.pyd 等 21 個 import vcomp140.dll。msvcp140_1.dll 只有 onnxruntime 用，本機轉錄不會
-載入（Silero 用 torch 版，不用 ONNX 版），不查。``tools/launcher.cs`` 查同一份清單（測試比對）。
+載入（Silero 用 torch 版，不用 ONNX 版），不查。``tools/launcher.cs`` 與 ``tools/portable/start.py``
+查同一份清單（測試比對）。
 """
 VC_RUNTIME_MIN_VERSION = (14, 38)
 """msvcp140.dll 至少要這一版（主、次版號）。
@@ -274,7 +275,7 @@ VC_RUNTIME_MIN_VERSION = (14, 38)
 Microsoft 規定電腦上的可轉散發套件「must be the same or later than the version of the MSVC Build
 Tools used to create your application」（同上的網頁）。2026-11-01 讀 PE 標頭：torch 與 torchaudio
 2.8.0+cu128（Windows）的 DLL 都由 linker 14.38 連結，隨包 Python 3.11.9 的 vcruntime140.dll 是
-14.38.33126.1。``tools/launcher.cs`` 用同一個版本（測試比對）。
+14.38.33126.1。``tools/launcher.cs`` 與 ``tools/portable/start.py`` 用同一個版本（測試比對）。
 """
 VC_RUNTIME_TABLE_TORCH = "2.8.0+cu128"
 """上面的版本是照這版 torch 查的。``requirements-standalone.txt`` 換了 torch，測試會要求重查。"""
@@ -377,7 +378,7 @@ def _vc_runtime_problem() -> str | None:
 
     只看 System32：torch 用 ``LOAD_LIBRARY_SEARCH_DEFAULT_DIRS`` 載入自己的 DLL，只找程式資料夾
     （``runtime\\``，沒有這兩個）、torch 加進來的資料夾與 System32，不找 PATH。讀不到版本時不當成
-    太舊。``tools/launcher.cs`` 在啟動伺服器前做同一個檢查（#304）。
+    太舊。``tools/launcher.cs`` 與 ``tools/portable/start.py`` 在啟動伺服器前做同一個檢查（#304）。
     """
     if platform.system() != "Windows":
         return None

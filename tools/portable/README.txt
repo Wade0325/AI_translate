@@ -42,6 +42,9 @@ AI_Translate {VERSION} — Windows 免安裝版
   - 8–12 GB 沒有測過；低於 8 GB 可能很慢，長音檔的說話者編號也比較容易對不上。
     畫面會提示，但照樣能用
   - GTX 900 系列（Maxwell）以前的顯卡不支援；GTX 10 系列（Pascal）沒有測過
+  - 要另外安裝 Microsoft Visual C++ 可轉散發套件（x64，14.38 以上，安裝需要
+    系統管理員權限）：https://aka.ms/vc14/vc_redist.x64.exe
+    沒裝或太舊時，黑色視窗會在下載執行環境之前提醒；Gemini 轉錄不需要
 - Gemini 轉錄：不需要顯卡，但要自備 Google Gemini API 金鑰，在 Settings 頁填入；
   音檔會上傳到 Google
 - 沒有顯卡的電腦，第一次啟動一樣會下載約 3.5 GB 的執行環境

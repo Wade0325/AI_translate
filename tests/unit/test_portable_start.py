@@ -97,6 +97,13 @@ class _Calls:
         return self.code
 
 
+@pytest.fixture(autouse=True)
+def _empty_system32(monkeypatch, tmp_path_factory):
+    """System32 預設是空的資料夾（沒有 NVIDIA 驅動，不提示 VC++）：不看執行測試那台電腦的 System32。"""
+    folder = tmp_path_factory.mktemp("System32")
+    monkeypatch.setattr(start, "system_folder", lambda: folder)
+
+
 class TestMatchesLauncher:
     def test_launcher_sets_these_variables(self):
         # 啟動器多設或改了一個變數時這裡紅燈：start.py 與 SERVER_ENV 一起改
@@ -234,6 +241,132 @@ class TestMain:
         captured = capsys.readouterr()
         assert "PermissionError: 拒絕存取" in captured.err
         assert "按任意鍵關閉" in captured.out
+
+
+MISSING_VC = "這台電腦沒有 Microsoft Visual C++ 可轉散發套件"
+
+
+def _system32(tmp_path: Path, *dlls: str, nvidia: bool = True) -> Path:
+    """假的 System32：有 NVIDIA 驅動（nvcuda.dll）與 dlls 裡的檔案。"""
+    folder = tmp_path / "System32"
+    folder.mkdir(exist_ok=True)
+    for name in (("nvcuda.dll",) if nvidia else ()) + dlls:
+        (folder / name).write_bytes(b"")
+    return folder
+
+
+class TestVcRuntime:
+    """有 NVIDIA 驅動、卻沒裝 Microsoft Visual C++ 可轉散發套件（或太舊）時，佈建之前先提示，不擋啟動，
+    和啟動器相同（#304）。清單、版本、網址與原因和啟動器、weights.py 相同，在 test_vc_runtime.py 比對。"""
+
+    def test_missing_runtime(self, tmp_path):
+        assert start.vc_runtime_problem(_system32(tmp_path), lambda path: None) == MISSING_VC
+
+    @pytest.mark.parametrize("dll", start.VC_RUNTIME_DLLS)
+    def test_each_dll_is_required(self, tmp_path, dll):
+        others = [name for name in start.VC_RUNTIME_DLLS if name != dll]
+
+        assert start.vc_runtime_problem(_system32(tmp_path, *others), lambda path: (14, 44)) == MISSING_VC
+
+    def test_old_runtime_says_both_versions(self, tmp_path):
+        system, read = _system32(tmp_path, *start.VC_RUNTIME_DLLS), []
+
+        problem = start.vc_runtime_problem(system, lambda path: read.append(path.name) or (14, 29))
+
+        assert problem == ("這台電腦的 Microsoft Visual C++ 可轉散發套件太舊"
+                           "（目前 14.29，需要 14.38 以上）")
+        assert read == ["msvcp140.dll"]
+
+    @pytest.mark.parametrize("version", [(14, 38), (14, 44), (15, 0), None])
+    def test_recent_or_unreadable_runtime_is_fine(self, tmp_path, version):
+        system = _system32(tmp_path, *start.VC_RUNTIME_DLLS)
+
+        assert start.vc_runtime_problem(system, lambda path: version) is None
+
+    def test_without_nvidia_driver_nothing_is_said(self, tmp_path):
+        # 本機轉錄本來就不能用，轉錄頁會先說顯卡
+        assert start.vc_runtime_problem(_system32(tmp_path, nvidia=False)) is None
+
+    def test_windows_checks_system32(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setattr(start, "system_folder", lambda: _system32(tmp_path))
+
+        assert start.check_vc_runtime() == MISSING_VC
+
+    def test_other_platforms_do_not_check(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.setattr(start, "system_folder", lambda: _system32(tmp_path))
+
+        assert start.check_vc_runtime() is None
+        assert start.file_version(tmp_path / "System32" / "msvcp140.dll") is None
+
+    def test_first_run_warns_before_provisioning_and_again_after(self, tmp_path, capsys):
+        root = _package(tmp_path)
+        serve = _Calls()
+
+        assert start.main([], root, run=_Calls(), serve=serve, vc_problem=lambda: MISSING_VC) == 0
+
+        out = capsys.readouterr().out
+        warning = f"{MISSING_VC}，本機轉錄不能用。"
+        # 佈建前說一次；佈建完還沒裝，再說一次（uv 的輸出把前一次推上去了）
+        assert out.count(warning) == 2
+        assert (out.index(warning) < out.index("首次啟動：正在下載執行環境")
+                < out.rindex(warning) < out.index("正在啟動 AI_Translate 伺服器"))
+        assert f"請下載安裝（需要系統管理員權限）：{start.VC_REDIST_URL}" in out
+        assert "再執行一次 start.bat" in out
+        assert len(serve.calls) == 1  # 不擋啟動：Gemini 照樣能用
+
+    def test_installed_while_provisioning(self, tmp_path, capsys):
+        root = _package(tmp_path)
+        answers = iter([MISSING_VC, None])
+
+        assert start.main([], root, run=_Calls(), serve=_Calls(),
+                          vc_problem=lambda: next(answers)) == 0
+
+        out = capsys.readouterr().out
+        assert out.count("本機轉錄不能用") == 1
+        assert (out.index("執行環境佈建完成")
+                < out.index("已經裝好 Microsoft Visual C++ 可轉散發套件")
+                < out.index("正在啟動 AI_Translate 伺服器"))
+
+    def test_provisioned_package_warns_once(self, tmp_path, capsys):
+        root = _package(tmp_path, provisioned=True)
+        checked = []
+
+        assert start.main([], root, run=_Calls(), serve=_Calls(),
+                          vc_problem=lambda: checked.append(1) or MISSING_VC) == 0
+
+        out = capsys.readouterr().out
+        assert out.count("本機轉錄不能用") == 1
+        assert "已經裝好" not in out
+        assert checked == [1]
+
+    def test_failed_provisioning_is_not_rechecked(self, tmp_path, capsys):
+        root = _package(tmp_path)
+        checked = []
+
+        assert start.main([], root, run=_Calls(code=2), serve=_Calls(),
+                          vc_problem=lambda: checked.append(1) or MISSING_VC) == 1
+
+        assert checked == [1]
+        assert capsys.readouterr().out.count("本機轉錄不能用") == 1
+
+    def test_nothing_is_said_when_installed(self, tmp_path, capsys):
+        root = _package(tmp_path)
+
+        assert start.main([], root, run=_Calls(), serve=_Calls(), vc_problem=lambda: None) == 0
+
+        assert "可轉散發套件" not in capsys.readouterr().out
+
+    def test_running_instance_is_not_checked(self, tmp_path):
+        # 和啟動器相同：已經有實例在執行時只顯示網址，提示交給那一個
+        root = _package(tmp_path)
+        checked = []
+
+        start.main([], root, run=_Calls(), serve=_Calls(), acquire=lambda root_: None,
+                   probe=lambda url: False, vc_problem=lambda: checked.append(1))
+
+        assert checked == []
 
 
 class _Instance:
@@ -516,6 +649,12 @@ class TestReadme:
     def test_only_placeholder_is_version(self):
         # build_release.ps1 只換 {VERSION}；其他的大括號字樣會原樣出現在使用者看到的檔案裡
         assert re.findall(r"\{[A-Z_]+\}", self._readme()) == ["{VERSION}"]
+
+    def test_says_how_to_get_the_visual_cpp_runtime(self):
+        # 本機轉錄要另外裝的可轉散發套件（#304）：和 start.py、啟動器提示的是同一個網址
+        requirements = self._readme()[self._readme().index("硬體需求"):]
+        assert "Microsoft Visual C++ 可轉散發套件" in requirements
+        assert start.VC_REDIST_URL in requirements
 
     def test_troubleshooting_points_to_start_bat(self):
         readme = self._readme()

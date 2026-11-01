@@ -2,7 +2,8 @@
 
 免安裝版只附 vcruntime140*.dll，torch 要的 msvcp140.dll、vcomp140.dll 從 System32 載入。從
 :func:`weights.detect_gpu` 觀察：torch 換成載入失敗的假 torch，System32 換成測試的資料夾。
-啟動器（tools/launcher.cs）在啟動伺服器前做同一個檢查：兩邊的清單、版本與連結要相同。
+啟動器（tools/launcher.cs）與 start.bat（tools/portable/start.py）在啟動伺服器前做同一個檢查：
+三邊的清單、版本與連結要相同。
 """
 import platform
 import re
@@ -14,6 +15,7 @@ import pytest
 from app.core.error_codes import ErrorCode, describe
 from app.provider.local import weights
 from tests.support.fake_torch import DLL_LOAD_FAILED, torch_import_fails
+from tools.portable import start
 
 ROOT = Path(__file__).resolve().parents[2]
 LAUNCHER = ROOT / "tools" / "launcher.cs"
@@ -154,3 +156,44 @@ class TestLauncherAgrees:
 
     def test_same_sign_of_an_nvidia_driver(self):
         assert '"nvcuda.dll"' in self.source
+
+
+class TestStartBatAgrees:
+    """start.bat（bin\\start.py）在佈建前做和啟動器一樣的提示。它只用標準函式庫（這時還沒佈建，
+    不能 import 後端），所以自己寫一份：清單、版本、連結與給使用者看的原因都要和這裡相同。"""
+
+    def test_same_dlls_minimum_and_link(self):
+        assert start.VC_RUNTIME_DLLS == weights.VC_RUNTIME_DLLS
+        assert start.VC_RUNTIME_MIN_VERSION == weights.VC_RUNTIME_MIN_VERSION
+        assert start.VC_REDIST_URL == weights.VC_REDIST_URL
+
+    def test_same_system32(self, monkeypatch):
+        monkeypatch.setenv("SystemRoot", r"D:\Windows")
+
+        assert start.system_folder() == weights._system32()
+
+    @pytest.mark.parametrize("installed, version", [
+        ((), None),
+        (("msvcp140.dll",), (14, 44)),
+        (("msvcp140.dll", "vcomp140.dll"), (14, 29)),
+        (("msvcp140.dll", "vcomp140.dll"), (14, 38)),
+        (("msvcp140.dll", "vcomp140.dll"), None),
+    ])
+    def test_same_reason(self, system32, monkeypatch, installed, version):
+        for dll in installed:
+            (system32 / dll).write_bytes(b"")
+
+        def file_version(path: Path) -> tuple[int, int] | None:
+            return version if path == system32 / "msvcp140.dll" else None
+        monkeypatch.setattr(weights, "_file_version", file_version)
+
+        assert start.vc_runtime_problem(system32, file_version) == weights._vc_runtime_problem()
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="要 Windows 的 version.dll")
+    def test_same_file_version(self, tmp_path):
+        python = Path(sys.base_prefix) / "python.exe"
+        plain = tmp_path / "msvcp140.dll"
+        plain.write_bytes(b"not a PE file")
+
+        assert start.file_version(python) == weights._file_version(python) == sys.version_info[:2]
+        assert start.file_version(plain) is None
