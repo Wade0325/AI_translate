@@ -7,7 +7,8 @@
 //
 // 職責：
 //   1. 只允許單一實例：同一個資料夾的 exe 已在執行時，打開那個網址，不再起第二個伺服器（#268）
-//   2. 首次啟動時以隨包 uv.exe 佈建 Python 依賴（含 torch，約 3.5 GB 下載）
+//   2. 首次啟動時以隨包 uv.exe 佈建 Python 依賴（含 torch，約 3.5 GB 下載），再刪掉 torch 執行時
+//      用不到的 .lib 靜態庫（約 2.8 GB，#305）
 //   3. 設定免安裝模式的環境變數 → 以隨包 Python 啟動 uvicorn
 //   4. 探活 /api/v1/health 後開啟預設瀏覽器
 //   5. 以 Job Object 綁定子行程：關閉視窗（或啟動器被殺）時 uvicorn 一併結束
@@ -362,7 +363,11 @@ static class Launcher
     {
         string sentinel = Path.Combine(root, "runtime", ".provisioned");
         if (File.Exists(sentinel))
+        {
+            // 每次啟動都補刪：首次佈建時被防毒軟體鎖住沒刪掉的，或這個版本之前佈建的
+            RemoveStaticLibraries(root);
             return;
+        }
 
         string uv = Path.Combine(root, "bin", "uv.exe");
         string requirements = Path.Combine(root, "backend", "requirements-standalone.txt");
@@ -405,8 +410,62 @@ static class Launcher
                 "  4. 公司或學校的網路擋了下載（防火牆、代理伺服器）：換一個網路再試。",
                 "  5. 資料夾的路徑太長：把整個資料夾移到較短的路徑（例如 D:\\AI_Translate）後再試。");
 
+        RemoveStaticLibraries(root);
         WriteFile(sentinel, DateTime.Now.ToString("o", CultureInfo.InvariantCulture));
         Log.Info("執行環境佈建完成。");
+    }
+
+    // torch 的 wheel 帶著約 2.8 GB 的 .lib 靜態庫（dnnl.lib 就有 2.3 GB），只有編譯要連結 torch 的
+    // C++ 擴充時才用得到，app 執行時用不到：#239 實測刪掉前後，本機轉錄的每種輸出與 Silero 的切點都
+    // 逐位元組相同。只刪 torch\lib 的：numpy 與 scikit-learn 的 .lib 合起來不到 1 MB（#305）。
+    // 刪不掉（例如防毒軟體正在掃描）時不讓啟動失敗，只寫進日誌，下次啟動再刪。
+    static void RemoveStaticLibraries(string root)
+    {
+        string folder = Path.Combine(root, "runtime", "Lib", "site-packages", "torch", "lib");
+        string[] files;
+        try
+        {
+            if (!Directory.Exists(folder))
+                return;
+            files = Directory.GetFiles(folder);
+        }
+        catch (Exception e)
+        {
+            if (!IsIoProblem(e))
+                throw;
+            Log.Detail("列不出 torch\\lib 的檔案，這次沒有刪 .lib：" + e.GetType().Name + "：" + e.Message);
+            return;
+        }
+
+        int removed = 0;
+        long freed = 0;
+        var failed = new List<string>();
+        foreach (string file in files)
+        {
+            // 不用 GetFiles(folder, "*.lib")：三個字的副檔名也會比對到 .libx 這類，以及短檔名
+            if (!string.Equals(Path.GetExtension(file), ".lib", StringComparison.OrdinalIgnoreCase))
+                continue;
+            try
+            {
+                long size = new FileInfo(file).Length;
+                File.Delete(file);
+                removed++;
+                freed += size;
+            }
+            catch (Exception e)
+            {
+                if (!IsIoProblem(e))
+                    throw;
+                failed.Add(Path.GetFileName(file) + "（" + e.GetType().Name + "：" + e.Message + "）");
+            }
+        }
+        if (removed > 0)
+            Log.Detail(string.Format(CultureInfo.InvariantCulture,
+                "刪掉 torch\\lib 裡執行時用不到的 .lib：{0} 個，{1:N0} 位元組", removed, freed));
+        if (failed.Count > 0)
+            Log.Detail(string.Format(CultureInfo.InvariantCulture,
+                "torch\\lib 裡有 {0} 個 .lib 刪不掉，下次啟動再試：{1}",
+                failed.Count, string.Join("、", failed.ToArray())));
     }
 
     // 程式資料夾所在的磁碟，以及 uv 放下載快取的磁碟（%LOCALAPPDATA%\uv\cache）
