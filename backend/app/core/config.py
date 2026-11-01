@@ -1,7 +1,7 @@
 import os
 from functools import lru_cache
 from pathlib import Path
-from pydantic import AliasChoices, Field
+from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # 設定檔搜尋順序：免安裝模式的 data 目錄/.env → backend/.env → 專案根目錄/.env
@@ -25,6 +25,11 @@ def _find_env_file() -> Path | None:
     return None
 
 ENV_FILE_PATH = _find_env_file()
+
+# Docker 模式的模型權重位置：本機轉錄在主機的 GPU worker 執行，local_worker.bat 把 HF_HOME 設成
+# 這裡；在主機下載權重（app/provider/local/download_weights.py）沒設 HF_HOME 時也用這裡，兩邊
+# 才是同一份（tests/unit/test_config_modes.py 檢查兩邊一致）
+DOCKER_HF_HOME = r"D:\AI_translate\models\hf_cache"
 
 
 class Settings(BaseSettings):
@@ -130,8 +135,18 @@ class Settings(BaseSettings):
                 origins.append(origin)
         return origins
 
-    # 本機的模型權重快取（免安裝模式下由 launcher 指向 data/models/hf_cache）
-    hf_home: str = r"D:\AI_translate\models\hf_cache"
+    # 本機的模型權重快取（Hugging Face 的 HF_HOME）。設了 HF_HOME 就用它；沒設（或是空的）時，
+    # 免安裝模式放在資料目錄的 models/hf_cache，和啟動器與 start.bat 設的相同：不經過它們、
+    # 自己帶 APP_MODE 啟動時也不會寫到別處（#267）；Docker 模式用 DOCKER_HF_HOME。空字串只是
+    # 「還沒決定」，建立設定時由 _default_hf_home 補上
+    hf_home: str = ""
+
+    @model_validator(mode="after")
+    def _default_hf_home(self) -> "Settings":
+        if not self.hf_home:
+            self.hf_home = (str(self.data_path / "models" / "hf_cache") if self.is_standalone
+                            else DOCKER_HF_HOME)
+        return self
 
     @property
     def temp_uploads_path(self) -> Path:
