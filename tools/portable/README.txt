@@ -59,6 +59,8 @@ AI_Translate {VERSION} — Windows 免安裝版
   它做的事和 AI_Translate.exe 相同（第一次執行時下載執行環境，再啟動程式），
   但不會自動開啟瀏覽器：視窗出現「Uvicorn running on http://127.0.0.1:8000」
   之後，用瀏覽器開啟 http://127.0.0.1:8000
+- AI_Translate.exe 與 start.bat 合起來同時只會跑一個：已經有一個在執行時，
+  再開哪一個都不會啟動第二個，只會顯示（或打開）已經在跑的那個網址
 - 用 start.bat 時 8000 埠被占用：在這個資料夾開啟命令提示字元，執行
   start.bat 8001（換成沒用到的埠），再開啟 http://127.0.0.1:8001
 - 用 AI_Translate.exe 時 8000 埠被占用會自動改用其他埠，以視窗顯示的網址為準

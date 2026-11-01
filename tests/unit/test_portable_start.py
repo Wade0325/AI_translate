@@ -8,6 +8,7 @@ start.bat 只能是 ASCII：cmd 遇到多位元組字元會算錯下一行的位
 Windows 10 上實測到）。發布包裡的換行、BOM 與 ASCII 由 CI 檢查 zip（tools/portable_zip.py）。
 """
 import io
+import os
 import re
 import subprocess
 import sys
@@ -235,6 +236,135 @@ class TestMain:
         assert "按任意鍵關閉" in captured.out
 
 
+class _Instance:
+    """假的單一實例（start.acquire_instance）：running=True 表示同一個資料夾已經有實例在執行。"""
+
+    def __init__(self, running: bool = False):
+        self.held = running
+        self.released = 0
+
+    def __call__(self, root: Path):
+        if self.held:
+            return None
+        self.held = True
+
+        def release() -> None:
+            self.held = False
+            self.released += 1
+
+        return release
+
+
+class TestSingleInstance:
+    """同一個資料夾的 AI_Translate.exe 與 start.bat 合起來只跑一個伺服器：伺服器啟動時會先把「處理中」
+    的任務記成失敗才綁埠，第二個實例綁不到埠也已經記了（#267 實測）。和啟動器真的互相擋住，
+    在 tests/integration/test_launcher.py 的 Windows 腿測。"""
+
+    def test_running_instance_is_shown_instead_of_starting_another(self, tmp_path, capsys):
+        root = _package(tmp_path)  # 還沒佈建也一樣：佈建交給已在執行的那一個
+        start.write_url_file(root, "http://127.0.0.1:8001")
+        run, serve, probed = _Calls(), _Calls(), []
+
+        code = start.main([], root, run=run, serve=serve, acquire=_Instance(running=True),
+                          probe=lambda url: probed.append(url) or True)
+
+        assert code == 0
+        assert run.calls == serve.calls == []
+        assert probed == ["http://127.0.0.1:8001"]
+        out = capsys.readouterr().out
+        assert "AI_Translate 已經在執行，不會再啟動第二個" in out
+        assert "請用瀏覽器開啟 http://127.0.0.1:8001" in out
+        assert "按任意鍵關閉" in out
+        assert start.url_file(root).exists()  # 是那個實例的，不刪
+
+    @pytest.mark.parametrize("url_text, responds", [
+        (None, True),                             # 還在首次佈建：還沒寫網址
+        ("http://127.0.0.1:8001", False),         # 已經寫了網址，伺服器還沒就緒
+        ("http://example.com:8001", True),        # 不是啟動器寫的格式，不顯示
+        ("http://127.0.0.1:70000", True),
+    ])
+    def test_instance_still_starting_points_to_its_window(self, tmp_path, capsys, url_text, responds):
+        root = _package(tmp_path, provisioned=True)
+        if url_text is not None:
+            start.write_url_file(root, url_text)
+        serve = _Calls()
+
+        code = start.main([], root, run=_Calls(), serve=serve, acquire=_Instance(running=True),
+                          probe=lambda url: responds)
+
+        assert code == 0
+        assert serve.calls == []
+        out = capsys.readouterr().out
+        assert "AI_Translate 已經在另一個視窗啟動中，不會再啟動第二個" in out
+        assert "example.com" not in out and "70000" not in out
+
+    def test_url_is_written_while_serving_and_removed_after(self, tmp_path):
+        root = _package(tmp_path)
+        instance, seen = _Instance(), []
+
+        def serve(root_: Path, port: int) -> int:
+            seen.append((instance.held, start.read_url_file(root_)))
+            return 0
+
+        assert start.main(["8267"], root, run=_Calls(), serve=serve, acquire=instance) == 0
+
+        # 佈建與伺服器都在持有單一實例時進行；網址和啟動器寫的格式相同，結束後讓出並刪掉
+        assert seen == [(True, "http://127.0.0.1:8267")]
+        assert instance.released == 1
+        assert not start.url_file(root).exists()
+
+    @pytest.mark.parametrize("run_code, serve_code", [(2, 0), (0, 1)])
+    def test_failure_releases_the_instance_before_waiting_for_a_key(self, tmp_path, monkeypatch,
+                                                                    run_code, serve_code):
+        # 視窗還停在「按任意鍵關閉」時再雙擊，要能直接重新啟動（和啟動器相同）
+        root = _package(tmp_path)
+        instance, held_at_pause = _Instance(), []
+        monkeypatch.setattr(start, "pause", lambda: held_at_pause.append(instance.held))
+
+        code = start.main([], root, run=_Calls(code=run_code), serve=_Calls(code=serve_code),
+                          acquire=instance)
+
+        assert code == 1
+        assert held_at_pause == [False]
+        assert not start.url_file(root).exists()
+
+    def test_unexpected_error_still_releases_the_instance(self, tmp_path):
+        root = _package(tmp_path, provisioned=True)
+        instance = _Instance()
+
+        def serve(root_: Path, port: int) -> int:
+            raise OSError("拒絕存取")
+
+        with pytest.raises(OSError):
+            start.main([], root, run=_Calls(), serve=serve, acquire=instance)
+
+        assert instance.released == 1
+        assert not start.url_file(root).exists()
+
+    def test_instance_name_follows_the_launcher(self, tmp_path):
+        # 啟動器：Local\ + AppName + -launcher- + 資料夾完整路徑去掉結尾的 \ 或 /、轉大寫後
+        # UTF-8 的 SHA-256 前 8 個位元組（16 個十六進位字）
+        launcher = _launcher()
+        assert 'const string AppName = "AI_Translate";' in launcher
+        assert '"Local\\\\" + AppName + "-launcher-" + PathHash(root)' in launcher
+        assert ".TrimEnd('\\\\', '/').ToUpperInvariant()" in launcher
+        assert "for (int i = 0; i < 8; i++)" in launcher
+        assert 'Path.Combine(dataDir, "launcher-url.txt")' in launcher
+
+        folder = tmp_path / "AI_Translate"
+        name = start.instance_name(folder)
+        assert re.fullmatch(r"Local\\AI_Translate-launcher-[0-9a-f]{16}", name)
+        assert start.instance_name(tmp_path / "ai_translate") == name  # 不分大小寫
+        assert start.instance_name(tmp_path / "AI_Translate-old") != name
+        assert start.url_file(folder) == folder / "data" / "launcher-url.txt"
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="Windows 上取得真的 mutex，在整合測試測")
+    def test_other_platforms_do_not_check(self, tmp_path):
+        release = start.acquire_instance(tmp_path)
+        assert release is not None
+        release()
+
+
 class _Console:
     """假的 stdin：是 console。"""
 
@@ -347,8 +477,8 @@ class TestFiles:
         script = (ROOT / "build_release.ps1").read_text(encoding="utf-8-sig")
         assert 'Copy-Item (Join-Path $portableDir "start.py") (Join-Path $binDir "start.py")' in script
         assert {"start.bat", "bin/start.py"} <= set(portable_zip.required_files(script))
-        # start.py 以 bin\start.py 的上一層當發布包的根目錄
-        assert start.ROOT == Path(start.__file__).resolve().parent.parent
+        # start.py 以 bin\start.py 的上一層當發布包的根目錄（不解析 subst 與網路磁碟機，同啟動器）
+        assert start.ROOT == Path(os.path.abspath(start.__file__)).parent.parent
 
 
 class TestReadme:
