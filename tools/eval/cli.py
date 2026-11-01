@@ -104,7 +104,7 @@ class _Scored:
     transcript: Path
     results: list[mer.Result]
     global_map: dict[str, str]
-    cp_global: float
+    cp_global: float | None  # 每一段都註明「cpMER 不計」時是 None
 
     def report(self) -> str:
         from . import mer
@@ -118,7 +118,7 @@ class _Scored:
             "per_excerpt": [r.to_dict() for r in self.results],
             "total_mer": round(sum(r.errors for r in self.results)
                                / max(1, sum(r.ref_len for r in self.results)), 4),
-            "cp_mer_global": round(self.cp_global, 4),
+            "cp_mer_global": None if self.cp_global is None else round(self.cp_global, 4),
             "global_mapping": self.global_map,
         }
 
@@ -212,7 +212,8 @@ def cmd_eval(args) -> int:
             "bootstrap": args.bootstrap,
             "systems": [s.to_dict() for s in scored],
             "global_mapping": {"mapping": scored[0].global_map,
-                               "cp_mer": round(scored[0].cp_global, 4)},
+                               "cp_mer": None if scored[0].cp_global is None
+                               else round(scored[0].cp_global, 4)},
             "paired": paired.to_dict() if paired is not None else None,
         }
         out.parent.mkdir(parents=True, exist_ok=True)

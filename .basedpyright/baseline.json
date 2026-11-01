@@ -364,14 +364,6 @@
                     "endColumn": 49,
                     "lineCount": 1
                 }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 17,
-                    "endColumn": 51,
-                    "lineCount": 1
-                }
             }
         ],
         "./backend/app/celery/task.py": [

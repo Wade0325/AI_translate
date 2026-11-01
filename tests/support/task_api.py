@@ -4,12 +4,15 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime, timedelta
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from fastapi.testclient import TestClient
 
 from app.core.task_status import TaskStatus
 from app.database.models import BatchJob
 from tests.support.synthetic_audio import VOICED, synthetic_audio
+from tests.support.synthetic_video import synthetic_video
 from tests.support.waiting import TIMEOUT
 
 _reader = ThreadPoolExecutor(max_workers=4)
@@ -39,10 +42,16 @@ def ping(ws) -> None:
 
 
 def upload(api: TestClient, name: str = "voice.wav", voiced=VOICED) -> str:
-    """上傳合成音檔（有聲段見 synthetic_audio；副檔名是 .flac 時寫成 FLAC），回傳暫存的檔名。"""
-    fmt, content_type = ("FLAC", "audio/flac") if name.endswith(".flac") else ("WAV", "audio/wav")
-    response = api.post(
-        "/api/v1/upload", files={"file": (name, synthetic_audio(fmt, voiced), content_type)})
+    """上傳合成音檔（有聲段見 synthetic_audio；副檔名是 .flac 時寫成 FLAC，是 .mp4 時做成同樣聲音的
+    合成影片），回傳暫存的檔名。"""
+    if name.endswith(".mp4"):
+        with TemporaryDirectory() as folder:
+            content = synthetic_video(Path(folder) / "clip.mp4", voiced).read_bytes()
+        content_type = "video/mp4"
+    else:
+        fmt, content_type = ("FLAC", "audio/flac") if name.endswith(".flac") else ("WAV", "audio/wav")
+        content = synthetic_audio(fmt, voiced)
+    response = api.post("/api/v1/upload", files={"file": (name, content, content_type)})
     assert response.status_code == 200, response.text
     return response.json()["filename"]
 
