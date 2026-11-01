@@ -168,6 +168,15 @@ class TestMatchesLauncher:
                                              prefetch_wheels.EXIT_MISMATCH, prefetch_wheels.EXIT_DISK,
                                              prefetch_wheels.EXIT_FALLBACK)
 
+    def test_same_static_libraries_are_removed(self):
+        # 首次佈建成功後與已佈建時都刪 torch\lib 的 .lib（#305），副檔名不分大小寫
+        launcher = _launcher()
+        assert 'Path.Combine(root, "runtime", "Lib", "site-packages", "torch", "lib")' in launcher
+        assert '".lib", StringComparison.OrdinalIgnoreCase' in launcher
+        assert launcher.count("RemoveStaticLibraries(root);") == 2
+
+        assert _relative(str(start.torch_lib(PKG))) == r"runtime\Lib\site-packages\torch\lib"
+
 
 class TestMain:
     def test_first_run_provisions_then_starts_the_server(self, tmp_path, capsys):
@@ -315,6 +324,82 @@ class TestMain:
         captured = capsys.readouterr()
         assert "PermissionError: 拒絕存取" in captured.err
         assert "按任意鍵關閉" in captured.out
+
+
+# 首次佈建裝好的樣子：torch\lib 有 .lib 與 DLL，numpy 也有一個 .lib（#239 實測的檔名）
+TORCH_LIB_FILES = ("dnnl.lib", "KINETO.LIB", "torch_cpu.lib", "torch_cpu.dll", "c10.dll")
+KEPT = {"torch_cpu.dll", "c10.dll"}
+
+
+def _install_torch(root: Path) -> tuple[Path, Path]:
+    torch_lib = start.torch_lib(root)
+    torch_lib.mkdir(parents=True)
+    for name in TORCH_LIB_FILES:
+        (torch_lib / name).write_bytes(b"x")
+    other = root / "runtime" / "Lib" / "site-packages" / "numpy" / "_core" / "lib" / "npymath.lib"
+    other.parent.mkdir(parents=True)
+    other.write_bytes(b"x")
+    return torch_lib, other
+
+
+class TestStaticLibraries:
+    """和啟動器一樣刪掉 torch\\lib 的 .lib（#305）：執行時用不到，約 2.8 GB。"""
+
+    def test_first_run_removes_them_after_provisioning(self, tmp_path):
+        root = _package(tmp_path)
+        torch_lib, other = _install_torch(root)
+
+        assert start.main([], root, run=_Calls(), serve=_Calls()) == 0
+
+        assert {path.name for path in torch_lib.iterdir()} == KEPT
+        assert other.exists()  # 只刪 torch 的
+        assert start.provisioned_marker(root).exists()
+
+    def test_provisioned_package_removes_what_is_left(self, tmp_path):
+        root = _package(tmp_path, provisioned=True)
+        torch_lib, _ = _install_torch(root)
+        run = _Calls()
+
+        assert start.main([], root, run=run, serve=_Calls()) == 0
+
+        assert {path.name for path in torch_lib.iterdir()} == KEPT
+        assert run.calls == []
+
+    def test_failed_provisioning_leaves_them(self, tmp_path):
+        root = _package(tmp_path)
+        torch_lib, _ = _install_torch(root)
+
+        assert start.main([], root, run=_Calls(code=2), serve=_Calls()) == 1
+
+        assert {path.name for path in torch_lib.iterdir()} == set(TORCH_LIB_FILES)
+
+    def test_one_that_cannot_be_removed_does_not_stop_the_start(self, tmp_path, monkeypatch, capsys):
+        root = _package(tmp_path)
+        torch_lib, _ = _install_torch(root)
+        unlink = Path.unlink
+
+        def locked(path: Path, missing_ok: bool = False) -> None:
+            if path.name == "dnnl.lib":
+                raise PermissionError(13, "檔案被其他程式占用")
+            unlink(path, missing_ok)
+        monkeypatch.setattr(Path, "unlink", locked)
+        serve = _Calls()
+
+        assert start.main([], root, run=_Calls(), serve=serve) == 0
+
+        assert {path.name for path in torch_lib.iterdir()} == KEPT | {"dnnl.lib"}
+        assert start.provisioned_marker(root).exists()
+        assert len(serve.calls) == 1
+        out = capsys.readouterr().out
+        assert "torch\\lib 裡有 1 個用不到的 .lib 刪不掉，不影響使用，下次啟動再試：" in out
+        assert "dnnl.lib（PermissionError：檔案被其他程式占用）" in out
+
+    def test_package_without_torch_starts_as_usual(self, tmp_path, capsys):
+        root = _package(tmp_path, provisioned=True)
+
+        assert start.main([], root, run=_Calls(), serve=_Calls()) == 0
+
+        assert "torch\\lib" not in capsys.readouterr().out
 
 
 class _Instance:
