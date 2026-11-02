@@ -12,7 +12,8 @@
 - 批次：不分段，結果放回原音檔的時間軸之後檢查整個音檔（:mod:`app.tasks.batch_core`）。
 
 任務完成時，起點記在任務紀錄上（``tail_loss_from_seconds``），隨完成的廣播送給畫面；畫面照它寫
-「從 mm:ss 起可能沒有轉錄到」。#94 的接續放棄時，也照這條路回報。
+「從 mm:ss 起可能沒有轉錄到」。之後做 #94 的接續時，接續放棄也要照這條路回報：接回來的片段停在哪裡，
+結果就帶著那裡當起點。
 """
 
 from __future__ import annotations
@@ -24,7 +25,7 @@ from app.services.silence_removal import Span
 
 
 def tail_loss_from(segments: Sequence[Mapping[str, Any]], *, start: float, end: float,
-                   silences: Sequence[Span] = ()) -> Optional[float]:
+                   silences: Sequence[Span]) -> Optional[float]:
     """原音檔的 ``start`` 到 ``end`` 秒送去轉錄、轉出 ``segments``：可能掉尾時回傳起點，不然是 None。
 
     都在原音檔的時間軸上。起點是最後一個片段的結束（沒有結束時間的片段，例如 Gemini 沒寫結束的行，

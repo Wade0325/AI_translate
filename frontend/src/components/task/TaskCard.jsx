@@ -11,6 +11,7 @@ import {
 } from "lucide-react"
 import { downloadFormats } from "@/constants/downloadFormats"
 import { TASK_STATUS } from "@/constants/taskStatus"
+import { TailLossSummary } from "@/components/TailLossNotice"
 import { formatDateTime, formatElapsed } from "@/utils/formatters"
 import { batchDisplayStatus, isBatchFailed, isBatchInterrupted, isBatchProcessing } from "@/utils/taskSessions"
 
@@ -207,9 +208,18 @@ export default function TaskCard({
                             }}
                         >
                             <FileAudio size={14} color={file.status === TASK_STATUS.COMPLETED ? "#2dd4a8" : "#e05252"} />
-                            <Text ellipsis style={{ flex: 1, fontSize: 12, color: "#e8e8e8" }}>
-                                {file.original_filename}
-                            </Text>
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                                <Text ellipsis style={{ display: "block", fontSize: 12, color: "#e8e8e8" }}>
+                                    {file.original_filename}
+                                </Text>
+                                {/* 完成了，轉錄結果卻可能少了一段（#257）：滑過去看下一步 */}
+                                {file.status === TASK_STATUS.COMPLETED && (
+                                    <TailLossSummary
+                                        seconds={file.result?.tail_loss_from_seconds}
+                                        style={{ display: "block" }}
+                                    />
+                                )}
+                            </div>
                             <Tag
                                 color={file.status === TASK_STATUS.COMPLETED ? "green" : "red"}
                                 style={{ fontSize: 11, margin: 0 }}

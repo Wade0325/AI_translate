@@ -258,10 +258,14 @@ class _ChunkedTranscription:
         """「分段轉錄的第幾段（在原音檔的起訖）」；沒有分段時是空的。依時間先後，前面的段都已經轉完。"""
         if not chunk.key_prefix:
             return ""
-        timeline = self._view.timeline
-        start = timeline.to_original(chunk.start)
-        end = timeline.to_original(chunk.start + chunk.duration, end=True)
+        start, end = self._original_span(chunk)
         return f"分段轉錄的第 {len(self._transcribed) + 1} 段（{_clock(start)}–{_clock(end)}）"
+
+    def _original_span(self, chunk: _Chunk) -> Tuple[float, float]:
+        """這一段在原音檔上的起訖。"""
+        timeline = self._view.timeline
+        return (timeline.to_original(chunk.start),
+                timeline.to_original(chunk.start + chunk.duration, end=True))
 
     # ── 送進轉接器 ───────────────────────────────────────────────
     def _send(self, chunk: _Chunk) -> TranscriptionTaskResult:
@@ -388,12 +392,10 @@ class _ChunkedTranscription:
         timeline = self._view.timeline
         starts = []
         for piece in self._transcribed:
-            chunk = piece.chunk
+            start, end = self._original_span(piece.chunk)
             found = tail_loss.tail_loss_from(
-                timeline.restore([_placed(segment, chunk) for segment in piece.result.segments]),
-                start=timeline.to_original(chunk.start),
-                end=timeline.to_original(chunk.start + chunk.duration, end=True),
-                silences=self._view.silences)
+                timeline.restore([_placed(segment, piece.chunk) for segment in piece.result.segments]),
+                start=start, end=end, silences=self._view.silences)
             if found is not None:
                 starts.append(found)
         return min(starts, default=None)

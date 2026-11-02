@@ -4,6 +4,8 @@ import { AlertCircle, CheckCircle2, FileAudio, Loader2 } from "lucide-react"
 import { formatDateTime } from "@/utils/formatters"
 import { TASK_STATUS } from "@/constants/taskStatus"
 import { FailureSummary } from "@/components/FailureNotice"
+import { TailLossSummary } from "@/components/TailLossNotice"
+import { describeTailLoss } from "@/utils/tailLoss"
 import { failureOf } from "@/utils/failure"
 
 const { Text } = Typography
@@ -94,6 +96,13 @@ export default function SingleTaskRow({ task }) {
                             <>
                                 <Text style={{ fontSize: 11, color: "#e05252" }}>·</Text>
                                 <FailureSummary failure={failureOf(task)} style={{ maxWidth: 360 }} />
+                            </>
+                        )}
+                        {/* 完成了，轉錄結果卻可能少了一段（#257）：滑過去看下一步 */}
+                        {task.status === TASK_STATUS.COMPLETED && describeTailLoss(task.tail_loss_from_seconds) && (
+                            <>
+                                <Text style={{ fontSize: 11, color: "#e0b84a" }}>·</Text>
+                                <TailLossSummary seconds={task.tail_loss_from_seconds} style={{ maxWidth: 360 }} />
                             </>
                         )}
                     </div>

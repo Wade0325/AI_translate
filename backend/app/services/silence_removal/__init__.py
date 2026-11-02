@@ -142,9 +142,13 @@ class SpeechTimeline:
             restored_end = restored_start
         return restored_start, restored_end
 
-    def silences(self, duration: float) -> Tuple[Span, ...]:
+    def cut_silences(self, duration: float) -> Tuple[Span, ...]:
         """去靜音剪掉的靜音（原音檔的時間軸）：有聲段以外、到原音檔的 ``duration`` 秒為止的地方；沒有
-        去靜音時是空的。批次只存下時間對照，檢查掉尾時用它（:mod:`app.services.tail_loss`）。"""
+        剪靜音時是空的。
+
+        批次只存下時間對照，檢查掉尾時用它（:mod:`app.services.tail_loss`）。和
+        :attr:`SpeechView.silences` 不同：語音佔比不低於門檻、沒有剪靜音的音檔，這裡沒有靜音，片尾的
+        靜音也當成聲音。"""
         return _silences_around(self.voiced, duration) if self.voiced else ()
 
     def serialized(self) -> List[Dict[str, float]]:
@@ -199,6 +203,16 @@ class SpeechView:
         """存進資料庫的形式，見 :meth:`SpeechTimeline.serialized`。只留時間對照：音檔與暫存檔在
         任務結束之後就不在了，讀回來（:meth:`SpeechTimeline.from_serialized`）只用來還原時間。"""
         return self.timeline.serialized()
+
+    def serialized_silences(self) -> List[Dict[str, float]]:
+        """:attr:`silences` 存進資料庫的形式（可以直接寫成 JSON），和 :meth:`serialized` 同一個形狀；
+        讀回用 :func:`silences_from_serialized`。批次送出時存下，結果回來時檢查掉尾用。"""
+        return [{"start": start, "end": end} for start, end in self.silences]
+
+
+def silences_from_serialized(stored: Sequence[Mapping[str, float]]) -> Tuple[Span, ...]:
+    """:meth:`SpeechView.serialized_silences` 存下來的形式讀回靜音（原音檔的時間軸）。"""
+    return tuple((float(span["start"]), float(span["end"])) for span in stored)
 
 
 def _silences_around(voiced: Sequence[Span], duration: float) -> Tuple[Span, ...]:

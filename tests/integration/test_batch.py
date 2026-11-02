@@ -99,13 +99,14 @@ def no_google_key(db_session):
 
 # ─── helpers ─────────────────────────────────────────────────────────────────
 
-def batch_request(api: TestClient, names: list[str], voiced=VOICED,
+def batch_request(api: TestClient, names: list[str], voiced=VOICED, length: float | None = None,
                   fields_per_file: dict[str, dict] | None = None, **fields) -> dict:
     """上傳每個檔案，組出送給批次端點的請求；檔案的 file_uid 就是檔名。
 
-    fields 是批次層級的欄位，fields_per_file 是個別檔案的欄位（以檔名為 key）。
+    每個檔案的有聲段是 ``voiced``、長度是 ``length``（見 synthetic_audio）。fields 是批次層級的欄位，
+    fields_per_file 是個別檔案的欄位（以檔名為 key）。
     """
-    files = [{"filename": upload(api, name, voiced), "original_filename": name, "file_uid": name,
+    files = [{"filename": upload(api, name, voiced, length), "original_filename": name, "file_uid": name,
               **(fields_per_file or {}).get(name, {})} for name in names]
     return {"files": files, "provider": "fake", "model": FAKE_MODEL, "source_lang": "ja",
             **fields}
@@ -261,7 +262,45 @@ def test_a_file_that_stopped_early_is_recorded_like_a_single_file_task(
     assert [f["result"] for f in again["files"]] == [stopped["result"], whole["result"]]
 
 
-MULTI_SPEAKER_NAMES =["labelled.wav", "unlabelled.wav"]
+def test_silence_after_the_last_segment_is_not_tail_loss_even_when_it_is_not_cut(
+        api, in_process_run_mode, batch_fake, monkeypatch):
+    # 幾乎全是語音的音檔不去靜音（語音佔比約 92%），結尾卻錄了約 3 秒的靜音：和單檔任務一樣，去靜音
+    # 找到的靜音照樣扣掉，不算沒轉到（見 test_provider_seam.py 的 TestTailLoss）。門檻改成 2 秒
+    from app.core.config import get_settings
+    monkeypatch.setattr(get_settings(), "tail_loss_min_seconds", 2.0)
+    batch_fake.script = [[(0.2, 15.0, 0, "前半。"), (15.2, 30.0, 1, "後半。")]]
+
+    end = of_file(run_batch(api, in_process_run_mode, "batch-tail-silence", ["long-talk.wav"],
+                            voiced=[(0.0, 30.0)], length=33.0), "long-talk.wav")[-1]
+
+    assert batch_fake.durations == [pytest.approx(33.0, abs=0.01)]
+    assert end["status_code"] == TaskStatus.COMPLETED
+    assert end["result"]["tail_loss_from_seconds"] is None
+
+
+def test_a_batch_sent_before_silences_were_stored_still_skips_the_cut_silences(
+        api, in_process_run_mode, batch_fake, db_session, monkeypatch):
+    # 改版前送出的批次沒有記下找到的靜音：復原時至少扣掉去靜音剪掉的那些。最後一句之後又錄了 10 秒
+    # 的靜音，剪掉了，就不算沒轉到。門檻改成 2 秒
+    from app.core.config import get_settings
+    from app.database.models import BatchFile
+    monkeypatch.setattr(get_settings(), "tail_loss_min_seconds", 2.0)
+    batch_fake.script = [[(0.2, 1.5, 0, "おはよう。"), (3.0, 4.6, 1, "またね。")]]
+    batch_fake.batch_polls = [Restart()]
+    submit_batch(api, in_process_run_mode, "batch-tail-older", ["older.wav"],
+                 voiced=[(0.0, 2.0), (5.0, 7.0)], length=17.0)
+    db_session.query(BatchFile).filter_by(batch_id="batch-tail-older").update({"silences_json": None})
+    db_session.commit()
+
+    end = of_file(recover(api, "batch-tail-older"), "older.wav")[-1]
+    in_process_run_mode.close(wait=True)  # 等復原整個跑完再查 API
+
+    assert end["status_code"] == TaskStatus.COMPLETED
+    assert flat_times(stored_segments(api, end["task_uuid"]))[-1] == pytest.approx(7.0)
+    assert end["result"]["tail_loss_from_seconds"] is None
+
+
+MULTI_SPEAKER_NAMES = ["labelled.wav", "unlabelled.wav"]
 MULTI_SPEAKER_REQUEST = {"multi_speaker": True,
                          "fields_per_file": {"unlabelled.wav": {"multi_speaker": False}}}
 """批次層級開著 Multi-Speaker，第二個檔案在每檔設定裡關掉。"""
