@@ -10,6 +10,7 @@ import json
 import os
 import platform
 import re
+import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
 from types import ModuleType
@@ -265,6 +266,26 @@ VC_REDIST_URL = "https://aka.ms/vc14/vc_redist.x64.exe"
 """Microsoft Visual C++ 可轉散發套件（x64）的固定連結，見
 https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist 。"""
 
+VC_RUNTIME_DLLS = ("msvcp140.dll", "vcomp140.dll")
+"""本機轉錄要從 System32 載入的 Microsoft Visual C++ 可轉散發套件 DLL（#304）。
+
+免安裝版的 ``runtime\\`` 只附 Python 本來就帶的 vcruntime140.dll 與 vcruntime140_1.dll。#35 試發布
+讀了佈建後每個 exe、dll、pyd 的 import 表：torch 等 50 個檔案 import msvcp140.dll，torchaudio 的
+libtorchaudio.pyd 等 21 個 import vcomp140.dll。msvcp140_1.dll 只有 onnxruntime 用，本機轉錄不會
+載入（Silero 用 torch 版，不用 ONNX 版），不查。``tools/launcher.cs`` 與 ``tools/portable/start.py``
+查同一份清單（測試比對）。
+"""
+VC_RUNTIME_MIN_VERSION = (14, 38)
+"""msvcp140.dll 至少要這一版（主、次版號）。
+
+Microsoft 規定電腦上的可轉散發套件「must be the same or later than the version of the MSVC Build
+Tools used to create your application」（同上的網頁）。2026-11-01 讀 PE 標頭：torch 與 torchaudio
+2.8.0+cu128（Windows）的 DLL 都由 linker 14.38 連結，隨包 Python 3.11.9 的 vcruntime140.dll 是
+14.38.33126.1。``tools/launcher.cs`` 與 ``tools/portable/start.py`` 用同一個版本（測試比對）。
+"""
+VC_RUNTIME_TABLE_TORCH = "2.8.0+cu128"
+"""上面的版本是照這版 torch 查的。``requirements-standalone.txt`` 換了 torch，測試會要求重查。"""
+
 DETAIL_MAX_CHARS = 500
 """原始錯誤最長幾個字，和任務失敗的細節（``error_codes.MAX_DETAIL_CHARS``）一樣。"""
 
@@ -341,27 +362,79 @@ def _required_driver(cuda: str | None) -> str:
 
 def _torch_load_failed(error: BaseException) -> GpuUnavailable:
     detail = error_summary(error)
-    if _missing_vc_runtime():
+    vc_runtime = _vc_runtime_problem()
+    if vc_runtime and not _has_nvidia_driver():
+        # 沒有 NVIDIA 驅動時，裝好 VC++ 可轉散發套件本機轉錄也還是不能用：先說顯卡（#304）
         return GpuUnavailable(
-            "torch_load_failed", "PyTorch 載入失敗：這台電腦沒有 Microsoft Visual C++ 可轉散發套件",
+            "no_gpu", "這台電腦沒有可用的 NVIDIA 顯卡（找不到 NVIDIA 驅動）",
+            "可以改用 Gemini；有 NVIDIA 顯卡的話，裝好驅動與 Microsoft Visual C++ 可轉散發套件"
+            f"（{VC_REDIST_URL}）後重新開啟 Mimiji", detail)
+    if vc_runtime:
+        return GpuUnavailable(
+            "torch_load_failed", f"PyTorch 載入失敗：{vc_runtime}",
             f"從 {VC_REDIST_URL} 下載安裝後重新開啟 Mimiji，或改用 Gemini", detail)
     return GpuUnavailable(
         "torch_load_failed", "PyTorch 載入失敗",
         "重新開機後再試；還是一樣的話，請回報問題並附上診斷資訊，或改用 Gemini", detail)
 
 
-def _missing_vc_runtime() -> bool:
-    """Windows 上缺 Microsoft Visual C++ 可轉散發套件的 DLL。torch 載入自己的 DLL 前也查這三個
-    （torch 2.8.0 的 ``torch/__init__.py``），缺了就載入失敗；免安裝版的 Python 沒有帶 msvcp140.dll。"""
+def _vc_runtime_problem() -> str | None:
+    """Windows 上 System32 缺 :data:`VC_RUNTIME_DLLS`，或 msvcp140.dll 比 :data:`VC_RUNTIME_MIN_VERSION`
+    舊時，是給使用者看的原因；不是 Windows，或都沒問題時是 None。
+
+    只看 System32：torch 用 ``LOAD_LIBRARY_SEARCH_DEFAULT_DIRS`` 載入自己的 DLL，只找程式資料夾
+    （``runtime\\``，沒有這兩個）、torch 加進來的資料夾與 System32，不找 PATH。讀不到版本時不當成
+    太舊。``tools/launcher.cs`` 與 ``tools/portable/start.py`` 在啟動伺服器前做同一個檢查（#304）。
+    """
     if platform.system() != "Windows":
-        return False
+        return None
+    system32 = _system32()
+    if not all((system32 / dll).is_file() for dll in VC_RUNTIME_DLLS):
+        return "這台電腦沒有 Microsoft Visual C++ 可轉散發套件"
+    version = _file_version(system32 / VC_RUNTIME_DLLS[0])
+    if version is not None and version < VC_RUNTIME_MIN_VERSION:
+        return ("這台電腦的 Microsoft Visual C++ 可轉散發套件太舊"
+                f"（目前 {_dotted(version)}，需要 {_dotted(VC_RUNTIME_MIN_VERSION)} 以上）")
+    return None
+
+
+def _has_nvidia_driver() -> bool:
+    """NVIDIA 顯卡驅動會把 CUDA 的驅動程式介面 nvcuda.dll 裝進 System32，torch 用顯卡時載入它。
+    ``tools/launcher.cs`` 也用它判斷要不要提示安裝 VC++ 可轉散發套件。"""
+    return (_system32() / "nvcuda.dll").is_file()
+
+
+def _system32() -> Path:
+    return Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32"
+
+
+def _dotted(version: tuple[int, int]) -> str:
+    return f"{version[0]}.{version[1]}"
+
+
+def _file_version(path: Path) -> tuple[int, int] | None:
+    """Windows 檔案的「檔案版本」（檔案總管的內容 →「詳細資料」）的主、次版號；讀不到時是 None。"""
+    if sys.platform != "win32":
+        return None
     import ctypes
-    try:
-        for dll in ("vcruntime140.dll", "msvcp140.dll", "vcruntime140_1.dll"):
-            ctypes.CDLL(dll)
-    except OSError:
-        return True
-    return False
+
+    version_dll = ctypes.WinDLL("version")
+    size = version_dll.GetFileVersionInfoSizeW(str(path), None)
+    if not size:
+        return None
+    data = ctypes.create_string_buffer(size)
+    if not version_dll.GetFileVersionInfoW(str(path), 0, size, data):
+        return None
+    fixed, length = ctypes.c_void_p(), ctypes.c_uint()
+    if not version_dll.VerQueryValueW(data, "\\", ctypes.byref(fixed), ctypes.byref(length)):
+        return None
+    if length.value < 16 or not fixed.value:
+        return None
+    # VS_FIXEDFILEINFO 的前四個 DWORD：dwSignature、dwStrucVersion、dwFileVersionMS、dwFileVersionLS
+    words = ctypes.cast(fixed, ctypes.POINTER(ctypes.c_uint32 * 4)).contents
+    if words[0] != 0xFEEF04BD:
+        return None
+    return words[2] >> 16, words[2] & 0xFFFF
 
 
 def nvidia_driver_version() -> str | None:

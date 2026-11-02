@@ -4,9 +4,11 @@ build_release.ps1 把它放在發布包的 bin\\start.py；start.bat 用隨包�
 
     runtime\\python.exe -I -X utf8 bin\\start.py [埠號]
 
-做的事和啟動器（tools/launcher.cs）相同：第一次執行時用同一個指令佈建執行環境、刪掉 torch 執行時用不到的
-.lib、寫同一個完成標記，再以同樣的環境變數啟動伺服器（tests/unit/test_portable_start.py 檢查兩邊一致）。
-不同的是不會自動改用空的埠，也不會自動開啟瀏覽器。
+做的事和啟動器（tools/launcher.cs）相同：第一次執行時用同樣的步驟佈建執行環境（先以
+bin\\prefetch_wheels.py 下載 PyTorch，斷線時可以接著下載；再以 uv 安裝；#303）、刪掉 torch 執行時
+用不到的 .lib（#305）、寫同一個完成標記，再以同樣的環境變數啟動伺服器（tests/unit/test_portable_start.py
+檢查兩邊一致）。有 NVIDIA 驅動、卻沒裝 Microsoft Visual C++ 可轉散發套件（或太舊）時，也一樣在佈建之前
+提示安裝（#304）。不同的是不會自動改用空的埠，也不會自動開啟瀏覽器。
 
 單一實例也和啟動器共用：同名的 mutex 與 data\\launcher-url.txt，所以同一個資料夾的 AI_Translate.exe
 與 start.bat 合起來只會跑一個伺服器（tests/integration/test_launcher.py 在 Windows 上兩個方向都測）。
@@ -27,6 +29,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import shutil
 import subprocess
 import sys
 import urllib.request
@@ -43,9 +46,16 @@ URL_PATTERN = re.compile(r"http://127\.0\.0\.1:([0-9]{1,5})")
 PROVISION_BANNER = """\
 ═══════════════════════════════════════════════════════
  首次啟動：正在下載執行環境（約 3.5 GB，含 PyTorch）
- 過程視網速需要數分鐘到數十分鐘；中斷後重開會續傳。
+ 過程視網速需要數分鐘到數十分鐘；中斷後重新執行，會從中斷的地方接著下載。
  沒有 NVIDIA 顯卡的電腦也會下載這些，只用 Gemini 時大部分用不到。
 ═══════════════════════════════════════════════════════"""
+
+# Microsoft Visual C++ 可轉散發套件（#304）：本機轉錄要從 System32 載入的 DLL，以及第一個
+# （msvcp140.dll）至少要的版本。依據寫在 backend/app/provider/local/weights.py 的同名常數；
+# 這裡、weights.py 與啟動器三邊要相同（tests/unit/test_vc_runtime.py 比對）
+VC_REDIST_URL = "https://aka.ms/vc14/vc_redist.x64.exe"
+VC_RUNTIME_DLLS = ("msvcp140.dll", "vcomp140.dll")
+VC_RUNTIME_MIN_VERSION = (14, 38)
 
 
 def python_exe(root: Path) -> Path:
@@ -55,6 +65,28 @@ def python_exe(root: Path) -> Path:
 def provisioned_marker(root: Path) -> Path:
     """首次佈建完成的標記，和啟動器的相同：用哪一個啟動，另一個都認得已經佈建好。"""
     return root / "runtime" / ".provisioned"
+
+
+def downloads_dir(root: Path) -> Path:
+    """首次佈建時預先下載的 wheel（PyTorch）放在這裡，裝好後刪掉；和啟動器的相同。"""
+    return root / "runtime" / "downloads"
+
+
+# bin\prefetch_wheels.py 的結束代碼（定義在 tools/portable/prefetch_wheels.py，測試檢查兩邊一致）。
+# 這三種停下來說明怎麼辦；0、5（這個來源下載不到）與其他的（它自己出錯）接著執行 uv
+PREFETCH_INTERRUPTED = 2
+PREFETCH_MISMATCH = 3
+PREFETCH_DISK = 4
+PREFETCH_FALLBACK = 5
+
+
+def prefetch_command(root: Path) -> list[str]:
+    """先下載 PyTorch 的指令，和啟動器的相同（在 root 執行）。
+
+    -I：不讀使用者自己裝的套件與 PYTHON* 環境變數；-X utf8：輸出導向檔案時也是 UTF-8。
+    """
+    return [str(python_exe(root)), "-I", "-X", "utf8",
+            str(root / "bin" / "prefetch_wheels.py"), str(downloads_dir(root))]
 
 
 def torch_lib(root: Path) -> Path:
@@ -86,11 +118,12 @@ def remove_static_libraries(root: Path) -> None:
 
 
 def provision_command(root: Path) -> list[str]:
-    """首次佈建的指令，和啟動器的相同（在 root 執行）。"""
+    """首次佈建的指令，和啟動器的相同（在 root 執行）：PyTorch 用 downloads_dir 裡預先下載的。"""
     return [str(root / "bin" / "uv.exe"), "pip", "install",
             "--python", str(python_exe(root)),
             "--target", str(root / "runtime" / "Lib" / "site-packages"),
-            "-r", str(root / "backend" / "requirements-standalone.txt")]
+            "-r", str(root / "backend" / "requirements-standalone.txt"),
+            "--find-links", str(downloads_dir(root))]
 
 
 def server_env(root: Path) -> dict[str, str]:
@@ -107,8 +140,13 @@ def server_env(root: Path) -> dict[str, str]:
 
 
 def server_command(root: Path, port: int) -> list[str]:
-    """啟動伺服器的指令，和啟動器的相同（在 root\\backend 執行）。"""
-    return [str(python_exe(root)), "-m", "uvicorn", "main:app",
+    """啟動伺服器的指令，和啟動器的相同（在 root\\backend 執行）。
+
+    -s：不載入使用者自己裝的套件（%APPDATA%\\Python\\Python311\\site-packages 與那裡的 .pth，
+    #301）；python311._pth 只開了隔離模式，沒有關掉它。不用 -I：它會連 PYTHON* 環境變數一起
+    忽略，server_env() 設的 PYTHONIOENCODING 就失效了。
+    """
+    return [str(python_exe(root)), "-s", "-m", "uvicorn", "main:app",
             "--host", "127.0.0.1", "--port", str(port)]
 
 
@@ -233,17 +271,132 @@ def pause() -> None:
 
 def provision(root: Path, run: Callable[..., int]) -> bool:
     print(PROVISION_BANNER, flush=True)
+    if not prefetch(root, run):
+        return False
     code = run(provision_command(root), cwd=root)
     if code != 0:
         print()
         print(f"執行環境佈建失敗（結束代碼 {exit_code_text(code)}，多半是網路中斷）。"
-              "已下載的部分會保留，")
-        print("重新執行 start.bat 即可續傳。")
+              "PyTorch 與已下載完的套件會保留，")
+        print("重新執行 start.bat 會接著下載其餘的套件。")
         return False
+    remove_downloads(root)
     remove_static_libraries(root)
     provisioned_marker(root).write_text(datetime.now().isoformat(), encoding="utf-8")
     print("執行環境佈建完成。", flush=True)
     return True
+
+
+def prefetch(root: Path, run: Callable[..., int]) -> bool:
+    """先下載 PyTorch（和啟動器相同）。停在這裡時印出怎麼辦，回傳 False；可以接著執行 uv 時回傳 True。
+
+    原因 prefetch_wheels.py 自己印在視窗裡，這裡只說下一步。
+    """
+    code = run(prefetch_command(root), cwd=root)
+    reason = "原因在上方的最後幾行"
+    if code == PREFETCH_INTERRUPTED:
+        print()
+        print(f"PyTorch 沒有下載完（{reason}）。")
+        print("已下載的部分會保留：網路恢復後重新執行 start.bat，會從中斷的地方接著下載。")
+        print("一直如此的話，公司或學校的網路可能擋了下載（防火牆、代理伺服器）：換一個網路再試。")
+        return False
+    if code == PREFETCH_MISMATCH:
+        print()
+        print(f"下載的 PyTorch 和預期的不同，已經刪掉（{reason}）。")
+        print("請重新執行 start.bat 再下載一次；一直如此的話，可能是網路上的代理伺服器"
+              "改動了下載的內容，請換一個網路再試。")
+        return False
+    if code == PREFETCH_DISK:
+        print()
+        print(f"PyTorch 下載到一半時寫不進資料夾（{reason}）。")
+        print("已下載的部分會保留：清出磁碟空間後重新執行 start.bat，會從中斷的地方接著下載。")
+        print("防毒軟體攔下了下載的檔案時，請把這個資料夾加入防毒軟體的排除清單後再試。")
+        return False
+    if code not in (0, PREFETCH_FALLBACK):
+        # prefetch_wheels.py 自己出錯。預先下載只是讓中斷之後可以接著下載：做不到時照原本的方式
+        # 由 uv 下載，不讓首次佈建停在這裡（和啟動器相同）
+        print(f"沒有預先下載 PyTorch（結束代碼 {exit_code_text(code)}），改由 uv 下載；"
+              "這次中斷的話，PyTorch 要從頭下載。", flush=True)
+    return True
+
+
+def remove_downloads(root: Path) -> None:
+    """刪掉預先下載的檔案（約 3.5 GB）。刪不掉（例如防毒軟體正在掃描）不影響啟動，下次啟動再刪。"""
+    shutil.rmtree(downloads_dir(root), ignore_errors=True)
+
+
+# ─── Microsoft Visual C++ 可轉散發套件（#304），和啟動器的 WarnVcRuntime 相同 ─────────────
+# torch 從 System32 載入 msvcp140.dll 等 DLL，免安裝版只附 vcruntime140*.dll。缺了伺服器照樣起得來、
+# Gemini 照樣能用，只有本機轉錄不能用，所以只提示、不擋。伺服器啟動時才第一次載入 torch：首次佈建
+# 之前就說，使用者趁下載時裝好，就不必重新開啟。沒有 NVIDIA 驅動時不說：本機轉錄本來就不能用，
+# 轉錄頁會說明。
+
+
+def system_folder() -> Path:
+    """System32。隨包的 Python 是 64 位元，不會被轉到 SysWOW64。"""
+    return Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32"
+
+
+def file_version(path: Path) -> tuple[int, int] | None:
+    """Windows 檔案的「檔案版本」的主、次版號（例如 msvcp140.dll 的 14.44）；不是 Windows 或讀不到
+    時是 None。和 weights.py 的 _file_version 相同（只用標準函式庫，這時還沒佈建，不能 import 後端）。"""
+    if sys.platform != "win32":
+        return None
+    import ctypes
+
+    version_dll = ctypes.WinDLL("version")
+    size = version_dll.GetFileVersionInfoSizeW(str(path), None)
+    if not size:
+        return None
+    data = ctypes.create_string_buffer(size)
+    if not version_dll.GetFileVersionInfoW(str(path), 0, size, data):
+        return None
+    fixed, length = ctypes.c_void_p(), ctypes.c_uint()
+    if not version_dll.VerQueryValueW(data, "\\", ctypes.byref(fixed), ctypes.byref(length)):
+        return None
+    if length.value < 16 or not fixed.value:
+        return None
+    # VS_FIXEDFILEINFO 的前四個 DWORD：dwSignature、dwStrucVersion、dwFileVersionMS、dwFileVersionLS
+    words = ctypes.cast(fixed, ctypes.POINTER(ctypes.c_uint32 * 4)).contents
+    if words[0] != 0xFEEF04BD:
+        return None
+    return words[2] >> 16, words[2] & 0xFFFF
+
+
+def vc_runtime_problem(system: Path,
+                       version: Callable[[Path], tuple[int, int] | None] = file_version) -> str | None:
+    """給使用者看的原因；沒有 NVIDIA 驅動（System32 沒有 nvcuda.dll），或都沒問題時是 None。
+    讀不到版本時不當成太舊。"""
+    if not (system / "nvcuda.dll").is_file():
+        return None
+    if not all((system / dll).is_file() for dll in VC_RUNTIME_DLLS):
+        return "這台電腦沒有 Microsoft Visual C++ 可轉散發套件"
+    current = version(system / VC_RUNTIME_DLLS[0])
+    if current is not None and current < VC_RUNTIME_MIN_VERSION:
+        return ("這台電腦的 Microsoft Visual C++ 可轉散發套件太舊"
+                f"（目前 {current[0]}.{current[1]}，"
+                f"需要 {VC_RUNTIME_MIN_VERSION[0]}.{VC_RUNTIME_MIN_VERSION[1]} 以上）")
+    return None
+
+
+def check_vc_runtime() -> str | None:
+    """這台電腦的 vc_runtime_problem；Windows 以外的平台不查（只有開發時的測試會在那裡執行）。
+    查的時候出錯（例如沒有權限讀）就不提示：只是提示，不能因此擋住啟動（和啟動器相同）。"""
+    if sys.platform != "win32":
+        return None
+    try:
+        return vc_runtime_problem(system_folder())
+    except OSError:
+        return None
+
+
+def warn_vc_runtime(problem: str) -> None:
+    print("───────────────────────────────────────────────────────")
+    print(f" {problem}，本機轉錄不能用。")
+    print(f" 請下載安裝（需要系統管理員權限）：{VC_REDIST_URL}")
+    print(" 在伺服器啟動之前裝好就不必重新開啟；之後才裝的話，裝好後關閉這個視窗，")
+    print(" 再執行一次 start.bat。只用 Gemini 的話可以不裝。")
+    print("───────────────────────────────────────────────────────", flush=True)
 
 
 def stop_with_this_process(pid: int) -> Callable[[], None] | None:
@@ -336,15 +489,16 @@ def main(argv: Sequence[str], root: Path = ROOT, *,
          run: Callable[..., int] = _call,
          serve: Callable[[Path, int], int] = run_server,
          acquire: Callable[[Path], Callable[[], None] | None] = acquire_instance,
-         probe: Callable[[str], bool] = probe_health) -> int:
+         probe: Callable[[str], bool] = probe_health,
+         vc_problem: Callable[[], str | None] | None = None) -> int:
     port = parse_port(argv)
     if port is None:
         print(f"埠號要是 1 到 65535 的數字，例如 start.bat 8001（收到的是：{argv[0]}）。")
         pause()
         return 1
 
-    needed = [python_exe(root), root / "bin" / "uv.exe", root / "backend" / "main.py",
-              root / "backend" / "requirements-standalone.txt"]
+    needed = [python_exe(root), root / "bin" / "uv.exe", root / "bin" / "prefetch_wheels.py",
+              root / "backend" / "main.py", root / "backend" / "requirements-standalone.txt"]
     missing = [path.relative_to(root) for path in needed if not path.exists()]
     if missing:
         print("找不到 " + "、".join(str(path) for path in missing) + "，請確認 zip 已完整解壓。")
@@ -357,7 +511,7 @@ def main(argv: Sequence[str], root: Path = ROOT, *,
         pause()
         return 0
     try:
-        started = _start(root, port, run, serve)
+        started = _start(root, port, run, serve, vc_problem or check_vc_runtime)
     finally:
         # 先讓出單一實例再停下來等按鍵：視窗還停著時再雙擊，可以直接重新啟動（和啟動器相同）
         try:
@@ -372,12 +526,25 @@ def main(argv: Sequence[str], root: Path = ROOT, *,
 
 
 def _start(root: Path, port: int, run: Callable[..., int],
-           serve: Callable[[Path, int], int]) -> bool:
+           serve: Callable[[Path, int], int], vc_problem: Callable[[], str | None]) -> bool:
     """第一次執行時佈建，再啟動伺服器並等它結束；失敗時印出原因，回傳 False。"""
+    problem = vc_problem()
+    if problem is not None:
+        warn_vc_runtime(problem)
     if provisioned_marker(root).exists():
+        remove_downloads(root)  # 上次佈建成功、但刪不掉時再刪一次（和啟動器相同）
         remove_static_libraries(root)  # 每次啟動補刪，和啟動器相同
-    elif not provision(root, run):
-        return False
+    else:
+        if not provision(root, run):
+            return False
+        if problem is not None:
+            # 佈建前提示過、佈建完再查一次：還沒裝就再說一次（uv 的輸出把前一次推上去了），
+            # 裝好了就說一聲（和啟動器的 RecheckVcRuntime 相同）
+            problem = vc_problem()
+            if problem is None:
+                print("已經裝好 Microsoft Visual C++ 可轉散發套件。", flush=True)
+            else:
+                warn_vc_runtime(problem)
 
     url = f"http://127.0.0.1:{port}"
     write_url_file(root, url)

@@ -4,6 +4,7 @@ import { Card, Button, Input, Typography, Row, Col, Spin, Divider, Progress, Ale
 import { Key, Save, Cpu, Download, CheckCircle2, Info } from "lucide-react"
 import { useModelManager } from "../components/ModelManager"
 import { ReasonText } from "../components/disabled-reason"
+import { TextWithLinks } from "../components/text-with-links"
 import { DiagnosticsCopy } from "../components/DiagnosticsCopy"
 import { LocalDataCard } from "../components/LocalDataCard"
 import { UploadNotice } from "../components/UploadNotice"
@@ -284,7 +285,7 @@ function LocalModelsCard() {
                     <Text style={{ color: status.gpu_available ? '#2dd4a8' : '#d46a2d', fontSize: 13 }}>
                         {status.gpu_available
                             ? `GPU: ${status.gpu_name}${status.gpu_vram_gb ? `（${Math.round(status.gpu_vram_gb)} GB）` : ''}`
-                            : (status.gpu_problem ?? '未偵測到 NVIDIA GPU — 本機轉錄不可用（Gemini 不受影響）')}
+                            : <TextWithLinks text={status.gpu_problem ?? '未偵測到 NVIDIA GPU — 本機轉錄不可用（Gemini 不受影響）'} />}
                     </Text>
                     {status.vram_notice && (
                         <Text style={{ color: '#d4a72d', fontSize: 12 }}>{status.vram_notice}</Text>

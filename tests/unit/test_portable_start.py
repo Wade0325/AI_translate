@@ -19,7 +19,7 @@ import pytest
 
 from app.core.config import Settings
 from tools import portable_zip
-from tools.portable import start
+from tools.portable import prefetch_wheels, start
 
 ROOT = Path(__file__).resolve().parents[2]
 PORTABLE = ROOT / "tools" / "portable"
@@ -75,7 +75,7 @@ def _relative(value: str) -> str:
 
 def _package(tmp_path: Path, *, provisioned: bool = False, skip: tuple[str, ...] = ()) -> Path:
     """在 tmp_path 做一個解壓後的發布包：start.py 啟動前檢查的檔案都在（skip 裡的除外）。"""
-    for rel in ("runtime/python.exe", "bin/uv.exe", "backend/main.py",
+    for rel in ("runtime/python.exe", "bin/uv.exe", "bin/prefetch_wheels.py", "backend/main.py",
                 "backend/requirements-standalone.txt"):
         if rel not in skip:
             (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
@@ -95,6 +95,25 @@ class _Calls:
     def __call__(self, *args, **kwargs) -> int:
         self.calls.append((args, kwargs))
         return self.code
+
+
+class _Run:
+    """假的 run：先下載 PyTorch 與 uv 各回傳指定的結束代碼，並記下收到的指令。"""
+
+    def __init__(self, *, prefetch: int = 0, uv: int = 0):
+        self.codes = {"prefetch": prefetch, "uv": uv}
+        self.calls: list[tuple] = []
+
+    def __call__(self, cmd, **kwargs) -> int:
+        self.calls.append(((cmd,), kwargs))
+        return self.codes["prefetch" if cmd[-2].endswith("prefetch_wheels.py") else "uv"]
+
+
+@pytest.fixture(autouse=True)
+def _empty_system32(monkeypatch, tmp_path_factory):
+    """System32 預設是空的資料夾（沒有 NVIDIA 驅動，不提示 VC++）：不看執行測試那台電腦的 System32。"""
+    folder = tmp_path_factory.mktemp("System32")
+    monkeypatch.setattr(start, "system_folder", lambda: folder)
 
 
 class TestMatchesLauncher:
@@ -117,7 +136,8 @@ class TestMatchesLauncher:
 
     def test_same_server_command(self):
         launcher = _launcher()
-        args = re.search(r'"(-m uvicorn [^"]*)\{0\}"', launcher)
+        # 從第一個參數取到埠號之前：連 -m 前面的 python 旗標（-s，#301）一起比
+        args = re.search(r'"((?:-\S+ )*-m uvicorn [^"]*)\{0\}"', launcher)
         assert args, "tools/launcher.cs 裡找不到啟動 uvicorn 的參數"
         assert "psi.WorkingDirectory = backend;" in launcher
 
@@ -128,7 +148,8 @@ class TestMatchesLauncher:
     def test_same_provisioning(self):
         # 佈建的指令與完成標記相同：用哪一個啟動，另一個都認得已經佈建好
         launcher = _launcher()
-        assert r'"pip install --python \"{0}\" --target \"{1}\" -r \"{2}\""' in launcher
+        assert (r'"pip install --python \"{0}\" --target \"{1}\" -r \"{2}\" --find-links \"{3}\""'
+                in launcher)
         assert 'Path.Combine(root, "runtime", "Lib", "site-packages")' in launcher
         assert 'Path.Combine(root, "backend", "requirements-standalone.txt")' in launcher
         assert 'Path.Combine(root, "runtime", ".provisioned")' in launcher
@@ -137,8 +158,23 @@ class TestMatchesLauncher:
         assert [_relative(part) for part in start.provision_command(PKG)] == [
             r"bin\uv.exe", "pip", "install", "--python", r"runtime\python.exe",
             "--target", r"runtime\Lib\site-packages",
-            "-r", r"backend\requirements-standalone.txt"]
+            "-r", r"backend\requirements-standalone.txt",
+            "--find-links", r"runtime\downloads"]
         assert _relative(str(start.provisioned_marker(PKG))) == r"runtime\.provisioned"
+
+    def test_same_prefetch(self):
+        # 先下載 PyTorch 的指令、下載的資料夾與結束代碼都和啟動器相同（#303）
+        launcher = _launcher()
+        assert r'"-I -X utf8 \"{0}\" \"{1}\""' in launcher
+        assert 'Path.Combine(root, "bin", "prefetch_wheels.py")' in launcher
+        assert 'Path.Combine(root, "runtime", "downloads")' in launcher
+
+        assert [_relative(part) for part in start.prefetch_command(PKG)] == [
+            r"runtime\python.exe", "-I", "-X", "utf8", r"bin\prefetch_wheels.py", r"runtime\downloads"]
+        assert (start.PREFETCH_INTERRUPTED, start.PREFETCH_MISMATCH, start.PREFETCH_DISK,
+                start.PREFETCH_FALLBACK) == (prefetch_wheels.EXIT_INTERRUPTED,
+                                             prefetch_wheels.EXIT_MISMATCH, prefetch_wheels.EXIT_DISK,
+                                             prefetch_wheels.EXIT_FALLBACK)
 
     def test_same_static_libraries_are_removed(self):
         # 首次佈建成功後與已佈建時都刪 torch\lib 的 .lib（#305），副檔名不分大小寫
@@ -153,12 +189,16 @@ class TestMatchesLauncher:
 class TestMain:
     def test_first_run_provisions_then_starts_the_server(self, tmp_path, capsys):
         root = _package(tmp_path)
-        run, serve = _Calls(), _Calls()
+        start.downloads_dir(root).mkdir(parents=True)  # 預先下載的 PyTorch
+        (start.downloads_dir(root) / "torch.whl").write_bytes(b"x")
+        run, serve = _Run(), _Calls()
 
         assert start.main([], root, run=run, serve=serve) == 0
 
-        assert run.calls == [((start.provision_command(root),), {"cwd": root})]
+        assert run.calls == [((start.prefetch_command(root),), {"cwd": root}),
+                             ((start.provision_command(root),), {"cwd": root})]
         assert start.provisioned_marker(root).exists()
+        assert not start.downloads_dir(root).exists()  # 裝好後刪掉
         assert serve.calls == [((root, 8000), {})]
         out = capsys.readouterr().out
         assert "首次啟動：正在下載執行環境" in out
@@ -174,18 +214,67 @@ class TestMain:
         assert run.calls == []
         assert len(serve.calls) == 1
 
+    def test_leftover_downloads_are_removed_on_the_next_start(self, tmp_path):
+        # 上次佈建成功、但下載的檔案沒刪掉（例如防毒軟體正在掃描）
+        root = _package(tmp_path, provisioned=True)
+        start.downloads_dir(root).mkdir(parents=True)
+        (start.downloads_dir(root) / "torch.whl").write_bytes(b"x")
+
+        assert start.main([], root, run=_Calls(), serve=_Calls()) == 0
+
+        assert not start.downloads_dir(root).exists()
+
     def test_failed_provisioning_stops_without_the_marker(self, tmp_path, capsys):
         root = _package(tmp_path)
-        run, serve = _Calls(code=2), _Calls()
+        start.downloads_dir(root).mkdir(parents=True)
+        (start.downloads_dir(root) / "torch.whl").write_bytes(b"x")
+        run, serve = _Run(uv=2), _Calls()
 
         assert start.main([], root, run=run, serve=serve) == 1
 
         assert not start.provisioned_marker(root).exists()
+        assert (start.downloads_dir(root) / "torch.whl").exists()  # 下載好的 PyTorch 留著
         assert serve.calls == []
         out = capsys.readouterr().out
         assert "執行環境佈建失敗（結束代碼 2" in out
-        assert "重新執行 start.bat 即可續傳" in out
+        assert "PyTorch 與已下載完的套件會保留" in out
+        assert "重新執行 start.bat 會接著下載其餘的套件" in out
         assert "按任意鍵關閉" in out
+
+    @pytest.mark.parametrize("code, says", [
+        (prefetch_wheels.EXIT_INTERRUPTED, "網路恢復後重新執行 start.bat，會從中斷的地方接著下載"),
+        (prefetch_wheels.EXIT_MISMATCH, "請重新執行 start.bat 再下載一次"),
+        (prefetch_wheels.EXIT_DISK, "清出磁碟空間後重新執行 start.bat，會從中斷的地方接著下載"),
+    ], ids=["interrupted", "mismatch", "disk"])
+    def test_torch_download_that_stops_says_what_to_do(self, tmp_path, capsys, code, says):
+        root = _package(tmp_path)
+        start.downloads_dir(root).mkdir(parents=True)
+        (start.downloads_dir(root) / "torch.whl.part").write_bytes(b"x")
+        run, serve = _Run(prefetch=code), _Calls()
+
+        assert start.main([], root, run=run, serve=serve) == 1
+
+        assert run.calls == [((start.prefetch_command(root),), {"cwd": root})]  # 不執行 uv
+        assert serve.calls == []
+        assert not start.provisioned_marker(root).exists()
+        assert (start.downloads_dir(root) / "torch.whl.part").exists()  # 下次接著下載
+        out = capsys.readouterr().out
+        assert says in out
+        assert "按任意鍵關閉" in out
+
+    @pytest.mark.parametrize("code", [prefetch_wheels.EXIT_FALLBACK, 1])
+    def test_torch_that_cannot_be_prefetched_is_left_to_uv(self, tmp_path, capsys, code):
+        # 5：來源下載不到；1：prefetch_wheels.py 自己出錯。都照原本的方式由 uv 下載
+        root = _package(tmp_path)
+        run, serve = _Run(prefetch=code), _Calls()
+
+        assert start.main([], root, run=run, serve=serve) == 0
+
+        assert [call[0][0] for call in run.calls] == [start.prefetch_command(root),
+                                                      start.provision_command(root)]
+        assert start.provisioned_marker(root).exists()
+        out = capsys.readouterr().out
+        assert ("改由 uv 下載" in out) == (code == 1)  # 5 的原因 prefetch_wheels.py 自己印了
 
     @pytest.mark.parametrize("code, shown", [
         (1, "1"),
@@ -243,6 +332,141 @@ class TestMain:
         captured = capsys.readouterr()
         assert "PermissionError: 拒絕存取" in captured.err
         assert "按任意鍵關閉" in captured.out
+
+
+MISSING_VC = "這台電腦沒有 Microsoft Visual C++ 可轉散發套件"
+
+
+def _system32(tmp_path: Path, *dlls: str, nvidia: bool = True) -> Path:
+    """假的 System32：有 NVIDIA 驅動（nvcuda.dll）與 dlls 裡的檔案。"""
+    folder = tmp_path / "System32"
+    folder.mkdir(exist_ok=True)
+    for name in (("nvcuda.dll",) if nvidia else ()) + dlls:
+        (folder / name).write_bytes(b"")
+    return folder
+
+
+class TestVcRuntime:
+    """有 NVIDIA 驅動、卻沒裝 Microsoft Visual C++ 可轉散發套件（或太舊）時，佈建之前先提示，不擋啟動，
+    和啟動器相同（#304）。清單、版本、網址與原因和啟動器、weights.py 相同，在 test_vc_runtime.py 比對。"""
+
+    def test_missing_runtime(self, tmp_path):
+        assert start.vc_runtime_problem(_system32(tmp_path), lambda path: None) == MISSING_VC
+
+    @pytest.mark.parametrize("dll", start.VC_RUNTIME_DLLS)
+    def test_each_dll_is_required(self, tmp_path, dll):
+        others = [name for name in start.VC_RUNTIME_DLLS if name != dll]
+
+        assert start.vc_runtime_problem(_system32(tmp_path, *others), lambda path: (14, 44)) == MISSING_VC
+
+    def test_old_runtime_says_both_versions(self, tmp_path):
+        system, read = _system32(tmp_path, *start.VC_RUNTIME_DLLS), []
+
+        problem = start.vc_runtime_problem(system, lambda path: read.append(path.name) or (14, 29))
+
+        assert problem == ("這台電腦的 Microsoft Visual C++ 可轉散發套件太舊"
+                           "（目前 14.29，需要 14.38 以上）")
+        assert read == ["msvcp140.dll"]
+
+    @pytest.mark.parametrize("version", [(14, 38), (14, 44), (15, 0), None])
+    def test_recent_or_unreadable_runtime_is_fine(self, tmp_path, version):
+        system = _system32(tmp_path, *start.VC_RUNTIME_DLLS)
+
+        assert start.vc_runtime_problem(system, lambda path: version) is None
+
+    def test_without_nvidia_driver_nothing_is_said(self, tmp_path):
+        # 本機轉錄本來就不能用，轉錄頁會先說顯卡
+        assert start.vc_runtime_problem(_system32(tmp_path, nvidia=False)) is None
+
+    def test_windows_checks_system32(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setattr(start, "system_folder", lambda: _system32(tmp_path))
+
+        assert start.check_vc_runtime() == MISSING_VC
+
+    def test_an_error_while_checking_does_not_stop_the_start(self, tmp_path, monkeypatch):
+        # 只是提示：讀不到 System32 或版本時不提示，照樣佈建與啟動（和啟動器相同）
+        def denied(path: Path, version=None):
+            raise PermissionError("拒絕存取")
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setattr(start, "vc_runtime_problem", denied)
+
+        assert start.check_vc_runtime() is None
+
+    def test_other_platforms_do_not_check(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.setattr(start, "system_folder", lambda: _system32(tmp_path))
+
+        assert start.check_vc_runtime() is None
+        assert start.file_version(tmp_path / "System32" / "msvcp140.dll") is None
+
+    def test_first_run_warns_before_provisioning_and_again_after(self, tmp_path, capsys):
+        root = _package(tmp_path)
+        serve = _Calls()
+
+        assert start.main([], root, run=_Calls(), serve=serve, vc_problem=lambda: MISSING_VC) == 0
+
+        out = capsys.readouterr().out
+        warning = f"{MISSING_VC}，本機轉錄不能用。"
+        # 佈建前說一次；佈建完還沒裝，再說一次（uv 的輸出把前一次推上去了）
+        assert out.count(warning) == 2
+        assert (out.index(warning) < out.index("首次啟動：正在下載執行環境")
+                < out.rindex(warning) < out.index("正在啟動 AI_Translate 伺服器"))
+        assert f"請下載安裝（需要系統管理員權限）：{start.VC_REDIST_URL}" in out
+        assert "再執行一次 start.bat" in out
+        assert len(serve.calls) == 1  # 不擋啟動：Gemini 照樣能用
+
+    def test_installed_while_provisioning(self, tmp_path, capsys):
+        root = _package(tmp_path)
+        answers = iter([MISSING_VC, None])
+
+        assert start.main([], root, run=_Calls(), serve=_Calls(),
+                          vc_problem=lambda: next(answers)) == 0
+
+        out = capsys.readouterr().out
+        assert out.count("本機轉錄不能用") == 1
+        assert (out.index("執行環境佈建完成")
+                < out.index("已經裝好 Microsoft Visual C++ 可轉散發套件")
+                < out.index("正在啟動 AI_Translate 伺服器"))
+
+    def test_provisioned_package_warns_once(self, tmp_path, capsys):
+        root = _package(tmp_path, provisioned=True)
+        checked = []
+
+        assert start.main([], root, run=_Calls(), serve=_Calls(),
+                          vc_problem=lambda: checked.append(1) or MISSING_VC) == 0
+
+        out = capsys.readouterr().out
+        assert out.count("本機轉錄不能用") == 1
+        assert "已經裝好" not in out
+        assert checked == [1]
+
+    def test_failed_provisioning_is_not_rechecked(self, tmp_path, capsys):
+        root = _package(tmp_path)
+        checked = []
+
+        assert start.main([], root, run=_Run(uv=2), serve=_Calls(),
+                          vc_problem=lambda: checked.append(1) or MISSING_VC) == 1
+
+        assert checked == [1]
+        assert capsys.readouterr().out.count("本機轉錄不能用") == 1
+
+    def test_nothing_is_said_when_installed(self, tmp_path, capsys):
+        root = _package(tmp_path)
+
+        assert start.main([], root, run=_Calls(), serve=_Calls(), vc_problem=lambda: None) == 0
+
+        assert "可轉散發套件" not in capsys.readouterr().out
+
+    def test_running_instance_is_not_checked(self, tmp_path):
+        # 和啟動器相同：已經有實例在執行時只顯示網址，提示交給那一個
+        root = _package(tmp_path)
+        checked = []
+
+        start.main([], root, run=_Calls(), serve=_Calls(), acquire=lambda root_: None,
+                   probe=lambda url: False, vc_problem=lambda: checked.append(1))
+
+        assert checked == []
 
 
 # 首次佈建裝好的樣子：torch\lib 有 .lib 與 DLL，numpy 也有一個 .lib（#239 實測的檔名）
@@ -601,6 +825,12 @@ class TestReadme:
     def test_only_placeholder_is_version(self):
         # build_release.ps1 只換 {VERSION}；其他的大括號字樣會原樣出現在使用者看到的檔案裡
         assert re.findall(r"\{[A-Z_]+\}", self._readme()) == ["{VERSION}"]
+
+    def test_says_how_to_get_the_visual_cpp_runtime(self):
+        # 本機轉錄要另外裝的可轉散發套件（#304）：和 start.py、啟動器提示的是同一個網址
+        requirements = self._readme()[self._readme().index("硬體需求"):]
+        assert "Microsoft Visual C++ 可轉散發套件" in requirements
+        assert start.VC_REDIST_URL in requirements
 
     def test_troubleshooting_points_to_start_bat(self):
         readme = self._readme()

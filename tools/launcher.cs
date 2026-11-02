@@ -7,12 +7,15 @@
 //
 // 職責：
 //   1. 只允許單一實例：同一個資料夾的 exe 已在執行時，打開那個網址，不再起第二個伺服器（#268）
-//   2. 首次啟動時以隨包 uv.exe 佈建 Python 依賴（含 torch，約 3.5 GB 下載），再刪掉 torch 執行時
-//      用不到的 .lib 靜態庫（約 2.8 GB，#305）
-//   3. 設定免安裝模式的環境變數 → 以隨包 Python 啟動 uvicorn
+//   2. 首次啟動時佈建 Python 依賴（含 torch，約 3.5 GB 下載）：先以 bin\prefetch_wheels.py 下載 torch，
+//      斷線時可以接著下載（#303）；再以隨包 uv.exe 安裝，最後刪掉 torch 執行時用不到的 .lib 靜態庫
+//      （約 2.8 GB，#305）
+//   3. 設定免安裝模式的環境變數 → 以隨包 Python 啟動 uvicorn（不載入使用者自己裝的套件，#301）
 //   4. 探活 /api/v1/health 後開啟預設瀏覽器
 //   5. 以 Job Object 綁定子行程：關閉視窗（或啟動器被殺）時 uvicorn 一併結束
 //   6. 出錯時不讓視窗直接消失：說明原因、下一步與日誌位置，按任意鍵才關（#268）
+//   7. 有 NVIDIA 驅動、卻沒裝 Microsoft Visual C++ 可轉散發套件（或太舊）時，佈建之前先提示安裝，
+//      不擋啟動（#304）
 //
 // 日誌：啟動器自己的輸出寫進 data\logs\launcher-YYYY-MM-DD.log，留最近 7 天，和後端的
 // app-YYYY-MM-DD.log（backend/app/utils/logger.py）放在一起；寫之前去識別：使用者家目錄寫成 ~，
@@ -22,6 +25,7 @@
 // 測試用的環境變數（tests/integration/test_launcher.py，使用者不必設）：
 //   AIT_LAUNCHER_HEALTH_TIMEOUT  等伺服器就緒的秒數，預設 180
 //   AIT_LAUNCHER_NO_BROWSER=1    不開瀏覽器，網址照樣印在視窗裡
+//   AIT_LAUNCHER_SYSTEM_DIR      查 VC++ 可轉散發套件與 NVIDIA 驅動時，用這個資料夾代替 System32
 
 using System;
 using System.Collections.Generic;
@@ -45,6 +49,13 @@ static class Launcher
     const string IssuesUrl = "https://github.com/Wade0325/AI_translate/issues";
     const int DefaultHealthTimeoutSeconds = 180; // 首次啟動 torch import 很慢
     const int SecondInstanceCloseSeconds = 5;
+    const string VcRedistUrl = "https://aka.ms/vc14/vc_redist.x64.exe";
+    // 本機轉錄要從 System32 載入的 VC++ 可轉散發套件 DLL，以及第一個（msvcp140.dll）至少要的版本。
+    // 依據寫在 backend/app/provider/local/weights.py 的 VC_RUNTIME_DLLS 與 VC_RUNTIME_MIN_VERSION，
+    // 和它與 tools/portable/start.py 要相同（tests/unit/test_vc_runtime.py 比對）
+    static readonly string[] VcRuntimeDlls = { "msvcp140.dll", "vcomp140.dll" };
+    const int VcRuntimeMinMajor = 14;
+    const int VcRuntimeMinMinor = 38;
 
     static Process _server;
     static Mutex _instance;
@@ -107,7 +118,9 @@ static class Launcher
         if (!AcquireInstance(root))
             return ShowRunningInstance();
 
-        Provision(root, python);
+        bool vcWarned = WarnVcRuntime();
+        if (Provision(root, python) && vcWarned)
+            RecheckVcRuntime();
 
         int port = PickPort(8000);
         string baseUrl = string.Format(CultureInfo.InvariantCulture, "http://127.0.0.1:{0}", port);
@@ -120,8 +133,11 @@ static class Launcher
 
         var psi = new ProcessStartInfo();
         psi.FileName = python;
+        // -s：不載入使用者自己裝的套件（%APPDATA%\Python\Python311\site-packages 與那裡的 .pth，
+        // #301）。python311._pth 只開了隔離模式，沒有關掉使用者的 site-packages。不用 -I：它會
+        // 連 PYTHON* 環境變數一起忽略，下面設的 PYTHONIOENCODING 就失效了。旗標要放在 -m 前面
         psi.Arguments = string.Format(CultureInfo.InvariantCulture,
-            "-m uvicorn main:app --host 127.0.0.1 --port {0}", port);
+            "-s -m uvicorn main:app --host 127.0.0.1 --port {0}", port);
         psi.WorkingDirectory = backend;
         psi.UseShellExecute = false; // 子行程直接沿用本 console 輸出日誌
         psi.EnvironmentVariables["APP_MODE"] = "standalone";
@@ -358,39 +374,52 @@ static class Launcher
     }
 
     // ─── 首次佈建 ─────────────────────────────────────────────────────────
+    // 1. bin\prefetch_wheels.py 把 torch 的 wheel 下載到 runtime\downloads：斷線時自己重試，結束之後
+    //    已下載的部分也留著，下次接著下載；下載完驗 SHA-256（#303）。uv 自己下載時，中斷就要從頭再來
+    // 2. uv 照 requirements-standalone.txt 安裝，--find-links 指向 runtime\downloads：torch 用那裡的檔案，
+    //    不再下載一次（uv 遇到同一個檔名的 wheel 時用 --find-links 的）
+    // 3. 成功之後刪掉 runtime\downloads（約 3.5 GB）與 torch\lib 執行時用不到的 .lib（約 2.8 GB，#305），
+    //    再寫完成標記
 
-    static void Provision(string root, string python)
+    // 回傳這次有沒有佈建（已經佈建過時是 false）
+    static bool Provision(string root, string python)
     {
         string sentinel = Path.Combine(root, "runtime", ".provisioned");
+        string downloads = Path.Combine(root, "runtime", "downloads");
         if (File.Exists(sentinel))
         {
+            RemoveDownloads(downloads); // 上次佈建成功、但刪不掉（例如防毒軟體正在掃描）時再刪一次
             // 每次啟動都補刪：首次佈建時被防毒軟體鎖住沒刪掉的，或這個版本之前佈建的
             RemoveStaticLibraries(root);
-            return;
+            return false;
         }
 
         string uv = Path.Combine(root, "bin", "uv.exe");
+        string prefetch = Path.Combine(root, "bin", "prefetch_wheels.py");
         string requirements = Path.Combine(root, "backend", "requirements-standalone.txt");
-        if (!File.Exists(uv) || !File.Exists(requirements))
+        if (!File.Exists(uv) || !File.Exists(prefetch) || !File.Exists(requirements))
             throw new LaunchFailure(
-                "找不到 bin\\uv.exe 或 backend\\requirements-standalone.txt：檔案不完整。",
+                "找不到 bin\\uv.exe、bin\\prefetch_wheels.py 或 backend\\requirements-standalone.txt：檔案不完整。",
                 "請重新解壓縮整個 zip；防毒軟體隔離了 uv.exe 時，請到隔離區還原，"
                     + "並把這個資料夾加入防毒軟體的排除清單。");
 
         Log.Info("═══════════════════════════════════════════════════════");
         Log.Info(" 首次啟動：正在下載執行環境（約 3.5 GB，含 PyTorch）");
-        Log.Info(" 過程視網速需要數分鐘到數十分鐘；中斷後重開會續傳。");
+        Log.Info(" 過程視網速需要數分鐘到數十分鐘；中斷後重新執行，會從中斷的地方接著下載。");
         Log.Info(" 沒有 NVIDIA 顯卡的電腦也會下載這些，只用 Gemini 時大部分用不到。");
         Log.Info("═══════════════════════════════════════════════════════");
         Log.Detail("首次佈建開始；可用空間：" + FreeSpaceText(root));
 
+        PrefetchWheels(root, python, prefetch, downloads);
+
         var psi = new ProcessStartInfo();
         psi.FileName = uv;
         psi.Arguments = string.Format(
-            "pip install --python \"{0}\" --target \"{1}\" -r \"{2}\"",
+            "pip install --python \"{0}\" --target \"{1}\" -r \"{2}\" --find-links \"{3}\"",
             python,
             Path.Combine(root, "runtime", "Lib", "site-packages"),
-            requirements);
+            requirements,
+            downloads);
         psi.WorkingDirectory = root;
         psi.UseShellExecute = false; // 進度直接顯示在本 console
 
@@ -404,15 +433,159 @@ static class Launcher
             throw new LaunchFailure(
                 "執行環境佈建失敗（uv 結束代碼 " + ExitCodeText(p.ExitCode) + "）。"
                     + "上方視窗裡 uv 印出的最後幾行通常就是原因。常見的原因：",
-                "  1. 網路中斷或不穩：已下載的部分會保留，重新執行 " + ExeName + " 即可續傳。",
+                "  1. 網路中斷或不穩：PyTorch 與已下載完的套件會保留，重新執行 " + ExeName
+                    + " 會接著下載其餘的套件。",
                 "  2. 磁碟空間不足：目前 " + FreeSpaceText(root) + "；清出空間後再試。",
                 "  3. 防毒軟體攔下了下載或解壓的檔案：把這個資料夾加入防毒軟體的排除清單後再試。",
                 "  4. 公司或學校的網路擋了下載（防火牆、代理伺服器）：換一個網路再試。",
                 "  5. 資料夾的路徑太長：把整個資料夾移到較短的路徑（例如 D:\\AI_Translate）後再試。");
 
+        RemoveDownloads(downloads);
         RemoveStaticLibraries(root);
         WriteFile(sentinel, DateTime.Now.ToString("o", CultureInfo.InvariantCulture));
         Log.Info("執行環境佈建完成。");
+        return true;
+    }
+
+    // ─── Microsoft Visual C++ 可轉散發套件（#304） ───────────────────────
+    // torch 從 System32 載入 msvcp140.dll 等 DLL，免安裝版只附 vcruntime140*.dll。缺了伺服器照樣
+    // 起得來、Gemini 照樣能用，只有本機轉錄不能用，所以只提示、不擋。伺服器啟動時才第一次載入
+    // torch：首次佈建之前就說，使用者趁下載時裝好，就不必重新開啟。沒有 NVIDIA 驅動時不說：本機轉錄
+    // 本來就不能用，轉錄頁會說明（weights.py 的 _torch_load_failed 也先說顯卡）。
+
+    // 有問題時提示安裝，回傳有沒有提示
+    static bool WarnVcRuntime()
+    {
+        string problem = VcRuntimeProblem(SystemFolder());
+        if (problem == null)
+            return false;
+        Log.Info("───────────────────────────────────────────────────────");
+        Log.Info(" " + problem + "，本機轉錄不能用。");
+        Log.Info(" 請下載安裝（需要系統管理員權限）：" + VcRedistUrl);
+        Log.Info(" 在伺服器啟動之前裝好就不必重新開啟；之後才裝的話，裝好後關閉這個視窗，");
+        Log.Info(" 再執行一次 " + ExeName + "。只用 Gemini 的話可以不裝。");
+        Log.Info("───────────────────────────────────────────────────────");
+        return true;
+    }
+
+    // 佈建前提示過、佈建完再查一次：還沒裝就再說一次（uv 的輸出把前一次推上去了），裝好了就說一聲
+    static void RecheckVcRuntime()
+    {
+        if (VcRuntimeProblem(SystemFolder()) == null)
+            Log.Info("已經裝好 Microsoft Visual C++ 可轉散發套件。");
+        else
+            WarnVcRuntime();
+    }
+
+    // 給使用者看的原因；沒有 NVIDIA 驅動，或都沒問題時是 null。讀不到版本時不當成太舊
+    static string VcRuntimeProblem(string system)
+    {
+        if (!File.Exists(Path.Combine(system, "nvcuda.dll")))
+            return null;
+        foreach (string dll in VcRuntimeDlls)
+        {
+            if (!File.Exists(Path.Combine(system, dll)))
+            {
+                Log.Detail("System32 沒有 " + dll);
+                return "這台電腦沒有 Microsoft Visual C++ 可轉散發套件";
+            }
+        }
+        string path = Path.Combine(system, VcRuntimeDlls[0]);
+        FileVersionInfo info;
+        try
+        {
+            info = FileVersionInfo.GetVersionInfo(path);
+        }
+        catch (Exception e)
+        {
+            Log.Detail("讀不到 " + VcRuntimeDlls[0] + " 的版本：" + e.Message);
+            return null;
+        }
+        int major = info.FileMajorPart, minor = info.FileMinorPart;
+        Log.Detail(string.Format(CultureInfo.InvariantCulture, "{0} 的版本：{1}",
+            VcRuntimeDlls[0], info.FileVersion));
+        if (major == 0 && minor == 0)
+            return null;
+        if (major > VcRuntimeMinMajor || (major == VcRuntimeMinMajor && minor >= VcRuntimeMinMinor))
+            return null;
+        return string.Format(CultureInfo.InvariantCulture,
+            "這台電腦的 Microsoft Visual C++ 可轉散發套件太舊（目前 {0}.{1}，需要 {2}.{3} 以上）",
+            major, minor, VcRuntimeMinMajor, VcRuntimeMinMinor);
+    }
+
+    // 64 位元的 System32：啟動器以 AnyCPU 編譯，在 64 位元的 Windows 上是 64 位元的行程，
+    // 不會被轉到 SysWOW64
+    static string SystemFolder()
+    {
+        string folder = Environment.GetEnvironmentVariable("AIT_LAUNCHER_SYSTEM_DIR");
+        return string.IsNullOrEmpty(folder) ? Environment.SystemDirectory : folder;
+    }
+
+    // 結束代碼見 tools/portable/prefetch_wheels.py 的開頭；原因它自己印在視窗裡，這裡決定下一步：
+    // 2、3、4 停下來說明怎麼辦，0 與其他的接著執行 uv
+    static void PrefetchWheels(string root, string python, string script, string downloads)
+    {
+        var psi = new ProcessStartInfo();
+        psi.FileName = python;
+        // -I：不讀使用者自己裝的套件與 PYTHON* 環境變數；-X utf8：輸出導向檔案時也是 UTF-8
+        psi.Arguments = string.Format("-I -X utf8 \"{0}\" \"{1}\"", script, downloads);
+        psi.WorkingDirectory = root;
+        psi.UseShellExecute = false; // 進度直接顯示在本 console
+
+        DateTime started = DateTime.UtcNow;
+        Process p = StartProcess(psi, "runtime\\python.exe");
+        p.WaitForExit();
+        Log.Detail(string.Format(CultureInfo.InvariantCulture,
+            "下載 PyTorch 結束，代碼 {0}，花了 {1:0} 秒；可用空間：{2}",
+            p.ExitCode, (DateTime.UtcNow - started).TotalSeconds, FreeSpaceText(root)));
+        const string reason = "原因在上方視窗的最後幾行";
+        switch (p.ExitCode)
+        {
+            case 0:
+                return;
+            case 2:
+                throw new LaunchFailure(
+                    "PyTorch 沒有下載完（" + reason + "）。",
+                    "已下載的部分會保留：網路恢復後重新執行 " + ExeName + "，會從中斷的地方接著下載。",
+                    "一直如此的話，公司或學校的網路可能擋了下載（防火牆、代理伺服器）：換一個網路再試。");
+            case 3:
+                throw new LaunchFailure(
+                    "下載的 PyTorch 和預期的不同，已經刪掉（" + reason + "）。",
+                    "請重新執行 " + ExeName + " 再下載一次；一直如此的話，可能是網路上的代理伺服器"
+                        + "改動了下載的內容，請換一個網路再試。");
+            case 4:
+                throw new LaunchFailure(
+                    "PyTorch 下載到一半時寫不進資料夾（" + reason + "）。目前 "
+                        + FreeSpaceText(root) + "。",
+                    "已下載的部分會保留：清出磁碟空間後重新執行 " + ExeName + "，會從中斷的地方接著下載。",
+                    "防毒軟體攔下了下載的檔案時，請把這個資料夾加入防毒軟體的排除清單後再試。");
+            case 5:
+                return; // 這個來源下載不到（例如伺服器上沒有這個檔案）：它已經說了改由 uv 下載
+            default:
+                // prefetch_wheels.py 自己出錯。預先下載只是讓中斷之後可以接著下載：做不到時照原本的
+                // 方式由 uv 下載，不讓首次佈建停在這裡
+                Log.Info("沒有預先下載 PyTorch（結束代碼 " + ExitCodeText(p.ExitCode)
+                    + "），改由 uv 下載；這次中斷的話，PyTorch 要從頭下載。");
+                return;
+        }
+    }
+
+    // 刪不掉不影響啟動：寫進日誌，下次啟動再刪
+    static void RemoveDownloads(string downloads)
+    {
+        if (!Directory.Exists(downloads))
+            return;
+        try
+        {
+            Directory.Delete(downloads, true);
+            Log.Detail("已刪除首次佈建下載的檔案：" + downloads);
+        }
+        catch (Exception e)
+        {
+            if (!IsIoProblem(e))
+                throw;
+            Log.Detail("刪不掉首次佈建下載的檔案（下次啟動再刪）：" + downloads + "：" + e.Message);
+        }
     }
 
     // torch 的 wheel 帶著約 2.8 GB 的 .lib 靜態庫（dnnl.lib 就有 2.3 GB），只有編譯要連結 torch 的
