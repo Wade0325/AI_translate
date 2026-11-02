@@ -35,7 +35,6 @@
 
 from __future__ import annotations
 
-import itertools
 import random
 import re
 import unicodedata
@@ -250,24 +249,67 @@ def speaker_distances(ref_spk: dict[str, list[str]],
     return d
 
 
+def _cheapest_assignment(cost: Sequence[Sequence[int]]) -> list[int]:
+    """方陣的最小成本指派（匈牙利演算法，O(n³)）：回傳每一列配到的欄。
+
+    說話者對應原本列舉全排列，20 位說話者就是 20!，永遠算不完（JVS 耳語，#273）。
+    """
+    n = len(cost)
+    inf = float("inf")
+    u = [0.0] * (n + 1)
+    v = [0.0] * (n + 1)
+    row_of = [0] * (n + 1)  # 第 j 欄配到的列（1 起算，0 表示還沒配）
+    way = [0] * (n + 1)
+    for i in range(1, n + 1):
+        row_of[0] = i
+        j0 = 0
+        min_v = [inf] * (n + 1)
+        used = [False] * (n + 1)
+        while True:
+            used[j0] = True
+            i0, delta, j1 = row_of[j0], inf, 0
+            for j in range(1, n + 1):
+                if not used[j]:
+                    cur = cost[i0 - 1][j - 1] - u[i0] - v[j]
+                    if cur < min_v[j]:
+                        min_v[j], way[j] = cur, j0
+                    if min_v[j] < delta:
+                        delta, j1 = min_v[j], j
+            for j in range(n + 1):
+                if used[j]:
+                    u[row_of[j]] += delta
+                    v[j] -= delta
+                else:
+                    min_v[j] -= delta
+            j0 = j1
+            if row_of[j0] == 0:
+                break
+        while j0:
+            j1 = way[j0]
+            row_of[j0] = row_of[j1]
+            j0 = j1
+    col_of = [0] * n
+    for j in range(1, n + 1):
+        col_of[row_of[j] - 1] = j - 1
+    return col_of
+
+
 def best_mapping(ref_spk, hyp_spk, dist=None) -> tuple[int, dict[str, str]]:
-    """列舉一對一對應，取總編輯距離最小者（cpWER 的標準做法）。"""
+    """一對一對應裡總編輯距離最小的一組（cpWER 的標準做法）。
+
+    配不到的說話者算全部刪除、配不到的標記算全部插入（對到空字串）。用指派問題的解法，不列舉全排列；
+    幾組對應平手時取哪一組沒有保證，總編輯距離（cpMER）相同。
+    """
     dist = dist or speaker_distances(ref_spk, hyp_spk)
     rk = sorted(ref_spk)
     hk = sorted(hyp_spk)
     n = max(len(rk), len(hk))
     rk_p = rk + [""] * (n - len(rk))
     hk_p = hk + [""] * (n - len(hk))
-    best = None
-    for perm in itertools.permutations(hk_p):
-        total = 0
-        for r, h in zip(rk_p, perm, strict=True):
-            if not r and not h:
-                continue
-            total += dist.get((r, h), 0)
-        if best is None or total < best[0]:
-            best = (total, {h: r for r, h in zip(rk_p, perm, strict=True) if h})
-    return best if best else (0, {})
+    cost = [[dist.get((r, h), 0) if r or h else 0 for h in hk_p] for r in rk_p]
+    cols = _cheapest_assignment(cost)
+    total = sum(cost[i][j] for i, j in enumerate(cols))
+    return total, {hk_p[j]: rk_p[i] for i, j in enumerate(cols) if hk_p[j]}
 
 
 def mapping_cost(ref_spk, hyp_spk, mapping: dict[str, str], dist=None) -> int:
@@ -304,6 +346,7 @@ class Result:
     cp_mer_local: float = 0.0
     mapping_local: dict[str, str] = field(default_factory=dict)
     cp_mer_global: float = 0.0
+    cp_mer_skip: str | None = None  # 標準答案註明不算 cpMER 的理由（reference_set.Excerpt）
     budget: dict[str, int] = field(default_factory=dict)
     examples: dict[str, list[str]] = field(default_factory=dict)
     term_total: int = 0
@@ -332,6 +375,8 @@ class Result:
             "mer_no_overlap": round(self.mer_no_overlap, 4),
             "cp_mer_local": round(self.cp_mer_local, 4),
             "cp_mer_global": round(self.cp_mer_global, 4),
+            "cp_mer_scored": self.cp_mer_skip is None,
+            "cp_mer_skip": self.cp_mer_skip,
             "mapping_local": self.mapping_local,
             "term_recall": round(self.term_recall, 4),
             "term_hit": self.term_hit, "term_total": self.term_total,
@@ -372,7 +417,7 @@ def evaluate(excerpt: Excerpt, transcript: Sequence[Utterance], vocabulary: Cust
 
     res = Result(name=excerpt.name, window=(excerpt.start, excerpt.end),
                  n_utts=len(excerpt.utterances), ref_len=len(ref) - unk,
-                 transcript_len=len(hyp_tokens), unk=unk)
+                 transcript_len=len(hyp_tokens), unk=unk, cp_mer_skip=excerpt.cp_mer_skip)
 
     n_lines = len(ref_lines)
     res.line_errors = [0] * n_lines
@@ -470,7 +515,7 @@ def paired_delta_ci(a: Sequence[int], b: Sequence[int], lens: Sequence[int],
 
 
 # ----------------------------------------------------------------- 全域對應
-def global_mapping(results: Sequence[Result]) -> tuple[dict[str, str], float]:
+def global_mapping(results: Sequence[Result]) -> tuple[dict[str, str], float | None]:
     """同一份轉錄結果的幾段標準答案共用同一組說話者對應時的最佳解與 cpMER。
 
     ``eval`` 一次只拿一份轉錄結果（一個音檔）去比幾段標準答案。轉錄結果的說話者標記在整個音檔裡
@@ -479,7 +524,16 @@ def global_mapping(results: Sequence[Result]) -> tuple[dict[str, str], float]:
 
     只能給同一份轉錄結果的結果（#298）：不同音檔裡同名的標記（S0、S1）不是同一個人，一起配對會把
     cpMER 灌高。一種語言的 cpMER 由 summary 把每個音檔各自配對的錯誤數加起來（照 token 數加權）。
+
+    標準答案註明「cpMER 不計」的片段不參與對應，它的 cp_mer_global 只列出局部對應的值；
+    每一段都不計時，cpMER 是 None。
     """
+    for r in results:
+        if r.cp_mer_skip is not None:
+            r.cp_mer_global = r.cp_mer_local
+    results = [r for r in results if r.cp_mer_skip is None]
+    if not results:
+        return {}, None
     labels_hyp = sorted({k for r in results for k in r.transcript_spk})
     labels_ref = sorted({k for r in results for k in r.ref_spk})
     n = max(len(labels_hyp), len(labels_ref))
@@ -488,13 +542,24 @@ def global_mapping(results: Sequence[Result]) -> tuple[dict[str, str], float]:
     dists = [speaker_distances(r.ref_spk, r.transcript_spk) for r in results]
     denom = sum(sum(len(v) for v in r.ref_spk.values()) for r in results) or 1
 
-    best: tuple[int, dict[str, str]] = (0, {})
-    for i, perm in enumerate(itertools.permutations(ref_p)):
-        mapping = {h: r for h, r in zip(hyp_p, perm, strict=True) if h}
-        total = sum(mapping_cost(r.ref_spk, r.transcript_spk, mapping, d)
-                    for r, d in zip(results, dists, strict=True))
-        if i == 0 or total < best[0]:
-            best = (total, mapping)
+    def pair_cost(rk: str, hk: str) -> int:
+        # 和 mapping_cost 同一套算法，拆成每一對的成本：標記配到這一段沒有的代號（或空字串）算全部
+        # 插入；這一段的代號沒有被這一段出現的標記配到，算全部刪除
+        total = 0
+        for r, d in zip(results, dists, strict=True):
+            in_ref, in_hyp = rk in r.ref_spk, hk in r.transcript_spk
+            if in_ref and in_hyp:
+                total += d[(rk, hk)]
+            elif in_hyp:
+                total += len(r.transcript_spk[hk])
+            elif in_ref:
+                total += len(r.ref_spk[rk])
+        return total
+
+    cost = [[pair_cost(r, h) for h in hyp_p] for r in ref_p]
+    mapping = {hyp_p[j]: r for r, j in zip(ref_p, _cheapest_assignment(cost), strict=True) if hyp_p[j]}
+    best = (sum(mapping_cost(r.ref_spk, r.transcript_spk, mapping, d)
+                for r, d in zip(results, dists, strict=True)), mapping)
     for r, d in zip(results, dists, strict=True):
         r.cp_mer_global = mapping_cost(r.ref_spk, r.transcript_spk, best[1], d) / (
             sum(len(v) for v in r.ref_spk.values()) or 1)
@@ -503,7 +568,7 @@ def global_mapping(results: Sequence[Result]) -> tuple[dict[str, str], float]:
 
 # ------------------------------------------------------------------- 報告
 def format_report(results: Sequence[Result], transcript_label: str,
-                  global_map: dict[str, str], cp_global: float) -> str:
+                  global_map: dict[str, str], cp_global: float | None) -> str:
     out: list[str] = [f"轉錄結果：{transcript_label}", ""]
     tot_err = sum(r.errors for r in results)
     tot_ref = sum(r.ref_len for r in results)
@@ -517,7 +582,8 @@ def format_report(results: Sequence[Result], transcript_label: str,
             f"   排除附和後      {r.mer_no_overlap*100:6.2f}%",
             f"   cpMER 局部對應  {r.cp_mer_local*100:6.2f}%   "
             f"對應 {_mapping_text(r.mapping_local)}",
-            f"   cpMER 全域對應  {r.cp_mer_global*100:6.2f}%",
+            f"   cpMER 全域對應  {r.cp_mer_global*100:6.2f}%" if r.cp_mer_skip is None else
+            f"   cpMER          不計（{r.cp_mer_skip}）：上面的局部對應只列出，不進判定",
             f"   術語召回        {r.term_recall*100:6.1f}%   "
             f"({r.term_hit}/{r.term_total})   誤插入 {r.term_false_ins}",
             "   錯誤預算：" + "  ".join(
@@ -528,16 +594,19 @@ def format_report(results: Sequence[Result], transcript_label: str,
             if r.examples.get(b):
                 out.append(f"     {b}: " + " ｜ ".join(r.examples[b]))
         out.append("")
-    out += [
-        f"總計  MER {tot_err/max(1,tot_ref)*100:.2f}%  "
-        f"({tot_err} 錯 / {tot_ref} token)",
-        f"      cpMER 全域對應 {cp_global*100:.2f}%   對應 {_mapping_text(global_map)}",
-    ]
+    out.append(f"總計  MER {tot_err/max(1,tot_ref)*100:.2f}%  "
+               f"({tot_err} 錯 / {tot_ref} token)")
+    scored = [r for r in results if r.cp_mer_skip is None]
+    if cp_global is None or not scored:
+        out.append("      cpMER 不計：每一段的標準答案都註明「cpMER 不計」")
+        return "\n".join(out)
+    out.append(f"      cpMER 全域對應 {cp_global*100:.2f}%   對應 {_mapping_text(global_map)}"
+               + (f"（不含註明不計的 {len(results) - len(scored)} 段）" if len(scored) < len(results) else ""))
     local = sum(r.cp_mer_local * max(1, sum(len(v) for v in r.ref_spk.values()))
-                for r in results) / max(1, sum(
-                    sum(len(v) for v in r.ref_spk.values()) for r in results))
+                for r in scored) / max(1, sum(
+                    sum(len(v) for v in r.ref_spk.values()) for r in scored))
     gap = cp_global - local
-    if len(results) > 1:
+    if len(scored) > 1:
         out.append(f"      cpMER 局部對應 {local*100:.2f}%"
                    f"   差距 {gap*100:+.2f} pp"
                    + ("   ← 說話者標記在這幾段之間不一致" if gap > 0.01 else ""))
