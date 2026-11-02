@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from tools import portable_zip
+from tools import portable_zip, release_assets
 from tools.portable import start
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -274,10 +274,11 @@ class TestProductName:
         assert (ROOT / "tools" / "portable" / "mimiji.ico").is_file()
 
     def test_workflows_use_the_zip_name_the_build_script_makes(self):
-        # 發版找不到 zip 時 gh release create 會失敗；CI 檢查的也要是這個名稱
+        # 發版找不到 zip 時 tools/release_assets.py prepare 會失敗；發版與 CI 檢查的也要是這個名稱
         release = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
-        assert f"(Get-ChildItem build\\{portable_zip.PRODUCT}-*-win64.zip).FullName" in release
-        assert f'--title "{portable_zip.PRODUCT} $env:TAG"' in release
+        assert f'run: python tools/portable_zip.py check "build/{portable_zip.PRODUCT}-$env:TAG-win64.zip"' in release
+        assert release_assets.zip_name("v1.2.3") == f"{portable_zip.PRODUCT}-v1.2.3-win64.zip"
+        assert release_assets.title("v1.2.3") == f"{portable_zip.PRODUCT} v1.2.3 beta"
         ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
         assert "run: .\\build_release.ps1 -Version ci -SkipFrontend" in ci
         assert f"run: python tools/portable_zip.py check build/{portable_zip.PRODUCT}-ci-win64.zip" in ci

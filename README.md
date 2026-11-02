@@ -428,7 +428,7 @@ git config core.hooksPath .githooks
 首次佈建成功後，啟動器與 `start.py` 都刪掉 `runtime\Lib\site-packages\torch\lib\*.lib`（約 2.8 GB，只有編譯要連結 torch 的 C++ 擴充時才用得到，#239 實測刪掉前後輸出相同），已佈建時每次啟動也補刪；刪不掉時照樣啟動。
 要在 git 的工作目錄裡、裝好 git 才能建置：後端只用 `git archive` 取白名單（腳本裡的 `$BackendPaths`）已經 commit 的檔案，沒進版控的東西不會被打包；白名單裡有還沒 commit 的改動或新檔時，建置會停下來，請先 commit 或 stash。
 Python embeddable、`uv` 與 ffmpeg 都釘版並驗 SHA-256，下載快取在 `build\cache\`；快取裡的檔案雜湊不符時會刪掉重新下載。
-推 `v*` tag 時 GitHub Actions（`.github/workflows/release.yml`）會先跑一次完整的 CI，通過後自動建置並發布 Release。
+推 `v*` tag（`vX.Y.Z`，可以接 `-rc.1` 之類的標記）時 GitHub Actions（`.github/workflows/release.yml`）會先跑一次完整的 CI，通過後在 Windows 建置，先建草稿 Release、上傳附件，確認附件齊全、大小與 SHA-256 都對之後，才以 prerelease 公開；標題與 release notes 標 beta，release notes 的「已知限制」取自本 README 的[已知限制](#-已知限制)。任何一步失敗都只留下草稿，workflow 會刪掉它（tag 不動），不會半發布。附件、標題與 release notes 由 `tools/release_assets.py` 產生與檢查。
 CI 的 `portable` job 在每個 PR 上也用 Windows 建置一次（不上傳、不發布），並用 `tools/portable_zip.py` 檢查 zip：檔名與最上層資料夾是 `Mimiji`、第 7 步清單裡的檔案都在、`backend\` 只有白名單裡的檔案，而且沒有使用者的音檔、資料庫、`.env` 等執行期資料；`Mimiji.exe` 的產品名稱、版本與圖示也在這裡檢查。日誌裡會列出 zip 的完整內容。
 
 發布包附上授權文件（#274）：Mimiji 的 `LICENSE.txt` 與 `NOTICE.txt`，以及第三方元件的 `THIRD_PARTY_NOTICES.txt` 與 `licenses\`（原稿在 [`tools/portable/`](tools/portable/THIRD_PARTY_NOTICES.txt)）。元件換版時一起更新：
@@ -436,7 +436,7 @@ CI 的 `portable` job 在每個 PR 上也用 Windows 建置一次（不上傳、
 - ffmpeg 或 `uv` 升版：在 repo 根目錄執行 `python -m tools.third_party_licenses`（要連網），重新產生 ffmpeg 靜態連入的函式庫與 Rust 套件的授權清單（`licenses/ffmpeg/libraries.txt`、`licenses/ffmpeg/rust-crates.txt`、`licenses/uv/crates.txt`）。它只解析 BtbN 的建置腳本、不執行；沒有重新產生時測試會紅燈。
 - 新增、移除或升級前端依賴：`npm ci --prefix frontend` 之後執行 `python tools/npm_licenses.py`，重新產生 `tools/portable/licenses/frontend/npm-packages.txt`；沒有重新產生時測試會紅燈。
 
-FFmpeg 的原始碼要附在發布包所在的同一個 GitHub Release。`python tools/ffmpeg_sources.py fetch build\release-assets` 準備這些附件並驗證：BtbN 的 build zip、對應 commit 的 FFmpeg 原始碼、BtbN 的建置腳本與 `SHA256SUMS`；CI 的 `portable` job 每個 PR 都跑一次。`release.yml` 還沒有上傳這些附件，接上它是 #278 的範圍。
+FFmpeg 的原始碼要附在發布包所在的同一個 GitHub Release。建置之後在 repo 根目錄執行 `python -m tools.release_assets prepare <版本> build\release-assets`，準備發版的全部附件並驗證：發布包、BtbN 的 build zip、對應 commit 的 FFmpeg 原始碼、BtbN 的建置腳本（後三個由 `tools/ffmpeg_sources.py` 準備），以及涵蓋全部附件的 `SHA256SUMS`；`python -m tools.release_assets check <版本> build\release-assets` 檢查附件齊全。CI 的 `portable` job 每個 PR 都用版本 `ci` 跑這兩步，`release.yml` 發版時跑同樣的兩步再上傳。
 
 ---
 
