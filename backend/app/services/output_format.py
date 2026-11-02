@@ -39,10 +39,10 @@ SRT／VTT 另有結束時間，照實際說話的時間顯示（ADR-0008，規�
 和以前從 LRC 轉換時一樣；開始與結束時間都四捨五入到毫秒（見 :func:`_milliseconds`）。斷行的規則見
 :func:`_segment_lines`。
 
-SRT／VTT 和其他兩種格式不同的地方只有兩點（#12）：超過兩行的量的行用逐字時間拆成數則字幕
-（見 :func:`_subtitle_pieces`），以及依說話者上色（見 :data:`SPEAKER_COLORS`）。LRC、TXT 不能
-上色，也不拆。文字只有 VTT 跳脫（#24，見 :func:`_vtt`）；SRT 沒有跳脫的寫法，和 LRC、TXT 一樣
-照原樣寫（見 :func:`_srt`）。
+SRT／VTT 和其他兩種格式不同的地方是超過兩行的量的行用逐字時間拆成數則字幕（#12，見
+:func:`_subtitle_pieces`）；LRC、TXT 不拆。只有 SRT 依說話者上色（#12，見 :data:`SPEAKER_COLORS`）；
+VTT 的顏色要寫在 STYLE 區塊，舊版 ffmpeg 遇到它整份字幕都不顯示，所以不上色（#271，見 :func:`_vtt`）。
+文字只有 VTT 跳脫（#24）；SRT 沒有跳脫的寫法，和 LRC、TXT 一樣照原樣寫（見 :func:`_srt`）。
 """
 
 from __future__ import annotations
@@ -623,7 +623,7 @@ def _speaker(cue: Cue) -> Optional[str]:
 
 
 SPEAKER_COLORS: Tuple[Optional[str], ...] = (None, "#FFDD55", "#66CCFF", "#7FE0A0")
-"""SRT／VTT 的說話者顏色（#12），依說話者編號輪流：S0、S4… 白色（播放器的預設，不加標籤），
+"""SRT 的說話者顏色（#12；VTT 不上色，見 :func:`_vtt`），依說話者編號輪流：S0、S4… 白色（播放器的預設，不加標籤），
 S1、S5… 黃，S2、S6… 青，S3、S7… 綠。照 BBC Subtitle Guidelines §8.3 的順序（白、黃、青、綠）
 把純色調柔：對黑色的對比 11.6:1 以上，兩色之間的色差（CIEDE2000）一般視覺 25 以上、紅綠色弱
 13 以上，純色在紅色弱的眼裡黃和綠只差 4。顏色只看行首的 [Sn]：Gemini 舊 LRC 的「Speaker 1:」
@@ -655,29 +655,21 @@ def _srt(cues: Sequence[Cue]) -> str:
 
 
 def _vtt(cues: Sequence[Cue]) -> str:
-    """VTT 用檔頭的 STYLE 區塊定義顏色，字幕用 ``<c.colorN>`` 包起來。
+    """VTT 不上色（#271），靠行首的說話者標記分辨說話者；顏色只在 SRT。
+
+    WebVTT 要上自訂的顏色，只能在檔頭的 STYLE 區塊寫 CSS，而 ffmpeg 7.0 之前的版本遇到 STYLE
+    區塊整個檔案都讀不出來，不顯示任何字幕也沒有錯誤訊息（#271 實測：Linux 的 mpv 0.37 與
+    Windows 的 mpv-lazy 0.35 都是）。WebVTT 預設的顏色類別（yellow、cyan、lime）不用 STYLE，
+    但只有純色，紅色弱的人分不出黃和綠（見 :data:`SPEAKER_COLORS`）。
 
     文字依 WebVTT 規格跳脫（#24）：字幕文字裡的 & 與 < 要寫成字元參照（§4.2.2），字幕內容
     不能有「-->」（§4.1），所以 &、<、> 寫成 &amp;、&lt;、&gt;。沒跳脫時，Chromium 與 ffmpeg
-    都把 ``<笑>`` 當成標籤吃掉；Chromium 遇到「-->」整則字幕的文字都不見。說話者與顏色看的是
-    跳脫前的文字。
-
-    ffmpeg 7.0 之前的版本遇到 STYLE 區塊，整個檔案都讀不出來（7.0 起跳過它），所以只在有要上色
-    的行時才寫，只有白色或沒有標記的 VTT 不帶 STYLE 區塊。類別名稱不用 WebVTT 的預設顏色名
-    （yellow、cyan、lime）：不讀 CSS 的 VLC 會照那些名字套上純色。
+    都把 ``<笑>`` 當成標籤吃掉；Chromium 遇到「-->」整則字幕的文字都不見。
     """
-    subtitles = _subtitles(cues)
-    indexes = [_color_index(text) for text, _, _ in subtitles]
     blocks = ["WEBVTT", ""]
-    used = sorted(set(indexes) - {0})
-    if used:
-        blocks += ["STYLE",
-                   *(f"::cue(.color{index}) {{ color: {SPEAKER_COLORS[index]}; }}" for index in used),
-                   ""]
-    for (text, start, end), index in zip(subtitles, indexes, strict=True):
-        escaped = html.escape(text, quote=False)
-        colored = f"<c.color{index}>{escaped}</c>" if index else escaped
-        blocks += [f"{_timestamp(start, '.')} --> {_timestamp(end, '.')}", colored, ""]
+    for text, start, end in _subtitles(cues):
+        blocks += [f"{_timestamp(start, '.')} --> {_timestamp(end, '.')}",
+                   html.escape(text, quote=False), ""]
     return "\n".join(blocks)
 
 
