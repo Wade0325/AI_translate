@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
+import os
 import sys
 import threading
 from dataclasses import dataclass
@@ -95,9 +96,26 @@ def check(package: Package) -> ModuleType | PackageUnavailable:
         return _results[package]
 
 
+def quiet_transformers() -> None:
+    """讓 transformers 只寫錯誤。
+
+    transformers 第一次匯入時才讀 ``TRANSFORMERS_VERBOSITY``，之後再設就沒有用，所以要在第一次匯入它
+    之前呼叫：這裡匯入套件之前（就緒檢查比 asr.py 早匯入 transformers；沒有這一步，主控台會多出
+    asr.py 本來消掉的警告，#311 的 GPU 實測），以及 asr.py 匯入時。使用者自己設了的不蓋掉。
+
+    被消音的提示皆已逐一確認無害：
+
+    - max_new_tokens 與模型內建 generation config 的 max_length 同時存在（前者優先，即預期行為）
+    - "exceeded maximum length (450)" 為誤報：450 是 VibeVoiceAsrConfig 把 acoustic tokenizer 每 60s
+      chunk 的音訊 token 數（1440000/3200）暴露成 max_position_embeddings 所致，文字解碼器實際上限為 131072
+    """
+    os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
+
+
 def _import(package: Package) -> ModuleType | PackageUnavailable:
     if not _installed(package.module):
         return _noted(PackageUnavailable("missing_package", package.name, missing=package.name))
+    quiet_transformers()  # 這兩個套件都會匯入 transformers
     try:
         module = importlib.import_module(package.module)
         for name in package.classes:

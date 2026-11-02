@@ -259,6 +259,37 @@ class TestRemembered:
         assert module is sys.modules["good_moss"]
 
 
+class TestTransformersStaysQuiet:
+    """transformers 第一次匯入時才讀 TRANSFORMERS_VERBOSITY。就緒檢查比 asr.py 早匯入它，所以匯入之前
+    要先設好；沒設時，GPU 實測的主控台多出 asr.py 本來消掉的 transformers 警告（#311）。"""
+
+    VERBOSITY_AT_IMPORT = (
+        "import os\nverbosity = os.environ.get('TRANSFORMERS_VERBOSITY')\n"
+        "class Model:\n    pass\n")
+
+    @pytest.fixture
+    def verbosity(self, monkeypatch):
+        """測試結束後把 TRANSFORMERS_VERBOSITY 還原成原本的樣子（原本沒設就拿掉）。"""
+        monkeypatch.setenv("TRANSFORMERS_VERBOSITY", "")
+        monkeypatch.delenv("TRANSFORMERS_VERBOSITY")
+        return monkeypatch
+
+    def test_set_before_the_package_is_imported(self, site, verbosity):
+        write(site, {"quiet_moss/__init__.py": self.VERBOSITY_AT_IMPORT})
+
+        module = packages.check(packages.Package("quiet-moss", "quiet_moss", ("Model",)))
+
+        assert module.verbosity == "error"
+
+    def test_keeps_what_the_user_set(self, site, verbosity):
+        verbosity.setenv("TRANSFORMERS_VERBOSITY", "info")  # 除錯時想看 transformers 的提示
+        write(site, {"chatty_moss/__init__.py": self.VERBOSITY_AT_IMPORT})
+
+        module = packages.check(packages.Package("chatty-moss", "chatty_moss", ("Model",)))
+
+        assert module.verbosity == "info"
+
+
 def test_moss_transcribe_says_which_one(site, monkeypatch, tmp_path):
     # 直接呼叫推論的地方（例如評測工具）不經過就緒檢查，也要說對原因
     from app.provider.local import moss
