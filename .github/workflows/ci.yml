@@ -275,6 +275,7 @@ jobs:
     # - 啟動器在 build_release.ps1 第 5 步編譯，編譯失敗時那一步就失敗
     # - 建好後檢查 zip：第 7 步清單裡的檔案都在、backend/ 只有白名單裡的檔案、沒有執行期資料，
     #   並在日誌列出 zip 的內容（tools/portable_zip.py check）
+    # - 準備發版時要附的 ffmpeg 原始碼並驗證（tools/ffmpeg_sources.py，#274）
     # 每個 PR 都跑（只改文件時跳過）：Python embeddable、uv 與 ffmpeg 每次重新下載，不用快取
     needs: changes
     if: needs.changes.outputs.docs_only != 'true'
@@ -308,6 +309,11 @@ jobs:
         run: .\build_release.ps1 -Version ci -SkipFrontend
       - name: 檢查 zip
         run: python tools/portable_zip.py check build/AI_Translate-ci-win64.zip
+      - name: 準備 ffmpeg 的原始碼附件並驗證
+        # 發版時和 zip 上傳到同一個 GitHub Release 的附件（#274）：BtbN 的 build zip（沿用上一步下載到
+        # build\cache 的那份）、對應 commit 的 FFmpeg 原始碼、BtbN 的建置腳本與 SHA256SUMS。每個 PR 跑一次：
+        # 釘的 commit 抓得到，授權全文與 THIRD_PARTY_NOTICES.txt 的 configure 參數對得上這個 build
+        run: python tools/ffmpeg_sources.py fetch build/release-assets
 
   workflows:
     needs: changes
