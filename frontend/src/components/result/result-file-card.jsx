@@ -106,11 +106,8 @@ export function ResultFileCard({ file, onDownload }) {
                     <Dropdown
                         menu={{
                             items: downloadMenuItems,
-                            onClick: ({ key }) => {
-                                if (onDownload) {
-                                    onDownload(fData.result?.[key], fData.name, key)
-                                }
-                            }
+                            // 沒有內容時（例如批次模式完成的檔案）由 onDownload 提示，不存出空檔
+                            onClick: ({ key }) => onDownload?.(fData, key)
                         }}
                         placement="bottomRight"
                     >
