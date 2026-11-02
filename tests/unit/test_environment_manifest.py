@@ -20,18 +20,33 @@ def test_local_models_record_their_pinned_weight_revisions():
     assert described["settings"]["single_pass_seconds"] > 0
 
 
-def test_records_the_gpu_this_run_can_see(monkeypatch):
+def _one_gpu(monkeypatch, nvidia_smi):
+    """一張 16 GB 的顯卡；``nvidia_smi`` 是 nvidia-smi 回報的驅動版本（None 是問不到）。"""
     gib = 1024 ** 3
     card = SimpleNamespace(name="NVIDIA GeForce RTX 4080 SUPER", total_memory=16 * gib)
     torch = SimpleNamespace(cuda=SimpleNamespace(is_available=lambda: True,
                                                  get_device_properties=lambda index: card))
     monkeypatch.setitem(sys.modules, "torch", torch)
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
+    monkeypatch.setattr(weights, "command_output", lambda *command: (
+        nvidia_smi if command[0] == "nvidia-smi" else None))
+
+
+def test_records_the_gpu_this_run_can_see(monkeypatch):
+    _one_gpu(monkeypatch, "576.02\n")
 
     described = environment_manifest.describe("local", weights.MOSS_ALIGN)
 
+    # 換了驅動，同一段音檔可能轉出不同的結果：基準與 PR 的驅動要相同才比（#276）
     assert described["gpu"] == {"name": "NVIDIA GeForce RTX 4080 SUPER", "vram_gb": 16.0,
-                                "cuda_visible_devices": "0"}
+                                "driver": "576.02", "cuda_visible_devices": "0"}
+
+
+def test_a_driver_nvidia_smi_cannot_tell_is_recorded_as_none(monkeypatch):
+    # summary 把讀不到的驅動當成確認不了相同，不下判定
+    _one_gpu(monkeypatch, None)
+
+    assert environment_manifest.describe("local", weights.MOSS_ALIGN)["gpu"]["driver"] is None
 
 
 @pytest.mark.parametrize("torch", [None, SimpleNamespace(
