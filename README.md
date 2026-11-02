@@ -68,17 +68,17 @@
 
 Mimiji 只發布 Windows 免安裝版：下載 zip、解壓縮就能用。本機轉錄另外需要 Microsoft Visual C++ 可轉散發套件（見[系統需求](#-系統需求)）。
 
-1. 到 [**Releases**](https://github.com/Wade0325/AI_translate/releases) 下載最新的 `AI_Translate-vX.Y.Z-win64.zip`。
+1. 到 [**Releases**](https://github.com/Wade0325/AI_translate/releases) 下載最新的 `Mimiji-vX.Y.Z-win64.zip`。
 2. 解壓到任意位置（建議路徑不含中文與空白）。
-3. 雙擊 **`AI_Translate.exe`**，會開一個黑色視窗。
+3. 雙擊 **`Mimiji.exe`**，會開一個黑色視窗。
    - 首次啟動會自動下載執行環境（約 3.5 GB，含 PyTorch），視網速需要數分鐘到數十分鐘；中斷後重新執行，會從中斷的地方接著下載。沒有 NVIDIA 顯卡的電腦也一樣會下載這些，只用 Gemini 時其中大部分用不到。
    - 有 NVIDIA 驅動、卻沒裝 Microsoft Visual C++ 可轉散發套件（或版本太舊）時，下載執行環境之前會先提醒並給下載網址。趁下載時裝好就不必重新開啟；下載完還沒裝，會再提醒一次。
    - 就緒後自動開啟瀏覽器。網址以黑色視窗顯示的為準：預設是 `http://127.0.0.1:8000`，8000 埠被占用時會改用其他埠。
-   - 關閉黑色視窗就停止程式。再雙擊一次 `AI_Translate.exe` 不會啟動第二個，而是打開已經在跑的那個網址。
+   - 關閉黑色視窗就停止程式。再雙擊一次 `Mimiji.exe` 不會啟動第二個，而是打開已經在跑的那個網址。
    - 出錯時黑色視窗會停住，寫出原因、下一步與日誌檔所在的資料夾，按任意鍵才關。
 4. 到 **Settings** 頁的 **Local Models (本機 GPU 模型)** 卡片按「下載模型權重」（預設模型約 3.7 GB）。下載完成後，就能在 **New Transcription** 頁用本機轉錄。
 5. 本機不能用時，轉錄頁與 Settings 頁的本機卡片會寫出原因與下一步：沒有 NVIDIA 顯卡、顯卡驅動太舊、CUDA 初始化失敗、PyTorch 載入失敗（例如沒裝 Microsoft Visual C++ 可轉散發套件，或版本太舊），或目前的 PyTorch 不支援這張顯卡。要下載的網址可以直接點。
-   - 照著更新驅動、安裝缺少的套件之後，關掉黑色視窗、重新開啟 `AI_Translate.exe` 才會重新偵測。
+   - 照著更新驅動、安裝缺少的套件之後，關掉黑色視窗、重新開啟 `Mimiji.exe` 才會重新偵測。
    - 也可以按「改用 Gemini」，再到 Settings 頁的 Gemini 卡片填入 [Gemini API 金鑰](https://aistudio.google.com/apikey)。Gemini 會把音檔上傳到 Google。
 
 > 所有資料（資料庫、模型權重）都在解壓資料夾的 `data\` 內；升級新版時把舊版 `data\` 複製過來即可保留紀錄。哪些是個人資料、怎麼清掉，見[資料與隱私](#-資料與隱私)。
@@ -202,7 +202,7 @@ Issue 是公開的，任何人都看得到：
 
 不會改變的設計：
 
-- **執行檔沒有數位簽章**（[ADR 0010](docs/adr/0010-no-code-signing.md)）：第一次執行 `AI_Translate.exe` 時，Windows 可能跳出 SmartScreen 的「Windows 已保護您的電腦」，按「其他資訊」→「仍要執行」即可。開著 Smart App Control 的電腦可能直接擋下、沒有「仍要執行」可以按。防毒軟體攔下 `AI_Translate.exe` 時，可以改雙擊同一個資料夾裡的 `start.bat`：做的事一樣，只是不會自動開啟瀏覽器，用法見資料夾裡的 `README.txt`。
+- **執行檔沒有數位簽章**（[ADR 0010](docs/adr/0010-no-code-signing.md)）：第一次執行 `Mimiji.exe` 時，Windows 可能跳出 SmartScreen 的「Windows 已保護您的電腦」，按「其他資訊」→「仍要執行」即可。開著 Smart App Control 的電腦可能直接擋下、沒有「仍要執行」可以按。防毒軟體攔下 `Mimiji.exe` 時，可以改雙擊同一個資料夾裡的 `start.bat`：做的事一樣，只是不會自動開啟瀏覽器，用法見資料夾裡的 `README.txt`。
 
 ---
 
@@ -418,15 +418,16 @@ git config core.hooksPath .githooks
 .\build_release.ps1 -Version v1.2.3
 ```
 
-產出 `build\AI_Translate-v1.2.3-win64.zip`（約 150 MB —— Python 依賴不進 zip，
+產出 `build\Mimiji-v1.2.3-win64.zip`（約 150 MB —— Python 依賴不進 zip，
 由使用者首次啟動時以隨包 `uv` 依 `backend/requirements-standalone.txt` 自動下載）。
 其中佔九成下載量的 torch 由啟動器與 `start.py` 先以 `bin\prefetch_wheels.py`（`tools/portable/prefetch_wheels.py`）下載到 `runtime\downloads\`：斷線時可以從中斷的地方接著下載，網址、大小與 SHA-256 釘在那支程式裡，換 torch 的版本時一起換（測試會檢查）。uv 再以 `--find-links` 從那裡安裝，裝好後刪掉。
+啟動器 `Mimiji.exe`（`tools/launcher.cs`）用 Windows 內建的 `csc` 編譯，帶著圖示 `tools/portable/mimiji.ico`（換圖示時換掉這個檔，要有 16、32、48 與 256 像素）與版本資訊：檔案總管的「內容 → 詳細資料」顯示產品名稱 Mimiji、產品版本（`-Version` 原樣，例如 `v0.1.0-rc.1`）與檔案版本。檔案版本只能是 4 個數字，所以 `vX.Y.Z` 開頭的版本號取 `X.Y.Z.0`（`-rc.1` 這類標記不進檔案版本），`dev` 等其他寫法是 `0.0.0.0`，規則寫在 `build_release.ps1` 的 `ConvertTo-FileVersion`。
 發布包裡給使用者看的 `README.txt`，以及手動啟動用的 `start.bat` 與 `start.py` 放在 `tools/portable/`，建置時複製進去（`README.txt` 的 `{VERSION}` 換成版本號，`start.py` 放進 `bin\`）。`start.bat` 只能有 ASCII：cmd 遇到中文會讀錯下一行，所以它只用隨包的 Python 執行 `bin\start.py`，佈建、啟動與訊息都寫在 `start.py`。`start.py` 和啟動器用同名的 mutex 與 `data\launcher-url.txt` 互相擋住，同一個資料夾合起來只跑一個伺服器：伺服器啟動時會先把「處理中」的任務記成失敗才綁埠，第二個實例就算綁不到埠也已經記了。伺服器也和啟動器一樣放進 Job Object，只結束 `start.py` 時伺服器跟著結束。
 首次佈建成功後，啟動器與 `start.py` 都刪掉 `runtime\Lib\site-packages\torch\lib\*.lib`（約 2.8 GB，只有編譯要連結 torch 的 C++ 擴充時才用得到，#239 實測刪掉前後輸出相同），已佈建時每次啟動也補刪；刪不掉時照樣啟動。
 要在 git 的工作目錄裡、裝好 git 才能建置：後端只用 `git archive` 取白名單（腳本裡的 `$BackendPaths`）已經 commit 的檔案，沒進版控的東西不會被打包；白名單裡有還沒 commit 的改動或新檔時，建置會停下來，請先 commit 或 stash。
 Python embeddable、`uv` 與 ffmpeg 都釘版並驗 SHA-256，下載快取在 `build\cache\`；快取裡的檔案雜湊不符時會刪掉重新下載。
 推 `v*` tag 時 GitHub Actions（`.github/workflows/release.yml`）會先跑一次完整的 CI，通過後自動建置並發布 Release。
-CI 的 `portable` job 在每個 PR 上也用 Windows 建置一次（不上傳、不發布），並用 `tools/portable_zip.py` 檢查 zip：第 7 步清單裡的檔案都在、`backend\` 只有白名單裡的檔案，而且沒有使用者的音檔、資料庫、`.env` 等執行期資料；日誌裡會列出 zip 的完整內容。
+CI 的 `portable` job 在每個 PR 上也用 Windows 建置一次（不上傳、不發布），並用 `tools/portable_zip.py` 檢查 zip：檔名與最上層資料夾是 `Mimiji`、第 7 步清單裡的檔案都在、`backend\` 只有白名單裡的檔案，而且沒有使用者的音檔、資料庫、`.env` 等執行期資料；`Mimiji.exe` 的產品名稱、版本與圖示也在這裡檢查。日誌裡會列出 zip 的完整內容。
 
 發布包附上授權文件（#274）：Mimiji 的 `LICENSE.txt` 與 `NOTICE.txt`，以及第三方元件的 `THIRD_PARTY_NOTICES.txt` 與 `licenses\`（原稿在 [`tools/portable/`](tools/portable/THIRD_PARTY_NOTICES.txt)）。元件換版時一起更新：
 - Python、`uv` 或 ffmpeg 升版：改 `THIRD_PARTY_NOTICES.txt` 寫的版本與來源，以及 `tools/portable/licenses/` 裡它們的授權全文；ffmpeg 另外改 `build_release.ps1` 的 `$FfmpegCommit` 與 `$BtbnCommit`。建置時會核對 Python 與 ffmpeg 自己附的授權檔，和 `licenses/` 裡的不同就停下來。

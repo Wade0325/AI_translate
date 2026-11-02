@@ -1,5 +1,5 @@
 @echo off
-rem Manual start for the portable build (#267): double-click this when antivirus blocks AI_Translate.exe.
+rem Manual start for the portable build (#267): double-click this when antivirus blocks Mimiji.exe.
 rem It runs bin\start.py with the bundled Python; provisioning, the server and all messages live there.
 rem Keep this file ASCII-only: cmd misreads the line after one that has multi-byte characters
 rem (UTF-8 under chcp 65001) and runs the rest as commands (tests\unit\test_portable_start.py checks).

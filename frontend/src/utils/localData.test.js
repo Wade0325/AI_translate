@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { deletedMessage, retentionNote } from './localData.js';
 
-const RETAINED = { enabled: true, retention_days: 30, folder: 'D:\\AI_Translate\\data\\audio_store', file_count: 2, total_bytes: 10 };
+const RETAINED = { enabled: true, retention_days: 30, folder: 'D:\\Mimiji\\data\\audio_store', file_count: 2, total_bytes: 10 };
 
 describe('retentionNote：設定頁說明保留音檔留多久（#231 Q1）', () => {
   it('照設定的天數說明，超過的在下次開啟時刪除', () => {

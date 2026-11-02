@@ -273,8 +273,9 @@ jobs:
     # - 建置前先在 backend/ 與 data/ 放進用過的開發環境會有的執行期資料（tools/portable_zip.py plant），
     #   build_release.ps1 取後端檔案的那一步（只取已 commit 的白名單路徑）才真的被考到
     # - 啟動器在 build_release.ps1 第 5 步編譯，編譯失敗時那一步就失敗
-    # - 建好後檢查 zip：第 7 步清單裡的檔案都在、backend/ 只有白名單裡的檔案、沒有執行期資料，
-    #   並在日誌列出 zip 的內容（tools/portable_zip.py check）
+    # - 建好後檢查 zip：檔名、最上層資料夾與 exe 的名稱是 Mimiji（#277）、第 7 步清單裡的檔案都在、
+    #   backend/ 只有白名單裡的檔案、沒有執行期資料、exe 帶圖示與版本資訊，並在日誌列出 zip 的內容
+    #   （tools/portable_zip.py check）
     # - 準備發版時要附的 ffmpeg 原始碼並驗證（tools/ffmpeg_sources.py，#274）
     # 每個 PR 都跑（只改文件時跳過）：Python embeddable、uv 與 ffmpeg 每次重新下載，不用快取
     needs: changes
@@ -308,7 +309,7 @@ jobs:
         # 不在這裡關進度條：build_release.ps1 自己關（#266），release.yml 呼叫時一樣快
         run: .\build_release.ps1 -Version ci -SkipFrontend
       - name: 檢查 zip
-        run: python tools/portable_zip.py check build/AI_Translate-ci-win64.zip
+        run: python tools/portable_zip.py check build/Mimiji-ci-win64.zip
       - name: 準備 ffmpeg 的原始碼附件並驗證
         # 發版時和 zip 上傳到同一個 GitHub Release 的附件（#274）：BtbN 的 build zip（沿用上一步下載到
         # build\cache 的那份）、對應 commit 的 FFmpeg 原始碼、BtbN 的建置腳本與 SHA256SUMS。每個 PR 跑一次：
