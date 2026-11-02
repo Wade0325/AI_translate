@@ -127,6 +127,8 @@ Mimiji 只發布 Windows 免安裝版：下載 zip、解壓縮就能用。本機
 
 - 預覽逐字稿與時間戳。
 - 下載 `.lrc` / `.srt` / `.vtt` / `.txt`（多個檔案可以用 **Download All** 打包成 ZIP）。
+  - 檔名沿用音檔的檔名：`interview.mp3` 的 SRT 是 `interview.srt`。ZIP 裡主檔名相同的音檔保留原本的副檔名來區分（`a.mp3.srt`、`a.wav.srt`），同一個檔名上傳兩次時加編號（`a.srt`、`a (2).srt`），解壓縮時不會互相覆蓋。
+  - 以批次模式完成的檔案，結果存在 **History** 頁面，要從那裡下載；在結果頁按下載會提示到 History 頁面，打包時也不放進 ZIP，訊息會列出沒打包的檔案。
 - SRT／VTT 的字幕照實際說話的時間顯示：Multi-Speaker 開著時，另一位說話者插話，兩行字幕會同時出現，靠行首的說話者標記分辨；同一位說話者的字幕不重疊。每一行至少顯示 0.8 秒，同一位說話者緊接著說下一句時例外。部分字幕編輯器會把重疊的字幕標成錯誤，原因見 [ADR-0008](docs/adr/0008-subtitles-follow-speech-and-may-overlap.md)。
 - SRT／VTT 的字幕依說話者上色：S0 白色、S1 黃、S2 青、S3 綠，第 5 位說話者起從白色重新輪；沒有說話者標記的行不上色。SRT 的顏色在 VLC 與 mpv 看得到；VTT 的顏色寫在檔頭的 STYLE 區塊，Chrome 看得到，Firefox 不支援，照樣顯示白字。ffmpeg 7.0 之前的版本讀不了帶 STYLE 區塊的 VTT，用這類工具時請改下載 SRT。LRC、TXT 不上色。
 - 一則字幕超過兩行的量（日文 26 個、其他語言 32 個全形字寬，半形字算半個）時，SRT／VTT 照逐字時間拆成數則，優先切在「、」「，」之後；只有本機的轉錄有逐字時間，Gemini 的結果不拆。LRC、TXT 保持一句一行。
@@ -430,11 +432,20 @@ Python embeddable、`uv` 與 ffmpeg 都釘版並驗 SHA-256，下載快取在 `b
 推 `v*` tag 時 GitHub Actions（`.github/workflows/release.yml`）會先跑一次完整的 CI，通過後自動建置並發布 Release。
 CI 的 `portable` job 在每個 PR 上也用 Windows 建置一次（不上傳、不發布），並用 `tools/portable_zip.py` 檢查 zip：第 7 步清單裡的檔案都在、`backend\` 只有白名單裡的檔案，而且沒有使用者的音檔、資料庫、`.env` 等執行期資料；日誌裡會列出 zip 的完整內容。
 
+發布包附上授權文件（#274）：Mimiji 的 `LICENSE.txt` 與 `NOTICE.txt`，以及第三方元件的 `THIRD_PARTY_NOTICES.txt` 與 `licenses\`（原稿在 [`tools/portable/`](tools/portable/THIRD_PARTY_NOTICES.txt)）。元件換版時一起更新：
+- Python、`uv` 或 ffmpeg 升版：改 `THIRD_PARTY_NOTICES.txt` 寫的版本與來源，以及 `tools/portable/licenses/` 裡它們的授權全文；ffmpeg 另外改 `build_release.ps1` 的 `$FfmpegCommit` 與 `$BtbnCommit`。建置時會核對 Python 與 ffmpeg 自己附的授權檔，和 `licenses/` 裡的不同就停下來。
+- ffmpeg 或 `uv` 升版：在 repo 根目錄執行 `python -m tools.third_party_licenses`（要連網），重新產生 ffmpeg 靜態連入的函式庫與 Rust 套件的授權清單（`licenses/ffmpeg/libraries.txt`、`licenses/ffmpeg/rust-crates.txt`、`licenses/uv/crates.txt`）。它只解析 BtbN 的建置腳本、不執行；沒有重新產生時測試會紅燈。
+- 新增、移除或升級前端依賴：`npm ci --prefix frontend` 之後執行 `python tools/npm_licenses.py`，重新產生 `tools/portable/licenses/frontend/npm-packages.txt`；沒有重新產生時測試會紅燈。
+
+FFmpeg 的原始碼要附在發布包所在的同一個 GitHub Release。`python tools/ffmpeg_sources.py fetch build\release-assets` 準備這些附件並驗證：BtbN 的 build zip、對應 commit 的 FFmpeg 原始碼、BtbN 的建置腳本與 `SHA256SUMS`；CI 的 `portable` job 每個 PR 都跑一次。`release.yml` 還沒有上傳這些附件，接上它是 #278 的範圍。
+
 ---
 
 ## 📝 授權
 
 本專案採用 [Apache License 2.0](LICENSE)，理由見 [ADR 0006](docs/adr/0006-license-apache-2.md)。
+
+免安裝版附帶的第三方元件（FFmpeg 與它靜態連入的函式庫、Python、`uv` 與它的 Rust 套件、介面打包的 npm 套件）各依自己的授權散布，見發布包裡的 `THIRD_PARTY_NOTICES.txt` 與 `licenses\`（原稿在 [`tools/portable/`](tools/portable/THIRD_PARTY_NOTICES.txt)）。FFmpeg 的原始碼附在每一版的 GitHub Release。
 
 本機的模型權重不隨本專案散布，由 app 在你的電腦上從 Hugging Face 下載，使用時依各自模型卡上的授權。Settings 頁的 Local Models 卡片列出每份權重的授權，並連到下載的那個版本的模型卡。
 
