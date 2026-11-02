@@ -291,15 +291,15 @@ test('資料與隱私：取消確認就不刪；有刪不掉的照實說', async
 test('資料與隱私：免安裝版說明 data 資料夾裡哪些是個人資料，以及日誌檔（#231 Q5、Q7）', async ({ page, mockBackend }) => {
     await mockBackend({
         routes: {
-            'GET /local-data': localData({ retention_days: 0, folder: 'D:\\AI_Translate\\data\\audio_store' },
-                { data_folder: 'D:\\AI_Translate\\data' }),
+            'GET /local-data': localData({ retention_days: 0, folder: 'D:\\Mimiji\\data\\audio_store' },
+                { data_folder: 'D:\\Mimiji\\data' }),
         },
     })
     await page.goto('/settings')
 
     const card = providerCard(page, '資料與隱私')
     await expect(card.getByText(/不會自動刪除/)).toBeVisible()
-    await expect(card.getByText('D:\\AI_Translate\\data', { exact: true })).toBeVisible()
+    await expect(card.getByText('D:\\Mimiji\\data', { exact: true })).toBeVisible()
     await expect(card.getByText(/任務紀錄、轉錄結果與 API 金鑰/)).toBeVisible()
     await expect(card.getByText(/日誌檔，回報問題時附上；不含原檔名、提示詞與轉錄內容/)).toBeVisible()
     await expect(card.getByText(/先關掉 app，再刪掉 models 以外的項目/)).toBeVisible()

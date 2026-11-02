@@ -1,4 +1,4 @@
-"""免安裝版的手動啟動（#267）：防毒軟體攔下 AI_Translate.exe 時，使用者雙擊 start.bat，由它執行這支。
+"""免安裝版的手動啟動（#267）：防毒軟體攔下 Mimiji.exe 時，使用者雙擊 start.bat，由它執行這支。
 
 build_release.ps1 把它放在發布包的 bin\\start.py；start.bat 用隨包的 runtime\\python.exe 執行它::
 
@@ -10,7 +10,7 @@ bin\\prefetch_wheels.py 下載 PyTorch，斷線時可以接著下載；再以 uv
 檢查兩邊一致）。有 NVIDIA 驅動、卻沒裝 Microsoft Visual C++ 可轉散發套件（或太舊）時，也一樣在佈建之前
 提示安裝（#304）。不同的是不會自動改用空的埠，也不會自動開啟瀏覽器。
 
-單一實例也和啟動器共用：同名的 mutex 與 data\\launcher-url.txt，所以同一個資料夾的 AI_Translate.exe
+單一實例也和啟動器共用：同名的 mutex 與 data\\launcher-url.txt，所以同一個資料夾的 Mimiji.exe
 與 start.bat 合起來只會跑一個伺服器（tests/integration/test_launcher.py 在 Windows 上兩個方向都測）。
 這不只是避免開兩個視窗：伺服器啟動時會先把資料庫裡「處理中」的任務記成失敗（backend/main.py 的
 啟動清掃），之後才綁埠，所以第二個實例就算綁不到埠，也已經把第一個實例正在轉錄的任務記成失敗
@@ -40,6 +40,8 @@ from pathlib import Path
 # bin\start.py 的上一層就是發布包的根目錄。用 abspath 不用 resolve：啟動器以執行時的路徑
 # （Path.GetFullPath）替 mutex 命名，resolve 會把 subst 的磁碟機與連線的網路磁碟機換成實際路徑
 ROOT = Path(os.path.abspath(__file__)).parent.parent
+# 產品名稱（#26）：訊息與單一實例的 mutex 名稱，和啟動器的 AppName 相同（tests/unit/test_portable_start.py 檢查）
+APP_NAME = "Mimiji"
 DEFAULT_PORT = 8000
 URL_PATTERN = re.compile(r"http://127\.0\.0\.1:([0-9]{1,5})")
 
@@ -156,7 +158,7 @@ def instance_name(root: Path) -> str:
     path = os.path.abspath(root).rstrip("\\/")
     # 啟動器用 ToUpperInvariant：一個字元換成一個字元。str.upper 會把 ß 換成 SS 這類，那些字元照原樣
     path = "".join(c.upper() if len(c.upper()) == 1 else c for c in path)
-    return "Local\\AI_Translate-launcher-" + hashlib.sha256(path.encode("utf-8")).hexdigest()[:16]
+    return f"Local\\{APP_NAME}-launcher-" + hashlib.sha256(path.encode("utf-8")).hexdigest()[:16]
 
 
 def url_file(root: Path) -> Path:
@@ -165,7 +167,7 @@ def url_file(root: Path) -> Path:
 
 
 def acquire_instance(root: Path) -> Callable[[], None] | None:
-    """取得這個資料夾的單一實例；回傳讓出的函式。已經有實例在執行（AI_Translate.exe 或另一個
+    """取得這個資料夾的單一實例；回傳讓出的函式。已經有實例在執行（Mimiji.exe 或另一個
     start.bat）時回傳 None。Windows 以外的平台不檢查（只有開發時的測試會在那裡執行）。"""
     if sys.platform != "win32":
         return lambda: None
@@ -231,10 +233,10 @@ def probe_health(url: str) -> bool:
 def show_running_instance(root: Path, probe: Callable[[str], bool]) -> None:
     url = read_url_file(root)
     if url is not None and probe(url):
-        print("AI_Translate 已經在執行，不會再啟動第二個。")
+        print(f"{APP_NAME} 已經在執行，不會再啟動第二個。")
         print(f"請用瀏覽器開啟 {url}")
     else:
-        print("AI_Translate 已經在另一個視窗啟動中，不會再啟動第二個。")
+        print(f"{APP_NAME} 已經在另一個視窗啟動中，不會再啟動第二個。")
         print("首次佈建可能要數分鐘到數十分鐘，請切換到那個視窗查看進度。")
 
 
@@ -548,10 +550,10 @@ def _start(root: Path, port: int, run: Callable[..., int],
 
     url = f"http://127.0.0.1:{port}"
     write_url_file(root, url)
-    print(f"正在啟動 AI_Translate 伺服器（port {port}）...")
+    print(f"正在啟動 {APP_NAME} 伺服器（port {port}）...")
     print("首次啟動需載入模型函式庫，可能需要一兩分鐘，請稍候。")
     print(f"視窗出現「Uvicorn running on {url}」之後，用瀏覽器開啟 {url}")
-    print("關閉此視窗即停止 AI_Translate。")
+    print(f"關閉此視窗即停止 {APP_NAME}。")
     print(flush=True)
     code = serve(root, port)
     if code != 0:

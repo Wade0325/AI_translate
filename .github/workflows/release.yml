@@ -55,6 +55,6 @@ jobs:
         shell: powershell
         run: >
           gh release create "$env:TAG"
-          (Get-ChildItem build\AI_Translate-*-win64.zip).FullName
-          --title "AI_Translate $env:TAG"
+          (Get-ChildItem build\Mimiji-*-win64.zip).FullName
+          --title "Mimiji $env:TAG"
           --generate-notes

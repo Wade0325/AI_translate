@@ -61,7 +61,7 @@ pytestmark = pytest.mark.skipif(not _has_compiler(), reason="沒有 C# 編譯器
 @pytest.fixture(scope="module")
 def binaries(tmp_path_factory) -> tuple[Path, Path]:
     folder = tmp_path_factory.mktemp("launcher-bin")
-    launcher, stub = folder / "AI_Translate.exe", folder / "stub.exe"
+    launcher, stub = folder / "Mimiji.exe", folder / "stub.exe"
     _compile(LAUNCHER_SOURCE, launcher)
     _compile(STUB_SOURCE, stub)
     return launcher, stub
@@ -110,7 +110,7 @@ class App:
         return env
 
     def cmd(self) -> list[str]:
-        exe = str(self.root / "AI_Translate.exe")
+        exe = str(self.root / "Mimiji.exe")
         return [exe] if WINDOWS else ["mono", exe]
 
     def start(self, server: str = "serve", uv_exit: int = 0, timeout: int = 30,
@@ -153,11 +153,11 @@ def _read(path: Path) -> str:
 
 def _make_app(base: Path, binaries: tuple[Path, Path], home: Path) -> App:
     launcher, stub = binaries
-    root = base / "AI_Translate"
+    root = base / "Mimiji"
     for folder in ("runtime", "bin", "backend"):
         (root / folder).mkdir(parents=True)
     (base / "System32").mkdir()
-    shutil.copy(launcher, root / "AI_Translate.exe")
+    shutil.copy(launcher, root / "Mimiji.exe")
     shutil.copy(stub, root / "runtime" / "python.exe")
     shutil.copy(stub, root / "bin" / "uv.exe")
     # 替身看到這個檔名就假裝是預先下載 torch，不讀它的內容
@@ -280,9 +280,9 @@ class TestProvisioning:
         assert not app.downloads.exists()
 
     @pytest.mark.parametrize(("code", "message", "kept"), [
-        (2, "PyTorch 沒有下載完", "已下載的部分會保留：網路恢復後重新執行 AI_Translate.exe，會從中斷的地方接著下載"),
-        (3, "下載的 PyTorch 和預期的不同，已經刪掉", "請重新執行 AI_Translate.exe 再下載一次"),
-        (4, "PyTorch 下載到一半時寫不進資料夾", "清出磁碟空間後重新執行 AI_Translate.exe，會從中斷的地方接著下載"),
+        (2, "PyTorch 沒有下載完", "已下載的部分會保留：網路恢復後重新執行 Mimiji.exe，會從中斷的地方接著下載"),
+        (3, "下載的 PyTorch 和預期的不同，已經刪掉", "請重新執行 Mimiji.exe 再下載一次"),
+        (4, "PyTorch 下載到一半時寫不進資料夾", "清出磁碟空間後重新執行 Mimiji.exe，會從中斷的地方接著下載"),
     ], ids=["interrupted", "mismatch", "disk"])
     def test_torch_download_that_stops_says_what_to_do(self, app, code, message, kept):
         app.sentinel.unlink()
@@ -530,7 +530,7 @@ class TestSharedWithStartBat:
             first.wait()
 
         out = capsys.readouterr().out
-        assert "AI_Translate 已經在執行，不會再啟動第二個" in out
+        assert "Mimiji 已經在執行，不會再啟動第二個" in out
         assert f"請用瀏覽器開啟 {url}" in out
 
     def test_launcher_starts_once_start_bat_has_released(self, app):
@@ -553,7 +553,7 @@ class TestLog:
             # 真正的 Windows 版本，不是相容性設定降成的 6.2.9200（Windows 8）
             major = int(result.log.split("啟動器開始：版本 v0.0.0-test，Windows ", 1)[1].split(".")[0])
             assert major >= 10
-        assert "正在啟動 AI_Translate 伺服器" in result.log
+        assert "正在啟動 Mimiji 伺服器" in result.log
         assert " - ERROR - " in result.log
         assert "伺服器還沒就緒就結束了（結束代碼 3）" in result.log
 
@@ -562,16 +562,16 @@ class TestLog:
 
         assert USER not in result.log
         assert str(app.home) not in result.log
-        assert f"程式資料夾：~{os.sep}Downloads{os.sep}AI_Translate" in result.log
+        assert f"程式資料夾：~{os.sep}Downloads{os.sep}Mimiji" in result.log
 
     def test_writes_the_user_name_in_other_paths_as_a_placeholder(self, tmp_path, binaries):
-        # 解壓在家目錄以外、但路徑裡有帳號名稱的資料夾（例如 D:\王小明\AI_Translate）
+        # 解壓在家目錄以外、但路徑裡有帳號名稱的資料夾（例如 D:\王小明\Mimiji）
         app = _make_app(tmp_path / "D" / USER, binaries, home=tmp_path / "Users" / USER)
 
         result = app.run(server="exit:3")
 
         assert USER not in result.log
-        assert f"{os.sep}%USERNAME%{os.sep}AI_Translate" in result.log
+        assert f"{os.sep}%USERNAME%{os.sep}Mimiji" in result.log
 
     def test_keeps_the_last_seven_days_of_launcher_logs(self, app):
         logs = app.data / "logs"

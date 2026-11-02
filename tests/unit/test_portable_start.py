@@ -1,6 +1,6 @@
 """免安裝版的手動啟動（start.bat → bin\\start.py）與 README.txt（#267），內容在 tools/portable/。
 
-start.bat 是防毒軟體攔下 AI_Translate.exe 時的手動啟動，只用隨包的 Python 執行 start.py；佈建、啟動
+start.bat 是防毒軟體攔下 Mimiji.exe 時的手動啟動，只用隨包的 Python 執行 start.py；佈建、啟動
 與訊息都在 start.py。它要和啟動器（tools/launcher.cs）做一樣的事：設一樣的環境變數，用一樣的指令
 佈建與啟動。兩邊各寫一份（Python 與 C#），這裡檢查沒有分岔，並測 start.py 的每一條路徑。
 
@@ -411,7 +411,7 @@ class TestVcRuntime:
         # 佈建前說一次；佈建完還沒裝，再說一次（uv 的輸出把前一次推上去了）
         assert out.count(warning) == 2
         assert (out.index(warning) < out.index("首次啟動：正在下載執行環境")
-                < out.rindex(warning) < out.index("正在啟動 AI_Translate 伺服器"))
+                < out.rindex(warning) < out.index("正在啟動 Mimiji 伺服器"))
         assert f"請下載安裝（需要系統管理員權限）：{start.VC_REDIST_URL}" in out
         assert "再執行一次 start.bat" in out
         assert len(serve.calls) == 1  # 不擋啟動：Gemini 照樣能用
@@ -427,7 +427,7 @@ class TestVcRuntime:
         assert out.count("本機轉錄不能用") == 1
         assert (out.index("執行環境佈建完成")
                 < out.index("已經裝好 Microsoft Visual C++ 可轉散發套件")
-                < out.index("正在啟動 AI_Translate 伺服器"))
+                < out.index("正在啟動 Mimiji 伺服器"))
 
     def test_provisioned_package_warns_once(self, tmp_path, capsys):
         root = _package(tmp_path, provisioned=True)
@@ -565,7 +565,7 @@ class _Instance:
 
 
 class TestSingleInstance:
-    """同一個資料夾的 AI_Translate.exe 與 start.bat 合起來只跑一個伺服器：伺服器啟動時會先把「處理中」
+    """同一個資料夾的 Mimiji.exe 與 start.bat 合起來只跑一個伺服器：伺服器啟動時會先把「處理中」
     的任務記成失敗才綁埠，第二個實例綁不到埠也已經記了（#267 實測）。和啟動器真的互相擋住，
     在 tests/integration/test_launcher.py 的 Windows 腿測。"""
 
@@ -581,7 +581,7 @@ class TestSingleInstance:
         assert run.calls == serve.calls == []
         assert probed == ["http://127.0.0.1:8001"]
         out = capsys.readouterr().out
-        assert "AI_Translate 已經在執行，不會再啟動第二個" in out
+        assert "Mimiji 已經在執行，不會再啟動第二個" in out
         assert "請用瀏覽器開啟 http://127.0.0.1:8001" in out
         assert "按任意鍵關閉" in out
         assert start.url_file(root).exists()  # 是那個實例的，不刪
@@ -604,7 +604,7 @@ class TestSingleInstance:
         assert code == 0
         assert serve.calls == []
         out = capsys.readouterr().out
-        assert "AI_Translate 已經在另一個視窗啟動中，不會再啟動第二個" in out
+        assert "Mimiji 已經在另一個視窗啟動中，不會再啟動第二個" in out
         assert "example.com" not in out and "70000" not in out
 
     def test_url_is_written_while_serving_and_removed_after(self, tmp_path):
@@ -654,17 +654,17 @@ class TestSingleInstance:
         # 啟動器：Local\ + AppName + -launcher- + 資料夾完整路徑去掉結尾的 \ 或 /、轉大寫後
         # UTF-8 的 SHA-256 前 8 個位元組（16 個十六進位字）
         launcher = _launcher()
-        assert 'const string AppName = "AI_Translate";' in launcher
+        assert 'const string AppName = "Mimiji";' in launcher
         assert '"Local\\\\" + AppName + "-launcher-" + PathHash(root)' in launcher
         assert ".TrimEnd('\\\\', '/').ToUpperInvariant()" in launcher
         assert "for (int i = 0; i < 8; i++)" in launcher
         assert 'Path.Combine(dataDir, "launcher-url.txt")' in launcher
 
-        folder = tmp_path / "AI_Translate"
+        folder = tmp_path / "Mimiji"
         name = start.instance_name(folder)
-        assert re.fullmatch(r"Local\\AI_Translate-launcher-[0-9a-f]{16}", name)
-        assert start.instance_name(tmp_path / "ai_translate") == name  # 不分大小寫
-        assert start.instance_name(tmp_path / "AI_Translate-old") != name
+        assert re.fullmatch(r"Local\\Mimiji-launcher-[0-9a-f]{16}", name)
+        assert start.instance_name(tmp_path / "mimiji") == name  # 不分大小寫
+        assert start.instance_name(tmp_path / "Mimiji-old") != name
         assert start.url_file(folder) == folder / "data" / "launcher-url.txt"
 
     @pytest.mark.skipif(sys.platform == "win32", reason="Windows 上取得真的 mutex，在整合測試測")
