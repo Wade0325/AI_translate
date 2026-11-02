@@ -10,6 +10,9 @@ cpMER、ΔMER 與 95% CI、RTF 與峰值顯存、結尾核對），最後是回�
 標準答案註明「cpMER 不計」的片段只算錯字率。95% CI、RTF、峰值顯存與結尾核對只列出，不參與判定。
 語言看 manifest 的 ``request.language``，只看主要的語言代碼（``zh-TW`` 與 ``zh-CN`` 都是中文）。
 
+判定之前先比對兩邊的 manifest（#276，比對的規則見 environment.py）：顯卡、驅動、套件版本、模型權重的
+revision 或設定有一項不同，或基準的 commit 不在這個 PR 的歷史裡，就不下判定，提醒先重建基準。
+
 只輸出數字、雜湊、檔名與「cpMER 不計」的理由，不輸出錯誤範例或任何轉錄文字：評測集的原文不進 PR（#15 的 Q4）。
 結尾核對只讀 LRC 每一行的時間戳。
 """
@@ -22,7 +25,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from . import lrc
+from . import environment, lrc
 from .cli import UsageError
 
 PASS = "通過"
@@ -291,13 +294,14 @@ class _Language:
             return PASS
         return UNDECIDED
 
-    def row(self) -> str:
+    def row(self, *, judged: bool = True) -> str:
+        """判定表的一列；``judged`` 是 False 時（兩邊的環境不能直接比）判定欄寫「不判定」。"""
         base, head, tokens, cp_tokens = self.base, self.head, self.tokens, self.cp_tokens
         cp = (f"{_rate(base.cp_low, base.cp_high, cp_tokens)} → {_rate(head.cp_low, head.cp_high, cp_tokens)}"
               if cp_tokens else "不計")
         return (f"| {self.name} | {'、'.join(self.references)} | {tokens} "
                 f"| {_rate(base.mer, base.mer, tokens)} → {_rate(head.mer, head.mer, tokens)} "
-                f"| {cp} | {self.verdict} |")
+                f"| {cp} | {self.verdict if judged else '不判定'} |")
 
 
 def _cp_skipped(run: _Eval) -> list[str]:
@@ -321,12 +325,18 @@ def _excluded(run: _Eval) -> str | None:
         return "兩邊轉錄的音檔不同"
     if not run.languages:
         return "找不到 manifest，不知道是哪種語言"
+    if any(s.manifest is None for s in run.systems):
+        return "找不到其中一邊的 manifest，比不了環境"
     if len(run.languages) > 1:
         return "兩邊的語言不同"
     return None
 
 
-def _overall(languages: list[_Language]) -> str:
+def _overall(languages: list[_Language], comparison: environment.Comparison | None) -> str:
+    if comparison is not None and not comparison.ok:
+        names = "、".join(item.name for item in comparison.problems)
+        return (f"{UNDECIDED}：基準與這個 PR 不能直接比（{names}），這次不下判定。先照「環境比對」的說明"
+                f"重建基準或重跑，再評測一次；代理不合併")
     if not languages:
         return f"{UNDECIDED}：沒有已確認的標準答案可以和基準比（有草稿標記的不算）"
     by_verdict: dict[str, list[str]] = {}
@@ -341,8 +351,22 @@ def _overall(languages: list[_Language]) -> str:
     return f"{PASS}（{'、'.join(by_verdict[PASS])}）"
 
 
-def render_verdict(runs: list[_Eval]) -> str:
-    """所有音檔合起來，每種語言一個判定（Markdown）。"""
+def compare_environments(runs: list[_Eval]) -> environment.Comparison | None:
+    """所有兩邊都有 manifest 的音檔：基準的 manifest 放一邊、這個 PR 的放另一邊比對。沒有這種音檔時是 None。
+
+    有草稿標記等原因不算進判定的音檔也比：它們和其他音檔在同一次評測裡轉錄，環境不同一樣是警訊。
+    """
+    pairs = [run.systems for run in runs
+             if len(run.systems) == 2 and all(s.manifest for s in run.systems)]
+    if not pairs:
+        return None
+    return environment.compare([base.manifest for base, _ in pairs if base.manifest],
+                               [head.manifest for _, head in pairs if head.manifest])
+
+
+def render_verdict(runs: list[_Eval], comparison: environment.Comparison | None) -> str:
+    """所有音檔合起來，每種語言一個判定（Markdown）。``comparison`` 是兩邊環境的比對
+    （:func:`compare_environments`）；有一項不能直接比時，數字照列，但不下判定。"""
     languages: dict[str, _Language] = {}
     excluded: list[str] = []
     for run in runs:
@@ -367,15 +391,21 @@ def render_verdict(runs: list[_Eval]) -> str:
     if languages:
         out += ["| 語言 | 標準答案 | token | 錯字率：基準 → 這個 PR | cpMER：基準 → 這個 PR | 判定 |",
                 "|---|---|---|---|---|---|"]
-        out += [language.row() for language in languages.values()]
+        judged = comparison is None or comparison.ok
+        out += [language.row(judged=judged) for language in languages.values()]
         out.append("")
     if excluded:
         out.append(f"- 沒算進判定：{'；'.join(excluded)}")
-    out.append(f"- 判定：{_overall(list(languages.values()))}")
+    out.append(f"- 判定：{_overall(list(languages.values()), comparison)}")
     return "\n".join(out) + "\n"
 
 
 def cmd_summary(args) -> int:
     runs = [_read(Path(p)) for p in args.eval_json]
-    print("\n".join(render(run) for run in runs) + "\n" + render_verdict(runs), end="")
+    comparison = compare_environments(runs)
+    sections = [render(run) for run in runs]
+    if comparison is not None:
+        sections.append(environment.render(comparison))
+    sections.append(render_verdict(runs, comparison))
+    print("\n".join(sections), end="")
     return 0

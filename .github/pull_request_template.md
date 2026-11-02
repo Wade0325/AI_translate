@@ -56,8 +56,9 @@ Gemini 專屬的路徑（backend/app/provider/google/**、backend/app/core/defau
 transcription_max_duration_seconds）不列：Gemini 的改動不附評測，照 docs/agents/merging.md 由使用者實測。
 
 怎麼產生（指令的細節見 tools/eval/README.md）：
-1. 這個 PR 跑一次 python -m tools.eval transcribe，轉評測集的音檔。基準存在研究區；它的環境（顯卡、套件版本、
-   模型權重的 revision、設定）和這次不完全相同時，main 也重跑一次，當作新的基準。
+1. 這個 PR 跑一次 python -m tools.eval transcribe，轉評測集的音檔。基準存在研究區；它的環境（顯卡、驅動、套件版本、
+   模型權重的 revision、設定）和這次不完全相同時，main 也重跑一次，當作新的基準。summary 的「環境比對」逐項比對兩邊的
+   manifest，有一項不同就不下判定。
 2. python -m tools.eval eval --reference <名稱> --transcript <基準的 LRC> --vs <這個 PR 的 LRC> --json <路徑>
 3. python -m tools.eval summary <每個音檔的 JSON>：評測集有好幾個音檔時每個音檔一份 JSON，一次全部給。它每個音檔印一張表，
    最後照 docs/adr/0009 以語言為單位印出回歸判定；整段貼在下面。
