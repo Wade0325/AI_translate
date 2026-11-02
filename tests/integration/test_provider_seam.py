@@ -928,9 +928,9 @@ class TestOutputFormatsFromSegments:
         ("srt", "1\n00:00:00,500 --> 00:00:03,500\n<font color=\"#FFDD55\">[S1] 你拉不拉货。</font>\n\n"
                 "2\n00:00:03,000 --> 00:00:03,800\n[S0] 对\n\n"
                 "3\n00:00:04,000 --> 00:00:06,500\n<font color=\"#FFDD55\">[S1] 但是。</font>\n"),
-        ("vtt", "WEBVTT\n\n00:00:00.500 --> 00:00:03.500\n[S1] 你拉不拉货。\n\n"
+        ("vtt", "WEBVTT\n\n00:00:00.500 --> 00:00:03.500\n<c.yellow>[S1] 你拉不拉货。</c>\n\n"
                 "00:00:03.000 --> 00:00:03.800\n[S0] 对\n\n"
-                "00:00:04.000 --> 00:00:06.500\n[S1] 但是。\n"),
+                "00:00:04.000 --> 00:00:06.500\n<c.yellow>[S1] 但是。</c>\n"),
     ])
     def test_interjection_overlaps_and_subtitles_follow_start_times(
             self, api, fake, fmt, expected):
@@ -948,7 +948,7 @@ class TestOutputFormatsFromSegments:
         ("srt", "1\n00:00:00,250 --> 00:00:02,500\n[S0] おはよう。\n\n"
                 "2\n00:00:02,500 --> 00:00:07,500\n<font color=\"#FFDD55\">[S1] こんにちは。</font>\n"),
         ("vtt", "WEBVTT\n\n00:00:00.250 --> 00:00:02.500\n[S0] おはよう。\n\n"
-                "00:00:02.500 --> 00:00:07.500\n[S1] こんにちは。\n"),
+                "00:00:02.500 --> 00:00:07.500\n<c.yellow>[S1] こんにちは。</c>\n"),
     ])
     def test_segments_without_an_end_keep_the_old_subtitle_end_times(
             self, api, fake, fmt, expected):

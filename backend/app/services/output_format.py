@@ -39,10 +39,10 @@ SRT／VTT 另有結束時間，照實際說話的時間顯示（ADR-0008，規�
 和以前從 LRC 轉換時一樣；開始與結束時間都四捨五入到毫秒（見 :func:`_milliseconds`）。斷行的規則見
 :func:`_segment_lines`。
 
-SRT／VTT 和其他兩種格式不同的地方是超過兩行的量的行用逐字時間拆成數則字幕（#12，見
-:func:`_subtitle_pieces`）；LRC、TXT 不拆。只有 SRT 依說話者上色（#12，見 :data:`SPEAKER_COLORS`）；
-VTT 的顏色要寫在 STYLE 區塊，舊版 ffmpeg 遇到它整份字幕都不顯示，所以不上色（#271，見 :func:`_vtt`）。
-文字只有 VTT 跳脫（#24）；SRT 沒有跳脫的寫法，和 LRC、TXT 一樣照原樣寫（見 :func:`_srt`）。
+SRT／VTT 和其他兩種格式不同的地方只有兩點（#12）：超過兩行的量的行用逐字時間拆成數則字幕
+（見 :func:`_subtitle_pieces`），以及依說話者上色（SRT 見 :data:`SPEAKER_COLORS`，VTT 見
+:data:`VTT_COLOR_CLASSES`）。LRC、TXT 不能上色，也不拆。文字只有 VTT 跳脫（#24，見 :func:`_vtt`）；
+SRT 沒有跳脫的寫法，和 LRC、TXT 一樣照原樣寫（見 :func:`_srt`）。
 """
 
 from __future__ import annotations
@@ -623,11 +623,17 @@ def _speaker(cue: Cue) -> Optional[str]:
 
 
 SPEAKER_COLORS: Tuple[Optional[str], ...] = (None, "#FFDD55", "#66CCFF", "#7FE0A0")
-"""SRT 的說話者顏色（#12；VTT 不上色，見 :func:`_vtt`），依說話者編號輪流：S0、S4… 白色（播放器的預設，不加標籤），
+"""SRT 的說話者顏色（#12），依說話者編號輪流：S0、S4… 白色（播放器的預設，不加標籤），
 S1、S5… 黃，S2、S6… 青，S3、S7… 綠。照 BBC Subtitle Guidelines §8.3 的順序（白、黃、青、綠）
 把純色調柔：對黑色的對比 11.6:1 以上，兩色之間的色差（CIEDE2000）一般視覺 25 以上、紅綠色弱
 13 以上，純色在紅色弱的眼裡黃和綠只差 4。顏色只看行首的 [Sn]：Gemini 舊 LRC 的「Speaker 1:」
-與沒有標記的行都不上色。"""
+與沒有標記的行都不上色。VTT 用不了這些顏色，改用 :data:`VTT_COLOR_CLASSES`。"""
+
+VTT_COLOR_CLASSES: Tuple[Optional[str], ...] = (None, "yellow", "cyan", "lime")
+"""VTT 的說話者顏色（#271）：WebVTT 規格預設的顏色類別（§5.1 Default text colors），和
+:data:`SPEAKER_COLORS` 一樣依說話者編號輪流，S0 白色不加標籤，S1 黃（yellow）、S2 青（cyan）、
+S3 綠（lime，規格說它就是字幕慣稱的 green）。這些是純色，紅色弱的人分不出黃和綠，靠行首的說話者
+標記分辨。"""
 
 _APP_LABEL_RE = re.compile(r"\[S(\d+)\]")
 
@@ -655,21 +661,25 @@ def _srt(cues: Sequence[Cue]) -> str:
 
 
 def _vtt(cues: Sequence[Cue]) -> str:
-    """VTT 不上色（#271），靠行首的說話者標記分辨說話者；顏色只在 SRT。
+    """VTT 用 WebVTT 預設的顏色類別上色（#271，見 :data:`VTT_COLOR_CLASSES`）：字幕用
+    ``<c.yellow>`` 這類標籤包起來，不寫 STYLE 區塊。
 
-    WebVTT 要上自訂的顏色，只能在檔頭的 STYLE 區塊寫 CSS，而 ffmpeg 7.0 之前的版本遇到 STYLE
-    區塊整個檔案都讀不出來，不顯示任何字幕也沒有錯誤訊息（#271 實測：Linux 的 mpv 0.37 與
-    Windows 的 mpv-lazy 0.35 都是）。WebVTT 預設的顏色類別（yellow、cyan、lime）不用 STYLE，
-    但只有純色，紅色弱的人分不出黃和綠（見 :data:`SPEAKER_COLORS`）。
+    以前在檔頭的 STYLE 區塊定義調柔過的顏色，但用 ffmpeg 7.0 之前版本解碼的播放器遇到 STYLE
+    區塊，整份字幕都不顯示，也沒有錯誤訊息（#271 實測：Ubuntu 24.04 的 mpv 0.37 與 Windows 的
+    mpv-lazy 0.35）。預設的顏色類別不用 STYLE。#271 實測：VLC 3.0.20 照類別名稱上純色；mpv 0.37
+    與 Chromium 153 不認得這些類別，字幕照常顯示，只是白字。
 
     文字依 WebVTT 規格跳脫（#24）：字幕文字裡的 & 與 < 要寫成字元參照（§4.2.2），字幕內容
     不能有「-->」（§4.1），所以 &、<、> 寫成 &amp;、&lt;、&gt;。沒跳脫時，Chromium 與 ffmpeg
-    都把 ``<笑>`` 當成標籤吃掉；Chromium 遇到「-->」整則字幕的文字都不見。
+    都把 ``<笑>`` 當成標籤吃掉；Chromium 遇到「-->」整則字幕的文字都不見。說話者與顏色看的是
+    跳脫前的文字。
     """
     blocks = ["WEBVTT", ""]
     for text, start, end in _subtitles(cues):
+        escaped = html.escape(text, quote=False)
+        color = VTT_COLOR_CLASSES[_color_index(text)]
         blocks += [f"{_timestamp(start, '.')} --> {_timestamp(end, '.')}",
-                   html.escape(text, quote=False), ""]
+                   f"<c.{color}>{escaped}</c>" if color else escaped, ""]
     return "\n".join(blocks)
 
 
