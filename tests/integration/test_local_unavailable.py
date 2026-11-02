@@ -23,6 +23,8 @@ from tests.support.fake_torch import (
     torch_import_fails,
 )
 
+_real_vc_runtime_problem = weights._vc_runtime_problem  # windows_standalone 換掉它；查 DLL 的測試換回來
+
 READINESS_URL = "/api/v1/setting/local-models/readiness"
 STATUS_URL = "/api/v1/setting/local-models/status"
 DIAGNOSTICS_URL = "/api/v1/diagnostics"
@@ -35,7 +37,7 @@ def windows_standalone(monkeypatch, tmp_path):
     monkeypatch.setattr(get_settings(), "data_dir", str(tmp_path))
     monkeypatch.setattr(platform, "system", lambda: "Windows")
     monkeypatch.setattr(weights, "command_output", lambda *command: "472.12\n")
-    monkeypatch.setattr(weights, "_missing_vc_runtime", lambda: False)
+    monkeypatch.setattr(weights, "_vc_runtime_problem", lambda: None)
     monkeypatch.setattr(weights, "repo_is_ready", lambda repo: True)
 
 
@@ -73,6 +75,30 @@ def test_every_page_gives_the_same_reason(client, monkeypatch, cause, reason, pr
     assert said["gpu_available"] is False
     assert said["diagnostics"] == f"- 顯卡：{problem}"
     assert said["torch_error"] and "王小明" not in said["torch_error"]
+
+
+@pytest.mark.parametrize("nvidia, reason, problem", [
+    (True, "torch_load_failed", "PyTorch 載入失敗：這台電腦沒有 Microsoft Visual C++ 可轉散發套件"),
+    # 沒有 NVIDIA 驅動時，裝好 VC++ 本機轉錄也還是不能用：先說顯卡（#304）
+    (False, "no_gpu", "這台電腦沒有可用的 NVIDIA 顯卡（找不到 NVIDIA 驅動）"),
+], ids=["nvidia_driver", "no_nvidia_driver"])
+def test_missing_visual_cpp_runtime_reads_the_same_everywhere(client, monkeypatch, tmp_path,
+                                                              nvidia, reason, problem):
+    system32 = tmp_path / "System32"
+    system32.mkdir()
+    if nvidia:
+        (system32 / "nvcuda.dll").write_bytes(b"")
+    monkeypatch.setattr(weights, "_vc_runtime_problem", _real_vc_runtime_problem)
+    monkeypatch.setattr(weights, "_system32", lambda: system32)
+    torch_import_fails(monkeypatch, DLL_LOAD_FAILED)
+
+    said = what_each_page_says(client)
+
+    assert said["reason"] == reason
+    assert said["readiness"].startswith(f"{problem}，本機轉錄不能用，")
+    assert weights.VC_REDIST_URL in said["readiness"]
+    assert said["settings"] == said["readiness"]
+    assert said["diagnostics"] == f"- 顯卡：{problem}"
 
 
 def test_a_usable_gpu_is_ready_everywhere(client, monkeypatch):

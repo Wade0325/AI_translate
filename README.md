@@ -57,25 +57,27 @@
 | 作業系統 | Windows（64 位元） |
 | 顯卡（本機轉錄） | NVIDIA 顯卡，顯卡記憶體 12 GB 以上，建議 16 GB。8–12 GB 沒有測過；低於 8 GB 可能很慢，長音檔的說話者編號也比較容易對不上，畫面會提示，但照樣能用。GTX 900 系列（Maxwell）以前的顯卡不支援；GTX 10 系列（Pascal）沒有測過 |
 | 顯卡驅動（本機轉錄） | NVIDIA 驅動 572.61 以上：免安裝版的 PyTorch 帶的是 CUDA 12.8 Update 1，版本照 [NVIDIA 的對照表](https://docs.nvidia.com/cuda/cuda-toolkit-release-notes/)。驅動太舊時，畫面會寫出目前的版本與需要的版本 |
+| Microsoft Visual C++ 可轉散發套件（本機轉錄） | 要裝 x64 的[最新版](https://aka.ms/vc14/vc_redist.x64.exe)（14.38 以上，[Microsoft 的說明](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist)），安裝要系統管理員權限。有 NVIDIA 驅動、卻沒裝或太舊時，黑色視窗在下載執行環境之前會提醒，轉錄頁也會寫出下載網址 |
 | 顯卡（Gemini） | 不需要，但要自備 Gemini API 金鑰 |
-| 磁碟空間 | 首次啟動下載的執行環境約 3.5 GB；本機的預設模型權重約 3.7 GB，選用模型另需約 21 GB |
+| 磁碟空間 | 首次啟動下載約 3.5 GB 的執行環境，安裝時在解壓資料夾裡最多約佔 11.7 GB（其中約 3.5 GB 是暫存在 `runtime\downloads\` 的 PyTorch 安裝檔），裝好後刪掉安裝檔與執行時用不到的 PyTorch 靜態庫（約 2.8 GB），剩約 5.4 GB。下載的檔案另外解開存在 `%LOCALAPPDATA%\uv\cache`（通常在 C 槽）約 8 GB，佈建完成後可以刪掉：和解壓資料夾不在同一個磁碟時另外佔空間；在同一個磁碟時兩邊共用同一份檔案、不另外佔空間，但刪掉的那 2.8 GB 要等刪掉 `uv\cache` 才會真的空出來。本機的預設模型權重約 3.7 GB，選用模型另需約 21 GB |
 | 網路 | 首次啟動與下載模型權重時需要；用 Gemini 轉錄時也需要 |
 
 ---
 
 ## 🚀 安裝
 
-Mimiji 只發布 Windows 免安裝版：下載 zip、解壓縮就能用，不必安裝其他軟體。
+Mimiji 只發布 Windows 免安裝版：下載 zip、解壓縮就能用。本機轉錄另外需要 Microsoft Visual C++ 可轉散發套件（見[系統需求](#-系統需求)）。
 
 1. 到 [**Releases**](https://github.com/Wade0325/AI_translate/releases) 下載最新的 `AI_Translate-vX.Y.Z-win64.zip`。
 2. 解壓到任意位置（建議路徑不含中文與空白）。
 3. 雙擊 **`AI_Translate.exe`**，會開一個黑色視窗。
-   - 首次啟動會自動下載執行環境（約 3.5 GB，含 PyTorch），視網速需要數分鐘到數十分鐘；中斷後重開會接著下載。沒有 NVIDIA 顯卡的電腦也一樣會下載這些，只用 Gemini 時其中大部分用不到。
+   - 首次啟動會自動下載執行環境（約 3.5 GB，含 PyTorch），視網速需要數分鐘到數十分鐘；中斷後重新執行，會從中斷的地方接著下載。沒有 NVIDIA 顯卡的電腦也一樣會下載這些，只用 Gemini 時其中大部分用不到。
+   - 有 NVIDIA 驅動、卻沒裝 Microsoft Visual C++ 可轉散發套件（或版本太舊）時，下載執行環境之前會先提醒並給下載網址。趁下載時裝好就不必重新開啟；下載完還沒裝，會再提醒一次。
    - 就緒後自動開啟瀏覽器。網址以黑色視窗顯示的為準：預設是 `http://127.0.0.1:8000`，8000 埠被占用時會改用其他埠。
    - 關閉黑色視窗就停止程式。再雙擊一次 `AI_Translate.exe` 不會啟動第二個，而是打開已經在跑的那個網址。
    - 出錯時黑色視窗會停住，寫出原因、下一步與日誌檔所在的資料夾，按任意鍵才關。
 4. 到 **Settings** 頁的 **Local Models (本機 GPU 模型)** 卡片按「下載模型權重」（預設模型約 3.7 GB）。下載完成後，就能在 **New Transcription** 頁用本機轉錄。
-5. 本機不能用時，轉錄頁與 Settings 頁的本機卡片會寫出原因與下一步：沒有 NVIDIA 顯卡、顯卡驅動太舊、CUDA 初始化失敗、PyTorch 載入失敗，或目前的 PyTorch 不支援這張顯卡。
+5. 本機不能用時，轉錄頁與 Settings 頁的本機卡片會寫出原因與下一步：沒有 NVIDIA 顯卡、顯卡驅動太舊、CUDA 初始化失敗、PyTorch 載入失敗（例如沒裝 Microsoft Visual C++ 可轉散發套件，或版本太舊），或目前的 PyTorch 不支援這張顯卡。要下載的網址可以直接點。
    - 照著更新驅動、安裝缺少的套件之後，關掉黑色視窗、重新開啟 `AI_Translate.exe` 才會重新偵測。
    - 也可以按「改用 Gemini」，再到 Settings 頁的 Gemini 卡片填入 [Gemini API 金鑰](https://aistudio.google.com/apikey)。Gemini 會把音檔上傳到 Google。
 
@@ -105,7 +107,7 @@ Mimiji 只發布 Windows 免安裝版：下載 zip、解壓縮就能用，不必
 進入 **New Transcription** 頁面：
 
 1. **選擇供應商與模型**：先選供應商（本機／Gemini），模型選單只列這個供應商的模型。下次開頁會沿用這次的選擇（記在瀏覽器裡，只有供應商與模型的名稱）。「測試 API」測的是這裡選的模型；「編輯 API」只在選 Gemini 時出現，本機不需要金鑰。
-2. **上傳檔案**：拖曳或點擊上傳音檔，支援 MP3、WAV、M4A、FLAC、WebM，單檔最大 1000 MB。可以一次加入多個檔案，每個檔案各是一個任務。
+2. **上傳檔案**：拖曳或點擊上傳音檔或影片。音檔支援 MP3、WAV、M4A、FLAC；影片支援 MP4、MOV、MKV、WebM、AVI、WMV、M4V、3GP、MPG、MPEG，上傳時先在這台電腦抽出聲音，之後只轉錄聲音，影片本身不保留、也不會送到 Gemini。單檔最大 2 GB，放得下 2 小時的 WAV。可以一次加入多個檔案，每個檔案各是一個任務。
 3. **選擇來源語言**：預設是 Auto Detect，由模型自己判斷音檔的語言；下次開頁會沿用上次的選擇（記在瀏覽器裡），個別檔案也可以在每檔設定裡另外選。選單最上面是 Auto Detect，下面分兩組。「官方支援」是日文與中文（繁體）；「未驗證」的語言（英文、韓文等）可以選，但轉錄品質沒有經過驗證，選了之後選單與檔案卡都會標「（未驗證）」。中文的轉錄結果一律是台灣繁體的字形與用詞：講者說「軟件」也寫成「軟體」。用詞是照字典自動換的，偶爾會換錯（例如「我支持你」寫成「我支援你」），校正時請留意；結果看得出是日文時，選了中文或 Auto Detect 也不轉，日文漢字不會被改。
 4. **（選填）Multi-Speaker**：決定 LRC、SRT、VTT、TXT 每一行帶不帶說話者標記（`[S0]`、`[S1]`），本機與 Gemini 都一樣。預設關，適合 ASMR、朗讀這類只有一個人說話的音檔；會議、訪談請打開。下次開頁會沿用上次的選擇（記在瀏覽器裡），個別檔案也可以在每檔設定裡另外開關。關掉時本機照樣分離說話者並存下說話者編號，只是輸出不標；Gemini 不會被要求標出說話者，自己標了也不輸出。字幕沒有標記時，所有行都算同一位說話者，不會重疊，也不上色。
 5. **（選填）提示詞**：只有 Gemini 支援，選本機的模型時提示詞欄位會停用並註明原因。轉錄頁填的提示詞是補充說明，例如說話者是誰、人名照寫，送出時空一行接在提示詞範本後面；範本裡要求 LRC 格式與時間戳的指示一定會送出。全域的提示詞會送給每個沒有個別設定提示詞的檔案，不必按 Apply to All；個別檔案可以在每檔設定改用自己的，清空就回到跟著全域。都沒填時只送提示詞範本。提示詞範本是設定頁各供應商的 Prompt Template 欄位存的（轉錄頁的「編輯參數」也能改，會帶出目前的範本，沒存過就是系統內建的），想整份改寫就改那裡，並保留要求 LRC 格式與時間戳的指示，否則轉錄會失敗。範本裡的 `{source_lang}` 送出時換成語言名稱（例如「日文」）；選 Auto Detect 時換成空白，不寫語言，由模型自己判斷，所以自己寫範本時，`{source_lang}` 拿掉之後句子也要通順（例如「請將以下{source_lang}音檔」）。
@@ -194,9 +196,13 @@ Issue 是公開的，任何人都看得到：
 目前是測試版，下面這些還沒做，之後的版本處理：
 
 - **長音檔的說話者編號**：本機一次能處理的長度約 70 分鐘，顯卡記憶體較小時更短；更長的音檔分段轉錄，每一段各自分離說話者，段與段之間的說話者編號可能對不上（例如前一段的 `[S0]` 到下一段變成 `[S1]`）。
+- **本機轉錄要另外裝 Microsoft Visual C++ 可轉散發套件**：免安裝版沒有附這些 DLL（Microsoft [建議](https://learn.microsoft.com/cpp/windows/choosing-a-deployment-method)用可轉散發套件集中安裝，Windows Update 才更新得到），沒裝或太舊的電腦要先裝好才能用本機轉錄；Gemini 照樣能用。
 - **介面語言**：介面中英夾雜，例如左側選單、頁面標題與部分按鈕是英文。
 - **API 金鑰沒有加密**：Gemini 的 API 金鑰照原樣存在 `data\app.db`，不要把 `data\` 資料夾或 `app.db` 交給別人。
-- **執行檔沒有數位簽章**：第一次執行 `AI_Translate.exe` 時，Windows 可能跳出 SmartScreen 的警告。
+
+不會改變的設計：
+
+- **執行檔沒有數位簽章**（[ADR 0010](docs/adr/0010-no-code-signing.md)）：第一次執行 `AI_Translate.exe` 時，Windows 可能跳出 SmartScreen 的「Windows 已保護您的電腦」，按「其他資訊」→「仍要執行」即可。開著 Smart App Control 的電腦可能直接擋下、沒有「仍要執行」可以按。防毒軟體攔下 `AI_Translate.exe` 時，可以改雙擊同一個資料夾裡的 `start.bat`：做的事一樣，只是不會自動開啟瀏覽器，用法見資料夾裡的 `README.txt`。
 
 ---
 
@@ -222,6 +228,8 @@ cd backend
 ```
 
 要看前端的畫面，先在 `frontend/` 執行 `npm run build`。帶環境變數 `AIT_DATA_DIR=<資料夾>` 可以把資料寫到別的資料夾，不動到既有的紀錄。
+
+模型權重放在 `HF_HOME`；沒設時，免安裝模式用資料目錄（`AIT_DATA_DIR`，沒設時是 repo 的 `data\`）底下的 `models\hf_cache`，和免安裝版相同。要沿用 `local_worker.bat` 那份權重，設 `$env:HF_HOME='D:\AI_translate\models\hf_cache'`。
 
 免安裝模式比 Docker 模式多三項限制（#16）：
 
@@ -412,6 +420,9 @@ git config core.hooksPath .githooks
 
 產出 `build\AI_Translate-v1.2.3-win64.zip`（約 150 MB —— Python 依賴不進 zip，
 由使用者首次啟動時以隨包 `uv` 依 `backend/requirements-standalone.txt` 自動下載）。
+其中佔九成下載量的 torch 由啟動器與 `start.py` 先以 `bin\prefetch_wheels.py`（`tools/portable/prefetch_wheels.py`）下載到 `runtime\downloads\`：斷線時可以從中斷的地方接著下載，網址、大小與 SHA-256 釘在那支程式裡，換 torch 的版本時一起換（測試會檢查）。uv 再以 `--find-links` 從那裡安裝，裝好後刪掉。
+發布包裡給使用者看的 `README.txt`，以及手動啟動用的 `start.bat` 與 `start.py` 放在 `tools/portable/`，建置時複製進去（`README.txt` 的 `{VERSION}` 換成版本號，`start.py` 放進 `bin\`）。`start.bat` 只能有 ASCII：cmd 遇到中文會讀錯下一行，所以它只用隨包的 Python 執行 `bin\start.py`，佈建、啟動與訊息都寫在 `start.py`。`start.py` 和啟動器用同名的 mutex 與 `data\launcher-url.txt` 互相擋住，同一個資料夾合起來只跑一個伺服器：伺服器啟動時會先把「處理中」的任務記成失敗才綁埠，第二個實例就算綁不到埠也已經記了。伺服器也和啟動器一樣放進 Job Object，只結束 `start.py` 時伺服器跟著結束。
+首次佈建成功後，啟動器與 `start.py` 都刪掉 `runtime\Lib\site-packages\torch\lib\*.lib`（約 2.8 GB，只有編譯要連結 torch 的 C++ 擴充時才用得到，#239 實測刪掉前後輸出相同），已佈建時每次啟動也補刪；刪不掉時照樣啟動。
 要在 git 的工作目錄裡、裝好 git 才能建置：後端只用 `git archive` 取白名單（腳本裡的 `$BackendPaths`）已經 commit 的檔案，沒進版控的東西不會被打包；白名單裡有還沒 commit 的改動或新檔時，建置會停下來，請先 commit 或 stash。
 Python embeddable、`uv` 與 ffmpeg 都釘版並驗 SHA-256，下載快取在 `build\cache\`；快取裡的檔案雜湊不符時會刪掉重新下載。
 推 `v*` tag 時 GitHub Actions（`.github/workflows/release.yml`）會先跑一次完整的 CI，通過後自動建置並發布 Release。

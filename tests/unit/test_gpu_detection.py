@@ -27,7 +27,6 @@ from tests.support.fake_torch import (
 
 STANDALONE_REQUIREMENTS = (
     Path(__file__).resolve().parents[2] / "backend" / "requirements-standalone.txt")
-_real_missing_vc_runtime = weights._missing_vc_runtime  # machine 換掉它；查 DLL 的測試換回來
 
 
 @pytest.fixture
@@ -37,7 +36,7 @@ def machine(monkeypatch):
     monkeypatch.setattr(platform, "system", lambda: "Windows")
     monkeypatch.setattr(weights, "command_output", lambda *command: (
         f"{state.driver}\n" if state.driver and command[0] == "nvidia-smi" else None))
-    monkeypatch.setattr(weights, "_missing_vc_runtime", lambda: False)
+    monkeypatch.setattr(weights, "_vc_runtime_problem", lambda: None)  # tests/unit/test_vc_runtime.py 測它
     monkeypatch.setattr(weights, "repo_is_ready", lambda repo: True)
     return state
 
@@ -152,27 +151,6 @@ class TestTorchLoadFailed:
         assert str(error) == ("PyTorch 載入失敗，本機轉錄不能用，重新開機後再試；還是一樣的話，"
                               "請回報問題並附上診斷資訊，或改用 Gemini")
         assert describe(error).code == ErrorCode.LOCAL_TORCH_LOAD_FAILED
-
-    def test_missing_visual_cpp_runtime(self, monkeypatch, machine):
-        # torch 載入自己的 DLL 前也查 vcruntime140.dll、msvcp140.dll、vcruntime140_1.dll
-        torch_import_fails(monkeypatch, DLL_LOAD_FAILED)
-        loaded = []
-
-        def cdll(name):
-            loaded.append(name)
-            if name == "msvcp140.dll":
-                raise OSError(126, "找不到指定的模組。")
-
-        monkeypatch.setattr(weights, "_missing_vc_runtime", _real_missing_vc_runtime)
-        monkeypatch.setattr("ctypes.CDLL", cdll)
-
-        gpu = weights.detect_gpu()
-
-        assert gpu.reason == "torch_load_failed"
-        assert gpu.message == (
-            "PyTorch 載入失敗：這台電腦沒有 Microsoft Visual C++ 可轉散發套件，本機轉錄不能用，"
-            "從 https://aka.ms/vc14/vc_redist.x64.exe 下載安裝後重新開啟 Mimiji，或改用 Gemini")
-        assert loaded == ["vcruntime140.dll", "msvcp140.dll"]
 
     def test_torch_without_cuda(self, monkeypatch, machine):
         calls = fake_torch(monkeypatch, cuda=None, version="2.8.0+cpu")

@@ -55,6 +55,28 @@ def test_refuses_draft_marks_unless_allowed(tmp_path):
     assert read_reference(path, allow_draft=True).draft_marks == 2
 
 
+def test_reads_cpmer_skip_with_its_reason(tmp_path):
+    # 說話者的安排量不到說話者分離的片段（例如幾位唸同一份台本、依序接成區塊）只算錯字率（ADR 0009）
+    path = _write(tmp_path / "demo_J.txt", """
+        # demo_J  00:00.00-00:30.00
+        # cpMER 不計：兩位說話者唸同一份台本、依序接成區塊
+        A: 我們下週二
+        B: 我們下週二
+    """)
+
+    assert read_reference(path).cp_mer_skip == "兩位說話者唸同一份台本、依序接成區塊"
+    assert read_reference(_write(tmp_path / "demo_A.txt", "# demo_A  00:00.00-00:30.00\nA: 好\n")
+                          ).cp_mer_skip is None
+
+
+@pytest.mark.parametrize("line", ["# cpMER 不計", "# cpMER 不計：", "# cpMER 不計：  "])
+def test_refuses_cpmer_skip_without_a_reason(tmp_path, line):
+    path = _write(tmp_path / "demo_J.txt", f"# demo_J  00:00.00-00:30.00\n{line}\nA: 好\n")
+
+    with pytest.raises(ReferenceSetError, match="沒有理由"):
+        read_reference(path)
+
+
 def test_refuses_file_without_time_range(tmp_path):
     path = _write(tmp_path / "demo_A.txt", "A: 沒有表頭。\n")
 
