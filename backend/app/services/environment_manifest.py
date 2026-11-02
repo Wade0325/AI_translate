@@ -1,10 +1,10 @@
 """轉錄環境的描述：同一段音檔換了環境可能轉出不同的結果，比較轉錄結果之前要先知道環境一不一樣。
 
-記下主要套件的版本、這次看得到的顯卡、本機模型權重釘住的 revision，以及去靜音與分段轉錄的設定。
-評測指令（``python -m tools.eval transcribe``，#37）把它寫進 manifest；之後要記錄轉錄環境的地方
-也用這裡，不另外寫一份。
+記下主要套件的版本、這次看得到的顯卡與 NVIDIA 驅動、本機模型權重釘住的 revision，以及去靜音與
+分段轉錄的設定。評測指令（``python -m tools.eval transcribe``，#37）把它寫進 manifest，``summary``
+拿基準與 PR 兩邊的 manifest 逐項比對（#276）；之後要記錄轉錄環境的地方也用這裡，不另外寫一份。
 
-只讀已安裝套件的中繼資料與設定，不建立供應商轉接器、不載入模型；有 torch 時才問顯卡。
+只讀已安裝套件的中繼資料與設定，不建立供應商轉接器、不載入模型；有 torch 時才問顯卡與驅動（nvidia-smi）。
 """
 
 from __future__ import annotations
@@ -63,8 +63,11 @@ def package(name: str) -> Dict[str, Optional[str]]:
 
 
 def gpu() -> Optional[Dict[str, Any]]:
-    """這次看得到的第一張顯卡（本機轉錄只用它）：名稱、顯存（GB）與 ``CUDA_VISIBLE_DEVICES``；
-    沒有 torch 或沒有 CUDA 時是 None。"""
+    """這次看得到的第一張顯卡（本機轉錄只用它）：名稱、顯存（GB）、NVIDIA 驅動的版本與
+    ``CUDA_VISIBLE_DEVICES``；沒有 torch 或沒有 CUDA 時是 None。
+
+    驅動是 nvidia-smi 回報的版本（例如 ``576.02``），問不到時是 None。換了驅動，同一段音檔可能轉出
+    不同的結果（docs/adr/0009），所以和顯卡一起記。"""
     try:
         import torch
     except ImportError:
@@ -74,10 +77,13 @@ def gpu() -> Optional[Dict[str, Any]]:
         if torch.cuda.is_available() is not True:
             return None
         card = torch.cuda.get_device_properties(0)
-        return {"name": str(card.name), "vram_gb": round(card.total_memory / 1024 ** 3, 1),
-                "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES")}
+        name, vram_gb = str(card.name), round(card.total_memory / 1024 ** 3, 1)
     except Exception:
         return None
+    from app.provider.local import weights
+
+    return {"name": name, "vram_gb": vram_gb, "driver": weights.nvidia_driver_version(),
+            "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES")}
 
 
 def model_revisions(model: str) -> Dict[str, str]:
