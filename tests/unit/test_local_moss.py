@@ -52,6 +52,31 @@ class TestParseOutput:
         segs = moss.parse_output("[0.0][S01]完整[1.0][2.0][S01]被截斷的")
         assert [s["Content"] for s in segs] == ["完整"]
 
+    @pytest.mark.parametrize("cut_off", ["[4.5", "[4.50]", "[4.50][", "[4.50][S0", "[4.50][S01]"],
+                             ids=["half-a-time", "next-start", "half-a-tag", "no-tag-end", "tag"])
+    def test_output_cut_off_inside_the_next_start_keeps_the_complete_last_segment(self, cut_off):
+        # 截斷停在下一段開頭的半途（#94）：前面那一段是完整的，照樣保留，結束時間也不會被下一段的起點
+        # 取代、真正的結束時間戳被併進文字
+        text = "[0.00][S01]一段目[2.00][2.50][S02]二段目[4.00]" + cut_off
+        assert moss.parse_output(text) == [
+            {"Start": 0.0, "End": 2.0, "Speaker": 0, "Content": "一段目"},
+            {"Start": 2.5, "End": 4.0, "Speaker": 1, "Content": "二段目"},
+        ]
+        assert moss.incomplete_tail(text)
+
+    def test_untagged_output_cut_off_inside_the_next_start_keeps_the_last_segment(self):
+        text = "[0.00]一段目[2.00][2.50]二段目[4.00][4.5"
+        assert [s["Content"] for s in moss.parse_output(text)] == ["一段目", "二段目"]
+        assert moss.incomplete_tail(text)
+
+    @pytest.mark.parametrize("text", ["", "[0.00][S01]一段目[2.00]", "[0.00][S01]一段目[2.00]\n"])
+    def test_output_that_ends_a_segment_is_complete(self, text):
+        assert not moss.incomplete_tail(text)
+
+    def test_output_cut_off_inside_a_segment_is_incomplete(self):
+        assert moss.incomplete_tail("[0.0][S01]完整[1.0][2.0][S01]被截斷的")
+        assert moss.incomplete_tail("[0.0][S01]完整[1.0][2.0][S01]被截斷的[2.")
+
     def test_empty_or_garbage(self):
         assert moss.parse_output("") == []
         assert moss.parse_output("no timestamps here") == []
@@ -85,6 +110,33 @@ class TestParseOutput:
             {"Start": 10.0, "End": 15.2, "Speaker": 0, "Content": "請看第[3]章的內容"},
             {"Start": 16.0, "End": 17.5, "Speaker": 0, "Content": "好"},
         ]
+
+
+# ─── 擔保轉錄到哪一秒（#94） ──────────────────────────────────────────────
+
+SEVEN = [{"Start": float(i), "End": float(i) + 0.5, "Speaker": 0, "Content": "x"} for i in range(7)]
+
+
+class TestCoveredUntil:
+    def test_output_that_ends_normally_reports_nothing(self):
+        assert moss.covered_until(SEVEN, incomplete=False, generated_tokens=900,
+                                  max_new_tokens=5000) is None
+
+    @pytest.mark.parametrize("generated_tokens, max_new_tokens, incomplete", [
+        (16_341, 38_000, False),  # MOSS 自己停在約 16k token：輸出完整，但之後可能還有
+        (5000, 5000, False),      # 用完預算
+        (900, 5000, True),        # 輸出停在一段的半途
+    ], ids=["16k-tokens", "budget-used-up", "cut-off"])
+    def test_signs_of_stopping_early_report_the_latest_end_of_the_last_five(
+            self, generated_tokens, max_new_tokens, incomplete):
+        # 最後 5 段裡最晚的結束：說話者重疊時最後一段不一定最晚結束
+        segments = [*SEVEN[:5], {**SEVEN[5], "End": 9.0}, SEVEN[6]]
+        assert moss.covered_until(segments, incomplete=incomplete, generated_tokens=generated_tokens,
+                                  max_new_tokens=max_new_tokens) == 9.0
+
+    def test_stopping_early_without_any_segment_covers_nothing(self):
+        assert moss.covered_until([], incomplete=True, generated_tokens=10,
+                                  max_new_tokens=5000) == 0.0
 
 
 # ─── 長度預算 ────────────────────────────────────────────────────────────
@@ -430,15 +482,16 @@ class TestRunMoss:
     def test_cancel_after_generate_raises(self, monkeypatch):
         monkeypatch.setattr(moss, "transcribe",
                             lambda wav, stopping_criteria=None, status_callback=None:
-                            (list(MOSS_SEGMENTS), "raw"))
+                            moss.MossOutput(list(MOSS_SEGMENTS), "raw", None))
         with pytest.raises(TranscriptionCancelledError):
             asr._run_moss(Path("x.wav"), _progress(cancelled=True))
 
-    def test_returns_segments(self, monkeypatch):
+    @pytest.mark.parametrize("covered", [None, 2.0])
+    def test_returns_segments_and_where_it_is_covered_until(self, monkeypatch, covered):
         monkeypatch.setattr(moss, "transcribe",
                             lambda wav, stopping_criteria=None, status_callback=None:
-                            (list(MOSS_SEGMENTS), "raw"))
-        assert asr._run_moss(Path("x.wav"), _progress(cancelled=False)) == MOSS_SEGMENTS
+                            moss.MossOutput(list(MOSS_SEGMENTS), "raw", covered))
+        assert asr._run_moss(Path("x.wav"), _progress(cancelled=False)) == (MOSS_SEGMENTS, covered)
 
 
 # ─── 模型能力 ────────────────────────────────────────────────────────────
@@ -481,6 +534,13 @@ class TestLocalCapabilities:
             assert caps.queue == "local_asr"
             assert not caps.can_terminate
             assert not caps.split_retry_on_failure
+
+    def test_moss_models_are_continued_vibevoice_is_not(self):
+        # MOSS 約輸出 16k token 就停（#94），從停下的地方附近接續；舊版的 VibeVoice 不接續
+        caps = self._declared()
+        assert caps["moss-align"].continuation
+        assert caps["moss-qwen3-asr"].continuation
+        assert not caps["vibevoice-qwen3-asr"].continuation
 
 
 class TestLocalReadiness:

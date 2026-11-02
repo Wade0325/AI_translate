@@ -30,7 +30,7 @@ from app.core.task_status import TaskStatus
 from app.exceptions import TransientError
 from app.runtime import run_mode
 from tests.support.db_faults import writes_fail
-from tests.support.fake_provider import FAKE_MODEL, Fail, ServedAs
+from tests.support.fake_provider import FAKE_MODEL, Fail, Listen, ServedAs
 from tests.support.synthetic_audio import VOICED, synthetic_audio
 from tests.support.synthetic_video import stream_types
 from tests.support.task_api import (
@@ -866,6 +866,167 @@ class TestTailLoss:
         assert tail_loss_from(messages) == pytest.approx(1.0)
 
 
+# ─── 接續（#94） ────────────────────────────────────────────────────────────
+
+TONE_A, TONE_B = 440, 660
+SPEAKING = [(3.5 * i, 3.5 * i + 1.5, tone)
+            for i, tone in enumerate([TONE_A, TONE_B, TONE_B, TONE_A, TONE_A, TONE_B, TONE_A, TONE_B])]
+"""26 秒、8 句的合成音檔：每 3.5 秒說 1.5 秒，第 i 句在 3.5i–3.5i+1.5 秒；兩位說話者（正弦波的頻率）
+交錯。語音佔比低於門檻，不剪靜音的模型拿每段靜音的正中間當切點（6.0、9.5、13.0 秒…）。"""
+SPEAKING_STARTS = [start for start, _, _ in SPEAKING]
+
+
+def heard_tone(segment: dict) -> int:
+    """假供應商照音檔回答時寫在文字裡的頻率（取到 100 Hz）。"""
+    return int(segment["text"].removesuffix("Hz"))
+
+
+class TestContinuation:
+    """接續（#94）：模型提早停止輸出時，從停下的地方附近再轉錄一次並接回，以免掉尾。
+
+    假供應商照收到的音檔回答（Listen），像本機的 MOSS：只輸出結束在這段音檔 15 秒以內的句子就停（像 MOSS
+    輸出到約 16k token 就停），說話者編號照它聽到的先後。模型不剪靜音、允許接續，和本機一樣。重疊改成 4 秒、
+    每次至少推進 2 秒，掉尾的門檻改成 2 秒，合成音檔才不必很長。
+
+    第一次轉出前 4 句（到 12 秒）就停。接續從 12 秒往前 4 秒的 8 秒，對齊之前的靜音 6.0 秒，送 6–26 秒；
+    假供應商又只轉出 15 秒以內的（原音檔的 7–19 秒），接在 12 秒。第二次從 19 秒往前、對齊到 13.0 秒，
+    送 13–26 秒，轉到結尾。
+    """
+
+    @pytest.fixture(autouse=True)
+    def _like_local(self, fake, settings, monkeypatch):
+        fake.model_capabilities = replace(
+            fake.model_capabilities, remove_silence=False, continuation=True)
+        monkeypatch.setattr(settings, "tail_loss_min_seconds", 2.0)
+        monkeypatch.setattr(settings, "continuation_overlap_seconds", 4.0)
+        monkeypatch.setattr(settings, "continuation_min_progress_seconds", 2.0)
+
+    @pytest.mark.parametrize("reports", [True, False], ids=["reported", "unaware"])
+    def test_stopping_early_is_continued_to_the_end(self, api, fake, reports):
+        # reported：模型知道自己停早了，回報擔保轉錄到哪一秒（像 MOSS 生成到約 16k token）。unaware：模型
+        # 不知道（例如長段非語音之後就結束），照樣看最後一句之後還有聲音
+        fake.script = [Listen(stops_after=15.0, reports=reports)] * 3
+        messages = transcribe(api, "uid-continued", voiced=SPEAKING)
+
+        assert codes(messages)[-1] == TaskStatus.COMPLETED
+        assert fake.durations == pytest.approx([26.0, 20.0, 13.0], abs=0.01)
+        segments = stored_segments(api, messages[-1]["task_uuid"])
+        # 每一句剛好一次：重疊區轉了兩次的句子只留一份
+        assert [s["start"] for s in segments] == pytest.approx(SPEAKING_STARTS, abs=0.01)
+        assert flat_times(segments)[-1] == pytest.approx(26.0, abs=0.01)
+        assert [s["seg_key"] for s in segments] == [
+            "0000", "0001", "0002", "0003", "c1.0002", "c1.0003", "c2.0002", "c2.0003"]
+        assert tail_loss_from(messages) is None
+        assert recorded_tail_loss_from(api, messages) is None
+        # 處理中的狀態說明在接續（供應商的進度從接續段的開頭重新算起），不寫接續了幾次（#94 第 3 題）
+        texts = [m["status_text"] for m in messages]
+        assert "接續轉錄 00:06 之後的部分..." in texts
+        assert "接續轉錄 00:13 之後的部分..." in texts
+
+    def test_speakers_of_the_continuation_are_matched_to_the_earlier_ones(self, api, fake):
+        # 接續段從第 3 句（B）聽起，B 是它的 S0、A 是 S1，和第一次相反；重疊區兩邊同時說話的配成同一位
+        fake.script = [Listen(stops_after=15.0)] * 3
+        messages = transcribe(api, "uid-continued-speakers", voiced=SPEAKING)
+
+        segments = stored_segments(api, messages[-1]["task_uuid"])
+        assert len(segments) == len(SPEAKING)
+        assert {(heard_tone(s), s["speaker"]) for s in segments} == {(400, "S0"), (700, "S1")}
+
+    def test_gives_up_after_the_last_attempt_and_says_where_it_stopped(
+            self, api, fake, settings, monkeypatch):
+        # 最多接續 1 次：接續轉到 19 秒又停了，不再接續。任務照樣完成，保留已轉的部分，從 19 秒起可能
+        # 沒有轉錄到
+        monkeypatch.setattr(settings, "continuation_max_attempts", 1)
+        fake.script = [Listen(stops_after=15.0)] * 2
+        messages = transcribe(api, "uid-continued-once", voiced=SPEAKING)
+
+        assert codes(messages)[-1] == TaskStatus.COMPLETED
+        assert len(fake.calls) == 2
+        segments = stored_segments(api, messages[-1]["task_uuid"])
+        assert [s["start"] for s in segments] == pytest.approx(SPEAKING_STARTS[:6], abs=0.01)
+        assert tail_loss_from(messages) == pytest.approx(19.0, abs=0.01)
+        assert recorded_tail_loss_from(api, messages) == pytest.approx(19.0, abs=0.01)
+
+    @pytest.mark.parametrize("again", [
+        # 卡住：接續只轉出重疊區裡的一句（原音檔的 7–8.5 秒），沒有轉到 12 秒之後
+        Listen(stops_after=5.0),
+        Fail("模型壞掉了"),
+        TransientError("503 服務暫時無法使用"),
+    ], ids=["stuck", "failed", "transient-errors"])
+    def test_continuation_that_fails_or_gets_stuck_keeps_what_was_transcribed(
+            self, api, fake, settings, monkeypatch, quick_transient_retries, again):
+        # 接續失敗或卡住時不讓任務失敗（#94 第 1 題）：保留已轉的前 4 句，從 12 秒起可能沒有轉錄到。暫時
+        # 錯誤照樣等一段時間重試，重試用完才放棄
+        monkeypatch.setattr(settings, "transient_error_retries", 1)
+        fake.script = [Listen(stops_after=15.0), again, again]
+        messages = transcribe(api, "uid-continuation-gave-up", voiced=SPEAKING)
+
+        assert codes(messages)[-1] == TaskStatus.COMPLETED
+        assert len(fake.calls) == (3 if isinstance(again, TransientError) else 2)
+        segments = stored_segments(api, messages[-1]["task_uuid"])
+        assert [s["start"] for s in segments] == pytest.approx(SPEAKING_STARTS[:4], abs=0.01)
+        assert tail_loss_from(messages) == pytest.approx(12.0, abs=0.01)
+
+    def test_model_without_continuation_is_not_continued(self, api, fake):
+        # Gemini 在 v0.1 不接續（#94 第 2 題）：停下就停下，只用掉尾的提示告訴使用者
+        fake.model_capabilities = replace(fake.model_capabilities, continuation=False)
+        fake.script = [Listen(stops_after=15.0)] * 3
+        messages = transcribe(api, "uid-not-continued", voiced=SPEAKING)
+
+        assert len(fake.calls) == 1
+        assert tail_loss_from(messages) == pytest.approx(12.0, abs=0.01)
+
+    def test_audio_that_ends_with_silence_is_not_continued(self, api, fake):
+        # 最後一句之後只剩靜音：轉到結尾了，不接續
+        fake.script = [Listen(stops_after=15.0)] * 3
+        messages = transcribe(api, "uid-silent-end", voiced=SPEAKING[:4], length=26.0)
+
+        assert codes(messages)[-1] == TaskStatus.COMPLETED
+        assert len(fake.calls) == 1
+        assert tail_loss_from(messages) is None
+
+    def test_each_chunk_is_continued_on_its_own(self, api, fake):
+        # 分段轉錄：單次只能處理 15 秒，26 秒切在最接近中點的靜音 13.0 秒，兩段各 13 秒。第一段只轉出
+        # 10 秒以內的（前 3 句）就停在 8.5 秒。接續往前重疊 4 秒到 4.5 秒，但最多重疊到停下的地方的一半
+        # （4.25 秒），這之間沒有靜音，就從 4.5 秒送這一段的結尾，切到第 2 句的最後半秒也沒關係：重疊區裡
+        # 的用前段的。第二段一次轉完
+        fake.model_capabilities = replace(fake.model_capabilities, single_pass_seconds=15.0)
+        fake.script = [Listen(stops_after=10.0), Listen(), Listen()]
+        messages = transcribe(api, "uid-chunk-continued", voiced=SPEAKING)
+
+        assert codes(messages)[-1] == TaskStatus.COMPLETED
+        assert fake.durations == pytest.approx([13.0, 8.5, 13.0], abs=0.01)
+        segments = stored_segments(api, messages[-1]["task_uuid"])
+        assert [s["start"] for s in segments] == pytest.approx(SPEAKING_STARTS, abs=0.01)
+        # 接續段聽到的是半句、第 3 句、第 4 句，只留第 4 句
+        assert [s["seg_key"] for s in segments] == [
+            "a.0000", "a.0001", "a.0002", "a.c1.0002", "b.0000", "b.0001", "b.0002", "b.0003"]
+        assert tail_loss_from(messages) is None
+
+    def test_cancel_during_a_continuation_cancels_the_task(self, api, fake, data_dir):
+        # 接續送出之後使用者取消：任務記成已取消，切出的接續音檔照樣清掉
+        resent = threading.Event()
+
+        def hold_the_continuation(path):
+            if len(fake.calls) == 2:
+                fake.hold = threading.Event()
+                resent.set()
+
+        fake.examine = hold_the_continuation
+        fake.script = [Listen(stops_after=15.0)] * 3
+        filename = upload(api, voiced=SPEAKING)
+        with api.websocket_connect("/api/v1/ws/uid-cancel-continuation") as ws:
+            submit(ws, filename)
+            assert resent.wait(TIMEOUT)
+            cancel_when_dispatched(api, "uid-cancel-continuation")
+            endpoint_end = receive_until_terminal(ws)[-1]
+            task_end = receive_until_terminal(ws)[-1]
+
+        assert codes([endpoint_end, task_end]) == [TaskStatus.CANCELLED] * 2
+        assert len(fake.calls) == 2
+        assert leftovers(data_dir) == []
+
+
 class TestSplitRetryAfterFailure:
     """失敗後切段重試（#112）。去靜音之後 7.2 秒的語音視圖（見 VOICED）由三個有聲段接成，交界在 2.3 與
     4.9 秒；單次只能處理 5 秒，在 4.9 秒切成 4.9 秒與 2.3 秒兩段。失敗的段不短於 2 秒才切段重試。"""
@@ -1513,6 +1674,7 @@ class TestModelCapabilitiesEndpoint:
             "queue": "local_asr",
             "can_terminate": False,
             "split_retry_on_failure": False,
+            "continuation": False,
             "accepts_prompt": False,
             "accepts_user_text": True,
             "supports_batch": False,
