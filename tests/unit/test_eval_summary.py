@@ -1,16 +1,19 @@
 """``python -m tools.eval summary``：把 eval 的 JSON 與兩邊的 manifest 整理成 PR 的評測摘要（#38），
-最後照 ADR 0009 判定回歸（#264）。
+比對兩邊的環境（#276），最後照 ADR 0009 判定回歸（#264）。
 
 摘要要貼進 PR，所以只能有數字、雜湊與檔名：標準答案與轉錄結果的文字一個字都不能出現（#15 的 Q4）。
+環境比對每一項的規則在 test_eval_environment.py；這裡測它和判定接在一起。
 """
 import json
 import textwrap
 
 import pytest
 
-from tools.eval import cli
+from tools.eval import cli, environment
 
 REFERENCE_TEXT = "我們下週二去爬山"
+MOSS = "OpenMOSS-Team/MOSS-Transcribe-Diarize"
+REVISION = "704aa4a9c304e8520be88901e0d1960158ef5b15"
 
 
 def _write(path, text):
@@ -20,17 +23,31 @@ def _write(path, text):
 
 
 def _manifest(lrc, commit, *, sha256="ab" * 32, duration=30.0, rtf=0.1234, vram=10.5,
-              dirty=False, audio="demo.wav", language="zh-TW"):
-    """transcribe 在轉錄結果旁邊寫的 manifest（只留摘要用到的欄位）。"""
+              dirty=False, audio="demo.wav", language="zh-TW", driver="576.02", revision=REVISION):
+    """transcribe 在轉錄結果旁邊寫的 manifest（環境只留每一類的一項）。"""
     manifest = {
         "command": "transcribe",
         "request": {"provider": "local", "model": "moss-align", "language": language},
         "audio": {"file": audio, "sha256": sha256, "duration_seconds": duration},
         "code": {"commit": commit, "dirty": dirty},
+        "environment": {
+            "packages": {"torch": {"version": "2.8.0+cu128", "source": None}},
+            "gpu": {"name": "NVIDIA GeForce RTX 4080 SUPER", "vram_gb": 16.0, "driver": driver,
+                    "cuda_visible_devices": "0"},
+            "model_revisions": {MOSS: revision},
+            "settings": {"remove_silence": False},
+        },
         "run": {"success": True, "rtf": rtf, "peak_vram_gb": vram},
     }
     lrc.with_name(f"{lrc.stem}.manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+
+
+@pytest.fixture(autouse=True)
+def baseline_in_history(monkeypatch):
+    """基準的 commit 都在這個 PR 的歷史裡：測試裡的 commit 是假的，git 找不到（真的 git 在
+    test_eval_environment.py 測）。"""
+    monkeypatch.setattr(environment, "git_is_ancestor", lambda base, head: True)
 
 
 @pytest.fixture
@@ -77,7 +94,7 @@ def test_eval_json_has_what_the_summary_needs(lab, runs, tmp_path, capsys):
 
 def test_compares_main_and_the_pull_request(lab, runs, tmp_path, capsys):
     _manifest(runs[0], "1" * 40, rtf=0.1234, vram=10.5)
-    _manifest(runs[1], "2" * 40, rtf=0.2, vram=None, dirty=True)
+    _manifest(runs[1], "2" * 40, rtf=0.2, vram=None)
     path = _eval(capsys, tmp_path / "eval.json", *runs)
 
     code, out, _ = _summary(capsys, path)
@@ -85,7 +102,7 @@ def test_compares_main_and_the_pull_request(lab, runs, tmp_path, capsys):
     assert code == 0
     assert "### 評測摘要：demo.wav" in out
     assert "| | 基準（--transcript） | 這個 PR（--vs） |" in out
-    assert f"| commit | `{'1' * 12}` | `{'2' * 12}`（有沒 commit 的改動） |" in out
+    assert f"| commit | `{'1' * 12}` | `{'2' * 12}` |" in out
     assert "| 模型與語言 | local／moss-align／zh-TW | local／moss-align／zh-TW |" in out
     assert "| 錯字率（MER） | 12.50% | 0.00% |" in out
     assert "| cpMER（全域對應） | 12.50% | 0.00% |" in out
@@ -98,8 +115,89 @@ def test_compares_main_and_the_pull_request(lab, runs, tmp_path, capsys):
     assert ("`python -m tools.eval transcribe --audio demo.wav --provider local --model moss-align "
             "--language zh-TW`") in out
     assert "--transcript <基準的 LRC> --vs <這個 PR 的 LRC> --bootstrap 1000" in out
+    assert "### 環境比對" in out
+    assert f"| commit | `{'1' * 12}` | `{'2' * 12}` | 基準在這個 PR 的歷史裡 |" in out
+    assert "| 驅動 | 576.02 | 同左 | 相同 |" in out
+    assert "- 環境相同，可以直接和基準比。" in out
     assert "| 中文 | demo_A | 8 | 12.50%（1 個錯） → 0.00%（0 個錯） | 12.50%（1 個錯） → 0.00%（0 個錯） | 通過 |" in out
     assert out.rstrip().endswith("- 判定：通過（中文）")
+
+
+@pytest.mark.parametrize(("change", "row"), [
+    ({"driver": "581.57"}, "| 驅動 | 576.02 | 581.57 | **不同** |"),
+    ({"revision": "f" * 40}, f"| 模型權重：{MOSS} | `704aa4a9c304` | `ffffffffffff` | **不同** |"),
+], ids=["driver", "weight revision"])
+def test_a_different_environment_gets_no_verdict(lab, runs, tmp_path, capsys, change, row):
+    # PR 少錯一個字，但環境不同：差異可能來自環境，不判定通過
+    _manifest(runs[0], "1" * 40)
+    _manifest(runs[1], "2" * 40, **change)
+    path = _eval(capsys, tmp_path / "eval.json", *runs)
+
+    _, out, _ = _summary(capsys, path)
+
+    name = row.split(" | ")[0].removeprefix("| ")
+    assert row in out
+    assert f"- ⚠ 環境不同（{name}）：先在目前的環境用 main 重建基準，再重跑評測。" in out
+    assert "| 中文 | demo_A | 8 | 12.50%（1 個錯） → 0.00%（0 個錯） | 12.50%（1 個錯） → 0.00%（0 個錯） | 不判定 |" in out
+    assert out.rstrip().endswith(
+        f"- 判定：無法判定：基準與這個 PR 不能直接比（{name}），這次不下判定。"
+        "先照「環境比對」的說明重建基準或重跑，再評測一次；代理不合併")
+    assert out.index("### 環境比對") < out.index("### 回歸判定")
+
+
+def test_a_regression_in_a_different_environment_gets_no_verdict_either(lab, runs, tmp_path, capsys):
+    _manifest(runs[0], "1" * 40)
+    _manifest(runs[1], "2" * 40, driver="581.57")
+    path = _eval(capsys, tmp_path / "eval.json", runs[1], runs[0])
+
+    _, out, _ = _summary(capsys, path)
+
+    assert "| 中文 | demo_A | 8 | 0.00%（0 個錯） → 12.50%（1 個錯） |" in out
+    assert "| 回歸 |" not in out
+    assert "- 判定：無法判定：基準與這個 PR 不能直接比（驅動）" in out
+
+
+def test_a_dirty_run_is_flagged_and_gets_no_verdict(lab, runs, tmp_path, capsys):
+    _manifest(runs[0], "1" * 40)
+    _manifest(runs[1], "2" * 40, dirty=True)
+    path = _eval(capsys, tmp_path / "eval.json", *runs)
+
+    _, out, _ = _summary(capsys, path)
+
+    assert f"| commit | `{'1' * 12}` | `{'2' * 12}`（有沒 commit 的改動） |" in out
+    assert "**這個 PR 有沒 commit 的改動** |" in out
+    assert "- ⚠ commit：數字要對得上這個 PR 的 commit：commit 之後重跑這個 PR 的轉錄。" in out
+    assert "- 判定：無法判定：基準與這個 PR 不能直接比（commit）" in out
+
+
+def test_the_baseline_must_be_in_the_history_of_the_pull_request(lab, runs, tmp_path, capsys,
+                                                                 monkeypatch):
+    # PR 落後 main、基準已經換成新的 main：兩邊的差異不只這個 PR 的改動
+    monkeypatch.setattr(environment, "git_is_ancestor", lambda base, head: False)
+    _manifest(runs[0], "1" * 40)
+    _manifest(runs[1], "2" * 40)
+    path = _eval(capsys, tmp_path / "eval.json", *runs)
+
+    _, out, _ = _summary(capsys, path)
+
+    assert "**基準不在這個 PR 的歷史裡** |" in out
+    assert "- 判定：無法判定：基準與這個 PR 不能直接比（commit）" in out
+
+
+def test_every_audio_file_is_compared(lab, runs, tmp_path, capsys):
+    # 另一個音檔的基準換了驅動才跑：就算 demo 兩邊相同，也不能合起來判定
+    for lrc in runs:
+        _manifest(lrc, "1" * 40)
+    demo = _eval(capsys, tmp_path / "demo.json", *runs)
+    other = _other_audio(lab, tmp_path, capsys, base_text="東京大学図", head_text="東京大学図書館",
+                         language="zh-CN")
+    _manifest(tmp_path / "runs" / "main" / "other.lrc", "1" * 40, sha256="cd" * 32, audio="other.wav",
+              language="zh-CN", driver="581.57")
+
+    _, out, _ = _summary(capsys, demo, other)
+
+    assert "| 驅動 | 576.02；581.57 | 576.02 | **基準的音檔之間就不同** |" in out
+    assert "- 判定：無法判定：基準與這個 PR 不能直接比（驅動）" in out
 
 
 def test_never_prints_any_transcript_or_reference_text(lab, runs, tmp_path, capsys):
@@ -120,6 +218,7 @@ def test_single_transcript(lab, runs, tmp_path, capsys):
     _, out, _ = _summary(capsys, path)
 
     assert "| | 轉錄結果 |" in out
+    assert "### 環境比對" not in out  # 沒有基準，沒得比
     assert "| 錯字率（MER） | 12.50% |" in out
     assert "ΔMER" not in out
     assert "--vs" not in out
@@ -137,6 +236,10 @@ def test_missing_manifest_leaves_blanks_and_says_so(lab, runs, tmp_path, capsys)
     assert "| 結尾核對 | 最後一行 0:01 | 最後一行 0:01，音檔 0:30" in out
     assert "找不到 manifest" in out
     assert "demo.lrc" in out
+    # 少了基準的 manifest 就比不了環境：不拿這個音檔判定
+    assert "### 環境比對" not in out
+    assert "- 沒算進判定：demo.wav（找不到其中一邊的 manifest，比不了環境）" in out
+    assert "- 判定：無法判定" in out
 
 
 def test_warns_when_the_two_runs_used_different_audio(lab, runs, tmp_path, capsys):
