@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from app.core.error_codes import ErrorCode
+from app.provider.local import packages
 # HF_HOME 由 weights 模組（權重單一事實來源）於 import 時設定
 from app.provider.local.weights import (  # noqa: F401 — re-export 供既有引用
     ALIGNER_MODEL_ID,
@@ -46,13 +47,6 @@ from app.provider.local.weights import (  # noqa: F401 — re-export 供既有�
 )
 # 權重載入進度條的每次刷新在 Celery 日誌都是一行 WARNING，關閉
 os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
-# transformers 只留 error。被消音的提示皆已逐一確認無害：
-# - max_new_tokens 與模型內建 generation config 的 max_length 同時存在
-#   （前者優先，即預期行為）
-# - "exceeded maximum length (450)" 為誤報：450 是 VibeVoiceAsrConfig 把
-#   acoustic tokenizer 每 60s chunk 的音訊 token 數（1440000/3200）暴露成
-#   max_position_embeddings 所致，文字解碼器實際上限為 131072
-os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
 
 import soundfile as sf
 
@@ -61,6 +55,10 @@ from app.provider.base import ProgressAndCancel
 from app.utils.audio import FFMPEG_ERRORS_ONLY
 from app.utils.binaries import ffmpeg_bin
 from app.utils.logger import setup_logger
+
+# transformers 只留 error（被消音的提示與理由見 packages.quiet_transformers）。要在第一次匯入
+# transformers 之前：上面的匯入都不會匯入它，transformers 在下面的函式裡才匯入
+packages.quiet_transformers()
 
 logger = setup_logger(__name__)
 
