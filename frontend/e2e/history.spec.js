@@ -7,7 +7,7 @@ const RECORDS = [
         status: 'COMPLETED', original_filename: 'meeting.wav', audio_duration_seconds: 300.0,
         model_used: 'moss-align', source_language: 'zh-TW', total_tokens: 0, cost: 0.0,
         error_code: null, error_message: null, is_batch: false, session_id: 'session-1', file_uid: 'file-1',
-        service_tier_used: 'standard',
+        service_tier_used: 'standard', tail_loss_from_seconds: null,
     },
     {
         task_uuid: 'task-2', request_timestamp: '2026-10-21T09:00:00', completed_at: null,
@@ -15,7 +15,7 @@ const RECORDS = [
         model_used: 'gemini-3.5-flash', source_language: 'ja-JP', total_tokens: 1200, cost: 0.0042,
         error_code: 'GEMINI_UNAVAILABLE', error_message: '503 UNAVAILABLE: The model is overloaded.',
         is_batch: false, session_id: 'session-2', file_uid: 'file-2',
-        service_tier_used: 'standard',
+        service_tier_used: 'standard', tail_loss_from_seconds: null,
     },
 ]
 
@@ -66,6 +66,34 @@ test('失敗的那一列在檔名下面寫出原因，滑過去看下一步與�
     const tooltip = page.getByRole('tooltip')
     await expect(tooltip).toContainText('已經自動重試過幾次')
     await expect(tooltip).toContainText('錯誤碼 GEMINI_UNAVAILABLE · 503 UNAVAILABLE: The model is overloaded.')
+})
+
+test('可能掉尾的完成任務在檔名下面寫出從哪裡起可能沒有轉錄到，滑過去看下一步（#257）', async ({ page, mockBackend }) => {
+    // 批次的結果只在這裡看得到：轉錄頁的檔案卡沒有批次的轉錄結果
+    const stopped = { ...RECORDS[0], tail_loss_from_seconds: 3000.4, is_batch: true }
+    await mockBackend({
+        routes: {
+            ...HISTORY_ROUTES,
+            'GET /history': { items: [stopped, RECORDS[1]], total: 2, page: 1, page_size: 10, total_pages: 1 },
+        },
+    })
+    await page.goto('/history')
+
+    const hint = recordRow(page, 'meeting.wav').getByText('從 50:00 起可能沒有轉錄到')
+    await expect(hint).toBeVisible()
+    // 失敗的那一列沒有轉錄結果，也就沒有掉尾的提示
+    await expect(recordRow(page, 'interview.mp3').getByText(/可能沒有轉錄到/)).toHaveCount(0)
+
+    await hint.hover()
+    await expect(page.getByRole('tooltip')).toContainText('只是音樂或環境音就不必理會')
+})
+
+test('完成的任務沒有掉尾時，不寫可能沒有轉錄到（#257）', async ({ page, mockBackend }) => {
+    await mockBackend({ routes: HISTORY_ROUTES })
+    await page.goto('/history')
+
+    await expect(recordRow(page, 'meeting.wav')).toContainText('完成')
+    await expect(page.getByText(/可能沒有轉錄到/)).toHaveCount(0)
 })
 
 test('成功率照後端算的數字顯示：處理中與已取消的任務不算進分母', async ({ page, mockBackend }) => {

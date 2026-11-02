@@ -238,7 +238,30 @@ def test_a_chinese_file_is_stored_in_traditional_like_a_single_file_task(
     assert [s["text"] for s in stored_segments(api, ja["task_uuid"])] == ["我们开会。"]
 
 
-MULTI_SPEAKER_NAMES = ["labelled.wav", "unlabelled.wav"]
+def test_a_file_that_stopped_early_is_recorded_like_a_single_file_task(
+        api, in_process_run_mode, batch_fake, monkeypatch):
+    # 批次不分段：結果放回原音檔的時間軸之後，檢查整個音檔（#257）。門檻改成 2 秒（見
+    # test_provider_seam.py 的 TestTailLoss）。第一個檔案只轉出第一句就停了，後面兩個有聲段沒轉到；
+    # 第二個檔案轉到了結尾
+    from app.core.config import get_settings
+    monkeypatch.setattr(get_settings(), "tail_loss_min_seconds", 2.0)
+    batch_fake.script = [[(0.2, 1.5, 0, "おはよう。")], list(LINES)]
+    names = ["stopped-early.wav", "to-the-end.wav"]
+
+    messages = run_batch(api, in_process_run_mode, "batch-tail-loss", names)
+
+    stopped, whole = ends(messages, names)
+    assert codes([stopped, whole]) == [TaskStatus.COMPLETED] * 2
+    assert stopped["result"]["tail_loss_from_seconds"] == pytest.approx(1.5)
+    assert whole["result"]["tail_loss_from_seconds"] is None
+    assert record(api, stopped["task_uuid"])["tail_loss_from_seconds"] == pytest.approx(1.5)
+    assert record(api, whole["task_uuid"])["tail_loss_from_seconds"] is None
+    # 之後再取回結果，從任務紀錄讀出，和完成時廣播的相同
+    again = api.post("/api/v1/batch/batch-tail-loss/recover", json={}).json()
+    assert [f["result"] for f in again["files"]] == [stopped["result"], whole["result"]]
+
+
+MULTI_SPEAKER_NAMES =["labelled.wav", "unlabelled.wav"]
 MULTI_SPEAKER_REQUEST = {"multi_speaker": True,
                          "fields_per_file": {"unlabelled.wav": {"multi_speaker": False}}}
 """批次層級開著 Multi-Speaker，第二個檔案在每檔設定裡關掉。"""

@@ -180,6 +180,8 @@ export function transcriptionMessages(request) {
                 source_language: request.source_lang,
                 audio_duration_seconds: 5.0,
                 speaker_count: 2,
+                // 轉到了結尾：沒有可能掉尾的起點（#257）
+                tail_loss_from_seconds: null,
             },
         },
     }

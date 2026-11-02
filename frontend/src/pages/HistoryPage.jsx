@@ -15,6 +15,7 @@ import { downloadBlob, renameExtension } from "../utils/download"
 import { StatCard } from "../components/StatCard"
 import { STATUS_META, TASK_STATUS } from "../constants/taskStatus"
 import { FailureSummary } from "../components/FailureNotice"
+import { TailLossSummary } from "../components/TailLossNotice"
 import { failureOf } from "../utils/failure"
 
 const { Text } = Typography
@@ -118,6 +119,13 @@ export default function HistoryPage() {
                     {record.status === TASK_STATUS.FAILED && (record.error_code || record.error_message) && (
                         <FailureSummary
                             failure={failureOf(record)}
+                            style={{ display: "block", maxWidth: 250, marginLeft: 22, fontSize: 12 }}
+                        />
+                    )}
+                    {/* 完成了，轉錄結果卻可能少了一段（#257）：批次的結果只在這裡看得到 */}
+                    {record.status === TASK_STATUS.COMPLETED && (
+                        <TailLossSummary
+                            seconds={record.tail_loss_from_seconds}
                             style={{ display: "block", maxWidth: 250, marginLeft: 22, fontSize: 12 }}
                         />
                     )}

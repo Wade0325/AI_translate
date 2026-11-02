@@ -432,6 +432,8 @@ export default function TranscribePage() {
                             cost: file.cost,
                             result: file.result,
                             failure: file.failure,
+                            // 可能掉尾的起點（utils/tailLoss.js）；沒有掉尾時是 null
+                            tailLossFrom: file.tailLossFrom ?? null,
                             // 送出之後連線斷了時的狀況（utils/connectionLoss.js），接回之後清掉
                             connection: file.connection ?? null,
                             userSuppliedText: file.userSuppliedText,

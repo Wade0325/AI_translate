@@ -185,6 +185,8 @@ test('選本機送出一個檔案，顯示處理中，完成後到結果頁下�
     await expect(page.getByText('轉錄中...')).toBeVisible()
     finish()
     await expect(page.getByText('轉錄完成')).toBeVisible()
+    // 轉到了結尾：沒有掉尾的提示（#257）
+    await expect(page.getByTestId('tail-loss-notice')).toHaveCount(0)
     // 先上傳，再用上傳拿到的伺服器檔名開任務；本機不吃提示詞與使用者文稿，送出時不帶
     expect(backend.requests.filter((r) => r.path === '/upload')).toHaveLength(1)
     expect(backend.transcriptionRequests).toEqual([
@@ -204,7 +206,36 @@ test('選本機送出一個檔案，顯示處理中，完成後到結果頁下�
     await expect(page.getByText(AUDIO.name)).toBeVisible()
     // 說話者人數是後端從轉錄結果算的，不是轉錄頁填的人數（#13 Q1）
     await expect(page.getByText('2 speaker(s)')).toBeVisible()
+    await expect(page.getByTestId('tail-loss-notice')).toHaveCount(0)
 
+    await page.getByRole('button', { name: 'Download', exact: true }).hover()
+    expect(await download(page, () => page.getByText('SRT (Subtitles)').click()))
+        .toEqual({ filename: 'meeting.srt', text: TRANSCRIPTS.srt })
+})
+
+test('轉錄結果可能掉尾：檔案卡與結果頁都寫出從哪裡起可能沒有轉錄到，照樣可以下載（#257）', async ({ page, mockBackend }) => {
+    // 例如本機的 MOSS 在約 50 分鐘處提早停止輸出：任務照樣完成，結果帶著可能掉尾的起點
+    await mockBackend({
+        routes: { 'POST /upload': { filename: 'meeting_1.wav' } },
+        transcribe: async (request, send) => {
+            const { processing, completed } = transcriptionMessages(request)
+            send(processing)
+            send({ ...completed, result: { ...completed.result, tail_loss_from_seconds: 3000.4 } })
+        },
+    })
+    await page.goto('/transcribe')
+    await addAudio(page)
+    await page.getByRole('button', { name: 'Start' }).click()
+
+    const card = page.getByTestId('tail-loss-notice')
+    await expect(card).toContainText('從 50:00 起可能沒有轉錄到')
+    await expect(card).toContainText('只是音樂或環境音就不必理會')
+    // 任務是完成，不是失敗：沒有失敗的說明
+    await expect(page.getByText('轉錄完成')).toBeVisible()
+    await expect(page.getByTestId('failure-notice')).toHaveCount(0)
+
+    await page.getByRole('link', { name: 'Result Viewer' }).click()
+    await expect(page.getByTestId('tail-loss-notice')).toContainText('從 50:00 起可能沒有轉錄到')
     await page.getByRole('button', { name: 'Download', exact: true }).hover()
     expect(await download(page, () => page.getByText('SRT (Subtitles)').click()))
         .toEqual({ filename: 'meeting.srt', text: TRANSCRIPTS.srt })

@@ -22,6 +22,18 @@ export function formatDuration(seconds) {
   return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${ss}` : `${m}:${ss}`;
 }
 
+/**
+ * 原音檔上的時間 → 「MM:SS」，一小時以上是「H:MM:SS」；秒以下捨去。和後端寫在訊息裡的時間同一種寫法
+ * （backend/app/services/chunked_transcription.py 的 _clock）。
+ */
+export function formatClock(seconds) {
+  const total = Math.max(0, Math.floor(seconds || 0));
+  const h = Math.floor(total / 3600);
+  const mm = String(Math.floor((total % 3600) / 60)).padStart(2, '0');
+  const ss = String(total % 60).padStart(2, '0');
+  return h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
+}
+
 /** 位元組 → 「12.3 MB」或「1.5 GB」（小數一位）；不是 0 的至少顯示 0.1 MB。 */
 export function formatFileSize(bytes) {
   if (bytes <= 0) return '0 MB';

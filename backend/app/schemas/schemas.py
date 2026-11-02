@@ -154,6 +154,8 @@ class HistoryLogResponse(BaseModel):
     session_id: Optional[str] = None
     file_uid: Optional[str] = None
     service_tier_used: Optional[str] = None
+    # 可能掉尾的起點（原音檔的秒數，app.services.tail_loss）；畫面照它寫「從 mm:ss 起可能沒有轉錄到」
+    tail_loss_from_seconds: Optional[float] = None
 
     model_config = ConfigDict(from_attributes=True)
 

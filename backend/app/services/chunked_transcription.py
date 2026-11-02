@@ -20,6 +20,8 @@
    之後接在這裡：拿得到所有轉完的段，每一段帶著音檔、位置與段內片段。
 5. 放回原音檔的時間軸（:meth:`SpeechTimeline.in_original_order`）：時間還原回原音檔，依開始時間
    排好、重編序號。批次不分段，結果回來之後也經過同一步。
+6. 掉尾（#257）：每一段各自檢查最後一個片段之後還有沒有聲音（:mod:`app.services.tail_loss`，扣掉語音
+   視圖記下的靜音），取最早的起點寫進轉錄結果；中間的段也可能提早停止，最後一段卻轉到了結尾。
 
 片段 key：依單次長度切出的兩段前綴是 ``a``、``b``，切段重試切出的兩段是 ``s0``、``s1``，由外往內接，
 例如 ``a.b.0003``、``b.s1.0002``；沒有分段時就是轉接器給的 key。
@@ -44,6 +46,7 @@ from app.core.config import get_settings
 from app.core.error_codes import ErrorCode, Failure, describe
 from app.exceptions import TranscriptionCancelledError, TransientError
 from app.provider.base import ProgressAndCancel, Provider, TranscribeRequest
+from app.services import tail_loss
 from app.services.silence_removal import SpeechView
 from app.services.transcription.models import TranscriptionTaskResult
 from app.services.inspection_artifacts import persist_split
@@ -376,14 +379,32 @@ class _ChunkedTranscription:
         why = _why_no_segments(segments, self._transcribed)
         return self._result(success=True, text=why.text if why else "",
                             error_code=why.error_code if why else None,
-                            segments=self._view.timeline.in_original_order(segments))
+                            segments=self._view.timeline.in_original_order(segments),
+                            tail_loss_from=self._tail_loss_from())
+
+    def _tail_loss_from(self) -> Optional[float]:
+        """可能掉尾的起點（原音檔的時間軸）：每一段各自檢查（:func:`tail_loss.tail_loss_from`），取最早
+        的；都沒有時是 None。"""
+        timeline = self._view.timeline
+        starts = []
+        for piece in self._transcribed:
+            chunk = piece.chunk
+            found = tail_loss.tail_loss_from(
+                timeline.restore([_placed(segment, chunk) for segment in piece.result.segments]),
+                start=timeline.to_original(chunk.start),
+                end=timeline.to_original(chunk.start + chunk.duration, end=True),
+                silences=self._view.silences)
+            if found is not None:
+                starts.append(found)
+        return min(starts, default=None)
 
     def _failed_result(self, failure: Failure) -> TranscriptionTaskResult:
         """以失敗結束的轉錄結果，帶著錯誤碼與到目前為止的用量。"""
         return self._result(success=False, text=failure.detail, error_code=failure.code)
 
     def _result(self, *, success: bool, text: str, error_code: Optional[ErrorCode] = None,
-                segments: Sequence[Dict[str, Any]] = ()) -> TranscriptionTaskResult:
+                segments: Sequence[Dict[str, Any]] = (),
+                tail_loss_from: Optional[float] = None) -> TranscriptionTaskResult:
         """帶著到目前為止的用量的轉錄結果。"""
         usage = self._usage or TranscriptionTaskResult(success=False)
         return TranscriptionTaskResult(
@@ -395,6 +416,7 @@ class _ChunkedTranscription:
             total_tokens=usage.total_tokens,
             service_tier_used=usage.service_tier_used,
             segments=list(segments),
+            tail_loss_from=tail_loss_from,
         )
 
 

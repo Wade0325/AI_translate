@@ -133,6 +133,9 @@ class TranscriptionLog(Base):
     # 副本照樣有說話者編號。開關做出來之前（#259）的任務是 NULL，當成開，下載結果不變
     # （app.services.output_format.shows_speaker_labels）
     multi_speaker = Column(Boolean, nullable=True)
+    # 可能掉尾的起點（原音檔的秒數，#257）：完成的任務從這裡起可能有內容沒有轉錄到，畫面照它提醒使用者
+    # （app.services.tail_loss）。沒有掉尾、沒有完成，以及這一欄加上之前的任務是 NULL
+    tail_loss_from_seconds = Column(Float, nullable=True)
 
 
 class TranscriptSegment(Base):

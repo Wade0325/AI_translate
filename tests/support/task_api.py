@@ -41,16 +41,18 @@ def ping(ws) -> None:
     ws.send_json({"type": "ping"})
 
 
-def upload(api: TestClient, name: str = "voice.wav", voiced=VOICED) -> str:
-    """上傳合成音檔（有聲段見 synthetic_audio；副檔名是 .flac 時寫成 FLAC，是 .mp4 時做成同樣聲音的
-    合成影片），回傳暫存的檔名。"""
+def upload(api: TestClient, name: str = "voice.wav", voiced=VOICED,
+           length: float | None = None) -> str:
+    """上傳合成音檔（有聲段與長度見 synthetic_audio；副檔名是 .flac 時寫成 FLAC，是 .mp4 時做成同樣
+    聲音的合成影片），回傳暫存的檔名。"""
     if name.endswith(".mp4"):
+        assert length is None, "合成影片不補靜音"
         with TemporaryDirectory() as folder:
             content = synthetic_video(Path(folder) / "clip.mp4", voiced).read_bytes()
         content_type = "video/mp4"
     else:
         fmt, content_type = ("FLAC", "audio/flac") if name.endswith(".flac") else ("WAV", "audio/wav")
-        content = synthetic_audio(fmt, voiced)
+        content = synthetic_audio(fmt, voiced, length)
     response = api.post("/api/v1/upload", files={"file": (name, content, content_type)})
     assert response.status_code == 200, response.text
     return response.json()["filename"]
