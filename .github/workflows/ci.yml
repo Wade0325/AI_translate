@@ -267,7 +267,7 @@ jobs:
           fi
 
   portable:
-    # 免安裝版的建置（#256）：和 release.yml 的 windows-zip 一樣先建前端，再用 Windows PowerShell
+    # 免安裝版的建置（#256）：和 release.yml 的 build job 一樣先建前端，再用 Windows PowerShell
     # 執行 build_release.ps1 -SkipFrontend；不上傳、不發布。打包的改動（build_release.ps1、
     # tools/launcher.cs）因此每個 PR 都在 Windows 上實際建置過一次，不必等維護者在本機建置。
     # - 建置前先在 backend/ 與 data/ 放進用過的開發環境會有的執行期資料（tools/portable_zip.py plant），
@@ -276,7 +276,7 @@ jobs:
     # - 建好後檢查 zip：檔名、最上層資料夾與 exe 的名稱是 Mimiji（#277）、第 7 步清單裡的檔案都在、
     #   backend/ 只有白名單裡的檔案、沒有執行期資料、exe 帶圖示與版本資訊，並在日誌列出 zip 的內容
     #   （tools/portable_zip.py check）
-    # - 準備發版時要附的 ffmpeg 原始碼並驗證（tools/ffmpeg_sources.py，#274）
+    # - 準備發版時要上傳的附件並檢查齊全（tools/release_assets.py，#278；FFmpeg 的原始碼由 tools/ffmpeg_sources.py 準備，#274）
     # 每個 PR 都跑（只改文件時跳過）：Python embeddable、uv 與 ffmpeg 每次重新下載，不用快取
     needs: changes
     if: needs.changes.outputs.docs_only != 'true'
@@ -310,11 +310,14 @@ jobs:
         run: .\build_release.ps1 -Version ci -SkipFrontend
       - name: 檢查 zip
         run: python tools/portable_zip.py check build/Mimiji-ci-win64.zip
-      - name: 準備 ffmpeg 的原始碼附件並驗證
-        # 發版時和 zip 上傳到同一個 GitHub Release 的附件（#274）：BtbN 的 build zip（沿用上一步下載到
-        # build\cache 的那份）、對應 commit 的 FFmpeg 原始碼、BtbN 的建置腳本與 SHA256SUMS。每個 PR 跑一次：
+      - name: 準備發版的附件並驗證
+        # 和 release.yml 的 build job 同樣的兩步（#278）：發布包，加上和它上傳到同一個 GitHub Release 的
+        # FFmpeg 原始碼附件（#274）：BtbN 的 build zip（沿用 build_release.ps1 下載到 build\cache 的那份）、
+        # 對應 commit 的 FFmpeg 原始碼、BtbN 的建置腳本，以及涵蓋全部的 SHA256SUMS。每個 PR 跑一次：
         # 釘的 commit 抓得到，授權全文與 THIRD_PARTY_NOTICES.txt 的 configure 參數對得上這個 build
-        run: python tools/ffmpeg_sources.py fetch build/release-assets
+        run: python -m tools.release_assets prepare ci build/release-assets
+      - name: 檢查附件齊全
+        run: python -m tools.release_assets check ci build/release-assets
 
   workflows:
     needs: changes

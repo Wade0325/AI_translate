@@ -2,7 +2,8 @@
 
 散布 bin\\ffmpeg.exe 與 bin\\ffprobe.exe 時，要在同一個地方提供和它們完全對應的原始碼（GPLv3 §6(d)，
 LGPLv3 引用它；#80 的研究）。依 Wade 的決定（#274），發版時把下列檔案上傳成同一個 GitHub Release
-的附件；這支腳本準備檔案並驗證，上傳由發版 workflow（#278）做：
+的附件；這支腳本準備檔案並驗證，上傳由發版 workflow（#278）做。發版與 CI 都經由 tools/release_assets.py
+的 prepare 呼叫這裡，它再把發布包的 zip 加進來，改寫成涵蓋全部附件的 SHA256SUMS：
 
 - BtbN 的 build zip（兩個 exe 取自其中）：以 build_release.ps1 釘的 SHA-256 驗證。
 - FFmpeg-<commit>.tar.gz：那個 build 的 FFmpeg commit 的完整原始碼。
