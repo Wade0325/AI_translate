@@ -77,8 +77,8 @@ def _capabilities(model: str) -> ModelCapabilities:
         can_terminate=False,
         # 各段說話者分離互相獨立，拼接後 [S0]/[S1] 會指向不同人
         split_retry_on_failure=False,
-        # MOSS 約輸出 16k token 就自己停下（#94），從停下的地方附近接續；接續段的說話者編號靠重疊區
-        # 配對回來。舊版的 VibeVoice 不接續
+        # MOSS 轉長音檔時可能約輸出 16k token 就自己停下（#94），從停下的地方附近接續；接續段的
+        # 說話者編號靠重疊區配對回來。舊版的 VibeVoice 不接續
         continuation=weights.is_moss_model(model),
         accepts_prompt=False,
         accepts_user_text=False,

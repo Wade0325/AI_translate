@@ -31,7 +31,7 @@ class TranscriptionTaskResult(BaseModel):
     covered_until: Optional[float] = Field(
         default=None,
         description="轉接器擔保轉錄到哪一秒（送進轉接器的那段音檔的時間軸）：模型可能提早停止輸出時"
-                    "（例如本機的 MOSS 生成到約 16k token、用完預算或輸出結尾不完整），之後的內容可能"
+                    "（例如本機的 MOSS 用完生成預算或輸出結尾不完整），之後的內容可能"
                     "沒有轉錄到；沒有這種跡象時是 None。分段轉錄照它決定要不要接續"
                     "（app.services.continuation），只在轉接器回傳與分段轉錄內部使用，不記進任務紀錄。",
     )

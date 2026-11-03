@@ -7,8 +7,9 @@
 ``trust_remote_code``），權重固定 HF revision（``weights.REPO_REVISIONS``）。
 torch / transformers 一律延遲匯入：只有主機 GPU worker 與免安裝模式的執行緒池會用到。
 
-MOSS 約輸出 16k token 就自己停下，不論音檔多長（#94）。:func:`transcribe` 照生成的長度與輸出的結尾
-回報擔保轉錄到哪一秒（:func:`covered_until`），分段轉錄照它決定要不要接續。
+MOSS 轉長音檔時可能約輸出 16k token 就自己停下（#94）。:func:`transcribe` 用完生成預算或輸出結尾
+不完整時回報擔保轉錄到哪一秒（:func:`covered_until`）；自己停下時輸出是完整的，由分段轉錄看最後一個
+片段之後還有沒有聲音，決定要不要接續。
 
 Windows：torch 沒有 Flash SDPA，memory-efficient kernel 又不接受 ``enable_gqa``，
 transformers 5.x 在無遮罩時送 GQA → 退回 math kernel，prefill 顯存 O(L²)
@@ -52,10 +53,6 @@ _GIB_PER_K_TOKENS = 0.111
 _VRAM_HEADROOM_GIB = 2.5           # 桌面與其他程式佔用、配置器碎片
 _MIN_VRAM_SINGLE_PASS_SECONDS = 300.0  # 實測 275 秒峰值 2.32 GiB，4 GB 卡即可容納
 
-EARLY_STOP_TOKENS = 16_000
-"""生成到這麼多 token 就當成可能提早停止：MOSS 不論音檔多長，約輸出 16,340 個 token 就自己停下，停在
-片段邊界（#94：本機實測 4 次都停在 16,341～16,354；上游 issue #26 在 transformers、vLLM、SGLang 都
-重現）。這是模型學到的行為，不是設定的上限，所以 max_new_tokens 再大也沒有用。"""
 COVERED_TAIL_SEGMENTS = 5
 """擔保點取最後這麼多段裡最晚的結束：說話者重疊時，最後一段不一定最晚結束。"""
 
@@ -267,13 +264,16 @@ def covered_until(segments: Sequence[Mapping[str, float]], *, incomplete: bool,
 
     ``segments`` 是解析出的片段（:func:`parse_output`，依輸出的順序），``incomplete`` 是輸出結尾
     不完整（:func:`incomplete_tail`），``generated_tokens`` 是生成了幾個 token、``max_new_tokens``
-    是這次的預算。跡象有三個：生成到 :data:`EARLY_STOP_TOKENS`、用完預算、輸出結尾不完整。擔保點是
-    最後 :data:`COVERED_TAIL_SEGMENTS` 段裡最晚的結束，一段都沒有時是 0。之後到底還有沒有沒轉到的
-    語音，由分段轉錄看語音視圖決定，這裡不知道。
+    是這次的預算。跡象有兩個：用完預算、輸出結尾不完整，都表示輸出被截斷。擔保點是最後
+    :data:`COVERED_TAIL_SEGMENTS` 段裡最晚的結束，一段都沒有時是 0。之後到底還有沒有沒轉到的語音，由
+    分段轉錄看語音視圖決定，這裡不知道。
+
+    生成到約 16k token 不算跡象：#94 實測日文 ASMR 與中文對話 4 次都停在 16,341～16,354 token，但朗讀的
+    《坊っちゃん》1～3 章（61 分鐘）生成到 22,654 token 才轉到檔尾（#317 的 GPU 實驗），拿它當跡象會
+    誤報。MOSS 自己停下時輸出是完整的，停在最後一個片段的結束，分段轉錄沒有回報時也從那裡看之後還有
+    沒有聲音，結果相同。
     """
     signs = []
-    if generated_tokens >= EARLY_STOP_TOKENS:
-        signs.append(f"生成了 {generated_tokens} token，到了約 16k 的停止點")
     if generated_tokens >= max_new_tokens:
         signs.append(f"用完 max_new_tokens={max_new_tokens}")
     if incomplete:

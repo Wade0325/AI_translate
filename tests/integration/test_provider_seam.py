@@ -903,8 +903,8 @@ class TestContinuation:
 
     @pytest.mark.parametrize("reports", [True, False], ids=["reported", "unaware"])
     def test_stopping_early_is_continued_to_the_end(self, api, fake, reports):
-        # reported：模型知道自己停早了，回報擔保轉錄到哪一秒（像 MOSS 生成到約 16k token）。unaware：模型
-        # 不知道（例如長段非語音之後就結束），照樣看最後一句之後還有聲音
+        # reported：模型知道自己停早了，回報擔保轉錄到哪一秒（像 MOSS 用完生成預算）。unaware：模型不知道
+        # （像 MOSS 在約 16k token 自己停下，輸出完整），照樣看最後一句之後還有聲音
         fake.script = [Listen(stops_after=15.0, reports=reports)] * 3
         messages = transcribe(api, "uid-continued", voiced=SPEAKING)
 

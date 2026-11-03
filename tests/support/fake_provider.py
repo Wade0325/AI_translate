@@ -78,8 +78,8 @@ class Listen:
 
     ``stops_after`` 設定時模擬提早停止：只輸出結束在這段音檔的這麼多秒以內的有聲段，像 MOSS 輸出到約
     16k token 就停。``reports`` 是停下時要不要回報擔保轉錄到哪一秒（``covered_until``，最後一個輸出的
-    片段的結束），像 MOSS 生成到約 16k token 時那樣；False 模擬模型自己不知道停早了，例如長段非語音
-    之後就結束。
+    片段的結束），像 MOSS 用完生成預算、輸出被截斷時那樣；False 模擬模型自己不知道停早了，像 MOSS 在
+    約 16k token 自己停下（輸出完整），或長段非語音之後就結束。
     """
     stops_after: Optional[float] = None
     reports: bool = True

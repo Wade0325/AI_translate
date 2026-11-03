@@ -118,15 +118,18 @@ SEVEN = [{"Start": float(i), "End": float(i) + 0.5, "Speaker": 0, "Content": "x"
 
 
 class TestCoveredUntil:
-    def test_output_that_ends_normally_reports_nothing(self):
-        assert moss.covered_until(SEVEN, incomplete=False, generated_tokens=900,
-                                  max_new_tokens=5000) is None
+    @pytest.mark.parametrize("generated_tokens", [900, 16_341, 22_654],
+                             ids=["short", "stopped-by-itself-at-16k", "past-16k"])
+    def test_output_that_ends_normally_reports_nothing(self, generated_tokens):
+        # 生成到約 16k token 不算跡象：MOSS 自己停在那裡時輸出是完整的，朗讀的長檔也可能超過 16k 才轉到
+        # 檔尾；之後還有沒有聲音由分段轉錄看最後一個片段之後決定
+        assert moss.covered_until(SEVEN, incomplete=False, generated_tokens=generated_tokens,
+                                  max_new_tokens=38_000) is None
 
     @pytest.mark.parametrize("generated_tokens, max_new_tokens, incomplete", [
-        (16_341, 38_000, False),  # MOSS 自己停在約 16k token：輸出完整，但之後可能還有
         (5000, 5000, False),      # 用完預算
         (900, 5000, True),        # 輸出停在一段的半途
-    ], ids=["16k-tokens", "budget-used-up", "cut-off"])
+    ], ids=["budget-used-up", "cut-off"])
     def test_signs_of_stopping_early_report_the_latest_end_of_the_last_five(
             self, generated_tokens, max_new_tokens, incomplete):
         # 最後 5 段裡最晚的結束：說話者重疊時最後一段不一定最晚結束
