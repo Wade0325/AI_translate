@@ -22,6 +22,7 @@ import { LoadingOutlined } from "@ant-design/icons"
 import { ReasonText } from "@/components/disabled-reason"
 import { FailureNotice } from "@/components/FailureNotice"
 import { ConnectionNotice } from "@/components/ConnectionNotice"
+import { TailLossNotice } from "@/components/TailLossNotice"
 import { languages, formatLang } from "@/constants/languages"
 import { downloadFormats } from "@/constants/downloadFormats"
 import { globalSettingsPatch } from "@/utils/transcribeRequest"
@@ -337,6 +338,8 @@ export function FileConfigCard({
 
             {failure && <FailureNotice failure={failure} />}
             {connection && <ConnectionNotice connection={config.connection} />}
+            {/* 完成了，轉錄結果卻可能少了一段（#257）：寫出從哪裡起可能沒有轉錄到 */}
+            {isCompleted && <TailLossNotice seconds={config.tailLossFrom} />}
 
             {/* Expanded per-file override settings：處理中時強制收起 */}
             {expanded && !isActive && (

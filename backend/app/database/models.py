@@ -66,7 +66,7 @@ class BatchFile(Base):
 
     每個檔案仍各是一個任務，以它的任務紀錄 id 為主鍵。不設外鍵到 transcription_logs：列在任務
     開始之前就建立；使用者刪掉任務紀錄之後，批次照樣列得出這個檔案。復原時從這裡讀回開始時量到的
-    長度、上傳檔與語音視圖的序列化形式（app.tasks.batch_core）。
+    長度、上傳檔、語音視圖的序列化形式與去靜音找到的靜音（app.tasks.batch_core）。
     """
     __tablename__ = 'batch_files'
     __table_args__ = (
@@ -81,6 +81,8 @@ class BatchFile(Base):
     file_path = Column(String, nullable=True)      # 上傳檔，任務結束時保留或清理
     audio_duration_seconds = Column(Float, nullable=True)  # 開始時量到的長度
     speech_view_json = Column(Text, nullable=True)  # 語音視圖的序列化形式；送出之前是 NULL
+    # 去靜音在原音檔裡找到的靜音（剪不剪都有），檢查掉尾時扣掉（#257）；送出之前、改版前送出的是 NULL
+    silences_json = Column(Text, nullable=True)
     request_index = Column(Integer, nullable=True)  # 送出的批次裡第幾個請求；沒送出的是 NULL
     status = Column(String, nullable=False)        # 結果狀態：PROCESSING / COMPLETED / FAILED
     created_at = Column(DateTime, default=datetime.now)
@@ -133,6 +135,9 @@ class TranscriptionLog(Base):
     # 副本照樣有說話者編號。開關做出來之前（#259）的任務是 NULL，當成開，下載結果不變
     # （app.services.output_format.shows_speaker_labels）
     multi_speaker = Column(Boolean, nullable=True)
+    # 可能掉尾的起點（原音檔的秒數，#257）：完成的任務從這裡起可能有內容沒有轉錄到，畫面照它提醒使用者
+    # （app.services.tail_loss）。沒有掉尾、沒有完成，以及這一欄加上之前的任務是 NULL
+    tail_loss_from_seconds = Column(Float, nullable=True)
 
 
 class TranscriptSegment(Base):

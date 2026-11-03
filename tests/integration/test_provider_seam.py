@@ -202,9 +202,9 @@ def submit(ws, filename: str, provider: str = "fake", model: str = FAKE_MODEL,
 
 
 def transcribe(api, file_uid: str, name: str = "voice.wav", voiced=VOICED,
-               **fields) -> list[dict]:
-    """上傳（音檔的有聲段見 synthetic_audio）、送出，收下這個任務的所有廣播直到結束。"""
-    filename = upload(api, name, voiced)
+               length: float | None = None, **fields) -> list[dict]:
+    """上傳（音檔的有聲段與長度見 synthetic_audio）、送出，收下這個任務的所有廣播直到結束。"""
+    filename = upload(api, name, voiced, length)
     with api.websocket_connect(f"/api/v1/ws/{file_uid}") as ws:
         submit(ws, filename, original_filename=name, **fields)
         return receive_until_terminal(ws)
@@ -777,6 +777,93 @@ class TestChunkedTranscriptionFollowsCapabilities:
 
         segments = stored_segments(api, messages[-1]["task_uuid"])
         assert [s["start"] for s in segments] == pytest.approx([line[0] for line in SCRIPT[0]])
+
+
+# ─── 掉尾（#257） ───────────────────────────────────────────────────────────
+
+def tail_loss_from(messages: list[dict]) -> float | None:
+    """完成時廣播的可能掉尾的起點（原音檔的秒數）；沒有掉尾時是 None。"""
+    return messages[-1]["result"]["tail_loss_from_seconds"]
+
+
+def recorded_tail_loss_from(api, messages: list[dict]) -> float | None:
+    """任務紀錄（History）記下的可能掉尾的起點。"""
+    return api.get(f"/api/v1/history/{messages[-1]['task_uuid']}").json()["tail_loss_from_seconds"]
+
+
+class TestTailLoss:
+    """供應商提早停止輸出（本機的 MOSS 約輸出 16k token 就停，#94）：沒有回報錯誤，只是少了後面。
+    任務照樣完成，已經轉出的部分照樣存下；任務記下可能掉尾的起點，畫面照它寫「從 mm:ss 起可能沒有
+    轉錄到」。
+
+    門檻改成 2 秒，合成音檔才不必很長：一段送去轉錄的音檔，最後一個片段之後扣掉去靜音找到的靜音，還有
+    2 秒以上的聲音，就算可能掉尾。
+    """
+
+    @pytest.fixture(autouse=True)
+    def _threshold(self, settings, monkeypatch):
+        monkeypatch.setattr(settings, "tail_loss_min_seconds", 2.0)
+
+    def test_provider_stopping_early_is_recorded_with_where_it_stopped(self, api, fake):
+        # 12 秒的音檔（見 VOICED）只轉出第一句就停了：後面兩個有聲段都沒轉到
+        fake.script = [[(0.2, 1.5, 0, "おはよう。")]]
+        messages = transcribe(api, "uid-stopped-early")
+
+        assert codes(messages)[-1] == TaskStatus.COMPLETED
+        assert tail_loss_from(messages) == pytest.approx(1.5)
+        assert recorded_tail_loss_from(api, messages) == pytest.approx(1.5)
+        assert [s["text"] for s in stored_segments(api, messages[-1]["task_uuid"])] == ["おはよう。"]
+
+    def test_task_that_reaches_the_end_has_no_tail_loss(self, api, fake):
+        # 最後一句在原音檔的 10.4–11.0 秒（見 TestSpeechView）：之後只剩 1 秒的聲音
+        fake.script = list(SCRIPT)
+        messages = transcribe(api, "uid-to-the-end")
+
+        assert codes(messages)[-1] == TaskStatus.COMPLETED
+        assert tail_loss_from(messages) is None
+        assert recorded_tail_loss_from(api, messages) is None
+
+    @pytest.mark.parametrize("remove_silence, script", [
+        # 剪靜音的模型：送進去的是只剩語音的 4.9 秒，最後一句在語音視圖的 3.0–4.6 秒
+        (True, [[(0.2, 1.5, 0, "おはよう。"), (3.0, 4.6, 1, "またね。")]]),
+        # 不剪靜音的模型（本機）：送原音檔，最後一句在 5.4–7.0 秒，之後的 10 秒靜音靠語音視圖記下的
+        # 靜音扣掉
+        (False, [[(0.2, 1.5, 0, "おはよう。"), (5.4, 7.0, 1, "またね。")]]),
+    ], ids=["cuts-silences", "keeps-silences"])
+    def test_silence_after_the_last_segment_is_not_tail_loss(
+            self, api, fake, remove_silence, script):
+        # 最後一句之後又錄了 10 秒的靜音（例如會議結束忘了關錄音）：沒有聲音，就沒有沒轉到的內容
+        fake.model_capabilities = replace(fake.model_capabilities, remove_silence=remove_silence)
+        fake.script = script
+        messages = transcribe(api, "uid-trailing-silence", voiced=[(0.0, 2.0), (5.0, 7.0)],
+                              length=17.0)
+
+        assert codes(messages)[-1] == TaskStatus.COMPLETED
+        assert flat_times(stored_segments(api, messages[-1]["task_uuid"]))[-1] == pytest.approx(7.0)
+        assert tail_loss_from(messages) is None
+
+    def test_chunk_that_stopped_early_counts_even_when_the_last_chunk_reaches_the_end(
+            self, api, fake):
+        # 分段轉錄中間那一段提早停了（MOSS 在每一段都可能停在約 16k token，#24），最後一段卻轉到了結尾：
+        # 起點是中間那一段停下的地方。模型不剪靜音、單次只能處理 5 秒，12 秒的原音檔切成 0–3.5、
+        # 3.5–8.5、8.5–12 秒三段（見 test_model_that_keeps_silences_gets_the_original_cut_at_silences）
+        fake.model_capabilities = replace(
+            fake.model_capabilities, remove_silence=False, single_pass_seconds=5.0)
+        fake.script = [[(0.5, 1.5, 0, "一つ目。")], [(0.2, 0.8, 1, "二つ目。")],
+                       [(2.0, 3.0, 0, "三つ目。")]]
+        messages = transcribe(api, "uid-middle-chunk-stopped")
+
+        # 中間那一段只轉出原音檔的 3.7–4.3 秒，之後 4.7–7.3 秒的有聲段沒轉到；最後一句在 10.5–11.5 秒
+        assert codes(messages)[-1] == TaskStatus.COMPLETED
+        assert flat_times(stored_segments(api, messages[-1]["task_uuid"]))[-1] == pytest.approx(11.5)
+        assert tail_loss_from(messages) == pytest.approx(4.3)
+
+    def test_segments_without_an_end_count_from_their_start(self, api, fake):
+        # Gemini 沒寫結束的行只有開始時間：最後一句在語音視圖的 1.0 秒開始，還原回原音檔也是 1.0 秒
+        fake.script = [[(0.2, None, 0, "おはよう。"), (1.0, None, 1, "こんにちは。")]]
+        messages = transcribe(api, "uid-no-end-stopped")
+
+        assert tail_loss_from(messages) == pytest.approx(1.0)
 
 
 class TestSplitRetryAfterFailure:

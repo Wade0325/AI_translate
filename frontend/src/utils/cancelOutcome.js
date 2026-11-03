@@ -78,6 +78,7 @@ async function endedTask(file, api) {
             audio_duration_seconds: record.audio_duration_seconds,
             model: record.model_used,
             source_language: record.source_language,
+            tail_loss_from_seconds: record.tail_loss_from_seconds,
           },
         },
       };

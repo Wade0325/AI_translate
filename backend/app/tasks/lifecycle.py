@@ -18,6 +18,8 @@
   寫不進去就照失敗處理。同一個任務再完成一次時，使用者動過的片段不刪、不覆寫（ADR-0007）。
 - 說話者標記跟著 Multi-Speaker 開關：任務紀錄記下開關，完成時送給畫面的輸出格式照它帶或不帶
   說話者標記，和之後下載的相同；片段與凍結的原始轉錄副本不論開關都有說話者編號（#13 Q1、ADR-0007）。
+- 可能掉尾時記下起點：轉錄結果帶著可能掉尾的起點（:mod:`app.services.tail_loss`）時，完成時記進
+  任務紀錄、隨完成的廣播送給畫面，畫面照它告訴使用者從哪裡起可能沒有轉錄到；任務照樣完成（#257）。
 - 中文一律輸出繁體：完成時先把片段轉成繁體輸出（:mod:`app.services.traditional_output`），
   輸出格式、凍結的原始轉錄副本與片段都從轉換後的片段產生（ADR-0002）。
 - 計價照模型能力的計價方式；實際以 Flex 或批次完成的照設定打折。供應商已經回應的用量，
@@ -357,6 +359,9 @@ class TaskLifecycle:
         logger.info(
             f"Transcription complete. Task ID: {self._task_uuid}. "
             f"Tokens used: {result.total_tokens:,}")
+        if result.tail_loss_from is not None:
+            logger.warning(f"任務 {self._task_uuid} 可能掉尾：原音檔 {result.tail_loss_from:.1f} 秒"
+                           f"之後可能沒有轉錄到（音檔長 {self._duration:.1f} 秒）")
 
         # 輸出格式、凍結的原始轉錄副本與片段都從轉換後的片段產生（ADR-0002、ADR-0007）
         result = result.model_copy(update={"segments": traditional_output.convert(
@@ -383,6 +388,8 @@ class TaskLifecycle:
             # 凍結的原始轉錄副本（ADR-0007）：不論 Multi-Speaker 開關都帶說話者標記
             "lrc_content": output_format.frozen_copy(result) or None,
             "service_tier_used": result.service_tier_used or "standard",
+            # 沒有掉尾時寫 None：同一個任務再完成一次時，不留著上一次的起點
+            "tail_loss_from_seconds": result.tail_loss_from,
         }, commit=False)
         # 只有取消不蓋掉；其他狀態照實記成完成（例如啟動清掃把還在跑的任務記成了失敗）
         if not completed and self._is_record_cancelled(db):
@@ -399,7 +406,7 @@ class TaskLifecycle:
         response = _completed_response(
             self._task_uuid, transcripts, tokens=tokens, cost=cost, model=self._task.model,
             source_language=self._task.source_lang, duration=self._duration,
-            speaker_count=_speaker_count(result.segments))
+            speaker_count=_speaker_count(result.segments), tail_loss_from=result.tail_loss_from)
         return _Outcome(TaskStatus.COMPLETED, _COMPLETED_TEXT, broadcast_result=response,
                         return_value={"raw_lrc_text": transcripts["lrc"]})
 
@@ -629,7 +636,8 @@ def completed_result(db: Session, task_uuid) -> Optional[dict]:
     return _completed_response(
         record.task_uuid, transcripts, tokens=record.total_tokens or 0, cost=record.cost or 0.0,
         model=record.model_used or "", source_language=record.source_language or "",
-        duration=record.audio_duration_seconds or 0.0, speaker_count=_speaker_count(segments))
+        duration=record.audio_duration_seconds or 0.0, speaker_count=_speaker_count(segments),
+        tail_loss_from=cast(Optional[float], record.tail_loss_from_seconds))
 
 
 def ended_status(db: Session, task_uuid) -> Optional[dict]:
@@ -656,8 +664,9 @@ def ended_status(db: Session, task_uuid) -> Optional[dict]:
 
 
 def _completed_response(task_uuid, transcripts: dict, *, tokens: int, cost: float, model: str,
-                        source_language: str, duration: float, speaker_count: int) -> dict:
-    """完成時送給畫面的結果：四種輸出格式、計價與說話者人數。"""
+                        source_language: str, duration: float, speaker_count: int,
+                        tail_loss_from: Optional[float]) -> dict:
+    """完成時送給畫面的結果：四種輸出格式、計價、說話者人數與可能掉尾的起點。"""
     response = TranscriptionResponse(
         task_uuid=task_uuid,
         transcripts=transcripts,
@@ -667,6 +676,7 @@ def _completed_response(task_uuid, transcripts: dict, *, tokens: int, cost: floa
         source_language=source_language,
         audio_duration_seconds=duration,
         speaker_count=speaker_count,
+        tail_loss_from_seconds=tail_loss_from,
     ).model_dump()
     response["task_uuid"] = response["task_uuid"].hex
     return response

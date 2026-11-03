@@ -15,9 +15,13 @@ import { downloadBlob, renameExtension } from "../utils/download"
 import { StatCard } from "../components/StatCard"
 import { STATUS_META, TASK_STATUS } from "../constants/taskStatus"
 import { FailureSummary } from "../components/FailureNotice"
+import { TailLossSummary } from "../components/TailLossNotice"
 import { failureOf } from "../utils/failure"
 
 const { Text } = Typography
+
+/** 寫在檔名下面的一行（失敗的原因、可能掉尾）：和檔名的文字對齊。 */
+const UNDER_FILENAME = { display: "block", maxWidth: 250, marginLeft: 22, fontSize: 12 }
 
 export default function HistoryPage() {
     const [historyData, setHistoryData] = useState([])
@@ -118,7 +122,14 @@ export default function HistoryPage() {
                     {record.status === TASK_STATUS.FAILED && (record.error_code || record.error_message) && (
                         <FailureSummary
                             failure={failureOf(record)}
-                            style={{ display: "block", maxWidth: 250, marginLeft: 22, fontSize: 12 }}
+                            style={UNDER_FILENAME}
+                        />
+                    )}
+                    {/* 完成了，轉錄結果卻可能少了一段（#257）：滑過去看下一步 */}
+                    {record.status === TASK_STATUS.COMPLETED && (
+                        <TailLossSummary
+                            seconds={record.tail_loss_from_seconds}
+                            style={UNDER_FILENAME}
                         />
                     )}
                 </>
