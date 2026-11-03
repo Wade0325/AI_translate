@@ -343,9 +343,9 @@ class TestSrtVttAndTxt:
     def test_vtt_has_a_header_and_dot_milliseconds(self):
         # 「こんにちは。」只有 0.75 秒，顯示最短的 0.8 秒
         assert formats(*GREETINGS).vtt == (
-            "WEBVTT\n\nSTYLE\n::cue(.color1) { color: #FFDD55; }\n\n"
+            "WEBVTT\n\n"
             "00:00:01.500 --> 00:00:02.800\n[S0] おはよう。\n\n"
-            "00:00:03.250 --> 00:00:04.050\n<c.color1>[S1] こんにちは。</c>\n\n"
+            "00:00:03.250 --> 00:00:04.050\n<c.yellow>[S1] こんにちは。</c>\n\n"
             "01:02:05.500 --> 01:02:07.000\n[S0] またね。\n")
 
     def test_txt_keeps_the_labelled_text_of_each_line(self):
@@ -400,9 +400,9 @@ class TestSpecialCharacters:
         result = formats({"start": 1.0, "end": 2.0, "speaker": "S0", "text": SPECIAL},
                          {"start": 3.0, "end": 4.0, "speaker": "S1", "text": SPECIAL})
         assert result.vtt == (
-            "WEBVTT\n\nSTYLE\n::cue(.color1) { color: #FFDD55; }\n\n"
+            "WEBVTT\n\n"
             "00:00:01.000 --> 00:00:02.000\n[S0] A &amp; B &lt;笑&gt; --&gt; x\n\n"
-            "00:00:03.000 --> 00:00:04.000\n<c.color1>[S1] A &amp; B &lt;笑&gt; --&gt; x</c>\n")
+            "00:00:03.000 --> 00:00:04.000\n<c.yellow>[S1] A &amp; B &lt;笑&gt; --&gt; x</c>\n")
 
     def test_srt_lrc_and_txt_keep_the_text_as_it_is(self):
         result = formats({"start": 1.0, "end": 2.0, "speaker": "S1", "text": SPECIAL})
@@ -663,7 +663,8 @@ def one_line_each(*speakers):
 
 class TestSpeakerColors:
     """SRT／VTT 依說話者上色（#12）：S0 白色（播放器的預設，不加標籤），S1 黃、S2 青、S3 綠，
-    第 5 位說話者起從白色重新輪。顏色只看行首的 [Sn]；LRC、TXT 不能上色。"""
+    第 5 位說話者起從白色重新輪。顏色只看行首的 [Sn]；LRC、TXT 不能上色。SRT 用調柔過的顏色；
+    VTT 用 WebVTT 預設的顏色類別，不寫 STYLE 區塊（#271）。"""
 
     def test_srt_wraps_each_line_in_its_speakers_color(self):
         assert formats(*one_line_each("S0", "S1", "S2", "S3", "S4", "S5")).srt == (
@@ -674,22 +675,22 @@ class TestSpeakerColors:
             "5\n00:00:09,000 --> 00:00:10,000\n[S4] はい。\n\n"
             '6\n00:00:11,000 --> 00:00:12,000\n<font color="#FFDD55">[S5] はい。</font>\n')
 
-    def test_vtt_defines_the_colors_it_uses_in_a_style_block(self):
-        # 顏色跟著說話者編號，不是出場順序：先講話的 S2 是青色
-        assert formats(*one_line_each("S2", "S0", "S1")).vtt == (
-            "WEBVTT\n\nSTYLE\n::cue(.color1) { color: #FFDD55; }\n"
-            "::cue(.color2) { color: #66CCFF; }\n\n"
-            "00:00:01.000 --> 00:00:02.000\n<c.color2>[S2] はい。</c>\n\n"
-            "00:00:03.000 --> 00:00:04.000\n[S0] はい。\n\n"
-            "00:00:05.000 --> 00:00:06.000\n<c.color1>[S1] はい。</c>\n")
+    def test_srt_colors_follow_the_speaker_number_not_the_order(self):
+        # 先講話的 S2 是青色
+        assert formats(*one_line_each("S2", "S0")).srt.split("\n")[2] == (
+            '<font color="#66CCFF">[S2] はい。</font>')
 
-    @pytest.mark.parametrize("speakers", [("S0", "S4"), (None, None)],
-                             ids=["white-only", "no-labels"])
-    def test_vtt_without_colored_lines_has_no_style_block(self, speakers):
-        # ffmpeg 7.0 之前遇到 STYLE 區塊整個檔案都讀不出來：只有要上色時才寫
-        vtt = formats(*one_line_each(*speakers)).vtt
-        assert "STYLE" not in vtt
-        assert "<c." not in vtt
+    def test_vtt_uses_the_default_color_classes_without_a_style_block(self):
+        # #271 實測：用 ffmpeg 7.0 之前版本解碼的 mpv 遇到 STYLE 區塊，整份 VTT 都不顯示；
+        # 預設的顏色類別不用 STYLE。顏色跟著說話者編號，不是出場順序：先講話的 S2 是青色
+        assert formats(*one_line_each("S2", "S0", "S1", "S3", "S4", "S5")).vtt == (
+            "WEBVTT\n\n"
+            "00:00:01.000 --> 00:00:02.000\n<c.cyan>[S2] はい。</c>\n\n"
+            "00:00:03.000 --> 00:00:04.000\n[S0] はい。\n\n"
+            "00:00:05.000 --> 00:00:06.000\n<c.yellow>[S1] はい。</c>\n\n"
+            "00:00:07.000 --> 00:00:08.000\n<c.lime>[S3] はい。</c>\n\n"
+            "00:00:09.000 --> 00:00:10.000\n[S4] はい。\n\n"
+            "00:00:11.000 --> 00:00:12.000\n<c.yellow>[S5] はい。</c>\n")
 
     def test_lrc_and_txt_have_no_colors(self):
         result = formats(*one_line_each("S0", "S1"))
@@ -700,10 +701,10 @@ class TestSpeakerColors:
         # 沒有片段的任務從存下來的 LRC 轉換，照同一套顏色；Gemini 舊 LRC 的「Speaker 2:」不上色
         app = output_format.convert_from_lrc("[00:01.00][S0] はい\n[00:03.00][S1] ええ")
         assert '\n<font color="#FFDD55">[S1] ええ</font>\n' in app.srt
-        assert "\n<c.color1>[S1] ええ</c>\n" in app.vtt
+        assert "\n<c.yellow>[S1] ええ</c>\n" in app.vtt
         gemini = output_format.convert_from_lrc("[00:01.00]Speaker 1: はい\n[00:03.00]Speaker 2: ええ")
         assert "<font" not in gemini.srt
-        assert "STYLE" not in gemini.vtt
+        assert "<c." not in gemini.vtt
 
 
 # ─── SRT／VTT 拆開長字幕（#12） ──────────────────────────────────────────────
@@ -840,7 +841,7 @@ class TestLongSubtitles:
     def test_pieces_keep_the_speakers_color_and_label(self):
         result = formats({**LONG_JAPANESE, "speaker": "S1"})
         assert result.srt.count('<font color="#FFDD55">[S1] ') == 3
-        assert result.vtt.count("<c.color1>[S1] ") == 3
+        assert result.vtt.count("<c.yellow>[S1] ") == 3
 
     def test_line_without_a_speaker_label_is_split_without_one(self):
         assert [text for _, text in srt_cues({**LONG_JAPANESE, "speaker": None})] == [
@@ -876,7 +877,7 @@ class TestMultiSpeakerSwitch:
             "[S0] おはようございます。", "[S0] 今日は、いい天気ですね！",
             "[S1] ラーメン食べた？", "[S1] 人々も来た。"]
         assert '<font color="#FFDD55">[S1] ラーメン食べた？</font>' in result.srt
-        assert "<c.color1>[S1] ラーメン食べた？</c>" in result.vtt
+        assert "<c.yellow>[S1] ラーメン食べた？</c>" in result.vtt
 
     def test_off_local_lines_have_no_labels_or_colors(self):
         result = switched(*SENTENCES, labels=False)
@@ -905,9 +906,9 @@ class TestMultiSpeakerSwitch:
             "1\n00:00:00,500 --> 00:00:03,000\n[S0] おはよう。\n\n"
             '2\n00:00:03,000 --> 00:00:04,000\n<font color="#FFDD55">[S1] こんにちは。</font>\n')
         assert result.vtt == (
-            "WEBVTT\n\nSTYLE\n::cue(.color1) { color: #FFDD55; }\n\n"
+            "WEBVTT\n\n"
             "00:00:00.500 --> 00:00:03.000\n[S0] おはよう。\n\n"
-            "00:00:03.000 --> 00:00:04.000\n<c.color1>[S1] こんにちは。</c>\n")
+            "00:00:03.000 --> 00:00:04.000\n<c.yellow>[S1] こんにちは。</c>\n")
 
     def test_off_gemini_lines_have_no_labels_or_colors(self):
         # 沒有結束時間的行照以前，顯示到下一行開始
