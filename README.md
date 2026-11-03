@@ -437,6 +437,12 @@ Python embeddable、`uv` 與 ffmpeg 都釘版並驗 SHA-256，下載快取在 `b
 推 `v*` tag（`vX.Y.Z`，可以接 `-rc.1` 之類的標記）時 GitHub Actions（`.github/workflows/release.yml`）會先跑一次完整的 CI，通過後在 Windows 建置，先建草稿 Release、上傳附件，確認附件齊全、大小與 SHA-256 都對之後，才以 prerelease 公開；標題與 release notes 標 beta，release notes 的「已知限制」取自本 README 的[已知限制](#-已知限制)。任何一步失敗都只留下草稿，workflow 會刪掉它（tag 不動），不會半發布。附件、標題與 release notes 由 `tools/release_assets.py` 產生與檢查。
 CI 的 `portable` job 在每個 PR 上也用 Windows 建置一次（不上傳、不發布），並用 `tools/portable_zip.py` 檢查 zip：檔名與最上層資料夾是 `Mimiji`、第 7 步清單裡的檔案都在、`backend\` 只有白名單裡的檔案，而且沒有使用者的音檔、資料庫、`.env` 等執行期資料；`Mimiji.exe` 的產品名稱、版本與圖示也在這裡檢查。日誌裡會列出 zip 的完整內容。
 
+發版的 tag 由維護者自己推，代理不推 tag（[`docs/agents/merging.md`](docs/agents/merging.md)）。repo 有一條 ruleset 禁止所有人建立、更新與刪除 `v*` tag，免得誤推一個 tag 就公開發布，所以發版時照這個順序：
+1. 到 [Settings → Rules → Rulesets](https://github.com/Wade0325/AI_translate/settings/rules) 把限制 `v*` tag 的那條暫時停用（Enforcement status 改成 Disabled）。
+2. 只推要發的那一個 tag：`git push origin refs/tags/vX.Y.Z`。不要用 `git push --tags`，本機其他的 `v*` tag 會一起推上去，每一個都會發一次 Release。
+3. 推完就把那條 ruleset 改回 Active。`release.yml` 只在已經存在的 tag 上建 Release，不會建立或改動 tag。
+4. 要刪掉或移動 tag 時，一樣先停用、做完再改回。發版中途失敗時：只是暫時性的錯誤（例如網路），在 Actions 重新執行失敗的 job 就好，不必動 tag；要改程式才能修時，tag 還指向舊的 commit，修好合併後要刪掉這個 tag 再推到新的 commit，或改發下一個版本號。
+
 發布包附上授權文件（#274）：Mimiji 的 `LICENSE.txt` 與 `NOTICE.txt`，以及第三方元件的 `THIRD_PARTY_NOTICES.txt` 與 `licenses\`（原稿在 [`tools/portable/`](tools/portable/THIRD_PARTY_NOTICES.txt)）。元件換版時一起更新：
 - Python、`uv` 或 ffmpeg 升版：改 `THIRD_PARTY_NOTICES.txt` 寫的版本與來源，以及 `tools/portable/licenses/` 裡它們的授權全文；ffmpeg 另外改 `build_release.ps1` 的 `$FfmpegCommit` 與 `$BtbnCommit`。建置時會核對 Python 與 ffmpeg 自己附的授權檔，和 `licenses/` 裡的不同就停下來。
 - ffmpeg 或 `uv` 升版：在 repo 根目錄執行 `python -m tools.third_party_licenses`（要連網），重新產生 ffmpeg 靜態連入的函式庫與 Rust 套件的授權清單（`licenses/ffmpeg/libraries.txt`、`licenses/ffmpeg/rust-crates.txt`、`licenses/uv/crates.txt`）。它只解析 BtbN 的建置腳本、不執行；沒有重新產生時測試會紅燈。
