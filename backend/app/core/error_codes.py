@@ -61,6 +61,10 @@ class ErrorCode(StrEnum):
     """PyTorch 載入失敗，或裝到不支援 CUDA 的版本。"""
     LOCAL_UNSUPPORTED_GPU = "LOCAL_UNSUPPORTED_GPU"
     """目前的 PyTorch 不支援這張顯卡。"""
+    LOCAL_PACKAGE_MISSING = "LOCAL_PACKAGE_MISSING"
+    """所選模型要用的套件沒有安裝（#311）。"""
+    LOCAL_PACKAGE_LOAD_FAILED = "LOCAL_PACKAGE_LOAD_FAILED"
+    """所選模型要用的套件裝了，匯入時卻出錯（#311）。"""
     LOCAL_MISSING_WEIGHTS = "LOCAL_MISSING_WEIGHTS"
     """所選模型的模型權重還沒下載完。"""
     LOCAL_OUT_OF_MEMORY = "LOCAL_OUT_OF_MEMORY"
@@ -247,6 +251,8 @@ _LOCAL_NOT_READY = {
     "cuda_init_failed": ErrorCode.LOCAL_CUDA_INIT_FAILED,
     "torch_load_failed": ErrorCode.LOCAL_TORCH_LOAD_FAILED,
     "unsupported_gpu": ErrorCode.LOCAL_UNSUPPORTED_GPU,
+    "missing_package": ErrorCode.LOCAL_PACKAGE_MISSING,
+    "package_load_failed": ErrorCode.LOCAL_PACKAGE_LOAD_FAILED,
     "missing_weights": ErrorCode.LOCAL_MISSING_WEIGHTS,
 }
 """本機還不能轉錄的原因（:class:`~app.provider.local.weights.LocalNotReady` 的 ``reason``）→ 錯誤碼。"""

@@ -10,15 +10,20 @@
   不覆寫，所以不會蓋掉本機的 .env 或資料庫；但檔案會留在工作目錄裡，本機不必執行。
 - ``check``：
   1. zip 的最上層剛好一個資料夾：解壓後是一個資料夾，不會把檔案散在解壓的位置。
-  2. build_release.ps1 第 7 步的清單（``$required``）每一個都在，而且不是空檔。清單直接讀
+  2. 名稱是產品名稱 Mimiji（#26、#277）：zip 的檔名是 ``Mimiji-<版本>-win64.zip``、最上層的資料夾是
+     ``Mimiji``，檔名裡的版本和建置時寫的 backend/VERSION 相同。exe 的檔名在第 3 點的清單裡。
+  3. build_release.ps1 第 7 步的清單（``$required``）每一個都在，而且不是空檔。清單直接讀
      build_release.ps1，那裡是唯一來源；改清單時這裡不必跟著改。
-  3. backend/ 底下只有後端白名單（build_release.ps1 的 ``$BackendPaths``，#266）裡的路徑，
+  4. backend/ 底下只有後端白名單（build_release.ps1 的 ``$BackendPaths``，#266）裡的路徑，
      加上建置時寫的 VERSION。
-  4. 沒有執行期資料：使用者的音檔、資料庫、環境變數檔（可能有 API 金鑰）、日誌檔，以及開發環境
+  5. 沒有執行期資料：使用者的音檔、資料庫、環境變數檔（可能有 API 金鑰）、日誌檔，以及開發環境
      的殘留（runtime_data()）。檢查的是 zip 本身，和 build_release.ps1 怎麼挑檔案無關：取檔的
      方式出錯或被改掉時，一樣抓得到。
-  5. 批次檔（start.bat，#267）cmd 讀得對：只有 ASCII（cmd 遇到多位元組字元會算錯下一行的位置，
+  6. 批次檔（start.bat，#267）cmd 讀得對：只有 ASCII（cmd 遇到多位元組字元會算錯下一行的位置，
      把後面的字當成指令執行）、開頭沒有 BOM，換行一律是 CRLF（batch_file_problems()）。
+  7. 只在 Windows：Mimiji.exe 的版本資訊與圖示（#277），也就是「內容 → 詳細資料」看到的：產品名稱與檔案
+     描述是 Mimiji、產品版本是 backend/VERSION 的版本號、檔案版本是 4 個數字，而且至少有一個圖示
+     （exe_problems()）。用 Windows 自己讀版本資訊的 API，和檔案總管看到的相同；其他平台跳過這一項。
   檢查完列出 zip 裡的每一個檔案與大小：改到打包的 PR 可以拿 main 與 PR 的 CI 日誌比對發布包的內容。
 
 只用標準函式庫：CI 的 runner 不必安裝依賴。
@@ -28,13 +33,22 @@ from __future__ import annotations
 
 import argparse
 import re
+import struct
 import sys
+import tempfile
 import zipfile
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 ROOT = Path(__file__).resolve().parent.parent
 BUILD_SCRIPT = ROOT / "build_release.ps1"
+
+# 產品名稱（#26）：zip 是 Mimiji-<版本>-win64.zip，解壓後是 Mimiji 資料夾，啟動器是 Mimiji.exe。
+# 刻意不從 build_release.ps1 讀：這裡是對照的一方。和 build_release.ps1 的 $ProductName、啟動器的
+# AppName 相同（tests/unit/test_portable_zip.py 檢查）
+PRODUCT = "Mimiji"
+ZIP_NAME = re.compile(rf"{PRODUCT}-(?P<version>.+)-win64\.zip")
 
 # 執行期資料夾：上傳暫存、去靜音的除錯產物、保留的音檔。名稱和 backend/app/core/config.py 的
 # 預設值一致（tests/unit/test_portable_zip.py 檢查）；persistent_uploads 是舊版的名稱
@@ -127,6 +141,93 @@ def _in_backend_whitelist(rel: str, allowed: Sequence[str]) -> bool:
                for path in allowed)
 
 
+@dataclass(frozen=True)
+class ExeInfo:
+    """exe 的版本資訊與圖示：檔案總管的「內容 → 詳細資料」顯示的那些。"""
+
+    strings: dict[str, str]  # 版本資訊的字串：ProductName、ProductVersion、FileVersion、FileDescription…
+    file_version: str  # 數字的檔案版本（VS_FIXEDFILEINFO），寫成 a.b.c.d
+    icons: int
+
+
+# 版本資訊裡要讀的字串
+EXE_STRINGS = ("ProductName", "ProductVersion", "FileVersion", "FileDescription", "LegalCopyright",
+               "OriginalFilename")
+
+
+def read_exe_info(path: Path) -> ExeInfo | None:
+    """用 Windows 的 API 讀 exe 的版本資訊與圖示的個數；沒有版本資訊時是 None。只能在 Windows 執行。"""
+    import ctypes
+    from ctypes import wintypes
+
+    version = ctypes.WinDLL("version")
+    version.GetFileVersionInfoSizeW.argtypes = [wintypes.LPCWSTR, ctypes.c_void_p]
+    version.GetFileVersionInfoSizeW.restype = wintypes.DWORD
+    version.GetFileVersionInfoW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p]
+    version.GetFileVersionInfoW.restype = wintypes.BOOL
+    version.VerQueryValueW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_void_p),
+                                       ctypes.POINTER(wintypes.UINT)]
+    version.VerQueryValueW.restype = wintypes.BOOL
+    shell32 = ctypes.WinDLL("shell32")
+    shell32.ExtractIconExW.argtypes = [wintypes.LPCWSTR, ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p,
+                                       wintypes.UINT]
+    shell32.ExtractIconExW.restype = wintypes.UINT
+
+    size = version.GetFileVersionInfoSizeW(str(path), None)
+    if not size:
+        return None
+    data = ctypes.create_string_buffer(size)
+    if not version.GetFileVersionInfoW(str(path), 0, size, data):
+        return None
+
+    def query(block: str) -> tuple[int, int] | None:
+        """版本資訊裡一個區塊的（位址，長度）；字串的長度以字元計，含結尾的 NUL。"""
+        pointer, length = ctypes.c_void_p(), wintypes.UINT()
+        if not version.VerQueryValueW(data, block, ctypes.byref(pointer), ctypes.byref(length)):
+            return None
+        return (pointer.value, length.value) if pointer.value else None
+
+    fixed = query("\\")
+    translation = query("\\VarFileInfo\\Translation")
+    if fixed is None or translation is None or translation[1] < 4:
+        return None
+    # VS_FIXEDFILEINFO：dwSignature、dwStrucVersion 之後是 dwFileVersionMS 與 dwFileVersionLS
+    high, low = struct.unpack_from("<II", ctypes.string_at(fixed[0], 16), 8)
+    language, codepage = struct.unpack("<HH", ctypes.string_at(translation[0], 4))
+    strings = {}
+    for key in EXE_STRINGS:
+        found = query(f"\\StringFileInfo\\{language:04x}{codepage:04x}\\{key}")
+        if found is not None:
+            strings[key] = ctypes.wstring_at(found[0], found[1]).rstrip("\0")
+    # 圖示的索引給 -1、不給陣列時，回傳 exe 裡圖示的個數
+    icons = shell32.ExtractIconExW(str(path), -1, None, None, 0)
+    return ExeInfo(strings, f"{high >> 16}.{high & 0xFFFF}.{low >> 16}.{low & 0xFFFF}", icons)
+
+
+def exe_problems(info: ExeInfo | None, name: str, version: str | None) -> list[str]:
+    """exe 的版本資訊與圖示的問題（name 是 zip 裡的路徑，version 是 backend/VERSION）；沒有問題時是空的。"""
+    if info is None:
+        return [f"{name} 沒有版本資訊"]
+    problems = []
+    for key, label in (("ProductName", "產品名稱"), ("FileDescription", "檔案描述")):
+        if info.strings.get(key) != PRODUCT:
+            problems.append(f"{name} 的{label}是「{info.strings.get(key, '')}」，應該是 {PRODUCT}")
+    if version is not None and info.strings.get("ProductVersion") != version:
+        problems.append(f"{name} 的產品版本是「{info.strings.get('ProductVersion', '')}」，"
+                        f"應該和 backend/VERSION 一樣是 {version}")
+    file_version = info.strings.get("FileVersion", "")
+    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+", file_version) or file_version != info.file_version:
+        problems.append(f"{name} 的檔案版本是「{file_version}」（數字的是 {info.file_version}），"
+                        "應該是 4 個數字，兩者相同")
+    if info.icons < 1:
+        problems.append(f"{name} 沒有圖示")
+    return problems
+
+
+# main 用來讀 exe 的函式：只有 Windows 讀得到，其他平台不檢查 exe
+EXE_READER: Callable[[Path], ExeInfo | None] | None = read_exe_info if sys.platform == "win32" else None
+
+
 def batch_file_problems(data: bytes) -> list[str]:
     """批次檔的內容 cmd 會讀錯的地方；沒有問題時是空的。"""
     problems = []
@@ -158,10 +259,47 @@ def contents(zip_path: Path) -> dict[str, tuple[bool, int]]:
     return entries
 
 
-def check(zip_path: Path, required: Sequence[str], backend: Sequence[str]) -> list[str]:
+def _read(zip_path: Path, name: str) -> bytes | None:
+    """zip 裡一個檔案（路徑用 /）的內容；沒有這個檔案時是 None。"""
+    with zipfile.ZipFile(zip_path) as archive:
+        for info in archive.infolist():
+            if info.filename.replace("\\", "/") == name:
+                return archive.read(info)
+    return None
+
+
+def _name_problems(zip_path: Path, top: str, version: str | None) -> list[str]:
+    """zip 的檔名與最上層資料夾不是產品名稱，或檔名的版本和 backend/VERSION 不同。"""
+    problems = []
+    match = ZIP_NAME.fullmatch(zip_path.name)
+    if match is None:
+        problems.append(f"zip 的檔名應該是 {PRODUCT}-<版本>-win64.zip，實際是 {zip_path.name}")
+    elif version is not None and match["version"] != version:
+        problems.append(f"zip 檔名的版本 {match['version']} 和 {top}/backend/VERSION 的 {version} 不同")
+    if top != PRODUCT:
+        problems.append(f"zip 最上層的資料夾應該是 {PRODUCT}，實際是 {top}")
+    return problems
+
+
+def _exe_problems(zip_path: Path, top: str, version: str | None,
+                  read_exe: Callable[[Path], ExeInfo | None]) -> list[str]:
+    """把 zip 裡的 exe 解到暫存資料夾，交給 read_exe 讀版本資訊與圖示。exe 不在或是空的時，第 3 點已經報了。"""
+    name = f"{top}/{PRODUCT}.exe"
+    data = _read(zip_path, name)
+    if not data:
+        return []
+    with tempfile.TemporaryDirectory() as folder:
+        exe = Path(folder) / f"{PRODUCT}.exe"
+        exe.write_bytes(data)
+        return exe_problems(read_exe(exe), name, version)
+
+
+def check(zip_path: Path, required: Sequence[str], backend: Sequence[str],
+          read_exe: Callable[[Path], ExeInfo | None] | None = None) -> list[str]:
     """檢查免安裝版的 zip；回傳每一個問題的說明，沒有問題時是空的。
 
     required 是必要的檔案，backend 是後端白名單；兩者都是最上層資料夾以下的路徑，用 /。
+    read_exe 讀 exe 的版本資訊與圖示（Windows 上是 read_exe_info）；None 時不檢查 exe。
     """
     entries = contents(zip_path)
     if not entries:
@@ -173,7 +311,9 @@ def check(zip_path: Path, required: Sequence[str], backend: Sequence[str]) -> li
         return [f"zip 的最上層應該剛好是一個資料夾，實際是：{'、'.join(tops)}"]
     top = tops[0]
 
-    problems = []
+    version_file = _read(zip_path, f"{top}/backend/VERSION")
+    version = version_file.decode("utf-8-sig").strip() if version_file else None
+    problems = _name_problems(zip_path, top, version)
     for rel in required:
         entry = entries.get(f"{top}/{rel}")
         if entry is None or entry[0]:
@@ -196,6 +336,8 @@ def check(zip_path: Path, required: Sequence[str], backend: Sequence[str]) -> li
         problems.append(f"不該打包的還有 {len(leaked) - MAX_LISTED} 個，沒有列出")
     for name, data in sorted(_batch_files(zip_path).items()):
         problems += [f"批次檔 {name} {problem}" for problem in batch_file_problems(data)]
+    if read_exe is not None:
+        problems += _exe_problems(zip_path, top, version, read_exe)
     return problems
 
 
@@ -233,7 +375,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     script = BUILD_SCRIPT.read_text(encoding="utf-8-sig")
     required = required_files(script)
-    problems = check(args.zip, required, backend_paths(script))
+    read_exe = EXE_READER
+    problems = check(args.zip, required, backend_paths(script), read_exe)
     files = sorted((name, size) for name, (is_dir, size) in contents(args.zip).items() if not is_dir)
     print(f"{args.zip} 的內容（{len(files)} 個檔案，位元組）：")
     for name, size in files:
@@ -243,7 +386,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         for problem in problems:
             print(f"  {problem}")
         return 1
-    print(f"{args.zip}：必要的 {len(required)} 個檔案都在，後端只有白名單裡的檔案，沒有執行期資料")
+    print(f"{args.zip}：名稱是 {PRODUCT}，必要的 {len(required)} 個檔案都在，後端只有白名單裡的檔案，"
+          "沒有執行期資料")
+    if read_exe is None:
+        print(f"不是 Windows：沒有檢查 {PRODUCT}.exe 的版本資訊與圖示（CI 的 portable job 在 Windows 上檢查）")
+    else:
+        print(f"{PRODUCT}.exe 的產品名稱、產品版本、檔案版本與圖示都對")
     return 0
 
 
