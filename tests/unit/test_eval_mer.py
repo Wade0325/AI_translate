@@ -97,6 +97,33 @@ def test_japanese_backchannel_is_scored_and_listed_separately():
     assert result.mer_no_overlap == 0.0
 
 
+def test_cp_mer_skips_unclear_like_mer():
+    # 《坊っちゃん》：錄音開頭的有聲書宣告底稿沒有，標成 [聽不清]。錯字率不計那一段，cpMER 以前
+    # 卻把 [聽不清] 先丟掉，宣告整段算成插入（#273）
+    excerpt = Excerpt(name="ja", start=0.0, end=60.0, utterances=[
+        Utterance(speaker="A", text="[聽不清] 親譲りの無鉄砲で"),
+        Utterance(speaker="B", text="小供の時から損ばかり"),
+    ])
+    transcript = [
+        Utterance(speaker="S0", text="これは録音です。親譲りの無鉄砲で"),
+        Utterance(speaker="S1", text="子供の時から損ばかり"),
+    ]
+
+    result = evaluate(excerpt, transcript, CustomVocabulary(), bootstrap=0)
+    _, cp = global_mapping([result])
+
+    # 兩邊都只剩「小供／子供」1 個錯，分母都不含 [聽不清]
+    assert result.errors == 1
+    assert result.cp_mer_local == pytest.approx(result.mer)
+    assert cp == pytest.approx(result.mer)
+
+
+def test_unclear_alone_costs_nothing_when_its_speaker_is_unmatched():
+    dist = speaker_distances({"A": [UNK], "B": ["甲", UNK, "乙"]}, {})
+
+    assert (dist[("A", "")], dist[("B", "")]) == (0, 2)
+
+
 # ----------------------------------------------------------------- 說話者對應
 def _random_speakers(rng, prefix, count, vocabulary="甲乙丙丁戊"):
     return {f"{prefix}{k}": [rng.choice(vocabulary) for _ in range(rng.randint(0, 6))]
