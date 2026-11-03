@@ -147,6 +147,8 @@ def test_network_errors(error):
     ("torch_load_failed", ErrorCode.LOCAL_TORCH_LOAD_FAILED),
     ("unsupported_gpu", ErrorCode.LOCAL_UNSUPPORTED_GPU),
     ("missing_weights", ErrorCode.LOCAL_MISSING_WEIGHTS),
+    ("missing_package", ErrorCode.LOCAL_PACKAGE_MISSING),
+    ("package_load_failed", ErrorCode.LOCAL_PACKAGE_LOAD_FAILED),
 ])
 def test_local_not_ready(reason, code):
     assert describe(LocalNotReady(reason, "本機還不能轉錄")) == Failure(code, "本機還不能轉錄")
@@ -231,6 +233,7 @@ def test_error_code_values_are_unchanged():
         "GEMINI_UNAVAILABLE", "GEMINI_BLOCKED", "GEMINI_REQUEST_FAILED", "NETWORK",
         "LOCAL_NO_GPU", "LOCAL_UNSUPPORTED_GPU", "LOCAL_MISSING_WEIGHTS", "LOCAL_OUT_OF_MEMORY",
         "LOCAL_DRIVER_TOO_OLD", "LOCAL_CUDA_INIT_FAILED", "LOCAL_TORCH_LOAD_FAILED",
+        "LOCAL_PACKAGE_MISSING", "LOCAL_PACKAGE_LOAD_FAILED",
         "AUDIO_UNREADABLE", "NO_TRANSCRIPT",
         "UNSUPPORTED_REQUEST", "UPLOAD_MISSING", "SUBMIT_FAILED",
         "INTERRUPTED", "DATABASE", "BATCH_FAILED", "INTERNAL",

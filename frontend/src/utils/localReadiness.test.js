@@ -36,6 +36,17 @@ describe('轉錄頁選本機時，這台電腦能不能轉錄（#11）', () => {
     },
   );
 
+  it.each(['missing_package', 'package_load_failed'])(
+    '所選模型要用的套件沒裝或載入失敗（%s，#311）：照後端寫的原因擋下，另外可以改用別的供應商',
+    (reason) => {
+      const message = 'moss-transcribe-diarize 套件載入失敗，本機轉錄不能用，請回報問題並附上診斷資訊，'
+        + '或改用 Gemini';
+      expect(readinessView(answer({ ready: false, reason, message }))).toEqual({
+        blockedReason: message, nextStep: 'switch', warning: null,
+      });
+    },
+  );
+
   it('缺模型權重：擋下 Start，下一步是到設定頁下載', () => {
     expect(readinessView(answer({ ready: false, reason: 'missing_weights', message: '缺權重' })))
       .toEqual({ blockedReason: '缺權重', nextStep: 'settings', warning: null });

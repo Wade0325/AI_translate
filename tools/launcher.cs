@@ -1,8 +1,9 @@
-// AI_Translate 免安裝版的啟動器：以免安裝模式執行整套服務。
+// Mimiji 免安裝版的啟動器（Mimiji.exe）：以免安裝模式執行整套服務。
 //
-// 以 Windows 內建 csc 編譯（.NET Framework 4.x，各 Windows 10/11 皆預裝）：
+// 以 Windows 內建 csc 編譯（.NET Framework 4.x，各 Windows 10/11 皆預裝），build_release.ps1 第 5 步：
 //   C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe /nologo /optimize
-//     /out:AI_Translate.exe tools\launcher.cs
+//     /win32icon:tools\portable\mimiji.ico /out:Mimiji.exe tools\launcher.cs build\launcher-version.cs
+// launcher-version.cs 是建置時產生的版本號（#277）；只編譯這個檔也可以，版本資訊的版本號就是 0.0.0.0。
 // 注意：內建 csc 僅支援 C# 5 語法（無字串插值、無 ?. 運算子、無 nameof）。
 //
 // 職責：
@@ -42,10 +43,19 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 
+// exe 的「內容 → 詳細資料」（#277）：產品名稱、檔案描述與著作權固定寫在這裡（著作權和 NOTICE 相同）；
+// 檔案版本與產品版本由 build_release.ps1 在建置時產生的 launcher-version.cs 給。檔案描述也是工作管理員
+// 顯示的名稱
+[assembly: AssemblyTitle(Launcher.AppName)]
+[assembly: AssemblyProduct(Launcher.AppName)]
+[assembly: AssemblyCopyright("Copyright 2026 Wade")]
+
 static class Launcher
 {
-    const string AppName = "AI_Translate";
-    const string ExeName = "AI_Translate.exe";
+    // 產品名稱（#26）：視窗標題與訊息、單一實例的 mutex 名稱（和 tools/portable/start.py 相同）。
+    // build_release.ps1 的 $ProductName 與 exe 的檔名也是它（tests/unit/test_portable_zip.py 檢查）
+    internal const string AppName = "Mimiji";
+    const string ExeName = AppName + ".exe";
     const string IssuesUrl = "https://github.com/Wade0325/AI_translate/issues";
     const int DefaultHealthTimeoutSeconds = 180; // 首次啟動 torch import 很慢
     const int SecondInstanceCloseSeconds = 5;
@@ -438,7 +448,7 @@ static class Launcher
                 "  2. 磁碟空間不足：目前 " + FreeSpaceText(root) + "；清出空間後再試。",
                 "  3. 防毒軟體攔下了下載或解壓的檔案：把這個資料夾加入防毒軟體的排除清單後再試。",
                 "  4. 公司或學校的網路擋了下載（防火牆、代理伺服器）：換一個網路再試。",
-                "  5. 資料夾的路徑太長：把整個資料夾移到較短的路徑（例如 D:\\AI_Translate）後再試。");
+                "  5. 資料夾的路徑太長：把整個資料夾移到較短的路徑（例如 D:\\Mimiji）後再試。");
 
         RemoveDownloads(downloads);
         RemoveStaticLibraries(root);
@@ -728,11 +738,11 @@ static class Launcher
     // 回傳 {原因, 下一步}
     static string[] IoReason(Exception e)
     {
-        const string move = "請把整個資料夾移到可以寫入的位置（例如 D:\\AI_Translate），不要放在 C:\\Program Files 底下，再重新執行。";
+        const string move = "請把整個資料夾移到可以寫入的位置（例如 D:\\Mimiji），不要放在 C:\\Program Files 底下，再重新執行。";
         if (e is UnauthorizedAccessException || e is System.Security.SecurityException)
             return new string[] { "沒有寫入權限（存取被拒）。", move };
         if (e is PathTooLongException)
-            return new string[] { "路徑太長。", "請把整個資料夾移到較短的路徑（例如 D:\\AI_Translate）後再試。" };
+            return new string[] { "路徑太長。", "請把整個資料夾移到較短的路徑（例如 D:\\Mimiji）後再試。" };
         if (e is DriveNotFoundException || e is DirectoryNotFoundException)
             return new string[] { "上層資料夾或磁碟不存在（隨身碟或網路磁碟被移除了嗎？）。", move };
         switch (Marshal.GetHRForException(e) & 0xFFFF)
@@ -1109,7 +1119,7 @@ static class Log
     // 資料夾名稱到這裡結束：後面不是名稱裡的字（句尾的句號不算名稱）
     const string NameEnd = @"(?![\w\-]|\.[\w\-])";
 
-    // 路徑裡和帳號名稱相同的一整層（例如 D:\王小明\AI_Translate 的「王小明」）
+    // 路徑裡和帳號名稱相同的一整層（例如 D:\王小明\Mimiji 的「王小明」）
     static Regex UserPattern(string user)
     {
         if (string.IsNullOrEmpty(user))

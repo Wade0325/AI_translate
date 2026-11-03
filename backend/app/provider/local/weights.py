@@ -13,11 +13,15 @@ import re
 import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Callable, TypeVar
+from types import ModuleType
+from typing import TYPE_CHECKING, Callable, TypeVar
 
 from app.core.config import get_settings
 from app.utils.commands import command_output
 from app.utils.logger import setup_logger
+
+if TYPE_CHECKING:
+    from app.provider.local.packages import Package, PackageUnavailable
 
 logger = setup_logger(__name__)
 T = TypeVar("T")
@@ -208,6 +212,8 @@ class LocalNotReady(ValueError):
     - ``no_gpu``、``driver_too_old``、``cuda_init_failed``、``torch_load_failed``：PyTorch 用不了
       顯卡，見 :class:`GpuUnavailable`（#262）
     - ``unsupported_gpu``：目前的 PyTorch 不支援這張顯卡的架構（#11 Q4）
+    - ``missing_package``、``package_load_failed``：所選模型要用的套件沒裝，或裝了卻載入失敗，見
+      :class:`app.provider.local.packages.PackageUnavailable`（#311）
     """
 
     def __init__(self, reason: str, message: str):
@@ -232,7 +238,7 @@ class GpuUnavailable:
     next_step: str
     """下一步，例如「更新驅動後重新開啟 Mimiji，或改用 Gemini」。"""
     detail: str = ""
-    """PyTorch 回報的原始錯誤（見 :func:`_error_summary`），寫進診斷資訊與日誌，不上轉錄頁。"""
+    """PyTorch 回報的原始錯誤（見 :func:`error_summary`），寫進診斷資訊與日誌，不上轉錄頁。"""
 
     @property
     def message(self) -> str:
@@ -316,7 +322,7 @@ def _cuda_failed(error: BaseException, cuda: str | None) -> GpuUnavailable:
     """照 PyTorch 初始化 CUDA 的錯誤訊息分原因。訊息是 c10/cuda/CUDAFunctions.cpp 的
     ``device_count_impl`` 與 ``device_count_ensure_non_zero`` 寫的（torch 2.8.0 的 c10_cuda.dll 裡
     逐字相同）；認不得的都算初始化失敗。"""
-    detail = _error_summary(error)
+    detail = error_summary(error)
     text = str(error)
     if "Found no NVIDIA driver" in text:
         return GpuUnavailable(
@@ -355,7 +361,7 @@ def _required_driver(cuda: str | None) -> str:
 
 
 def _torch_load_failed(error: BaseException) -> GpuUnavailable:
-    detail = _error_summary(error)
+    detail = error_summary(error)
     vc_runtime = _vc_runtime_problem()
     if vc_runtime and not _has_nvidia_driver():
         # 沒有 NVIDIA 驅動時，裝好 VC++ 可轉散發套件本機轉錄也還是不能用：先說顯卡（#304）
@@ -449,7 +455,7 @@ def _basename(path: str) -> str:
     return re.split(r"[\\/]", path.rstrip("\\/"))[-1]
 
 
-def _error_summary(error: BaseException) -> str:
+def error_summary(error: BaseException) -> str:
     """原始錯誤的摘要：例外類型與訊息的第一行，路徑只留檔名（診斷資訊會貼進公開的 Issue，路徑常帶
     著帳號名稱），太長的只留開頭。"""
     lines = str(error).strip().splitlines()
@@ -537,14 +543,59 @@ def vram_notice(vram_gb: float, single_pass_seconds: float) -> str | None:
 
 def ensure_local_ready(model: str | None = None) -> Gpu:
     """本機轉錄前的前置檢查（由本機轉接器呼叫）；不符合直接拋 :class:`LocalNotReady`，
-    符合時回傳要用的顯卡。顯卡記憶體不足不在這裡擋（#11 Q2）。"""
+    符合時回傳要用的顯卡。顯卡記憶體不足不在這裡擋（#11 Q2）。
+
+    依序查顯卡、所選模型要用的套件（#311）與模型權重。套件排在模型權重前面：套件載入不了時，
+    下載好幾 GB 的模型權重也轉錄不了。
+    """
     gpu = detect_gpu()
     if not isinstance(gpu, Gpu) or not gpu.supported:
         raise _unusable_gpu(gpu)
+    from app.provider.local import packages  # 它用到這個模組的模型名稱，在這裡才匯入，免得互相匯入
+    unavailable = packages.problem(model)
+    if unavailable:
+        raise _package_not_ready(unavailable)
     missing = missing_repos(model)
     if missing:
         raise LocalNotReady("missing_weights", _missing_weights_message(model, missing))
     return gpu
+
+
+def require_package(package: Package) -> ModuleType:
+    """匯入本機模型要用的套件（:func:`packages.check`）；匯入不了時拋 :class:`LocalNotReady`，寫明是
+    沒裝還是載入失敗（#311）。轉錄前的檢查已經查過一次（結果記住了），直接呼叫推論的地方（例如評測
+    工具）也照樣說對原因。"""
+    from app.provider.local import packages
+    result = packages.check(package)
+    if isinstance(result, packages.PackageUnavailable):
+        raise _package_not_ready(result)
+    return result
+
+
+def package_problem(unavailable: PackageUnavailable) -> str:
+    """本機模型要用的套件匯入不了的原因，例如「moss-transcribe-diarize 套件載入失敗」；轉錄頁的就緒
+    提示、設定頁的「測試」、任務失敗的細節與診斷資訊都寫這句。
+
+    原始錯誤（``detail``）和 PyTorch 的一樣不放進這句，只寫進診斷資訊與日誌（#262）。
+    """
+    if unavailable.reason == "missing_package":
+        if unavailable.missing == unavailable.package:
+            return f"缺少 {unavailable.package} 套件"
+        return f"缺少 {unavailable.missing} 套件（{unavailable.package} 要用）"
+    return f"{unavailable.package} 套件載入失敗"
+
+
+def _package_not_ready(unavailable: PackageUnavailable) -> LocalNotReady:
+    if get_settings().is_standalone:
+        next_step = "請回報問題並附上診斷資訊，或改用 Gemini"
+    elif unavailable.reason == "missing_package":
+        # Docker 模式的本機轉錄在主機的 GPU worker，執行環境是 backend\.venv（README「本機 GPU worker」）
+        next_step = ("請依 backend/requirements-standalone.txt 裝進主機的 backend\\.venv，"
+                     "再重新啟動 local_worker.bat")
+    else:
+        next_step = "原始錯誤寫在主機 GPU worker 的日誌，修好後重新啟動 local_worker.bat，或改用 Gemini"
+    return LocalNotReady(unavailable.reason,
+                         f"{package_problem(unavailable)}，本機轉錄不能用，{next_step}")
 
 
 def _missing_weights_message(model: str | None, missing: list[str]) -> str:

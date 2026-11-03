@@ -5,6 +5,7 @@
 - 輕量 lifespan（略過 Redis / VAD 初始化）
 - 收集 app 寫進 log 的內容
 - 單檔任務的暫存資料夾、任務用的資料庫與假供應商
+- 本機模型的套件當成匯入得了（CI 不裝）
 """
 import logging
 import sys
@@ -133,6 +134,29 @@ def client(test_engine):
 
     app.router.lifespan_context = original_lifespan
     app.dependency_overrides.clear()
+
+
+# ─── 4b. 本機模型的套件 ─────────────────────────────────────────────────────
+
+@pytest.fixture(autouse=True)
+def local_model_packages_importable():
+    """本機模型要用的套件（moss-transcribe-diarize、transformers）當成匯入得了。
+
+    CI 不裝這些套件，torch 又換成了假的（上面第 1 節），就緒檢查真的去匯入一定失敗，查顯卡與
+    模型權重的測試都會停在套件。所以先替每個模型要用的套件記下一個空模組當成匯入過的結果；要測
+    匯入不了的測試用自己的 :class:`~app.provider.local.packages.Package`，或換掉這裡記的結果
+    （tests/unit/test_local_packages.py）。
+    """
+    from types import ModuleType
+
+    from app.provider.local import packages
+
+    packages._results.clear()
+    for found in packages.MODEL_PACKAGES.values():
+        for package in found:
+            packages._results[package] = ModuleType(package.module)
+    yield
+    packages._results.clear()
 
 
 # ─── 5. app 的 log ───────────────────────────────────────────────────────────

@@ -534,7 +534,7 @@ test('連不上伺服器時說明要重新開啟 Mimiji；重新開啟之後自�
 
     const notice = page.getByTestId('connection-notice')
     await expect(notice.getByText('連不上伺服器，Mimiji 可能已經關閉')).toBeVisible()
-    await expect(notice.getByText(/請重新開啟 Mimiji（免安裝版是 AI_Translate.exe/)).toBeVisible()
+    await expect(notice.getByText(/請重新開啟 Mimiji（免安裝版是 Mimiji.exe/)).toBeVisible()
     await expect(notice.getByRole('link', { name: '任務頁' })).toHaveAttribute('href', '/tasks')
     await expect(notice.getByRole('link', { name: '歷史紀錄' })).toHaveAttribute('href', '/history')
     await expect(page.getByText('連線中斷，連不上伺服器')).toBeVisible()
@@ -691,7 +691,7 @@ test('批次上傳時連不上伺服器：說明要重新開啟 Mimiji；重新�
 
     const notices = page.getByTestId('connection-notice')
     await expect(notices.getByText('連不上伺服器，Mimiji 可能已經關閉')).toHaveCount(2)
-    await expect(notices.getByText(/請重新開啟 Mimiji（免安裝版是 AI_Translate.exe/)).toHaveCount(2)
+    await expect(notices.getByText(/請重新開啟 Mimiji（免安裝版是 Mimiji.exe/)).toHaveCount(2)
     await expect(notices.first().getByRole('link', { name: '任務頁' })).toHaveAttribute('href', '/tasks')
     await expect(page.getByText('連線中斷，連不上伺服器')).toHaveCount(2)
 

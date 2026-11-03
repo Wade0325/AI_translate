@@ -22,10 +22,12 @@ from pathlib import Path
 from typing import Callable, List, Optional, Tuple
 
 from app.core.config import get_settings
+from app.provider.local import packages
 from app.provider.local.weights import (
     MOSS_MODEL_ID,
     load_pretrained,
     notice_if_missing,
+    require_package,
 )
 from app.utils.logger import setup_logger
 
@@ -295,15 +297,13 @@ def transcribe(
     """
     import soundfile as sf
     import torch
-    try:
-        from moss_transcribe_diarize import (
-            MossTranscribeDiarizeForConditionalGeneration,
-            MossTranscribeDiarizeProcessor,
-        )
-    except ImportError as e:
-        raise RuntimeError(
-            "缺少 moss-transcribe-diarize 套件，請依 backend/requirements-standalone.txt 安裝"
-            "（av 與 moss-transcribe-diarize 兩行）") from e
+
+    # 匯入不了時寫明是沒裝還是載入失敗（#311）
+    require_package(packages.MOSS)
+    from moss_transcribe_diarize import (
+        MossTranscribeDiarizeForConditionalGeneration,
+        MossTranscribeDiarizeProcessor,
+    )
 
     _register_attention()
     duration = float(sf.info(str(wav_path)).duration)
