@@ -28,6 +28,12 @@ class TranscriptionTaskResult(BaseModel):
     service_tier_used: Optional[str] = Field(
         default=None, description="實際採用的 service tier：'flex' 或 'standard'（None 表示 standard）"
     )
+    tail_loss_from: Optional[float] = Field(
+        default=None,
+        description="可能掉尾的起點（原音檔的時間軸，秒）：從這裡起可能有內容沒有轉錄到，例如供應商"
+                    "提早停止輸出（app.services.tail_loss）；沒有掉尾時是 None。分段轉錄與批次放回"
+                    "原音檔的時間軸時寫，任務完成時記進任務紀錄。",
+    )
     segments: List[Dict[str, Any]] = Field(
         default_factory=list,
         description="轉錄結果的片段：說話者編號、開始與結束時間、文字，本機另有逐字時間。"
@@ -54,3 +60,7 @@ class TranscriptionResponse(BaseModel):
     speaker_count: int = Field(
         ..., description="片段裡出現幾個不同的說話者編號，結果頁顯示的人數；沒有片段帶說話者編號時"
                          "（例如 Gemini 沒寫說話者代號）是 0")
+    tail_loss_from_seconds: Optional[float] = Field(
+        default=None,
+        description="可能掉尾的起點（原音檔的秒數）：檔案卡、結果頁與 History 照它寫「從 mm:ss 起"
+                    "可能沒有轉錄到」；沒有掉尾時是 None（app.services.tail_loss）")

@@ -57,6 +57,7 @@ def _log_to_response(log: TranscriptionLog) -> HistoryLogResponse:
         session_id=log.session_id,
         file_uid=log.file_uid,
         service_tier_used=log.service_tier_used,
+        tail_loss_from_seconds=cast(Optional[float], log.tail_loss_from_seconds),
     )
 
 

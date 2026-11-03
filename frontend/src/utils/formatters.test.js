@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  formatClock,
   formatDateTime,
   formatDuration,
   formatElapsed,
@@ -41,6 +42,19 @@ describe('formatDuration：音檔長度顯示成時:分:秒', () => {
 
   it.each([0, null, undefined, NaN])('沒有長度（%s）時顯示 0:00', (seconds) => {
     expect(formatDuration(seconds)).toBe('0:00');
+  });
+});
+
+describe('formatClock：原音檔上的時間顯示成分:秒，一小時以上是時:分:秒', () => {
+  it.each([
+    [0, '00:00'],
+    [45.9, '00:45'],
+    [3000.4, '50:00'],
+    [3599.99, '59:59'],
+    [3600, '1:00:00'],
+    [6612, '1:50:12'],
+  ])('%s 秒顯示成 %s', (seconds, expected) => {
+    expect(formatClock(seconds)).toBe(expected);
   });
 });
 

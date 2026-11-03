@@ -11,6 +11,7 @@ import {
 } from "lucide-react"
 import { downloadFormatsDetailed } from "@/constants/downloadFormats"
 import { formatDuration } from "@/utils/formatters"
+import { TailLossNotice } from "@/components/TailLossNotice"
 
 const { Text } = Typography
 
@@ -117,6 +118,8 @@ export function ResultFileCard({ file, onDownload }) {
                     </Dropdown>
                 </div>
             </div>
+            {/* 轉錄結果可能少了一段（#257）：文字和檔名對齊（左邊距 12 + 圖示 36 + 間距 12） */}
+            <TailLossNotice seconds={fData.tailLossFrom} paddingLeft={60} />
         </div>
     )
 }
