@@ -30,7 +30,7 @@
 
 **[聽不清] 的處理有近似**：該位置的替換／刪除不計分，緊鄰的插入也不計分，但若
 不清楚的區間對應到轉錄結果的多個 token，較遠的那幾個仍會被算成插入。報告會印出 unk
-數量，數字很小才能安心使用。
+數量，數字很小才能安心使用。cpMER 用同一套規則，在每位說話者的 token 上算（#273）。
 """
 
 from __future__ import annotations
@@ -229,21 +229,41 @@ def score_text(reference: str, transcript: str, zh_terms: Iterable[str] = ()) ->
 
 
 # ----------------------------------------------------------------- 說話者
-def _by_speaker(utts: Sequence[Utterance]) -> dict[str, list[str]]:
+def _by_speaker(utts: Sequence[Utterance], keep_unclear: bool = False) -> dict[str, list[str]]:
+    """每位說話者（或每個說話者標記）的 token。
+
+    標準答案要 ``keep_unclear``：留著 [聽不清]（UNK），cpMER 才能和錯字率一樣不計那個位置；
+    不留的話，轉錄結果在那裡轉出的字全部算成插入。轉錄結果照舊丟掉。
+    """
     out: dict[str, list[str]] = {}
     for u in utts:
-        out.setdefault(u.speaker, []).extend(t for t in tokenize(u.text) if t != UNK)
+        out.setdefault(u.speaker, []).extend(t for t in tokenize(u.text) if keep_unclear or t != UNK)
     return out
+
+
+def _scored_len(tokens: Sequence[str]) -> int:
+    """不含 [聽不清] 的 token 數：cpMER 的分母，也是這位說話者整個配不到時的刪除數。"""
+    return sum(1 for t in tokens if t != UNK)
+
+
+def _scored_distance(ref: Sequence[str], hyp: Sequence[str]) -> int:
+    """編輯距離，但和錯字率一樣不計 [聽不清] 位置的替換／刪除與緊鄰它的插入。"""
+    if UNK not in ref:
+        return Levenshtein.distance(ref, hyp)
+    return len(_scored_spans(_op_spans(Levenshtein.editops(ref, hyp)), ref))
 
 
 def speaker_distances(ref_spk: dict[str, list[str]],
                       hyp_spk: dict[str, list[str]]) -> dict[tuple[str, str], int]:
-    """所有 (標準答案的說話者, 轉錄結果的說話者標記) 組合的編輯距離，含「對應到空」的成本。"""
+    """所有 (標準答案的說話者, 轉錄結果的說話者標記) 組合的編輯距離，含「對應到空」的成本。
+
+    標準答案的 [聽不清] 不計分（見 :func:`_scored_distance`）。
+    """
     d: dict[tuple[str, str], int] = {}
     for rk, rv in ref_spk.items():
-        d[(rk, "")] = len(rv)
+        d[(rk, "")] = _scored_len(rv)
         for hk, hv in hyp_spk.items():
-            d[(rk, hk)] = Levenshtein.distance(rv, hv)
+            d[(rk, hk)] = _scored_distance(rv, hv)
     for hk, hv in hyp_spk.items():
         d[("", hk)] = len(hv)
     return d
@@ -471,10 +491,10 @@ def evaluate(excerpt: Excerpt, transcript: Sequence[Utterance], vocabulary: Cust
                 res.term_false_ins += 1
 
     # 說話者歸屬
-    res.ref_spk = _by_speaker(excerpt.utterances)
+    res.ref_spk = _by_speaker(excerpt.utterances, keep_unclear=True)
     res.transcript_spk = _by_speaker(transcript)
     cost, mapping = best_mapping(res.ref_spk, res.transcript_spk)
-    denom = sum(len(v) for v in res.ref_spk.values()) or 1
+    denom = sum(_scored_len(v) for v in res.ref_spk.values()) or 1
     res.cp_mer_local = cost / denom
     res.mapping_local = mapping
 
@@ -540,7 +560,7 @@ def global_mapping(results: Sequence[Result]) -> tuple[dict[str, str], float | N
     hyp_p = labels_hyp + [""] * (n - len(labels_hyp))
     ref_p = labels_ref + [""] * (n - len(labels_ref))
     dists = [speaker_distances(r.ref_spk, r.transcript_spk) for r in results]
-    denom = sum(sum(len(v) for v in r.ref_spk.values()) for r in results) or 1
+    denom = sum(sum(_scored_len(v) for v in r.ref_spk.values()) for r in results) or 1
 
     def pair_cost(rk: str, hk: str) -> int:
         # 和 mapping_cost 同一套算法，拆成每一對的成本：標記配到這一段沒有的代號（或空字串）算全部
@@ -553,7 +573,7 @@ def global_mapping(results: Sequence[Result]) -> tuple[dict[str, str], float | N
             elif in_hyp:
                 total += len(r.transcript_spk[hk])
             elif in_ref:
-                total += len(r.ref_spk[rk])
+                total += _scored_len(r.ref_spk[rk])
         return total
 
     cost = [[pair_cost(r, h) for h in hyp_p] for r in ref_p]
@@ -562,7 +582,7 @@ def global_mapping(results: Sequence[Result]) -> tuple[dict[str, str], float | N
                 for r, d in zip(results, dists, strict=True)), mapping)
     for r, d in zip(results, dists, strict=True):
         r.cp_mer_global = mapping_cost(r.ref_spk, r.transcript_spk, best[1], d) / (
-            sum(len(v) for v in r.ref_spk.values()) or 1)
+            sum(_scored_len(v) for v in r.ref_spk.values()) or 1)
     return best[1], best[0] / denom
 
 
@@ -602,9 +622,9 @@ def format_report(results: Sequence[Result], transcript_label: str,
         return "\n".join(out)
     out.append(f"      cpMER 全域對應 {cp_global*100:.2f}%   對應 {_mapping_text(global_map)}"
                + (f"（不含註明不計的 {len(results) - len(scored)} 段）" if len(scored) < len(results) else ""))
-    local = sum(r.cp_mer_local * max(1, sum(len(v) for v in r.ref_spk.values()))
+    local = sum(r.cp_mer_local * max(1, sum(_scored_len(v) for v in r.ref_spk.values()))
                 for r in scored) / max(1, sum(
-                    sum(len(v) for v in r.ref_spk.values()) for r in scored))
+                    sum(_scored_len(v) for v in r.ref_spk.values()) for r in scored))
     gap = cp_global - local
     if len(scored) > 1:
         out.append(f"      cpMER 局部對應 {local*100:.2f}%"
