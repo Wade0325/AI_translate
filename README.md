@@ -201,10 +201,16 @@ Issue 是公開的，任何人都看得到：
 - **本機轉錄要另外裝 Microsoft Visual C++ 可轉散發套件**：免安裝版沒有附這些 DLL（Microsoft [建議](https://learn.microsoft.com/cpp/windows/choosing-a-deployment-method)用可轉散發套件集中安裝，Windows Update 才更新得到），沒裝或太舊的電腦要先裝好才能用本機轉錄；Gemini 照樣能用。
 - **介面語言**：介面中英夾雜，例如左側選單、頁面標題與部分按鈕是英文。
 - **API 金鑰沒有加密**：Gemini 的 API 金鑰照原樣存在 `data\app.db`，不要把 `data\` 資料夾或 `app.db` 交給別人。
+- **首次佈建一律下載約 3.5 GB**：第一次啟動時下載的執行環境含本機轉錄用的 PyTorch，沒有 NVIDIA 顯卡、只用 Gemini 的電腦也一樣要下載，其中大部分用不到；這一版不把本機轉錄用的套件分開下載（[ADR 0003](docs/adr/0003-local-engine-is-the-default.md)）。要等多久、佔多少磁碟空間見[安裝](#-安裝)與[系統需求](#-系統需求)。
+- **還不能用自己的文字稿只補時間戳**：貼上已有的完整文字稿、只讓模型替它補上時間戳（使用者文稿），這個功能還沒做好，轉錄頁暫時不提供入口（[#66](https://github.com/Wade0325/AI_translate/issues/66)）。
 
 不會改變的設計：
 
 - **執行檔沒有數位簽章**（[ADR 0010](docs/adr/0010-no-code-signing.md)）：第一次執行 `Mimiji.exe` 時，Windows 可能跳出 SmartScreen 的「Windows 已保護您的電腦」，按「其他資訊」→「仍要執行」即可。開著 Smart App Control 的電腦可能直接擋下、沒有「仍要執行」可以按。防毒軟體攔下 `Mimiji.exe` 時，可以改雙擊同一個資料夾裡的 `start.bat`：做的事一樣，只是不會自動開啟瀏覽器，用法見資料夾裡的 `README.txt`。
+
+其他軟體的限制：
+
+- **VLC 3.0 播 VTT 時不顯示重疊的字幕**：Multi-Speaker 開著時，另一位說話者插話的那一則字幕會和正在說的那一則同時出現（[ADR 0008](docs/adr/0008-subtitles-follow-speech-and-may-overlap.md)）。VLC 3.0 播 VTT 時，後出現的那一則不會顯示，播 SRT 時兩則都會顯示，所以用 VLC 看字幕請下載 SRT（在 VLC 3.0.20 實測）。
 
 ---
 
