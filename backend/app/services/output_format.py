@@ -666,8 +666,8 @@ def _vtt(cues: Sequence[Cue]) -> str:
 
     以前在檔頭的 STYLE 區塊定義調柔過的顏色，但用 ffmpeg 7.0 之前版本解碼的播放器遇到 STYLE
     區塊，整份字幕都不顯示，也沒有錯誤訊息（#271 實測：Ubuntu 24.04 的 mpv 0.37 與 Windows 的
-    mpv-lazy 0.35）。預設的顏色類別不用 STYLE。#271 實測：VLC 3.0.20 照類別名稱上純色；mpv 0.37
-    與 Chromium 153 不認得這些類別，字幕照常顯示，只是白字。
+    mpv-lazy 0.35）。預設的顏色類別不用 STYLE。#271 實測：VLC 3.0.20 與 PotPlayer 26.10.21 照類別
+    名稱上純色；mpv 0.37 與 Chromium 153 不認得這些類別，字幕照常顯示，只是白字。
 
     文字依 WebVTT 規格跳脫（#24）：字幕文字裡的 & 與 < 要寫成字元參照（§4.2.2），字幕內容
     不能有「-->」（§4.1），所以 &、<、> 寫成 &amp;、&lt;、&gt;。沒跳脫時，Chromium 與 ffmpeg
