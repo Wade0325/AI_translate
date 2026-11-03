@@ -199,6 +199,13 @@ class Settings(BaseSettings):
     # 音樂與環境音也算聲音，Gemini 的最後一行也常沒有結束時間，所以留一分鐘的餘裕；MOSS 提早停下時
     # 少的是約 16k token 之後的全部（#94）
     tail_loss_min_seconds: float = 60.0
+    # 接續（#94）：模型能力允許接續的模型（本機的 MOSS）在分段轉錄的某一段可能掉尾時（照上一項的規則），
+    # 從停下的地方往前重疊這麼多秒再轉錄一次並接回；重疊的部分用來去掉重複的片段、配對說話者編號
+    continuation_overlap_seconds: float = 120.0
+    # 每次接續至少要往後推進這麼多秒，不然算卡住、放棄接續，改用掉尾的提示告訴使用者
+    continuation_min_progress_seconds: float = 60.0
+    # 一段最多接續幾次，用完仍沒有轉到結尾時放棄
+    continuation_max_attempts: int = 4
     # 單檔紀錄卡在 PROCESSING 超過此時數即視為孤兒（worker 中斷後不會回寫狀態），
     # 後端啟動時標記為 FAILED；需大於最長的合理轉錄時間（本機跑長檔可達數小時）
     stale_processing_max_age_hours: int = 12

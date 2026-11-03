@@ -30,7 +30,7 @@ import subprocess
 import time
 import warnings
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from app.core.error_codes import ErrorCode
 from app.provider.local import packages
@@ -146,17 +146,18 @@ def _to_mono(audio_path: Path, sample_rate: int) -> Path:
     return output
 
 
-def _run_moss(wav_path: Path, progress: ProgressAndCancel) -> List[dict]:
-    """MOSS 一次產生說話者、時間與文字，回傳與 VibeVoice 相同結構的片段。"""
+def _run_moss(wav_path: Path, progress: ProgressAndCancel) -> Tuple[List[dict], Optional[float]]:
+    """MOSS 一次產生說話者、時間與文字，回傳與 VibeVoice 相同結構的片段，以及可能提早停止時擔保
+    轉錄到哪一秒（見 :func:`app.provider.local.moss.covered_until`，沒有跡象時是 None）。"""
     from app.provider.local import moss
 
-    segments, _ = moss.transcribe(
+    output = moss.transcribe(
         wav_path,
         stopping_criteria=_make_cancel_stopping_criteria(progress),
         status_callback=progress.report)
     # generate 可能因為取消而中途停下，輸出不完整，必須在使用前中止
     progress.raise_if_cancelled()
-    return segments
+    return output.segments, output.covered_until
 
 
 def _entries_from_segments(segments: List[dict]) -> List[dict]:
@@ -402,6 +403,7 @@ def transcribe_with_local_models(
     use_moss = is_moss_model(model)
     language = _LANGUAGE_MAP.get((source_lang or "").strip().lower())
     wav: Optional[Path] = None
+    covered_until: Optional[float] = None
 
     try:
         progress.report("本機模型：準備音訊...")
@@ -410,7 +412,7 @@ def transcribe_with_local_models(
 
         if use_moss:
             progress.report("本機模型：MOSS 轉錄與說話者分離中...")
-            segments = _run_moss(wav, progress)
+            segments, covered_until = _run_moss(wav, progress)
         else:
             progress.report("本機模型：VibeVoice-ASR 說話者分離中（長檔需較久）...")
             segments = _run_diarization(wav, progress)
@@ -438,6 +440,8 @@ def transcribe_with_local_models(
             "total_tokens": 0,
             "service_tier_used": "local",
             "segments": records,
+            # MOSS 可能提早停止時擔保轉錄到哪一秒（輸入檔的時間軸）；分段轉錄照它決定要不要接續（#94）
+            "covered_until": covered_until,
         }
     finally:
         if wav:

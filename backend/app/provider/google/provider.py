@@ -93,6 +93,8 @@ def _capabilities() -> ModelCapabilities:
         # 容器 worker 是 gevent pool，支援 terminate
         can_terminate=True,
         split_retry_on_failure=True,
+        # v0.1 不接續（#94 第 2 題）：還沒有 Gemini 掉尾的實測紀錄；可能掉尾時照樣有提示（#257）
+        continuation=False,
         accepts_prompt=True,
         # 使用者文稿還沒交給任務（#66）：照實說不吃，送來的明確拒絕、轉錄頁也不提供入口（#13 Q4 定案
         # 先隱藏）。修好 #66 時改回 True
