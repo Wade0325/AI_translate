@@ -68,6 +68,16 @@ export const ERROR_CODES = Object.freeze({
     reason: '目前的版本不支援這張顯卡',
     nextStep: '本機的模型在這張顯卡上跑不了，請改用 Gemini 轉錄。',
   },
+  LOCAL_PACKAGE_MISSING: {
+    reason: '本機轉錄要用的套件沒有安裝',
+    nextStep: '缺哪個套件寫在下面的細節。請回報問題並附上錯誤碼，或改用 Gemini 轉錄。',
+    action: 'report',
+  },
+  LOCAL_PACKAGE_LOAD_FAILED: {
+    reason: '本機轉錄要用的套件載入失敗',
+    nextStep: '原始錯誤寫在設定頁的診斷資訊裡。請回報問題並附上錯誤碼與診斷資訊，或改用 Gemini 轉錄。',
+    action: 'report',
+  },
   LOCAL_MISSING_WEIGHTS: {
     reason: '所選模型的模型權重還沒下載',
     nextStep: '到設定頁下載模型權重，下載完再重新轉錄。',
