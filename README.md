@@ -59,7 +59,7 @@
 | 顯卡驅動（本機轉錄） | NVIDIA 驅動 572.61 以上：免安裝版的 PyTorch 帶的是 CUDA 12.8 Update 1，版本照 [NVIDIA 的對照表](https://docs.nvidia.com/cuda/cuda-toolkit-release-notes/)。驅動太舊時，畫面會寫出目前的版本與需要的版本 |
 | Microsoft Visual C++ 可轉散發套件（本機轉錄） | 要裝 x64 的[最新版](https://aka.ms/vc14/vc_redist.x64.exe)（14.38 以上，[Microsoft 的說明](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist)），安裝要系統管理員權限。有 NVIDIA 驅動、卻沒裝或太舊時，黑色視窗在下載執行環境之前會提醒，轉錄頁也會寫出下載網址 |
 | 顯卡（Gemini） | 不需要，但要自備 Gemini API 金鑰 |
-| 磁碟空間 | 首次啟動下載約 3.5 GB 的執行環境，安裝時在解壓資料夾裡最多約佔 11.7 GB（其中約 3.5 GB 是暫存在 `runtime\downloads\` 的 PyTorch 安裝檔），裝好後刪掉安裝檔與執行時用不到的 PyTorch 靜態庫（約 2.8 GB），剩約 5.4 GB。下載的檔案另外解開存在 `%LOCALAPPDATA%\uv\cache`（通常在 C 槽）約 8 GB，佈建完成後可以刪掉：和解壓資料夾不在同一個磁碟時另外佔空間；在同一個磁碟時兩邊共用同一份檔案、不另外佔空間，但刪掉的那 2.8 GB 要等刪掉 `uv\cache` 才會真的空出來。本機的預設模型權重約 3.7 GB，選用模型另需約 21 GB |
+| 磁碟空間 | 首次啟動下載約 3.5 GB 的執行環境，全部放在解壓資料夾裡，不另外佔用 C 槽。安裝時最多約佔 11.7 GB（其中約 3.5 GB 是暫存在 `runtime\downloads\` 的 PyTorch 安裝檔），裝好後自動刪掉安裝檔、執行時用不到的 PyTorch 靜態庫（約 2.8 GB）與 uv 的下載快取（`runtime\uv-cache\`），剩約 5.4 GB。下載快取和裝好的套件共用同一份檔案、不另外佔空間；解壓資料夾所在的磁碟不支援硬連結時（例如 exFAT 格式的隨身碟），安裝期間會另外多佔約 8 GB，裝好後一樣刪掉。本機的預設模型權重約 3.7 GB，選用模型另需約 21 GB |
 | 網路 | 首次啟動與下載模型權重時需要；用 Gemini 轉錄時也需要 |
 
 ---
