@@ -10,6 +10,7 @@ Windows 10 上實測到）。發布包裡的換行、BOM 與 ASCII 由 CI 檢查
 import io
 import os
 import re
+import shutil
 import subprocess
 import sys
 import types
@@ -98,15 +99,31 @@ class _Calls:
 
 
 class _Run:
-    """假的 run：先下載 PyTorch 與 uv 各回傳指定的結束代碼，並記下收到的指令。"""
+    """假的 run：先下載 PyTorch、uv 安裝與 uv 清快取各回傳指定的結束代碼，並記下收到的指令。
 
-    def __init__(self, *, prefetch: int = 0, uv: int = 0):
-        self.codes = {"prefetch": prefetch, "uv": uv}
+    uv 安裝時和真的 uv 一樣在 runtime\\uv-cache 留下快取（結束代碼是什麼都一樣）；清快取成功時刪掉它。
+    清快取時順便記下完成標記在不在（marker_when_cleaned）。
+    """
+
+    def __init__(self, *, prefetch: int = 0, uv: int = 0, clean: int = 0):
+        self.codes = {"prefetch": prefetch, "uv": uv, "clean": clean}
         self.calls: list[tuple] = []
+        self.marker_when_cleaned: list[bool] = []
 
     def __call__(self, cmd, **kwargs) -> int:
         self.calls.append(((cmd,), kwargs))
-        return self.codes["prefetch" if cmd[-2].endswith("prefetch_wheels.py") else "uv"]
+        if cmd[-2].endswith("prefetch_wheels.py"):
+            return self.codes["prefetch"]
+        root = kwargs["cwd"]
+        cache = start.uv_cache_dir(root)
+        if cmd[1:3] == ["cache", "clean"]:
+            self.marker_when_cleaned.append(start.provisioned_marker(root).exists())
+            if self.codes["clean"] == 0:
+                shutil.rmtree(cache)
+            return self.codes["clean"]
+        (cache / "archive-v0").mkdir(parents=True, exist_ok=True)
+        (cache / "archive-v0" / "torch.py").write_bytes(b"x")
+        return self.codes["uv"]
 
 
 @pytest.fixture(autouse=True)
@@ -148,8 +165,9 @@ class TestMatchesLauncher:
     def test_same_provisioning(self):
         # 佈建的指令與完成標記相同：用哪一個啟動，另一個都認得已經佈建好
         launcher = _launcher()
-        assert (r'"pip install --python \"{0}\" --target \"{1}\" -r \"{2}\" --find-links \"{3}\""'
+        assert (r'"pip install --python \"{0}\" --target \"{1}\" --cache-dir \"{2}\" --link-mode hardlink"'
                 in launcher)
+        assert r'+ " -r \"{3}\" --find-links \"{4}\"",' in launcher
         assert 'Path.Combine(root, "runtime", "Lib", "site-packages")' in launcher
         assert 'Path.Combine(root, "backend", "requirements-standalone.txt")' in launcher
         assert 'Path.Combine(root, "runtime", ".provisioned")' in launcher
@@ -158,9 +176,21 @@ class TestMatchesLauncher:
         assert [_relative(part) for part in start.provision_command(PKG)] == [
             r"bin\uv.exe", "pip", "install", "--python", r"runtime\python.exe",
             "--target", r"runtime\Lib\site-packages",
+            "--cache-dir", r"runtime\uv-cache", "--link-mode", "hardlink",
             "-r", r"backend\requirements-standalone.txt",
             "--find-links", r"runtime\downloads"]
         assert _relative(str(start.provisioned_marker(PKG))) == r"runtime\.provisioned"
+
+    def test_same_uv_cache(self):
+        # uv 的下載快取放在程式資料夾裡，佈建完用 uv 自己清掉；首次佈建成功後與已佈建時都清（#303）
+        launcher = _launcher()
+        assert 'string cache = Path.Combine(root, "runtime", "uv-cache");' in launcher
+        assert r'"cache clean --quiet --cache-dir \"{0}\""' in launcher
+        assert launcher.count("RemoveUvCache(root, uv, cache);") == 2
+
+        assert _relative(str(start.uv_cache_dir(PKG))) == r"runtime\uv-cache"
+        assert [_relative(part) for part in start.clean_uv_cache_command(PKG)] == [
+            r"bin\uv.exe", "cache", "clean", "--quiet", "--cache-dir", r"runtime\uv-cache"]
 
     def test_same_prefetch(self):
         # 先下載 PyTorch 的指令、下載的資料夾與結束代碼都和啟動器相同（#303）
@@ -196,9 +226,11 @@ class TestMain:
         assert start.main([], root, run=run, serve=serve) == 0
 
         assert run.calls == [((start.prefetch_command(root),), {"cwd": root}),
-                             ((start.provision_command(root),), {"cwd": root})]
+                             ((start.provision_command(root),), {"cwd": root}),
+                             ((start.clean_uv_cache_command(root),), {"cwd": root})]
         assert start.provisioned_marker(root).exists()
         assert not start.downloads_dir(root).exists()  # 裝好後刪掉
+        assert not start.uv_cache_dir(root).exists()  # uv 的下載快取也清掉（#303）
         assert serve.calls == [((root, 8000), {})]
         out = capsys.readouterr().out
         assert "首次啟動：正在下載執行環境" in out
@@ -271,7 +303,8 @@ class TestMain:
         assert start.main([], root, run=run, serve=serve) == 0
 
         assert [call[0][0] for call in run.calls] == [start.prefetch_command(root),
-                                                      start.provision_command(root)]
+                                                      start.provision_command(root),
+                                                      start.clean_uv_cache_command(root)]
         assert start.provisioned_marker(root).exists()
         out = capsys.readouterr().out
         assert ("改由 uv 下載" in out) == (code == 1)  # 5 的原因 prefetch_wheels.py 自己印了
@@ -483,6 +516,74 @@ def _install_torch(root: Path) -> tuple[Path, Path]:
     other.parent.mkdir(parents=True)
     other.write_bytes(b"x")
     return torch_lib, other
+
+
+class TestUvCache:
+    """uv 的下載快取放在 runtime\\uv-cache、佈建完清掉，和啟動器相同（#303）。
+
+    放在 uv 預設的 %LOCALAPPDATA%\\uv\\cache 時，程式資料夾在 D: 這類另一顆磁碟會在 C: 留下約 8 GB。
+    """
+
+    def test_first_run_clears_it_after_the_marker_is_written(self, tmp_path, capsys):
+        # 先寫完成標記再清：清到一半關掉視窗時，下次啟動接著清就好，不會重新佈建
+        root = _package(tmp_path)
+        run = _Run()
+
+        assert start.main([], root, run=run, serve=_Calls()) == 0
+
+        assert run.marker_when_cleaned == [True]
+        assert not start.uv_cache_dir(root).exists()
+        out = capsys.readouterr().out
+        assert out.index("執行環境佈建完成") < out.index("正在清掉首次佈建時暫存的檔案")
+        assert "沒有清乾淨" not in out
+
+    def test_failed_provisioning_keeps_it(self, tmp_path):
+        # 重新執行時，已經下載完的套件不必再下載
+        root = _package(tmp_path)
+        run = _Run(uv=2)
+
+        assert start.main([], root, run=run, serve=_Calls()) == 1
+
+        assert run.marker_when_cleaned == []
+        assert (start.uv_cache_dir(root) / "archive-v0" / "torch.py").exists()
+
+    def test_provisioned_package_clears_what_is_left(self, tmp_path):
+        # 上次清到一半時關掉視窗，或檔案被防毒軟體鎖住
+        root = _package(tmp_path, provisioned=True)
+        start.uv_cache_dir(root).mkdir(parents=True)
+        run, serve = _Run(), _Calls()
+
+        assert start.main([], root, run=run, serve=serve) == 0
+
+        assert run.calls == [((start.clean_uv_cache_command(root),), {"cwd": root})]
+        assert not start.uv_cache_dir(root).exists()
+        assert len(serve.calls) == 1
+
+    def test_one_that_cannot_be_cleared_does_not_stop_the_start(self, tmp_path, capsys):
+        root = _package(tmp_path, provisioned=True)
+        start.uv_cache_dir(root).mkdir(parents=True)
+        serve = _Calls()
+
+        assert start.main([], root, run=_Run(clean=2), serve=serve) == 0
+
+        assert start.uv_cache_dir(root).exists()
+        assert len(serve.calls) == 1
+        out = capsys.readouterr().out
+        assert "首次佈建時暫存的檔案（runtime\\uv-cache）沒有清乾淨（結束代碼 2），不影響使用，下次啟動再清" in out
+
+    def test_uv_that_cannot_run_does_not_stop_the_start(self, tmp_path, capsys):
+        root = _package(tmp_path, provisioned=True)
+        start.uv_cache_dir(root).mkdir(parents=True)
+        serve = _Calls()
+
+        def blocked(cmd, **kwargs) -> int:
+            raise PermissionError(13, "存取被拒")
+
+        assert start.main([], root, run=blocked, serve=serve) == 0
+
+        assert len(serve.calls) == 1
+        out = capsys.readouterr().out
+        assert "沒有清乾淨（無法執行 bin\\uv.exe：存取被拒）" in out
 
 
 class TestStaticLibraries:

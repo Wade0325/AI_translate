@@ -12,6 +12,9 @@
 //   serve-then-exit:N  回應第一次就緒檢查之後，以代碼 N 結束（就緒後崩潰）
 // uv 以 LAUNCHER_STUB_UV_EXIT 的代碼結束，沒設時是 0。設了 LAUNCHER_STUB_UV_COPY_FROM 與
 // LAUNCHER_STUB_UV_COPY_TO 時，先把前一個資料夾裡的檔案複製到後一個（假裝使用者趁佈建時裝了東西）。
+// 參數有 --cache-dir 時，和真的 uv 一樣在那裡留下下載快取（結束代碼是什麼都一樣）。
+// uv cache clean 以 LAUNCHER_STUB_UV_CLEAN_EXIT 的代碼結束，沒設時是 0：0 時刪掉 --cache-dir 的資料夾。
+// 清的時候在程式資料夾的 stub-clean-saw-sentinel.txt 寫下完成標記在不在（yes／no）。
 // 預先下載在最後一個參數（下載的資料夾）放一個檔案，以 LAUNCHER_STUB_PREFETCH_EXIT 的代碼結束，
 // 沒設時是 0：0 時放下載好的 wheel，其他的放下載到一半的 .part。
 // 輸出只用 ASCII，不受主控台碼頁影響。替身最多跑 60 秒，測試出錯時也不會一直留著。
@@ -48,8 +51,27 @@ static class LauncherStub
             return code;
         }
 
+        if (name == "uv" && args.Length >= 2 && args[0] == "cache" && args[1] == "clean")
+        {
+            File.WriteAllText(Path.Combine(root, "stub-clean-saw-sentinel.txt"),
+                File.Exists(Path.Combine(root, "runtime", ".provisioned")) ? "yes" : "no");
+            int code = ParseInt(Environment.GetEnvironmentVariable("LAUNCHER_STUB_UV_CLEAN_EXIT"), 0);
+            string cache = ArgAfter(args, "--cache-dir");
+            if (code == 0 && cache != null && Directory.Exists(cache))
+                Directory.Delete(cache, true);
+            Console.Error.WriteLine("stub uv cache clean: exit " + code);
+            return code;
+        }
+
         if (name == "uv")
         {
+            string cache = ArgAfter(args, "--cache-dir");
+            if (cache != null)
+            {
+                string archive = Path.Combine(cache, "archive-v0");
+                Directory.CreateDirectory(archive);
+                File.WriteAllText(Path.Combine(archive, "torch-stub.py"), "stub");
+            }
             string from = Environment.GetEnvironmentVariable("LAUNCHER_STUB_UV_COPY_FROM");
             string to = Environment.GetEnvironmentVariable("LAUNCHER_STUB_UV_COPY_TO");
             if (!string.IsNullOrEmpty(from) && !string.IsNullOrEmpty(to))
@@ -111,6 +133,15 @@ static class LauncherStub
             }
         }
         return 98;
+    }
+
+    // 參數裡 name 後面的那一個；沒有時是 null
+    static string ArgAfter(string[] args, string name)
+    {
+        for (int i = 0; i + 1 < args.Length; i++)
+            if (args[i] == name)
+                return args[i + 1];
+        return null;
     }
 
     static void ReadRequest(NetworkStream stream)

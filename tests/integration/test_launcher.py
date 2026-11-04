@@ -100,6 +100,11 @@ class App:
         """首次佈建時預先下載的 torch 放在這裡（#303）。"""
         return self.root / "runtime" / "downloads"
 
+    @property
+    def uv_cache(self) -> Path:
+        """首次佈建時 uv 的下載快取（#303）：佈建成功後清掉。"""
+        return self.root / "runtime" / "uv-cache"
+
     def env(self, server: str, uv_exit: int, timeout: int, prefetch_exit: int = 0) -> dict[str, str]:
         env = {**os.environ,
                "USERPROFILE": str(self.home), "USERNAME": USER,
@@ -262,6 +267,7 @@ class TestProvisioning:
         prefetch, uv = app.calls()
         assert _is_prefetch(prefetch) and uv[0] == "uv"
         assert (app.downloads / "torch-stub.whl").exists()
+        assert (app.uv_cache / "archive-v0" / "torch-stub.py").exists()  # uv 的快取也留著（#303）
 
     def test_success_marks_the_runtime_and_starts_the_server(self, app):
         app.sentinel.unlink()
@@ -269,15 +275,20 @@ class TestProvisioning:
         app.run(server="exit:3")
 
         assert app.sentinel.exists()
-        prefetch, uv, server = app.calls()
+        prefetch, uv, clean, server = app.calls()
         # 先預先下載 torch，uv 再從那個資料夾找 torch 的 wheel
         assert prefetch[2:] == ["-I", "-X", "utf8", str(app.root / "bin" / "prefetch_wheels.py"),
                                 str(app.downloads)]
         assert uv[0] == "uv" and uv[2:4] == ["pip", "install"]
         assert uv[-2:] == ["--find-links", str(app.downloads)]
+        # uv 的下載快取放在程式資料夾裡（#303），裝好之後用 uv 清掉
+        assert uv[uv.index("--cache-dir") + 1] == str(app.uv_cache)
+        assert uv[uv.index("--link-mode") + 1] == "hardlink"
+        assert clean[0] == "uv" and clean[2:] == ["cache", "clean", "--quiet", "--cache-dir", str(app.uv_cache)]
         assert server[0] == "python" and not _is_prefetch(server)
-        # 裝好之後刪掉下載的檔案
+        # 裝好之後刪掉下載的檔案與 uv 的快取
         assert not app.downloads.exists()
+        assert not app.uv_cache.exists()
 
     @pytest.mark.parametrize(("code", "message", "kept"), [
         (2, "PyTorch 沒有下載完", "已下載的部分會保留：網路恢復後重新執行 Mimiji.exe，會從中斷的地方接著下載"),
@@ -308,7 +319,7 @@ class TestProvisioning:
         app.run(server="exit:3", prefetch_exit=code)
 
         assert app.sentinel.exists()
-        assert [call[0] for call in app.calls()] == ["python", "uv", "python"]
+        assert [call[0] for call in app.calls()] == ["python", "uv", "uv", "python"]
         assert not app.downloads.exists()
 
     def test_leftover_downloads_are_removed_on_the_next_start(self, app):
@@ -320,6 +331,55 @@ class TestProvisioning:
 
         assert not app.downloads.exists()
         assert [call[0] for call in app.calls()] == ["python"]
+
+
+class TestUvCache:
+    """uv 的下載快取放在 runtime\\uv-cache、佈建成功後清掉（#303）。
+
+    放在 uv 預設的 %LOCALAPPDATA%\\uv\\cache 時，程式資料夾在 D: 這類另一顆磁碟會在 C: 留下約 8 GB。
+    """
+
+    def test_first_provisioning_clears_it_after_marking_the_runtime(self, app):
+        # 先寫完成標記再清：清到一半關掉視窗時，下次啟動接著清就好，不會重新佈建
+        app.sentinel.unlink()
+
+        result = app.run(server="exit:3")
+
+        assert (app.root / "stub-clean-saw-sentinel.txt").read_text(encoding="utf-8") == "yes"
+        assert not app.uv_cache.exists()
+        assert result.output.index("執行環境佈建完成") < result.output.index("正在清掉首次佈建時暫存的檔案")
+        assert "清 uv 的下載快取" in result.log and "結束，代碼 0" in result.log
+        assert "沒有清乾淨" not in result.log
+
+    def test_provisioned_runtime_clears_what_is_left(self, app):
+        # 上次清到一半時關掉視窗，或檔案被防毒軟體鎖住
+        (app.uv_cache / "archive-v0").mkdir(parents=True)
+
+        app.run(server="exit:3")
+
+        assert [call[0] for call in app.calls()] == ["uv", "python"]  # 不重新佈建
+        assert not app.uv_cache.exists()
+
+    def test_one_that_cannot_be_cleared_does_not_stop_the_launch(self, app):
+        (app.uv_cache / "archive-v0").mkdir(parents=True)
+        app.extra_env["LAUNCHER_STUB_UV_CLEAN_EXIT"] = "2"
+
+        result = app.run(server="exit:3")
+
+        assert [call[0] for call in app.calls()] == ["uv", "python"]  # 照樣啟動伺服器
+        assert app.uv_cache.exists()
+        assert "結束，代碼 2" in result.log
+        assert "uv 的下載快取沒有清乾淨，下次啟動再清" in result.log
+
+    def test_uv_that_cannot_run_does_not_stop_the_launch(self, app):
+        # 例如防毒軟體在佈建完之後隔離了 uv.exe
+        (app.uv_cache / "archive-v0").mkdir(parents=True)
+        (app.root / "bin" / "uv.exe").unlink()
+
+        result = app.run(server="exit:3")
+
+        assert [call[0] for call in app.calls()] == ["python"]
+        assert "無法執行 bin\\uv.exe，這次沒有清 uv 的下載快取（下次啟動再清）" in result.log
 
 
 class TestServerCommand:
@@ -368,8 +428,8 @@ class TestStaticLibraries:
         assert {p.name for p in torch_lib.iterdir()} == KEPT
         assert other.exists()  # 只刪 torch 的
         assert app.sentinel.exists()
-        # 預先下載 PyTorch、uv、伺服器
-        assert [call[0] for call in app.calls()] == ["python", "uv", "python"]
+        # 預先下載 PyTorch、uv 安裝、uv 清下載快取、伺服器
+        assert [call[0] for call in app.calls()] == ["python", "uv", "uv", "python"]
         assert "刪掉 torch\\lib 裡執行時用不到的 .lib：3 個，600 位元組" in result.log
 
     def test_provisioned_runtime_removes_what_is_left_at_the_next_start(self, app):
@@ -405,8 +465,8 @@ class TestStaticLibraries:
 
         assert {p.name for p in torch_lib.iterdir()} == KEPT | {"dnnl.lib"}
         assert app.sentinel.exists()
-        # 預先下載 PyTorch、uv、伺服器
-        assert [call[0] for call in app.calls()] == ["python", "uv", "python"]
+        # 預先下載 PyTorch、uv 安裝、uv 清下載快取、伺服器
+        assert [call[0] for call in app.calls()] == ["python", "uv", "uv", "python"]
         assert "佈建失敗" not in result.output
         assert "刪掉 torch\\lib 裡執行時用不到的 .lib：2 個，300 位元組" in result.log
         assert "torch\\lib 裡有 1 個 .lib 刪不掉，下次啟動再試：dnnl.lib（IOException：" in result.log
@@ -640,8 +700,8 @@ class TestVcRuntime:
         assert "只用 Gemini 的話可以不裝" in output
         # 不擋啟動：伺服器照樣起來
         assert "伺服器已就緒：http://127.0.0.1:" in output
-        # 預先下載 PyTorch、uv、伺服器
-        assert [call[0] for call in nvidia.calls()] == ["python", "uv", "python"]
+        # 預先下載 PyTorch、uv 安裝、uv 清下載快取、伺服器
+        assert [call[0] for call in nvidia.calls()] == ["python", "uv", "uv", "python"]
         assert VC_MISSING in result.log
         assert "System32 沒有 msvcp140.dll" in result.log
 

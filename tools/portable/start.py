@@ -5,10 +5,10 @@ build_release.ps1 把它放在發布包的 bin\\start.py；start.bat 用隨包�
     runtime\\python.exe -I -X utf8 bin\\start.py [埠號]
 
 做的事和啟動器（tools/launcher.cs）相同：第一次執行時用同樣的步驟佈建執行環境（先以
-bin\\prefetch_wheels.py 下載 PyTorch，斷線時可以接著下載；再以 uv 安裝；#303）、刪掉 torch 執行時
-用不到的 .lib（#305）、寫同一個完成標記，再以同樣的環境變數啟動伺服器（tests/unit/test_portable_start.py
-檢查兩邊一致）。有 NVIDIA 驅動、卻沒裝 Microsoft Visual C++ 可轉散發套件（或太舊）時，也一樣在佈建之前
-提示安裝（#304）。不同的是不會自動改用空的埠，也不會自動開啟瀏覽器。
+bin\\prefetch_wheels.py 下載 PyTorch，斷線時可以接著下載；再以 uv 安裝，下載快取放在程式資料夾裡；
+#303）、刪掉 torch 執行時用不到的 .lib（#305）、寫同一個完成標記、清掉 uv 的下載快取，再以同樣的
+環境變數啟動伺服器（tests/unit/test_portable_start.py 檢查兩邊一致）。有 NVIDIA 驅動、卻沒裝
+Microsoft Visual C++ 可轉散發套件（或太舊）時，也一樣在佈建之前提示安裝（#304）。不同的是不會自動改用空的埠，也不會自動開啟瀏覽器。
 
 單一實例也和啟動器共用：同名的 mutex 與 data\\launcher-url.txt，所以同一個資料夾的 Mimiji.exe
 與 start.bat 合起來只會跑一個伺服器（tests/integration/test_launcher.py 在 Windows 上兩個方向都測）。
@@ -74,6 +74,15 @@ def downloads_dir(root: Path) -> Path:
     return root / "runtime" / "downloads"
 
 
+def uv_cache_dir(root: Path) -> Path:
+    """首次佈建時 uv 的下載快取，佈建完清掉；和啟動器的相同（#303）。
+
+    不放 uv 預設的 %LOCALAPPDATA%\\uv\\cache：程式資料夾在 D: 這類另一顆磁碟時，那裡會在 C: 另外
+    留下約 8 GB，刪掉程式資料夾也清不掉。
+    """
+    return root / "runtime" / "uv-cache"
+
+
 # bin\prefetch_wheels.py 的結束代碼（定義在 tools/portable/prefetch_wheels.py，測試檢查兩邊一致）。
 # 這三種停下來說明怎麼辦；0、5（這個來源下載不到）與其他的（它自己出錯）接著執行 uv
 PREFETCH_INTERRUPTED = 2
@@ -120,12 +129,24 @@ def remove_static_libraries(root: Path) -> None:
 
 
 def provision_command(root: Path) -> list[str]:
-    """首次佈建的指令，和啟動器的相同（在 root 執行）：PyTorch 用 downloads_dir 裡預先下載的。"""
+    """首次佈建的指令，和啟動器的相同（在 root 執行）：PyTorch 用 downloads_dir 裡預先下載的。
+
+    --link-mode hardlink：同一顆磁碟上從快取用硬連結裝進 site-packages，不另外佔空間；寫明是為了
+    蓋過使用者自己設的 UV_LINK_MODE=symlink，裝好的套件才不會指向佈建完要清掉的快取（#303）。
+    磁碟不支援硬連結時 uv 自己改成複製。
+    """
     return [str(root / "bin" / "uv.exe"), "pip", "install",
             "--python", str(python_exe(root)),
             "--target", str(root / "runtime" / "Lib" / "site-packages"),
+            "--cache-dir", str(uv_cache_dir(root)), "--link-mode", "hardlink",
             "-r", str(root / "backend" / "requirements-standalone.txt"),
             "--find-links", str(downloads_dir(root))]
+
+
+def clean_uv_cache_command(root: Path) -> list[str]:
+    """清掉 uv 下載快取的指令，和啟動器的 RemoveUvCache 相同（在 root 執行）。"""
+    return [str(root / "bin" / "uv.exe"), "cache", "clean", "--quiet",
+            "--cache-dir", str(uv_cache_dir(root))]
 
 
 def server_env(root: Path) -> dict[str, str]:
@@ -284,8 +305,10 @@ def provision(root: Path, run: Callable[..., int]) -> bool:
         return False
     remove_downloads(root)
     remove_static_libraries(root)
+    # 先寫標記再清快取（和啟動器相同）：清到一半時關掉視窗，下次啟動接著清就好，不會重新佈建
     provisioned_marker(root).write_text(datetime.now().isoformat(), encoding="utf-8")
     print("執行環境佈建完成。", flush=True)
+    remove_uv_cache(root, run)
     return True
 
 
@@ -325,6 +348,28 @@ def prefetch(root: Path, run: Callable[..., int]) -> bool:
 def remove_downloads(root: Path) -> None:
     """刪掉預先下載的檔案（約 3.5 GB）。刪不掉（例如防毒軟體正在掃描）不影響啟動，下次啟動再刪。"""
     shutil.rmtree(downloads_dir(root), ignore_errors=True)
+
+
+def remove_uv_cache(root: Path, run: Callable[..., int]) -> None:
+    """佈建完清掉 uv 的下載快取，和啟動器的 RemoveUvCache 相同（#303）。
+
+    site-packages 裡的檔案是從快取硬連結過去的，清掉快取不影響裝好的套件。用 uv 自己清，不用
+    shutil.rmtree：快取裡的路徑比 site-packages 的長，超過 260 字元時隨包的 Python 刪不掉，uv 刪得掉。
+    沒有快取時不執行 uv；清不掉不影響啟動，下次啟動再清。
+    """
+    if not uv_cache_dir(root).exists():
+        return
+    print("正在清掉首次佈建時暫存的檔案，請稍候。", flush=True)
+    try:
+        code = run(clean_uv_cache_command(root), cwd=root)
+    except OSError as e:
+        code = None
+        reason = f"無法執行 bin\\uv.exe：{e.strerror or e}"
+    else:
+        reason = f"結束代碼 {exit_code_text(code)}"
+    if code != 0 or uv_cache_dir(root).exists():
+        print(f"注意：首次佈建時暫存的檔案（runtime\\uv-cache）沒有清乾淨（{reason}），"
+              "不影響使用，下次啟動再清。", flush=True)
 
 
 # ─── Microsoft Visual C++ 可轉散發套件（#304），和啟動器的 WarnVcRuntime 相同 ─────────────
@@ -536,6 +581,7 @@ def _start(root: Path, port: int, run: Callable[..., int],
     if provisioned_marker(root).exists():
         remove_downloads(root)  # 上次佈建成功、但刪不掉時再刪一次（和啟動器相同）
         remove_static_libraries(root)  # 每次啟動補刪，和啟動器相同
+        remove_uv_cache(root, run)  # 上次沒清完時接著清（和啟動器相同）
     else:
         if not provision(root, run):
             return False

@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.core.config import get_settings
+from app.core.error_codes import ErrorCode
 from app.exceptions import TranscriptionCancelledError
 from app.provider.base import ProgressAndCancel
 from app.provider.local import asr, moss, weights
@@ -30,6 +31,21 @@ class TestParseOutput:
     def test_drops_empty_and_reversed_segments(self):
         text = "[1.0][S01]  [2.0][5.0][S01]倒過來[4.0][6.0][S01]保留[7.0]"
         assert [s["Content"] for s in moss.parse_output(text)] == ["保留"]
+
+    def test_segments_with_only_speaker_tags_are_dropped(self):
+        # #325：MOSS 在長段無聲處每秒輸出一段、說話者標籤重複，第二個標籤落在文字的位置。不是說出來的
+        # 話，整段丟掉；前後正常的片段照樣保留
+        text = ("[0.48][S01]開會前[1.66]"
+                "[145.80][S01][S01][146.30][146.80][S01] [S01][147.30][147.80][S02][S01][148.30]"
+                "[1440.14][S01]好，大家早安[1442.00]")
+        assert moss.parse_output(text) == [
+            {"Start": 0.48, "End": 1.66, "Speaker": 0, "Content": "開會前"},
+            {"Start": 1440.14, "End": 1442.0, "Speaker": 0, "Content": "好，大家早安"},
+        ]
+
+    def test_speaker_tags_inside_text_are_removed(self):
+        segs = moss.parse_output("[0.48][S01][S01]こんにちは[S02]、元気？[2.00]")
+        assert segs == [{"Start": 0.48, "End": 2.0, "Speaker": 0, "Content": "こんにちは、元気？"}]
 
     def test_keeps_non_numeric_brackets_in_text(self):
         segs = moss.parse_output("[3.5][S01]あはは[笑]、そうだね[6.25]")
@@ -141,6 +157,33 @@ class TestCoveredUntil:
     def test_stopping_early_without_any_segment_covers_nothing(self):
         assert moss.covered_until([], incomplete=True, generated_tokens=10,
                                   max_new_tokens=5000) == 0.0
+
+    @pytest.mark.parametrize("generated_tokens, max_new_tokens, incomplete", [
+        (17_561, 44_224, False),  # 自己停下，沒有提早停止的跡象
+        (5000, 5000, False),      # 用完預算
+        (900, 5000, True),        # 輸出停在一段的半途
+    ], ids=["stopped-by-itself", "budget-used-up", "cut-off"])
+    def test_textless_segments_at_the_end_count_as_covered(
+            self, generated_tokens, max_new_tokens, incomplete):
+        # #325：MOSS 在長段無聲處輸出一串只有說話者標籤的段，再自己停下（17,561 token）。這些段丟掉了，
+        # 擔保點照樣算到它們的結束，不然分段轉錄以為 MOSS 停在最後一個片段
+        pieces = [*SEVEN, *({"Start": float(i), "End": float(i) + 0.5, "Speaker": 0, "Content": ""}
+                            for i in range(7, 12))]
+        assert moss.covered_until(pieces, incomplete=incomplete, generated_tokens=generated_tokens,
+                                  max_new_tokens=max_new_tokens) == 11.5
+
+    def test_textless_segments_before_the_last_segment_report_nothing(self):
+        pieces = [{**SEVEN[0], "Content": ""}, *SEVEN[1:]]
+        assert moss.covered_until(pieces, incomplete=False, generated_tokens=900,
+                                  max_new_tokens=5000) is None
+
+    def test_parsed_output_keeps_the_textless_segments_for_where_it_got_to(self):
+        # 只有標籤的段不是片段，但照樣看得出 MOSS 轉到了 147.30 秒
+        parsed = moss._parse("[0.48][S01]開會前[1.66][145.80][S01][S01][146.30]"
+                             "[146.80][S01][S01][147.30]")
+        assert [s["Content"] for s in parsed.segments] == ["開會前"]
+        assert moss.covered_until(parsed.pieces, incomplete=False, generated_tokens=900,
+                                  max_new_tokens=5000) == 147.3
 
 
 # ─── 長度預算 ────────────────────────────────────────────────────────────
@@ -514,6 +557,47 @@ class TestRunMoss:
                             lambda wav, stopping_criteria=None, status_callback=None:
                             moss.MossOutput(list(MOSS_SEGMENTS), "raw", covered))
         assert asr._run_moss(Path("x.wav"), _progress(cancelled=False)) == (MOSS_SEGMENTS, covered)
+
+
+class TestNothingTranscribed:
+    """本機的模型沒有轉錄出任何內容（空段，#327）：算轉完、沒有片段，寫明原因與錯誤碼。分段轉錄時其他段
+    照樣保留、整個任務都沒有片段才失敗，見 tests/integration/test_provider_seam.py 的 TestEmptyChunk。"""
+
+    @pytest.fixture
+    def aligned(self, monkeypatch, tmp_path):
+        """不跑 ffmpeg 與對齊器；回傳每次送去強制對齊的片段。"""
+        wav = tmp_path / "in_mono16k.wav"
+        wav.write_bytes(b"")
+        monkeypatch.setattr(asr, "_to_mono", lambda path, rate: wav)
+        calls = []
+        monkeypatch.setattr(asr, "_align_with_fallback",
+                            lambda wav, entries, progress: calls.append(list(entries)))
+        return calls
+
+    @staticmethod
+    def _transcribe(monkeypatch, segments, covered):
+        monkeypatch.setattr(asr, "_run_moss", lambda wav, progress: (segments, covered))
+        return asr.transcribe_with_local_models(Path("in.wav"), "zh", _progress(cancelled=False))
+
+    def test_no_segment_is_a_success_without_segments(self, monkeypatch, aligned):
+        # MOSS 回報轉到了 907.3 秒（只有說話者標籤的段丟掉之後，#325）：照樣交給分段轉錄決定要不要接續
+        result = self._transcribe(monkeypatch, [], 907.3)
+
+        assert result["success"] is True
+        assert result["segments"] == []
+        assert (result["error_code"], result["text"]) == (
+            ErrorCode.NO_TRANSCRIPT, "本機的模型沒有轉錄出任何內容")
+        assert result["covered_until"] == 907.3
+        # 沒有片段時不載入對齊器
+        assert aligned == []
+
+    def test_segments_are_aligned_and_returned_without_a_reason(self, monkeypatch, aligned):
+        result = self._transcribe(monkeypatch, [MOSS_SEGMENTS[0]], None)
+
+        assert result["success"] is True
+        assert [s["text"] for s in result["segments"]] == ["おはよう。"]
+        assert (result["error_code"], result["text"]) == (None, "")
+        assert len(aligned) == 1
 
 
 # ─── 模型能力 ────────────────────────────────────────────────────────────

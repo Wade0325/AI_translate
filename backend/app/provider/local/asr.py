@@ -147,8 +147,8 @@ def _to_mono(audio_path: Path, sample_rate: int) -> Path:
 
 
 def _run_moss(wav_path: Path, progress: ProgressAndCancel) -> Tuple[List[dict], Optional[float]]:
-    """MOSS 一次產生說話者、時間與文字，回傳與 VibeVoice 相同結構的片段，以及可能提早停止時擔保
-    轉錄到哪一秒（見 :func:`app.provider.local.moss.covered_until`，沒有跡象時是 None）。"""
+    """MOSS 一次產生說話者、時間與文字，回傳與 VibeVoice 相同結構的片段，以及可能提早停止、或最後
+    一段沒有文字時擔保轉錄到哪一秒（見 :func:`app.provider.local.moss.covered_until`，都不是時是 None）。"""
     from app.provider.local import moss
 
     output = moss.transcribe(
@@ -427,12 +427,18 @@ def transcribe_with_local_models(
                 f"本機模型：說話者分離完成（{len(speakers)} 位說話者），Qwen3-ASR 轉錄中...")
             entries = _transcribe_segments(wav, segments, language, progress)
             source = "qwen"
-        _align_with_fallback(wav, entries, progress)
+        if entries:
+            # 沒有片段時不必載入對齊器
+            _align_with_fallback(wav, entries, progress)
         records = _build_segment_records(entries, source)
+        if not records:
+            logger.warning("本機的模型沒有轉錄出任何內容")
 
         return {
-            # 本機沒有內容時照舊算失敗（分段轉錄時整個任務失敗），只是寫明原因
-            "success": bool(records),
+            # 沒有轉錄出任何內容也算轉完（空段，#327），和 Gemini 正常結束卻沒有內容時一樣：分段轉錄時
+            # 其他段的片段照樣保留，這一段有沒有漏掉內容照掉尾的規則看；整個任務都沒有片段時，任務生命
+            # 週期拿 text 與錯誤碼回報失敗
+            "success": True,
             "text": "" if records else "本機的模型沒有轉錄出任何內容",
             "error_code": None if records else ErrorCode.NO_TRANSCRIPT,
             "input_tokens": 0,
@@ -440,7 +446,8 @@ def transcribe_with_local_models(
             "total_tokens": 0,
             "service_tier_used": "local",
             "segments": records,
-            # MOSS 可能提早停止時擔保轉錄到哪一秒（輸入檔的時間軸）；分段轉錄照它決定要不要接續（#94）
+            # MOSS 可能提早停止、或最後一段沒有文字時擔保轉錄到哪一秒（輸入檔的時間軸）；分段轉錄照它
+            # 決定要不要接續（#94、#325）
             "covered_until": covered_until,
         }
     finally:

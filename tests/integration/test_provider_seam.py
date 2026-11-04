@@ -30,7 +30,7 @@ from app.core.task_status import TaskStatus
 from app.exceptions import TransientError
 from app.runtime import run_mode
 from tests.support.db_faults import writes_fail
-from tests.support.fake_provider import FAKE_MODEL, Fail, Listen, ServedAs
+from tests.support.fake_provider import FAKE_MODEL, Empty, Fail, Listen, ServedAs
 from tests.support.synthetic_audio import VOICED, synthetic_audio
 from tests.support.synthetic_video import stream_types
 from tests.support.task_api import (
@@ -1069,6 +1069,85 @@ class TestContinuation:
         assert codes([endpoint_end, task_end]) == [TaskStatus.CANCELLED] * 2
         assert len(fake.calls) == 2
         assert leftovers(data_dir) == []
+
+
+class TestEmptyChunk:
+    """空段（#327）：分段轉錄的一段跑完了，卻沒有轉錄出任何內容，例如會議錄影開頭的長段靜音或測試音。
+    不讓任務失敗，其他段的片段照樣保留；這一段有沒有漏掉內容照掉尾的規則看。每一段都是空段時才失敗。
+
+    模型像本機：不剪靜音、允許接續、不切段重試，單次只能處理 5 秒。12 秒的原音檔（見 VOICED）切成 0–3.5、
+    3.5–8.5、8.5–12 秒三段（見 test_model_that_keeps_silences_gets_the_original_cut_at_silences）。
+    """
+
+    @pytest.fixture(autouse=True)
+    def _like_local(self, fake):
+        fake.model_capabilities = replace(
+            fake.model_capabilities, remove_silence=False, continuation=True, single_pass_seconds=5.0)
+
+    def test_nearly_silent_empty_chunk_keeps_the_other_chunks_without_a_notice(self, api, fake):
+        # 中間那一段只有 2.6 秒的聲音（原音檔的 4.7–7.3 秒），不到掉尾的門檻（預設 60 秒）：近乎無聲，
+        # 沒有內容不算漏掉
+        fake.script = [[(0.5, 1.5, 0, "一つ目。")], Empty(), [(2.0, 3.0, 0, "三つ目。")]]
+        messages = transcribe(api, "uid-empty-chunk")
+
+        assert codes(messages)[-1] == TaskStatus.COMPLETED
+        assert len(fake.calls) == 3
+        segments = stored_segments(api, messages[-1]["task_uuid"])
+        assert [s["text"] for s in segments] == ["一つ目。", "三つ目。"]
+        assert [s["seg_key"] for s in segments] == ["a.0000", "b.b.0000"]
+        assert tail_loss_from(messages) is None
+        assert recorded_tail_loss_from(api, messages) is None
+
+    def test_empty_chunk_with_sound_says_it_may_be_missing_from_its_start(
+            self, api, fake, settings, monkeypatch):
+        # 門檻改成 2 秒：中間那一段的 2.6 秒聲音（例如測試音）算得上聲音，可能漏掉了內容，從這一段的開頭
+        # （3.5 秒）起提示；從開頭接續等於重轉同一段，不接續。任務照樣完成
+        monkeypatch.setattr(settings, "tail_loss_min_seconds", 2.0)
+        fake.script = [[(0.5, 1.5, 0, "一つ目。")], Empty(), [(2.0, 3.0, 0, "三つ目。")]]
+        messages = transcribe(api, "uid-empty-chunk-with-sound")
+
+        assert codes(messages)[-1] == TaskStatus.COMPLETED
+        assert len(fake.calls) == 3
+        assert [s["text"] for s in stored_segments(api, messages[-1]["task_uuid"])] == [
+            "一つ目。", "三つ目。"]
+        assert tail_loss_from(messages) == pytest.approx(3.5)
+        assert recorded_tail_loss_from(api, messages) == pytest.approx(3.5)
+
+    @pytest.mark.parametrize("single_pass, script", [
+        (5.0, [Empty("沒有內容"), Empty("另一段也沒有"), Empty()]),
+        (600, [Empty("沒有內容")]),
+    ], ids=["every-chunk", "not-chunked"])
+    def test_task_without_any_segment_fails(self, api, fake, single_pass, script):
+        # 每一段都是空段，或沒有分段、整個音檔都沒有內容：沒有轉錄結果，照第一個寫了原因的段回報失敗
+        fake.model_capabilities = replace(fake.model_capabilities, single_pass_seconds=single_pass)
+        fake.script = list(script)
+        messages = transcribe(api, f"uid-all-empty-{single_pass:g}")
+
+        assert codes(messages)[-1] == TaskStatus.FAILED
+        assert len(fake.calls) == len(script)
+        assert (messages[-1]["error_code"], messages[-1]["error_message"]) == (
+            ErrorCode.NO_TRANSCRIPT, "沒有內容")
+        record = api.get(f"/api/v1/history/{messages[-1]['task_uuid']}").json()
+        assert (record["error_code"], record["error_message"]) == (ErrorCode.NO_TRANSCRIPT, "沒有內容")
+
+    def test_empty_chunk_that_reports_where_it_got_to_is_continued_from_there(
+            self, api, fake, settings, monkeypatch):
+        # #325：MOSS 在長段無聲處輸出一長串只有說話者標籤的段，丟掉之後沒有片段，但它回報轉到了 12 秒；
+        # 之後還有人說話，從 12 秒附近接續，不是從開頭（從開頭等於重轉同一段，不會接續）。26 秒的音檔
+        # 14 秒起才有人說話；單次長度照預設，不分段。接續往前重疊 4 秒到 8 秒（之前沒有靜音的切點），
+        # 送 8–26 秒，轉到結尾
+        fake.model_capabilities = replace(fake.model_capabilities, single_pass_seconds=600)
+        monkeypatch.setattr(settings, "tail_loss_min_seconds", 2.0)
+        monkeypatch.setattr(settings, "continuation_overlap_seconds", 4.0)
+        monkeypatch.setattr(settings, "continuation_min_progress_seconds", 2.0)
+        fake.script = [Empty(covered_until=12.0), Listen()]
+        messages = transcribe(api, "uid-empty-continued", voiced=SPEAKING[4:])
+
+        assert codes(messages)[-1] == TaskStatus.COMPLETED
+        assert fake.durations == pytest.approx([26.0, 18.0], abs=0.01)
+        segments = stored_segments(api, messages[-1]["task_uuid"])
+        assert [s["start"] for s in segments] == pytest.approx(SPEAKING_STARTS[4:], abs=0.01)
+        assert tail_loss_from(messages) is None
 
 
 class TestSplitRetryAfterFailure:
