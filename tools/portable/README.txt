@@ -20,16 +20,13 @@ Mimiji {VERSION} — Windows 免安裝版
 
 1. 執行環境（含 PyTorch）：雙擊 Mimiji.exe 後自動下載。
    - 下載約 3.5 GB，裝在本資料夾的 runtime\。安裝時最多約佔 11.7 GB（其中約 3.5 GB
-     是下載中的 PyTorch，暫存在 runtime\downloads\），裝好後刪掉它與執行時用不到的
-     PyTorch 靜態庫（約 2.8 GB），剩約 5.4 GB
+     是下載中的 PyTorch，暫存在 runtime\downloads\），裝好後自動刪掉它、執行時用不到的
+     PyTorch 靜態庫（約 2.8 GB）與 uv 的下載快取（runtime\uv-cache\），剩約 5.4 GB
    - 視網速需要數分鐘到數十分鐘；中斷後重新執行 Mimiji.exe，
      會從中斷的地方接著下載
    - 沒有 NVIDIA 顯卡的電腦也會下載這些；只用 Gemini 時其中大部分用不到
-   - 下載的檔案另外解開存在 %LOCALAPPDATA%\uv\cache（通常在 C 槽），約 8 GB。
-     黑色視窗出現「執行環境佈建完成」之後，可以刪掉這個 uv\cache 資料夾。
-     它和本資料夾不在同一個磁碟時，那個磁碟也要留這些空間。在同一個磁碟時，
-     兩邊共用同一份檔案、不另外佔空間，但上面刪掉的約 2.8 GB 要等刪掉
-     uv\cache 才會真的空出來
+   - 這些檔案都在本資料夾裡，不另外佔用 C 槽。本資料夾所在的磁碟不支援硬連結時
+     （例如 exFAT 格式的隨身碟），安裝期間會另外多佔約 8 GB，裝好後一樣刪掉
 2. 模型權重（只有本機轉錄需要）：瀏覽器開啟之後，到 Settings 頁的
    Local Models (本機 GPU 模型) 卡片按「下載模型權重」。
    - 預設模型約 3.7 GB；選用模型另需約 21 GB。視網速需要數分鐘到數十分鐘
