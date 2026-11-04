@@ -186,6 +186,18 @@ class TestCoveredUntil:
                                   max_new_tokens=5000) == 147.3
 
 
+class TestIsTruncated:
+    @pytest.mark.parametrize("incomplete, generated_tokens, expected", [
+        (False, 5000, True),      # 用完預算（#326 的立法院質詢）
+        (True, 900, True),        # 輸出停在一段的半途
+        (False, 900, False),      # 正常結束；最後一段沒有文字（#325）也是這樣，不算截斷
+    ], ids=["budget-used-up", "cut-off", "ended-normally"])
+    def test_truncated_when_budget_is_used_up_or_output_is_cut_off(
+            self, incomplete, generated_tokens, expected):
+        assert moss.is_truncated(incomplete=incomplete, generated_tokens=generated_tokens,
+                                 max_new_tokens=5000) is expected
+
+
 # ─── 長度預算 ────────────────────────────────────────────────────────────
 
 class TestMaxNewTokens:
@@ -235,6 +247,51 @@ class TestVramPeaks:
         monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(cuda=cuda))
 
         assert moss._vram_peaks() == "顯存峰值：配置 6.90 GiB、保留 18.98 GiB"
+
+
+class TestIdleVramRelease:
+    """生成中每 256 個 token 看一次，閒置的顯存超過 1 GiB 就還給驅動（#326）。"""
+
+    @pytest.fixture
+    def cuda(self, monkeypatch):
+        gib = 2 ** 30
+        cuda = SimpleNamespace(allocated=6 * gib, reserved=6 * gib, emptied=0)
+        cuda.memory_allocated = lambda: cuda.allocated
+        cuda.memory_reserved = lambda: cuda.reserved
+
+        def empty_cache():
+            cuda.emptied += 1
+            cuda.reserved = cuda.allocated
+
+        cuda.empty_cache = empty_cache
+        monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(cuda=cuda))
+        return cuda
+
+    def generate(self, release, tokens: int) -> list[bool]:
+        return [release(None, None) for _ in range(tokens)]
+
+    def test_never_stops_generation(self, cuda):
+        cuda.reserved += 5 * 2 ** 30
+        assert not any(self.generate(moss._IdleVramRelease(), 1024))
+
+    def test_releases_idle_memory_over_1_gib_every_256_tokens(self, cuda):
+        # KV cache 變長留下 3 GiB 空著的區段：到第 256 個 token 才看，還回去之後到第 512 個又看一次
+        release = moss._IdleVramRelease()
+        cuda.reserved += 3 * 2 ** 30
+        self.generate(release, 255)
+        assert cuda.emptied == 0
+        self.generate(release, 1)
+        assert (cuda.emptied, release.releases) == (1, 1)
+        cuda.reserved += 3 * 2 ** 30
+        self.generate(release, 256)
+        assert (cuda.emptied, release.releases) == (2, 2)
+
+    def test_keeps_up_to_1_gib_idle(self, cuda):
+        # 1 GiB 以內的閒置顯存留給下一步重用，不必每次都向驅動要
+        cuda.reserved += 2 ** 30
+        release = moss._IdleVramRelease()
+        self.generate(release, 1024)
+        assert (cuda.emptied, release.releases) == (0, 0)
 
 
 class TestMaxSinglePassSeconds:
@@ -551,12 +608,12 @@ class TestRunMoss:
         with pytest.raises(TranscriptionCancelledError):
             asr._run_moss(Path("x.wav"), _progress(cancelled=True))
 
-    @pytest.mark.parametrize("covered", [None, 2.0])
-    def test_returns_segments_and_where_it_is_covered_until(self, monkeypatch, covered):
+    @pytest.mark.parametrize("covered, truncated", [(None, False), (2.0, False), (2.0, True)])
+    def test_returns_segments_and_where_it_is_covered_until(self, monkeypatch, covered, truncated):
+        output = moss.MossOutput(list(MOSS_SEGMENTS), "raw", covered, truncated=truncated)
         monkeypatch.setattr(moss, "transcribe",
-                            lambda wav, stopping_criteria=None, status_callback=None:
-                            moss.MossOutput(list(MOSS_SEGMENTS), "raw", covered))
-        assert asr._run_moss(Path("x.wav"), _progress(cancelled=False)) == (MOSS_SEGMENTS, covered)
+                            lambda wav, stopping_criteria=None, status_callback=None: output)
+        assert asr._run_moss(Path("x.wav"), _progress(cancelled=False)) == output
 
 
 class TestNothingTranscribed:
@@ -575,8 +632,9 @@ class TestNothingTranscribed:
         return calls
 
     @staticmethod
-    def _transcribe(monkeypatch, segments, covered):
-        monkeypatch.setattr(asr, "_run_moss", lambda wav, progress: (segments, covered))
+    def _transcribe(monkeypatch, segments, covered, truncated=False):
+        output = moss.MossOutput(segments, "", covered, truncated=truncated)
+        monkeypatch.setattr(asr, "_run_moss", lambda wav, progress: output)
         return asr.transcribe_with_local_models(Path("in.wav"), "zh", _progress(cancelled=False))
 
     def test_no_segment_is_a_success_without_segments(self, monkeypatch, aligned):
@@ -588,8 +646,16 @@ class TestNothingTranscribed:
         assert (result["error_code"], result["text"]) == (
             ErrorCode.NO_TRANSCRIPT, "本機的模型沒有轉錄出任何內容")
         assert result["covered_until"] == 907.3
+        # 只有說話者標籤的段不是截斷，掉尾照樣要一分鐘的聲音（#326）
+        assert result["truncated"] is False
         # 沒有片段時不載入對齊器
         assert aligned == []
+
+    def test_truncated_output_is_passed_on(self, monkeypatch, aligned):
+        # MOSS 用完生成預算：擔保點連同「輸出被截斷」交給分段轉錄，擔保點之後還有聲音就接續（#326）
+        result = self._transcribe(monkeypatch, [MOSS_SEGMENTS[0]], 1815.6, truncated=True)
+
+        assert (result["covered_until"], result["truncated"]) == (1815.6, True)
 
     def test_segments_are_aligned_and_returned_without_a_reason(self, monkeypatch, aligned):
         result = self._transcribe(monkeypatch, [MOSS_SEGMENTS[0]], None)

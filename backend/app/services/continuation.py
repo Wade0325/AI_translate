@@ -11,7 +11,7 @@
      只有說話者標籤、被丟掉時（#325）照樣回報，擔保點是那幾段的結束。
    - 分段轉錄照掉尾的規則（:mod:`app.services.tail_loss`）看語音視圖：從停下的地方（有回報時是
      ``covered_until``，沒有時是最後一個片段的結束）到這一段的結尾，扣掉靜音還有至少
-     ``TAIL_LOSS_MIN_SECONDS`` 秒的聲音才接續；有回報時（輸出被截斷）門檻是
+     ``TAIL_LOSS_MIN_SECONDS`` 秒的聲音才接續；轉接器回報輸出被截斷（``truncated``）時門檻是
      ``TAIL_LOSS_TRUNCATED_MIN_SECONDS``，之後還有聲音就接續（#326）。沒有回報也照樣看，抓得到模型
      自己不知道停早了的情況，例如在約 16k token 自己停下，或長段非語音之後就結束。
 2. 從哪裡接續（:func:`resume_point`）：停下的地方往前重疊 ``CONTINUATION_OVERLAP_SECONDS`` 秒，起點對齊

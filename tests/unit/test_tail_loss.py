@@ -14,9 +14,9 @@ SEGMENTS = [{"start": 1812.98, "end": COVERED}]
 
 
 def test_truncated_output_with_less_than_a_minute_left_is_tail_loss():
-    # 輸出被截斷（轉接器回報了擔保點）：擔保點之後還有 26.75 秒的聲音，不到一分鐘也算
+    # 輸出被截斷：擔保點之後還有 26.75 秒的聲音，不到一分鐘也算
     assert tail_loss.tail_loss_from(SEGMENTS, start=0.0, end=END, silences=(),
-                                    covered_until=COVERED) == COVERED
+                                    covered_until=COVERED, truncated=True) == COVERED
 
 
 def test_output_that_ended_by_itself_keeps_the_one_minute_margin():
@@ -25,8 +25,14 @@ def test_output_that_ended_by_itself_keeps_the_one_minute_margin():
     assert tail_loss.tail_loss_from(SEGMENTS, start=0.0, end=END, silences=()) is None
 
 
+def test_covered_point_without_truncation_keeps_the_one_minute_margin():
+    # MOSS 最後幾段只有說話者標籤、丟掉之後也回報擔保點（#325），但輸出不是被截斷的：一樣要一分鐘
+    assert tail_loss.tail_loss_from(SEGMENTS, start=0.0, end=END, silences=(),
+                                    covered_until=COVERED) is None
+
+
 def test_truncated_output_followed_only_by_silence_is_not_tail_loss():
     # 擔保點之後只剩半秒的聲音、其餘都是靜音：沒有沒轉到的話
     silences = [(COVERED + 0.5, END)]
     assert tail_loss.tail_loss_from(SEGMENTS, start=0.0, end=END, silences=silences,
-                                    covered_until=COVERED) is None
+                                    covered_until=COVERED, truncated=True) is None

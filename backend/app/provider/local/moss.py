@@ -15,6 +15,10 @@ MOSS 轉長音檔時可能約輸出 16k token 就自己停下（#94）。:func:`
 Windows：torch 沒有 Flash SDPA，memory-efficient kernel 又不接受 ``enable_gqa``，
 transformers 5.x 在無遮罩時送 GQA → 退回 math kernel，prefill 顯存 O(L²)
 （37.6 分鐘音檔要配置 53 GiB）。因此註冊 ``sdpa_win`` 注意力實作繞過（lab E7）。
+
+顯存：KV cache 每生成一個 token 就用 ``torch.cat`` 變長，PyTorch 的配置器留下一堆空著、卻接不了更長
+張量的區段；Windows 的驅動在顯卡記憶體滿了之後改給共用記憶體，配置器不會失敗，也就不會自己釋放，
+生成慢好幾倍（#326）。生成中定期把閒置的顯存還給驅動（:class:`_IdleVramRelease`）。
 """
 
 from __future__ import annotations
@@ -296,6 +300,12 @@ def _log_speaker_tags_in_text(bodies: Sequence[str]) -> None:
         logger.warning(f"MOSS 輸出有 {len(tagged) - labels_only} 段的文字裡夾著說話者標籤，去掉標籤")
 
 
+def is_truncated(*, incomplete: bool, generated_tokens: int, max_new_tokens: int) -> bool:
+    """輸出被截斷：用完生成預算，或輸出結尾不完整（:func:`incomplete_tail`）。和 :func:`covered_until`
+    看的提早停止跡象相同；最後一段沒有文字（#325）不算截斷。"""
+    return incomplete or generated_tokens >= max_new_tokens
+
+
 def covered_until(pieces: Sequence[Mapping[str, Any]], *, incomplete: bool,
                   generated_tokens: int, max_new_tokens: int) -> Optional[float]:
     """MOSS 可能提早停止輸出、或最後一段沒有文字時，擔保轉錄到這段音檔的哪一秒；都不是時是 None
@@ -399,6 +409,9 @@ class MossOutput:
     """未解析的輸出文字。"""
     covered_until: Optional[float]
     """可能提早停止、或最後一段沒有文字時，擔保轉錄到哪一秒（:func:`covered_until`）；都不是時是 None。"""
+    truncated: bool = False
+    """輸出被截斷：用完生成預算，或輸出結尾不完整。擔保點之後幾乎一定還有沒轉到的話，分段轉錄不等
+    一分鐘的聲音就接續（#326）；最後一段沒有文字（#325）不算。"""
 
 
 def transcribe(
@@ -444,9 +457,48 @@ def transcribe(
         torch.cuda.empty_cache()
 
     parsed = _parse(text)
+    incomplete = bool(text[parsed.consumed:].strip())
     return MossOutput(parsed.segments, text, covered_until(
-        parsed.pieces, incomplete=bool(text[parsed.consumed:].strip()),
-        generated_tokens=generated_tokens, max_new_tokens=max_new_tokens))
+        parsed.pieces, incomplete=incomplete,
+        generated_tokens=generated_tokens, max_new_tokens=max_new_tokens),
+        truncated=is_truncated(incomplete=incomplete, generated_tokens=generated_tokens,
+                               max_new_tokens=max_new_tokens))
+
+
+RELEASE_EVERY_TOKENS = 256
+"""生成中每這麼多個 token 看一次閒置的顯存。"""
+RELEASE_IDLE_GIB = 1.0
+"""PyTorch 保留的顯存比張量用到的多出這麼多 GiB 時，把閒置的還給驅動。"""
+
+
+class _IdleVramRelease:
+    """generate 的停止生成條件，但從不停止：每生成 :data:`RELEASE_EVERY_TOKENS` 個 token 看一次，PyTorch
+    保留的顯存比張量用到的多出 :data:`RELEASE_IDLE_GIB` 以上時，把閒置的區段還給驅動
+    （``torch.cuda.empty_cache``）。
+
+    #326 在 16 GB 的卡上轉立法院質詢（30:42，多人快速對答）：不釋放時生成到 19,712 個 token，張量只用
+    6.47 GiB，保留卻到 14.39 GiB，多的幾乎都是整段空著的區段（87 段長到 197 段，切開的區塊裡閒置的
+    一直只有約 0.5 GiB），之前一路長到 18.98 GiB、溢到共用記憶體，RTF 3.09。照這裡的規則釋放了 20 次，
+    整個檔保留峰值 10.00 GiB、RTF 0.63，每 256 個 token 的耗時從頭到尾沒有變；不釋放的那次停下之前的
+    輸出，和釋放時的開頭逐字相同。
+    """
+
+    def __init__(self):
+        import torch
+
+        self._cuda = torch.cuda
+        self._tokens = 0
+        self.releases = 0
+        """釋放了幾次，寫進 log。"""
+
+    def __call__(self, input_ids, scores, **kwargs) -> bool:
+        self._tokens += 1
+        if self._tokens % RELEASE_EVERY_TOKENS == 0:
+            idle = self._cuda.memory_reserved() - self._cuda.memory_allocated()
+            if idle > RELEASE_IDLE_GIB * 2 ** 30:
+                self._cuda.empty_cache()
+                self.releases += 1
+        return False
 
 
 def _vram_peaks() -> str:
@@ -454,7 +506,7 @@ def _vram_peaks() -> str:
 
     保留（``max_memory_reserved``，評測的峰值顯存也是看它）遠大於配置（``max_memory_allocated``）時，
     多出來的是配置器留著、沒有在用的顯存，例如 KV cache 一路變長留下的碎片；兩者差不多時是真的要用
-    那麼多。#326 的立法院質詢保留到 18.98 GiB，超過 16 GB 的顯卡，要靠這兩個數字分辨是哪一種。
+    那麼多。#326 的立法院質詢靠這兩個數字查出是碎片（見 :class:`_IdleVramRelease`）。
     """
     import torch
 
@@ -472,6 +524,7 @@ def _generate(model, processor, wav_path: Path, duration: float,
         build_transcription_messages,
         prepare_inputs,
     )
+    from transformers import StoppingCriteriaList
 
     device = torch.device("cuda")
     messages = build_transcription_messages(str(wav_path), DEFAULT_PROMPT)
@@ -489,6 +542,7 @@ def _generate(model, processor, wav_path: Path, duration: float,
     generation_config.do_sample = False
     streamer = (_make_progress_streamer(processor.tokenizer, duration, status_callback)
                 if status_callback else None)
+    release = _IdleVramRelease()
     with torch.inference_mode(), torch.amp.autocast("cuda", dtype=torch.bfloat16):
         output_ids = model.generate(
             input_ids=inputs["input_ids"],
@@ -497,11 +551,12 @@ def _generate(model, processor, wav_path: Path, duration: float,
             audio_feature_lengths=inputs["audio_feature_lengths"],
             audio_chunk_mapping=inputs["audio_chunk_mapping"],
             generation_config=generation_config,
-            stopping_criteria=stopping_criteria,
+            stopping_criteria=StoppingCriteriaList([*(stopping_criteria or ()), release]),
             streamer=streamer,
         )
     generated = output_ids[0][prompt_len:]
     generated_tokens = int(generated.numel())
-    logger.info(f"MOSS 生成 {generated_tokens} tokens；{_vram_peaks()}")
+    logger.info(f"MOSS 生成 {generated_tokens} tokens；{_vram_peaks()}；"
+                f"生成中釋放閒置顯存 {release.releases} 次")
     text = processor.tokenizer.decode(generated, skip_special_tokens=True).strip()
     return text, generated_tokens, max_new_tokens
