@@ -2,13 +2,13 @@
 
 用法（.github/workflows/portable-trial.yml 呼叫；要 Windows 與系統管理員權限）：
 
-    python tools/portable_trial/run_trial.py --zip build/AI_Translate-trial1-win64.zip --out trial-results
+    python tools/portable_trial/run_trial.py --zip build/Mimiji-trial1-win64.zip --out trial-results
 
 照時間序做這些事，每一步的結果寫進 --out 的 results.json 與 summary.md：
 
 1. 環境：Windows 版本、磁碟、長路徑設定、Defender、VC++ 執行階段、有沒有 NVIDIA 驅動。
-2. 解壓：和使用者一樣解到「下載」資料夾（Downloads\\<zip 名稱>\\AI_Translate）。
-3. 第一次啟動（冷啟動）：雙擊 AI_Translate.exe 的等價做法。PATH 只留 Windows 內建的資料夾，
+2. 解壓：和使用者一樣解到「下載」資料夾（Downloads\\<zip 名稱>\\Mimiji）。
+3. 第一次啟動（冷啟動）：雙擊 Mimiji.exe 的等價做法。PATH 只留 Windows 內建的資料夾，
    長路徑設定關掉（新裝的 Windows 預設關），經過 proxy.py 計下載量。記下首次佈建的下載量與耗時、
    uv 的輸出、health 就緒的秒數，再問幾個 API（health、版本、供應商、權重狀態、診斷資訊）。
 4. 權重下載：在同一個伺服器上按「下載預設權重」的 API，記下載量與耗時（沒有顯卡也能下載）。
@@ -17,14 +17,20 @@
 7. 大小：佈建後的資料夾、uv 的下載快取、最長的路徑（離 260 字元還有多少）。
 8. 簽章：發布包與佈建後每個 exe、dll、pyd 的 Authenticode 狀態。
 9. VC++ 執行階段：先靜態看每個 PE 檔 import 了哪些 VC++ 的 DLL、發布包裡有沒有附；再把
-   System32 裡 VC++ 的 DLL 暫時改名，重跑 import 探針、uv/ffmpeg，並用 AI_Translate.exe 與 start.bat
+   System32 裡 VC++ 的 DLL 暫時改名，重跑 import 探針、uv/ffmpeg，並用 Mimiji.exe 與 start.bat
    各啟動一次，最後改回來。runner 沒有 NVIDIA 驅動，這時不該提示安裝 VC++（#304）。
 10. VC++ 提示（#304）：VC++ 一樣拿掉，在 System32 放一個空的 nvcuda.dll 假裝有 NVIDIA 驅動，刪掉
-    佈建完成的標記讓它重跑佈建，用 AI_Translate.exe 與 start.bat 各啟動一次：提示要出現在佈建之前、
+    佈建完成的標記讓它重跑佈建，用 Mimiji.exe 與 start.bat 各啟動一次：提示要出現在佈建之前、
     佈建完再說一次，診斷資訊說 PyTorch 因為缺 VC++ 載入失敗。最後拿掉假的 nvcuda.dll。
 11. 斷網續傳：刪掉第一次的資料夾與 uv 快取，打開 Defender 的即時保護（能開的話），重新解壓、
     啟動；下載到一半時讓代理「斷網」，看啟動器怎麼結束、留下什麼，恢復網路後再啟動一次，
     記這次又下載了多少、花多久、health 幾秒就緒。
+12. 在 uv 下載時斷網（#303）：同樣重新解壓，這次等 PyTorch 預先下載完、uv 開始下載其他套件之後才
+    斷網。看 uv 的下載快取是不是留在程式資料夾的 runtime\\uv-cache、恢復網路後是不是只補下載剩下的，
+    佈建完成後是不是清掉。
+
+uv 的下載快取（#303）：每一步都記 runtime\\uv-cache 與 uv 預設的 %LOCALAPPDATA%\\uv\\cache。
+佈建完成後前者要清掉，後者不該出現；摘要最後一節逐項判定。
 
 每一步失敗都記下來、繼續做下一步；整支腳本只有在自己壞掉時才非零結束。
 只在 CI 的試發布 workflow 用，不進發布包。
@@ -52,6 +58,8 @@ from typing import Any
 HERE = Path(__file__).resolve().parent
 PROXY_PORT = 18080
 INTERRUPT_AT_BYTES = 1_500_000_000  # 斷網的時間點：torch（最大的一個檔）下載到一半左右
+PYPI_FILES_HOST = "files.pythonhosted.org"
+CUT_PYPI_BYTES = 30_000_000  # #303：uv 從 PyPI 下載到這麼多時斷網
 GIVE_UP_SECONDS = 15 * 60  # 斷網之後等啟動器自己結束的上限；超過就當成使用者關掉視窗
 RUN_TIMEOUT_SECONDS = 100 * 60
 WEIGHTS_TIMEOUT_SECONDS = 45 * 60
@@ -231,8 +239,9 @@ def environment(record: dict[str, Any]) -> None:
 # ─── 代理 ────────────────────────────────────────────────────────────────
 
 class Proxy:
-    def __init__(self, label: str) -> None:
+    def __init__(self, label: str, *, cut_host: str | None = None, cut_after: int | None = None) -> None:
         self.label = label
+        self.cut = ["--cut-host", cut_host, "--cut-after-bytes", str(cut_after)] if cut_host else []
         self.stats_path = OUT / f"proxy-{label}-stats.json"
         self.tunnels_path = OUT / f"proxy-{label}-tunnels.jsonl"
         self.control_path = OUT / f"proxy-{label}-blackhole"
@@ -243,7 +252,7 @@ class Proxy:
         self.process = subprocess.Popen([
             sys.executable, str(HERE / "proxy.py"), "--port", str(PROXY_PORT),
             "--stats", str(self.stats_path), "--control", str(self.control_path),
-            "--tunnels", str(self.tunnels_path)])
+            "--tunnels", str(self.tunnels_path), *self.cut])
         deadline = time.time() + 30
         while time.time() < deadline:
             with contextlib.suppress(OSError), socket.create_connection(("127.0.0.1", PROXY_PORT), 1):
@@ -318,6 +327,10 @@ def parse_launcher_logs(root: Path) -> dict[str, Any]:
                     for m in re.finditer(r"uv 結束，代碼 (\S+)，花了 (\d+) 秒", text)],
         "ready_seconds": [int(m.group(1)) for m in re.finditer(r"伺服器在 (\d+) 秒後就緒", text)],
         "free_space": re.findall(r"可用空間：([^\n]+)", text),
+        # 佈建完清 uv 的下載快取（#303，tools/launcher.cs 的 RemoveUvCache）
+        "uv_cache_clean": [{"code": m.group(1), "seconds": int(m.group(2))}
+                           for m in re.finditer(r"清 uv 的下載快取（[^）]*）結束，代碼 (\S+)，花了 (\d+) 秒", text)],
+        "uv_cache_left": len(re.findall(r"uv 的下載快取沒有清乾淨", text)),
     }
     return found
 
@@ -325,7 +338,7 @@ def parse_launcher_logs(root: Path) -> dict[str, Any]:
 def run_launcher(root: Path, label: str, proxy: Proxy, *, interrupt_at: int | None = None,
                  extra_env: dict[str, str] | None = None
                  ) -> tuple[dict[str, Any], subprocess.Popen[bytes] | None]:
-    """雙擊 AI_Translate.exe，等到就緒、結束或逾時。就緒時回傳還在跑的行程，由呼叫端停掉。"""
+    """雙擊 Mimiji.exe，等到就緒、結束或逾時。就緒時回傳還在跑的行程，由呼叫端停掉。"""
     console = OUT / f"{label}-console.log"
     result: dict[str, Any] = {"label": label, "events": {}, "timeline": []}
     events = result["events"]
@@ -334,7 +347,7 @@ def run_launcher(root: Path, label: str, proxy: Proxy, *, interrupt_at: int | No
     started = time.time()
     with console.open("wb") as f:
         process = subprocess.Popen(
-            [str(root / "AI_Translate.exe")], cwd=root, env=user_env(extra_env),
+            [str(root / "Mimiji.exe")], cwd=root, env=user_env(extra_env),
             stdin=subprocess.DEVNULL, stdout=f, stderr=subprocess.STDOUT,
             creationflags=CREATE_NEW_PROCESS_GROUP)
     blackholed_at: float | None = None
@@ -344,7 +357,14 @@ def run_launcher(root: Path, label: str, proxy: Proxy, *, interrupt_at: int | No
         time.sleep(1)
         elapsed = time.time() - started
         text = console.read_bytes().decode("utf-8", errors="replace")
-        down = proxy.down() - start_down
+        snapshot = proxy.stats()
+        down = int(snapshot.get("down", 0)) - start_down
+        if blackholed_at is None and snapshot.get("cut_at") is not None:
+            # 代理照 --cut-host／--cut-after-bytes 自己斷網（#303）
+            blackholed_at = elapsed
+            events["blackhole"] = round(elapsed, 1)
+            events["blackhole_bytes"] = down
+            say(f"   {label}：代理在下載 {mb(down)} 時自己斷網")
         if elapsed - last_sample >= 5:
             result["timeline"].append([round(elapsed), down])
             last_sample = elapsed
@@ -381,6 +401,7 @@ def run_launcher(root: Path, label: str, proxy: Proxy, *, interrupt_at: int | No
     text = console.read_bytes().decode("utf-8", errors="replace")
     lines = text.splitlines()
     result["vc_hint"] = vc_hint(text)
+    result["uv_cache_cleaning_shown"] = "正在清掉首次佈建時暫存的檔案" in text  # #303
     result["console_tail"] = lines[-150:]
     result["uv_lines"] = [line for line in lines if UV_LINE.match(line)][:400]
     result["launcher_log"] = parse_launcher_logs(root)
@@ -412,7 +433,7 @@ def vc_hint(text: str) -> dict[str, Any]:
 
 def run_start_bat(root: Path, label: str, proxy: Proxy
                   ) -> tuple[dict[str, Any], subprocess.Popen[bytes] | None]:
-    """雙擊 start.bat 的等價做法（防毒軟體攔下 AI_Translate.exe 時的手動啟動，#267）：等到 health
+    """雙擊 start.bat 的等價做法（防毒軟體攔下 Mimiji.exe 時的手動啟動，#267）：等到 health
     回應、結束或逾時。就緒時回傳還在跑的行程，由呼叫端停掉。"""
     console = OUT / f"{label}-console.log"
     result: dict[str, Any] = {"label": label, "events": {}}
@@ -570,7 +591,21 @@ def breakdown(path: Path, depth: int, top: int = 15) -> list[list[Any]]:
 
 
 def uv_cache() -> Path:
+    """uv 預設的下載快取。#303 之後首次佈建不該用到它。"""
     return Path(os.environ["LOCALAPPDATA"]) / "uv" / "cache"
+
+
+def package_uv_cache(root: Path) -> Path:
+    """首次佈建時 uv 的下載快取（#303）：放在程式資料夾裡，佈建完成後清掉。"""
+    return root / "runtime" / "uv-cache"
+
+
+def maybe_stats(path: Path) -> dict[str, Any] | None:
+    return tree_stats(path) if path.exists() else None
+
+
+def disk_free(root: Path) -> int:
+    return shutil.disk_usage(root.anchor).free
 
 
 def signatures(root: Path) -> dict[str, Any]:
@@ -820,7 +855,7 @@ def summary_markdown() -> str:
               "|---|---|---|---|---|---|---|"]
     for title, data in (("沒有 VC++、沒有 NVIDIA 驅動", vc),
                         ("沒有 VC++、有 NVIDIA 驅動（假的 nvcuda.dll）", driver)):
-        for how, run_key, state_key, expect_key in (("AI_Translate.exe", "start", "state", "expect"),
+        for how, run_key, state_key, expect_key in (("Mimiji.exe", "start", "state", "expect"),
                                                     ("start.bat", "start_bat", "state_bat", "expect_bat")):
             run_ = data.get(run_key) or {}
             state = data.get(state_key) or {}
@@ -846,11 +881,71 @@ def summary_markdown() -> str:
     run_line("斷網（下載到一半）", "interrupted")
     lines += [f"- 斷網後 uv 快取：{gib((r.get('interrupted', {}).get('uv_cache_after') or {}).get('bytes'))}", ""]
     run_line("恢復網路後再啟動（續傳）", "resumed")
+    run_line("在 uv 下載時斷網（#303）", "interrupted_uv")
+    run_line("恢復網路後再啟動（#303）", "resumed_uv")
+    lines += uv_cache_verdict()
     if r.get("errors"):
         lines += ["## 腳本的錯誤", ""]
         for e in r["errors"]:
             lines.append(f"- {e['phase']}：{e['error']}")
     return "\n".join(lines) + "\n"
+
+
+def uv_cache_verdict() -> list[str]:
+    """#303：uv 的下載快取放在程式資料夾的 runtime\\uv-cache、佈建完清掉，預設的位置不該出現。"""
+    r = RESULTS
+    first, sizes = r.get("first_start", {}), r.get("sizes", {})
+    cut, again = r.get("interrupted_uv", {}), r.get("resumed_uv", {})
+    first_run, cut_run, again_run = first.get("run") or {}, cut.get("run") or {}, again.get("run") or {}
+    first_total = (first_run.get("events") or {}).get("provisioned_bytes")
+    again_down = (again_run.get("proxy") or {}).get("down")
+    clean = (first_run.get("launcher_log") or {}).get("uv_cache_clean") or []
+
+    def same(before: Any, after: Any) -> bool:
+        # 預設位置的快取：佈建前後不變（runner 原本就沒有時，佈建後也沒有）
+        if before is None or after is None:
+            return before is None and after is None
+        return before.get("bytes") == after.get("bytes") and before.get("files") == after.get("files")
+
+    checks = [
+        ("第一次佈建就緒", (first_run.get("events") or {}).get("ready") is not None),
+        ("佈建完成後印出「正在清掉首次佈建時暫存的檔案」", first_run.get("uv_cache_cleaning_shown") is True),
+        ("啟動器日誌：清快取的 uv 結束代碼 0", bool(clean) and clean[0].get("code") == "0"),
+        ("第一次佈建後 runtime\\uv-cache 不在", first.get("package_uv_cache_after") is None),
+        ("第一次佈建前後 %LOCALAPPDATA%\\uv\\cache 沒有變",
+         same(first.get("default_uv_cache_before"), first.get("default_uv_cache_after"))),
+        ("熱啟動之後 runtime\\uv-cache 也不在", sizes.get("package_uv_cache") is None),
+        ("代理在 uv 從 PyPI 下載時斷網", cut.get("cut_at") is not None),
+        ("在 uv 下載時斷網：啟動器停下、沒寫完成標記",
+         cut_run.get("exit_code") not in (None, 0) and cut.get("sentinel_exists") is False),
+        ("斷網後 runtime\\uv-cache 留著（已下載的套件）",
+         bool((cut.get("package_uv_cache_after") or {}).get("bytes"))),
+        ("斷網後 %LOCALAPPDATA%\\uv\\cache 沒有出現",
+         cut.get("default_uv_cache_before") is None and cut.get("default_uv_cache_after") is None),
+        ("恢復網路後就緒、寫了完成標記",
+         (again_run.get("events") or {}).get("ready") is not None and again.get("sentinel_exists") is True),
+        ("恢復網路後只補下載剩下的（不到第一次的一成）",
+         bool(first_total) and again_down is not None and again_down < first_total * 0.1),
+        ("恢復網路、佈建完成後 runtime\\uv-cache 清掉", again.get("package_uv_cache_after") is None),
+        ("恢復網路後 %LOCALAPPDATA%\\uv\\cache 沒有出現", again.get("default_uv_cache_after") is None),
+    ]
+    free_before, free_after = first.get("disk_free_before"), first.get("disk_free_after")
+    lines = ["## uv 的下載快取（#303）", "", "| 檢查 | 結果 |", "|---|---|"]
+    lines += [f"| {name} | {'通過' if ok else '**沒通過**'} |" for name, ok in checks]
+    lines += ["",
+              f"- 第一次佈建：清快取 {clean}；磁碟可用空間少了 "
+              f"{gib(free_before - free_after) if free_before is not None and free_after is not None else None}"
+              f"（含日誌等其他檔案）",
+              f"- %LOCALAPPDATA%\\uv\\cache：第一次佈建前 {first.get('default_uv_cache_before')}，"
+              f"後 {first.get('default_uv_cache_after')}",
+              f"- 在 uv 下載時斷網：{cut.get('cut')}，代理在第 {cut.get('cut_at')} 秒斷網；"
+              f"斷網時總共下載 {mb((cut_run.get('events') or {}).get('blackhole_bytes'))}；runtime\\uv-cache "
+              f"{gib((cut.get('package_uv_cache_after') or {}).get('bytes'))}，"
+              f"{(cut.get('package_uv_cache_after') or {}).get('files')} 個檔案；runtime\\downloads "
+              f"{gib((cut.get('downloads_after') or {}).get('bytes'))}",
+              f"- 恢復網路後下載 {mb(again_down)}（第一次 {mb(first_total)}）",
+              f"- **{'全部通過' if all(ok for _, ok in checks) else '有沒通過的項目'}**", ""]
+    return lines
 
 
 # ─── 主流程 ──────────────────────────────────────────────────────────────
@@ -877,7 +972,7 @@ def main() -> int:
     user_zip = downloads / zip_path.name
     shutil.copy(zip_path, user_zip)
     dest = downloads / zip_path.stem
-    root = dest / "AI_Translate"
+    root = dest / "Mimiji"
     original_long_paths = registry_value(LONG_PATHS_KEY, "LongPathsEnabled")
 
     with phase("environment") as record:
@@ -892,8 +987,14 @@ def main() -> int:
     with phase("first_start") as record:
         set_long_paths(False)
         record["long_paths_enabled"] = registry_value(LONG_PATHS_KEY, "LongPathsEnabled")
+        record["default_uv_cache_before"] = maybe_stats(uv_cache())
+        record["disk_free_before"] = disk_free(root)
         proxy.start()
         record["run"], process = run_launcher(root, "first", proxy)
+        # 就緒時佈建與清快取都做完了（啟動器先清快取才啟動伺服器）
+        record["disk_free_after"] = disk_free(root)
+        record["package_uv_cache_after"] = maybe_stats(package_uv_cache(root))
+        record["default_uv_cache_after"] = maybe_stats(uv_cache())
         if process is not None:
             record["probe"] = probe(record["run"]["url"])
 
@@ -951,10 +1052,11 @@ def main() -> int:
         record["root"] = tree_stats(root)
         record["site_packages"] = tree_stats(root / "runtime" / "Lib" / "site-packages")
         record["models"] = tree_stats(root / "data" / "models")
-        record["uv_cache"] = tree_stats(uv_cache())
+        record["uv_cache"] = maybe_stats(uv_cache())
+        record["package_uv_cache"] = maybe_stats(package_uv_cache(root))
         record["models_breakdown"] = breakdown(root / "data" / "models", 3)
         record["site_packages_breakdown"] = breakdown(root / "runtime" / "Lib" / "site-packages", 1)
-        record["uv_cache_breakdown"] = breakdown(uv_cache(), 1)
+        record["uv_cache_breakdown"] = breakdown(uv_cache(), 1) if uv_cache().exists() else []
         record["longest_relative_len"] = record["root"]["longest_len"] - len(str(root)) - 1
         record["max_root_len_for_max_path"] = 259 - record["longest_relative_len"] - 1
         record["root_path_len"] = len(str(root))
@@ -979,7 +1081,7 @@ def main() -> int:
                     record["binaries"][exe] = {"exit_code": result.returncode,
                                                "first_line": (result.stdout or result.stderr).splitlines()[:1]}
                 record["nvcuda_dll"] = (system32() / "nvcuda.dll").exists()
-                # runner 沒有 NVIDIA 驅動：AI_Translate.exe 與 start.bat 都不該提示 VC++，
+                # runner 沒有 NVIDIA 驅動：Mimiji.exe 與 start.bat 都不該提示 VC++，
                 # 診斷資訊先說顯卡（#304）
                 record["start"], process = run_launcher(root, "no-vcrt", proxy)
                 if process is not None:
@@ -1046,6 +1148,7 @@ def main() -> int:
         proxy.stop()
         record["sentinel_exists"] = (root / "runtime" / ".provisioned").exists()
         record["uv_cache_after"] = tree_stats(uv_cache()) if uv_cache().exists() else None
+        record["package_uv_cache_after"] = maybe_stats(package_uv_cache(root))
         record["site_packages_after"] = tree_stats(root / "runtime" / "Lib" / "site-packages")
         copy_logs(root, "interrupted")
 
@@ -1059,7 +1162,44 @@ def main() -> int:
         stop(process, root)
         proxy.stop()
         record["defender_after"] = defender_status()
+        record["package_uv_cache_after"] = maybe_stats(package_uv_cache(root))
+        record["default_uv_cache_after"] = maybe_stats(uv_cache())
         copy_logs(root, "resumed")
+
+    # 12. 在 uv 下載時斷網（#303）：PyTorch（約九成的下載量）預先下載完之後才斷
+    with phase("interrupted_uv") as record:
+        rmtree(dest)
+        record["default_uv_cache_before"] = maybe_stats(uv_cache())
+        record["extract"] = extract(user_zip, dest)
+        set_long_paths(False)
+        # PyPI 的套件只有 uv 下載（PyTorch 由 prefetch_wheels.py 從 download.pytorch.org 下載）：
+        # 從 PyPI 下載到 CUT_PYPI_BYTES 時代理自己斷網，這時 uv 已經下載完一部分、還沒下載完全部
+        proxy = Proxy("interrupted-uv", cut_host=PYPI_FILES_HOST, cut_after=CUT_PYPI_BYTES)
+        proxy.start()
+        record["cut"] = {"host": PYPI_FILES_HOST, "after_bytes": CUT_PYPI_BYTES}
+        record["run"], process = run_launcher(root, "interrupted-uv", proxy)
+        record["cut_at"] = (record["run"].get("proxy") or {}).get("cut_at")
+        stop(process, root)
+        proxy.stop()
+        record["sentinel_exists"] = (root / "runtime" / ".provisioned").exists()
+        record["downloads_after"] = maybe_stats(root / "runtime" / "downloads")
+        record["package_uv_cache_after"] = maybe_stats(package_uv_cache(root))
+        record["default_uv_cache_after"] = maybe_stats(uv_cache())
+        copy_logs(root, "interrupted-uv")
+
+    with phase("resumed_uv") as record:
+        proxy = Proxy("resumed-uv")
+        proxy.start()
+        record["run"], process = run_launcher(root, "resumed-uv", proxy)
+        if process is not None:
+            status, _ = http("GET", record["run"]["url"] + "/api/v1/health")
+            record["health"] = status
+        stop(process, root)
+        proxy.stop()
+        record["sentinel_exists"] = (root / "runtime" / ".provisioned").exists()
+        record["package_uv_cache_after"] = maybe_stats(package_uv_cache(root))
+        record["default_uv_cache_after"] = maybe_stats(uv_cache())
+        copy_logs(root, "resumed-uv")
 
     if original_long_paths is not None:
         set_long_paths(bool(original_long_paths))

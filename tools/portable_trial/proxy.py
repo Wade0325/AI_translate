@@ -5,6 +5,8 @@ uv 與 huggingface_hub 都照 HTTPS_PROXY 走代理，所以經過這裡的位�
 
 - 每秒把累計的量寫進 --stats（JSON）：總量、每個主機的量、進行中的連線數。
 - 每條連線結束時，在 --tunnels（JSON Lines）記一行：主機、量、秒數、怎麼結束的。
+- --cut-host 與 --cut-after-bytes：那個主機下載到這麼多位元組時，馬上自己「斷網」，之後不再恢復
+  （#303 要斷在 uv 下載其他套件的時候；那段只有幾百 MB、幾秒就下載完，靠 --control 每半秒輪詢來不及）。
 - --control 這個檔案存在時是「斷網」：已經開著的連線不再轉送任何資料（不關閉，像 Wi-Fi 斷掉時
   連線卡住），新的連線收下但不回應。檔案刪掉之後，新的連線恢復正常；卡住的連線不會恢復，
   和真的斷網一樣只能靠用戶端逾時。要完全恢復就重新啟動這支代理。
@@ -53,6 +55,14 @@ class Stats:
         self.active = 0
         self.connections = 0
         self.blackhole = False
+        # --cut-host／--cut-after-bytes 觸發的斷網：一旦觸發就一直斷著，不受 --control 影響
+        self.cut_host: str | None = None
+        self.cut_after: int | None = None
+        self.cut_at: float | None = None
+
+    @property
+    def offline(self) -> bool:
+        return self.blackhole or self.cut_at is not None
 
     def host(self, name: str) -> dict[str, int]:
         return self.hosts.setdefault(name, {"down": 0, "up": 0, "connections": 0})
@@ -66,6 +76,7 @@ class Stats:
             "active": self.active,
             "connections": self.connections,
             "blackhole": self.blackhole,
+            "cut_at": self.cut_at,
             "hosts": self.hosts,
         }
 
@@ -82,14 +93,14 @@ async def relay(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, stat
                 host: str, direction: str, tunnel: Tunnel) -> None:
     try:
         while True:
-            if stats.blackhole:
+            if stats.offline:
                 tunnel.end("blackhole")
                 await hang()
             data = await reader.read(CHUNK)
             if not data:
                 tunnel.end(f"eof-{direction}")
                 break
-            if stats.blackhole:
+            if stats.offline:
                 tunnel.end("blackhole")
                 await hang()
             n = len(data)
@@ -98,6 +109,9 @@ async def relay(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, stat
             if direction == "down":
                 stats.down += n
                 tunnel.down += n
+                if (stats.cut_after is not None and stats.cut_at is None and host == stats.cut_host
+                        and counters["down"] >= stats.cut_after):
+                    stats.cut_at = round(time.time() - stats.started, 1)
             else:
                 stats.up += n
                 tunnel.up += n
@@ -113,7 +127,7 @@ async def relay(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, stat
 
 
 async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, stats: Stats) -> None:
-    if stats.blackhole:
+    if stats.offline:
         await hang()
     try:
         head = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), 60)
@@ -129,7 +143,7 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, sta
         writer.close()
         return
     host, _, port = parts[1].rpartition(":")
-    if stats.blackhole:
+    if stats.offline:
         await hang()
     tunnel = Tunnel(host=host, port=port, opened=round(time.time() - stats.started, 1))
     try:
@@ -178,8 +192,11 @@ async def main() -> None:
     parser.add_argument("--stats", type=Path, required=True)
     parser.add_argument("--control", type=Path, required=True)
     parser.add_argument("--tunnels", type=Path, required=True)
+    parser.add_argument("--cut-host")
+    parser.add_argument("--cut-after-bytes", type=int)
     args = parser.parse_args()
     stats = Stats(args.stats, args.control, args.tunnels)
+    stats.cut_host, stats.cut_after = args.cut_host, args.cut_after_bytes
 
     async def on_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         await handle(reader, writer, stats)

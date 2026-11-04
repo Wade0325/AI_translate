@@ -1,7 +1,9 @@
 # 試發布（#35）：在乾淨的 Windows runner 上從新的 checkout 建置免安裝版，照使用者的做法跑首次啟動，
 # 記下 zip 大小、首次佈建的下載量與耗時、uv 能否解析、沒有 NVIDIA 驅動時能否 import torch、
 # health 幾秒就緒、缺不缺 VC++ 執行階段，以及斷網後能否續傳（tools/portable_trial/run_trial.py）。
-# 也驗 #304：沒裝 VC++ 可轉散發套件時，AI_Translate.exe 與 start.bat 有沒有 NVIDIA 驅動各自該不該提示。
+# 也驗 #304：沒裝 VC++ 可轉散發套件時，Mimiji.exe 與 start.bat 有沒有 NVIDIA 驅動各自該不該提示。
+# 也驗 #303：uv 的下載快取放在程式資料夾的 runtime\uv-cache、佈建完清掉，%LOCALAPPDATA%\uv\cache 不出現；
+# 在 uv 下載時斷網，快取留著、恢復網路後只補下載剩下的。
 #
 # 只在這個試發布的分支上跑，不進 main、不是 `check` 的一部分；不推 tag、不發布 Release。
 # 建好的 zip 以 Actions 的 artifact 保留，給維護者下載後在自己的 Windows 雙擊（SmartScreen、
@@ -56,11 +58,11 @@ jobs:
         shell: powershell # 和 release.yml 一樣用 Windows PowerShell 5.1
         run: .\build_release.ps1 -Version trial1 -SkipFrontend
       - name: 檢查 zip（沒有 audio_store 與其他執行期資料）
-        run: python tools/portable_zip.py check build/AI_Translate-trial1-win64.zip
+        run: python tools/portable_zip.py check build/Mimiji-trial1-win64.zip
       - name: 安裝量測用的套件
         run: python -m pip install pefile==2024.8.26
       - name: 照使用者的做法跑首次啟動並量測
-        run: python tools/portable_trial/run_trial.py --zip build/AI_Translate-trial1-win64.zip --out trial-results --commit ${{ github.sha }}
+        run: python tools/portable_trial/run_trial.py --zip build/Mimiji-trial1-win64.zip --out trial-results --commit ${{ github.sha }}
       - name: 保留量測結果
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -72,6 +74,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          path: build/AI_Translate-trial1-win64.zip
+          path: build/Mimiji-trial1-win64.zip
           archive: false # 只能一個檔案；artifact 的名稱就是檔名
           retention-days: 90
