@@ -967,6 +967,50 @@ class TestContinuation:
         assert [s["start"] for s in segments] == pytest.approx(SPEAKING_STARTS[:4], abs=0.01)
         assert tail_loss_from(messages) == pytest.approx(12.0, abs=0.01)
 
+    def test_truncated_output_is_continued_even_with_less_than_the_threshold_left(
+            self, api, fake, settings, monkeypatch):
+        # #326：MOSS 用完生成預算時輸出被截斷、回報擔保點，擔保點之後的聲音不到門檻也接續，轉到結尾。
+        # 門檻改成 10 秒：第一次轉到 12 秒，之後只剩 4 句共 6 秒的聲音
+        monkeypatch.setattr(settings, "tail_loss_min_seconds", 10.0)
+        fake.script = [Listen(stops_after=15.0)] * 3
+        messages = transcribe(api, "uid-short-truncated-tail", voiced=SPEAKING)
+
+        assert codes(messages)[-1] == TaskStatus.COMPLETED
+        assert fake.durations == pytest.approx([26.0, 20.0, 13.0], abs=0.01)
+        segments = stored_segments(api, messages[-1]["task_uuid"])
+        assert [s["start"] for s in segments] == pytest.approx(SPEAKING_STARTS, abs=0.01)
+        assert tail_loss_from(messages) is None
+
+    def test_output_that_ended_by_itself_keeps_the_threshold(self, api, fake, settings, monkeypatch):
+        # 同樣停在 12 秒，但模型沒有回報擔保點（像 MOSS 自己停下，輸出完整）：之後 6 秒的聲音不到
+        # 10 秒的門檻，可能只是片尾音樂，不接續也不提示
+        monkeypatch.setattr(settings, "tail_loss_min_seconds", 10.0)
+        fake.script = [Listen(stops_after=15.0, reports=False)] * 3
+        messages = transcribe(api, "uid-short-untruncated-tail", voiced=SPEAKING)
+
+        assert codes(messages)[-1] == TaskStatus.COMPLETED
+        assert len(fake.calls) == 1
+        assert tail_loss_from(messages) is None
+
+    @pytest.mark.parametrize("again, stopped", [
+        # 次數用完：接續轉到 19 秒又被截斷，之後只剩 3 秒的聲音
+        (Listen(stops_after=15.0), 19.0),
+        # 卡住：接續只轉出重疊區裡的一句（原音檔的 7–8.5 秒），沒有轉到 12 秒之後
+        (Listen(stops_after=5.0), 12.0),
+    ], ids=["attempts-used-up", "stuck"])
+    def test_truncated_output_that_is_given_up_says_where_it_stopped(
+            self, api, fake, settings, monkeypatch, again, stopped):
+        # #326：接續放棄時，擔保點之後的聲音不到門檻也照樣寫掉尾的起點，畫面提示可能沒有轉錄到
+        monkeypatch.setattr(settings, "tail_loss_min_seconds", 10.0)
+        monkeypatch.setattr(settings, "continuation_max_attempts", 1)
+        fake.script = [Listen(stops_after=15.0), again]
+        messages = transcribe(api, "uid-short-truncated-tail-given-up", voiced=SPEAKING)
+
+        assert codes(messages)[-1] == TaskStatus.COMPLETED
+        assert len(fake.calls) == 2
+        assert tail_loss_from(messages) == pytest.approx(stopped, abs=0.01)
+        assert recorded_tail_loss_from(api, messages) == pytest.approx(stopped, abs=0.01)
+
     def test_model_without_continuation_is_not_continued(self, api, fake):
         # Gemini 在 v0.1 不接續（#94 第 2 題）：停下就停下，只用掉尾的提示告訴使用者
         fake.model_capabilities = replace(fake.model_capabilities, continuation=False)

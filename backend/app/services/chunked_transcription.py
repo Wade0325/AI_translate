@@ -29,8 +29,9 @@
 5. 放回原音檔的時間軸（:meth:`SpeechTimeline.in_original_order`）：時間還原回原音檔，依開始時間
    排好、重編序號。批次不分段，結果回來之後也經過同一步。
 6. 掉尾（#257）：每一段各自檢查停下的地方（轉接器回報的擔保點，沒有時是最後一個片段的結束）之後還有
-   沒有聲音（:mod:`app.services.tail_loss`，扣掉語音視圖記下的靜音），取最早的起點寫進轉錄結果；中間
-   的段也可能提早停止，最後一段卻轉到了結尾。接續放棄的段也從這裡回報。
+   沒有聲音（:mod:`app.services.tail_loss`，扣掉語音視圖記下的靜音；轉接器回報輸出被截斷時門檻較低，
+   #326），取最早的起點寫進轉錄結果；中間的段也可能提早停止，最後一段卻轉到了結尾。接續放棄的段也從
+   這裡回報。
 
 片段 key：依單次長度切出的兩段前綴是 ``a``、``b``，切段重試切出的兩段是 ``s0``、``s1``，第 n 次接續
 送出的片段是 ``cn``，由外往內接，例如 ``a.b.0003``、``b.s1.0002``、``a.c1.0005``；沒有分段時就是
@@ -287,13 +288,14 @@ class _ChunkedTranscription:
     def _continued(self, chunk: _Chunk, result: TranscriptionTaskResult) -> TranscriptionTaskResult:
         """這一段可能掉尾時接續（規則見 :mod:`app.services.continuation`）：從停下的地方附近到結尾再送
         一次、接回，直到不再可能掉尾或放棄。回傳接回之後的轉錄結果，時間軸是這一段的音檔；
-        ``covered_until`` 是最後一次停下的地方，放棄時掉尾的檢查從那裡回報。"""
+        ``covered_until`` 與 ``truncated`` 是最後一次停下的地方與那次的輸出是不是被截斷，放棄時掉尾的
+        檢查照它們回報。"""
         segments: List[Dict[str, Any]] = list(result.segments)
-        covered = result.covered_until
+        covered, truncated = result.covered_until, result.truncated
         settings = get_settings()
         attempts = settings.continuation_max_attempts
         for attempt in range(1, attempts + 1):
-            if self._tail_loss_in(chunk, segments, covered) is None:
+            if self._tail_loss_in(chunk, segments, covered, truncated) is None:
                 break
             stopped = tail_loss.stopped_at(segments, covered_until=covered, default=0.0)
             start = continuation.resume_point(stopped, chunk.silences)
@@ -315,15 +317,16 @@ class _ChunkedTranscription:
                 logger.warning(f"接續沒有轉到 {self._clock_at(chunk, stopped)} 之後，算卡住，放棄接續")
                 break
             segments = continuation.splice(segments, more.segments, overlap=(start, stopped))
-            covered = more.covered_until
+            covered, truncated = more.covered_until, more.truncated
             if (reached - stopped < settings.continuation_min_progress_seconds
-                    and self._tail_loss_in(chunk, segments, covered) is not None):
+                    and self._tail_loss_in(chunk, segments, covered, truncated) is not None):
                 logger.warning(f"接續只推進 {reached - stopped:.1f} 秒，算卡住，放棄接續")
                 break
         else:
-            if self._tail_loss_in(chunk, segments, covered) is not None:
+            if self._tail_loss_in(chunk, segments, covered, truncated) is not None:
                 logger.warning(f"接續了 {attempts} 次仍沒有轉到這一段的結尾，放棄接續")
-        return result.model_copy(update={"segments": segments, "covered_until": covered})
+        return result.model_copy(update={"segments": segments, "covered_until": covered,
+                                         "truncated": truncated})
 
     def _resent_from(self, chunk: _Chunk, start: float,
                      attempt: int) -> Optional[TranscriptionTaskResult]:
@@ -483,21 +486,24 @@ class _ChunkedTranscription:
     def _tail_loss_from(self) -> Optional[float]:
         """可能掉尾的起點（原音檔的時間軸）：每一段各自檢查（:meth:`_tail_loss_in`），取最早的；都沒有
         時是 None。"""
-        starts = [self._tail_loss_in(piece.chunk, piece.result.segments, piece.result.covered_until)
+        starts = [self._tail_loss_in(piece.chunk, piece.result.segments, piece.result.covered_until,
+                                     piece.result.truncated)
                   for piece in self._transcribed]
         return min((start for start in starts if start is not None), default=None)
 
     def _tail_loss_in(self, chunk: _Chunk, segments: Sequence[Mapping[str, Any]],
-                      covered_until: Optional[float]) -> Optional[float]:
-        """這一段轉出 ``segments``、擔保到 ``covered_until``（都是這一段的時間軸）時，可能掉尾的起點
-        （原音檔的時間軸，:func:`tail_loss.tail_loss_from`）；不可能掉尾時是 None。"""
+                      covered_until: Optional[float], truncated: bool) -> Optional[float]:
+        """這一段轉出 ``segments``、擔保到 ``covered_until``（都是這一段的時間軸）、輸出是不是被截斷是
+        ``truncated`` 時，可能掉尾的起點（原音檔的時間軸，:func:`tail_loss.tail_loss_from`）；不可能
+        掉尾時是 None。"""
         timeline = self._view.timeline
         start, end = self._original_span(chunk)
         covered = (None if covered_until is None
                    else timeline.to_original(chunk.to_view(covered_until), end=True))
         return tail_loss.tail_loss_from(
             timeline.restore([_placed(segment, chunk) for segment in segments]),
-            start=start, end=end, silences=self._view.silences, covered_until=covered)
+            start=start, end=end, silences=self._view.silences, covered_until=covered,
+            truncated=truncated)
 
     def _failed_result(self, failure: Failure) -> TranscriptionTaskResult:
         """以失敗結束的轉錄結果，帶著錯誤碼與到目前為止的用量。"""

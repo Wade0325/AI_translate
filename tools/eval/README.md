@@ -93,9 +93,10 @@ backend\.venv\Scripts\python.exe -m tools.eval eval --reference rec17_A.draft --
 | `environment.gpu` | 顯卡名稱、顯存（GB）、NVIDIA 驅動的版本（`driver`，nvidia-smi 回報的；問不到時是 `null`）與 `CUDA_VISIBLE_DEVICES`；沒有顯卡時是 `null` |
 | `environment.model_revisions` | 本機模型權重釘住的 revision |
 | `environment.settings` | 去靜音與切段的設定 |
-| `run` | 成功與否、片段數、耗時（秒）、RTF、峰值顯存（GB）、各階段耗時 |
+| `run` | 成功與否、片段數、耗時（秒）、RTF、峰值顯存（GB）與其中張量實際用到的（GB）、各階段耗時 |
 
 - 峰值顯存是 PyTorch 向顯卡要過的最大量（`torch.cuda.max_memory_reserved`），不含 CUDA 本身佔用的部分，所以比工作管理員看到的少。
+- `run.peak_vram_allocated_gb` 是張量實際用到的最大量（`torch.cuda.max_memory_allocated`）。比峰值顯存少很多時，差的是 PyTorch 的配置器留著、沒有在用的顯存（#326）。
 - 耗時與 RTF（耗時 ÷ 音檔長度）是從建立供應商轉接器到轉錄結束的整段，含載入模型與去靜音，和使用者在應用程式裡等的時間相當。
 - 各階段照轉錄時的進度訊息切開：階段的名稱就是畫面上的進度訊息，涵蓋從這則訊息到下一則之間做的事，不一定和名稱相符，例如載入 MOSS 模型算在「本機模型：MOSS 轉錄與說話者分離中...」，之後的「本機模型：MOSS 轉錄中 #/# 分鐘...」才是生成。第一則訊息之前算「建立供應商轉接器」；訊息裡的數字換成 `#`，同一個階段併成一筆。改了進度訊息的文字，階段的名稱也跟著變。
 - `settings.single_pass_seconds` 是模型能力列出的上限，本機轉接器實際轉錄時可能依顯卡容量切得更短。
