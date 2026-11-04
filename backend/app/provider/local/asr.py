@@ -30,9 +30,10 @@ import subprocess
 import time
 import warnings
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from app.core.error_codes import ErrorCode
+from app.provider.local import packages
 # HF_HOME 由 weights 模組（權重單一事實來源）於 import 時設定
 from app.provider.local.weights import (  # noqa: F401 — re-export 供既有引用
     ALIGNER_MODEL_ID,
@@ -46,13 +47,6 @@ from app.provider.local.weights import (  # noqa: F401 — re-export 供既有�
 )
 # 權重載入進度條的每次刷新在 Celery 日誌都是一行 WARNING，關閉
 os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
-# transformers 只留 error。被消音的提示皆已逐一確認無害：
-# - max_new_tokens 與模型內建 generation config 的 max_length 同時存在
-#   （前者優先，即預期行為）
-# - "exceeded maximum length (450)" 為誤報：450 是 VibeVoiceAsrConfig 把
-#   acoustic tokenizer 每 60s chunk 的音訊 token 數（1440000/3200）暴露成
-#   max_position_embeddings 所致，文字解碼器實際上限為 131072
-os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
 
 import soundfile as sf
 
@@ -61,6 +55,10 @@ from app.provider.base import ProgressAndCancel
 from app.utils.audio import FFMPEG_ERRORS_ONLY
 from app.utils.binaries import ffmpeg_bin
 from app.utils.logger import setup_logger
+
+# transformers 只留 error（被消音的提示與理由見 packages.quiet_transformers）。要在第一次匯入
+# transformers 之前：上面的匯入都不會匯入它，transformers 在下面的函式裡才匯入
+packages.quiet_transformers()
 
 logger = setup_logger(__name__)
 
@@ -148,17 +146,18 @@ def _to_mono(audio_path: Path, sample_rate: int) -> Path:
     return output
 
 
-def _run_moss(wav_path: Path, progress: ProgressAndCancel) -> List[dict]:
-    """MOSS 一次產生說話者、時間與文字，回傳與 VibeVoice 相同結構的片段。"""
+def _run_moss(wav_path: Path, progress: ProgressAndCancel) -> Tuple[List[dict], Optional[float]]:
+    """MOSS 一次產生說話者、時間與文字，回傳與 VibeVoice 相同結構的片段，以及可能提早停止時擔保
+    轉錄到哪一秒（見 :func:`app.provider.local.moss.covered_until`，沒有跡象時是 None）。"""
     from app.provider.local import moss
 
-    segments, _ = moss.transcribe(
+    output = moss.transcribe(
         wav_path,
         stopping_criteria=_make_cancel_stopping_criteria(progress),
         status_callback=progress.report)
     # generate 可能因為取消而中途停下，輸出不完整，必須在使用前中止
     progress.raise_if_cancelled()
-    return segments
+    return output.segments, output.covered_until
 
 
 def _entries_from_segments(segments: List[dict]) -> List[dict]:
@@ -404,6 +403,7 @@ def transcribe_with_local_models(
     use_moss = is_moss_model(model)
     language = _LANGUAGE_MAP.get((source_lang or "").strip().lower())
     wav: Optional[Path] = None
+    covered_until: Optional[float] = None
 
     try:
         progress.report("本機模型：準備音訊...")
@@ -412,7 +412,7 @@ def transcribe_with_local_models(
 
         if use_moss:
             progress.report("本機模型：MOSS 轉錄與說話者分離中...")
-            segments = _run_moss(wav, progress)
+            segments, covered_until = _run_moss(wav, progress)
         else:
             progress.report("本機模型：VibeVoice-ASR 說話者分離中（長檔需較久）...")
             segments = _run_diarization(wav, progress)
@@ -440,6 +440,8 @@ def transcribe_with_local_models(
             "total_tokens": 0,
             "service_tier_used": "local",
             "segments": records,
+            # MOSS 可能提早停止時擔保轉錄到哪一秒（輸入檔的時間軸）；分段轉錄照它決定要不要接續（#94）
+            "covered_until": covered_until,
         }
     finally:
         if wav:

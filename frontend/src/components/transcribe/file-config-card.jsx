@@ -22,6 +22,7 @@ import { LoadingOutlined } from "@ant-design/icons"
 import { ReasonText } from "@/components/disabled-reason"
 import { FailureNotice } from "@/components/FailureNotice"
 import { ConnectionNotice } from "@/components/ConnectionNotice"
+import { TailLossNotice } from "@/components/TailLossNotice"
 import { languages, formatLang } from "@/constants/languages"
 import { downloadFormats } from "@/constants/downloadFormats"
 import { globalSettingsPatch } from "@/utils/transcribeRequest"
@@ -230,10 +231,8 @@ export function FileConfigCard({
                         <Dropdown
                             menu={{
                                 items: downloadFormats,
-                                onClick: ({ key }) => {
-                                    const content = config.result?.[key]
-                                    if (content) onDownload(content, config.name, key)
-                                },
+                                // 沒有內容時（例如批次模式完成的檔案）由 onDownload 提示，不是點了沒反應
+                                onClick: ({ key }) => onDownload(config, key),
                             }}
                         >
                             <Tooltip title="下載">
@@ -339,6 +338,8 @@ export function FileConfigCard({
 
             {failure && <FailureNotice failure={failure} />}
             {connection && <ConnectionNotice connection={config.connection} />}
+            {/* 完成了，轉錄結果卻可能少了一段（#257）：寫出從哪裡起可能沒有轉錄到 */}
+            {isCompleted && <TailLossNotice seconds={config.tailLossFrom} />}
 
             {/* Expanded per-file override settings：處理中時強制收起 */}
             {expanded && !isActive && (

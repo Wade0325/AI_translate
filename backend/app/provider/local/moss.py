@@ -7,6 +7,10 @@
 ``trust_remote_code``），權重固定 HF revision（``weights.REPO_REVISIONS``）。
 torch / transformers 一律延遲匯入：只有主機 GPU worker 與免安裝模式的執行緒池會用到。
 
+MOSS 轉長音檔時可能約輸出 16k token 就自己停下（#94）。:func:`transcribe` 用完生成預算或輸出結尾
+不完整時回報擔保轉錄到哪一秒（:func:`covered_until`）；自己停下時輸出是完整的，由分段轉錄看最後一個
+片段之後還有沒有聲音，決定要不要接續。
+
 Windows：torch 沒有 Flash SDPA，memory-efficient kernel 又不接受 ``enable_gqa``，
 transformers 5.x 在無遮罩時送 GQA → 退回 math kernel，prefill 顯存 O(L²)
 （37.6 分鐘音檔要配置 53 GiB）。因此註冊 ``sdpa_win`` 注意力實作繞過（lab E7）。
@@ -18,14 +22,17 @@ import copy
 import gc
 import re
 from collections import deque
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, List, Mapping, Optional, Sequence, Tuple
 
 from app.core.config import get_settings
+from app.provider.local import packages
 from app.provider.local.weights import (
     MOSS_MODEL_ID,
     load_pretrained,
     notice_if_missing,
+    require_package,
 )
 from app.utils.logger import setup_logger
 
@@ -48,15 +55,25 @@ _GIB_PER_K_TOKENS = 0.111
 _VRAM_HEADROOM_GIB = 2.5           # 桌面與其他程式佔用、配置器碎片
 _MIN_VRAM_SINGLE_PASS_SECONDS = 300.0  # 實測 275 秒峰值 2.32 GiB，4 GB 卡即可容納
 
+COVERED_TAIL_SEGMENTS = 5
+"""擔保點取最後這麼多段裡最晚的結束：說話者重疊時，最後一段不一定最晚結束。"""
+
 _NUM = r"\d+(?:\.\d+)?"
-# 結束時間戳後面必須緊接下一段的「[起][Sxx]」或輸出結尾，文字裡的 [3]、[2024] 才不會被誤認
+# 生成被截斷時，輸出可能停在下一段開頭的半途（例如「[4.5」「[4.50][S0」）：結束時間戳後面接著這種
+# 殘缺的開頭、再來就是輸出結尾，照樣是一段的結束（#94）。不然完整的最後一段會被丟掉，或下一段的
+# 起點被當成結束時間，真正的結束時間戳被併進文字
+_PARTIAL_START = r"\[\d*(?:\.\d*)?(?:\](?:\[(?:S\d*)?)?)?\Z"
+_PARTIAL_TIME = r"\[\d*(?:\.\d*)?\Z"
+# 結束時間戳後面必須緊接下一段的「[起][Sxx]」、輸出結尾，或被截斷的下一段開頭，文字裡的 [3]、[2024]
+# 才不會被誤認
 _SEGMENT_RE = re.compile(
-    rf"\[({_NUM})\]\[S(\d+)\](.*?)\[({_NUM})\](?=\s*(?:\[{_NUM}\]\[S\d+\]|\Z))", re.S)
+    rf"\[({_NUM})\]\[S(\d+)\](.*?)\[({_NUM})\]"
+    rf"(?=\s*(?:\[{_NUM}\]\[S\d+\]|\Z|{_PARTIAL_START}))", re.S)
 # 沒有說話者標籤的輸出（上游 issue #40、#61，#134）只剩時間戳可以切段。MOSS 的時間戳都帶兩位
 # 小數（例如 [0.48]、[2.00]），文字裡的 [3]、[2024] 是整數，不會被當成時間戳
 _TIME = r"\d+\.\d+"
 _UNTAGGED_SEGMENT_RE = re.compile(
-    rf"\[({_TIME})\](.*?)\[({_TIME})\](?=\s*(?:\[{_TIME}\]|\Z))", re.S)
+    rf"\[({_TIME})\](.*?)\[({_TIME})\](?=\s*(?:\[{_TIME}\]|\Z|{_PARTIAL_TIME}))", re.S)
 # 帶標籤的段落裡夾著「[迄][起]」：後面沒有標籤的段落被併進了前一段
 _UNTAGGED_BOUNDARY_RE = re.compile(rf"\[({_TIME})\]\s*\[({_TIME})\]")
 # 進度回報只看段落開頭（後面接說話者標籤）的時間戳
@@ -206,23 +223,68 @@ def parse_output(text: str) -> List[dict]:
     """``[起][Sxx]文字[迄]`` → ``[{Start, End, Speaker, Content}]``。
 
     說話者 S01 → 0、S02 → 1（與 VibeVoice 的編號一致）；空文字與迄 < 起的片段丟棄。
-    沒有說話者標籤的段落沿用前一段的說話者，前面沒有時當成第一位（#134）。
+    沒有說話者標籤的段落沿用前一段的說話者，前面沒有時當成第一位（#134）。生成被截斷時，沒有結束
+    時間戳的最後一段丟棄，它前面完整的段照樣保留（#94）。
     """
+    return _parse(text)[0]
+
+
+def incomplete_tail(text: str) -> bool:
+    """輸出在最後一個完整的段之後還有東西，例如被截斷、沒有結束時間戳的一段或半個時間戳：生成在
+    一段的半途停下了。正常結束的輸出停在一段的結束時間戳。"""
+    text = text or ""
+    return bool(text[_parse(text)[1]:].strip())
+
+
+def _parse(text: str) -> Tuple[List[dict], int]:
+    """解析輸出（見 :func:`parse_output`），連同最後一個完整的段在 ``text`` 裡結束的位置；一段都
+    沒有時是 0。"""
     text = text or ""
     # 第一個說話者標籤之前（整份都沒有標籤時就是全部）沒有說話者可以沿用，當成第一位
     first_tag = _SEGMENT_START_RE.search(text)
     head = text[:first_tag.start()] if first_tag else text
-    pieces = [(float(m[1]), 0, m[2], float(m[3])) for m in _UNTAGGED_SEGMENT_RE.finditer(head)]
+    matches = list(_UNTAGGED_SEGMENT_RE.finditer(head))
+    pieces = [(float(m[1]), 0, m[2], float(m[3])) for m in matches]
     untagged = len(pieces)
+    consumed = matches[-1].end() if matches else 0
     if first_tag:
         for m in _SEGMENT_RE.finditer(text, first_tag.start()):
             split = _split_untagged(float(m[1]), m[3], float(m[4]))
             untagged += len(split) - 1
             pieces.extend((start, max(int(m[2]) - 1, 0), body, end) for start, body, end in split)
+            consumed = m.end()
     if untagged:
         logger.warning(f"MOSS 輸出有 {untagged} 段沒有說話者標籤，沿用前一位說話者")
-    return [{"Start": start, "End": end, "Speaker": speaker, "Content": body.strip()}
-            for start, speaker, body, end in pieces if body.strip() and end >= start]
+    segments = [{"Start": start, "End": end, "Speaker": speaker, "Content": body.strip()}
+                for start, speaker, body, end in pieces if body.strip() and end >= start]
+    return segments, consumed
+
+
+def covered_until(segments: Sequence[Mapping[str, float]], *, incomplete: bool,
+                  generated_tokens: int, max_new_tokens: int) -> Optional[float]:
+    """MOSS 可能提早停止輸出時，擔保轉錄到這段音檔的哪一秒；沒有這種跡象時是 None（#94）。
+
+    ``segments`` 是解析出的片段（:func:`parse_output`，依輸出的順序），``incomplete`` 是輸出結尾
+    不完整（:func:`incomplete_tail`），``generated_tokens`` 是生成了幾個 token、``max_new_tokens``
+    是這次的預算。跡象有兩個：用完預算、輸出結尾不完整，都表示輸出被截斷。擔保點是最後
+    :data:`COVERED_TAIL_SEGMENTS` 段裡最晚的結束，一段都沒有時是 0。之後到底還有沒有沒轉到的語音，由
+    分段轉錄看語音視圖決定，這裡不知道。
+
+    生成到約 16k token 不算跡象：#94 實測日文 ASMR 與中文對話 4 次都停在 16,341～16,354 token，但朗讀的
+    《坊っちゃん》1～3 章（61 分鐘）生成到 22,654 token 才轉到檔尾（#317 的 GPU 實驗），拿它當跡象會
+    誤報。MOSS 自己停下時輸出是完整的，停在最後一個片段的結束，分段轉錄沒有回報時也從那裡看之後還有
+    沒有聲音，結果相同。
+    """
+    signs = []
+    if generated_tokens >= max_new_tokens:
+        signs.append(f"用完 max_new_tokens={max_new_tokens}")
+    if incomplete:
+        signs.append("輸出結尾不完整")
+    if not signs:
+        return None
+    covered = max((float(s["End"]) for s in segments[-COVERED_TAIL_SEGMENTS:]), default=0.0)
+    logger.warning(f"MOSS 可能提早停止（{'、'.join(signs)}），擔保轉錄到 {covered:.2f} 秒")
+    return covered
 
 
 def _split_untagged(start: float, body: str, end: float) -> List[Tuple[float, str, float]]:
@@ -282,28 +344,38 @@ def _make_progress_streamer(tokenizer, duration: float, status_callback: Callabl
 
 # ─── 推論 ────────────────────────────────────────────────────────────────
 
+@dataclass(frozen=True)
+class MossOutput:
+    """MOSS 跑一次的結果。"""
+
+    segments: List[dict]
+    """解析出的片段（:func:`parse_output`）。"""
+    text: str
+    """未解析的輸出文字。"""
+    covered_until: Optional[float]
+    """可能提早停止時擔保轉錄到哪一秒（:func:`covered_until`）；沒有跡象時是 None。"""
+
+
 def transcribe(
     wav_path: Path,
     *,
     stopping_criteria=None,
     status_callback: Optional[Callable[[str], None]] = None,
-) -> Tuple[List[dict], str]:
-    """對 16 kHz mono wav 跑 MOSS，回傳 (片段, 未解析的輸出文字)。
+) -> MossOutput:
+    """對 16 kHz mono wav 跑 MOSS，回傳片段、未解析的輸出文字與擔保轉錄到哪一秒。
 
     stopping_criteria 由呼叫端傳入（取消旗標）；被中途停下時輸出不完整，
     呼叫端必須先檢查取消再使用結果。
     """
     import soundfile as sf
     import torch
-    try:
-        from moss_transcribe_diarize import (
-            MossTranscribeDiarizeForConditionalGeneration,
-            MossTranscribeDiarizeProcessor,
-        )
-    except ImportError as e:
-        raise RuntimeError(
-            "缺少 moss-transcribe-diarize 套件，請依 backend/requirements-standalone.txt 安裝"
-            "（av 與 moss-transcribe-diarize 兩行）") from e
+
+    # 匯入不了時寫明是沒裝還是載入失敗（#311）
+    require_package(packages.MOSS)
+    from moss_transcribe_diarize import (
+        MossTranscribeDiarizeForConditionalGeneration,
+        MossTranscribeDiarizeProcessor,
+    )
 
     _register_attention()
     duration = float(sf.info(str(wav_path)).duration)
@@ -319,17 +391,22 @@ def transcribe(
         ).to(dtype=torch.bfloat16).to("cuda").eval()
         # 推論放在獨立函式裡：返回時輸入特徵、輸出等 GPU 張量都已離開作用域，
         # 下面的 empty_cache 才真的釋放得掉
-        text = _generate(model, processor, wav_path, duration, stopping_criteria, status_callback)
+        text, generated_tokens, max_new_tokens = _generate(
+            model, processor, wav_path, duration, stopping_criteria, status_callback)
     finally:
         del model
         gc.collect()
         torch.cuda.empty_cache()
 
-    return parse_output(text), text
+    segments, consumed = _parse(text)
+    return MossOutput(segments, text, covered_until(
+        segments, incomplete=bool(text[consumed:].strip()),
+        generated_tokens=generated_tokens, max_new_tokens=max_new_tokens))
 
 
 def _generate(model, processor, wav_path: Path, duration: float,
-              stopping_criteria, status_callback) -> str:
+              stopping_criteria, status_callback) -> Tuple[str, int, int]:
+    """跑一次 generate，回傳（輸出文字, 生成了幾個 token, max_new_tokens）。"""
     import torch
     from moss_transcribe_diarize.inference_utils import (
         DEFAULT_PROMPT,
@@ -365,6 +442,7 @@ def _generate(model, processor, wav_path: Path, duration: float,
             streamer=streamer,
         )
     generated = output_ids[0][prompt_len:]
-    if int(generated.numel()) >= max_new_tokens:
-        logger.warning(f"MOSS 生成達 max_new_tokens={max_new_tokens} 上限，結尾可能被截斷")
-    return processor.tokenizer.decode(generated, skip_special_tokens=True).strip()
+    generated_tokens = int(generated.numel())
+    logger.info(f"MOSS 生成 {generated_tokens} tokens")
+    text = processor.tokenizer.decode(generated, skip_special_tokens=True).strip()
+    return text, generated_tokens, max_new_tokens

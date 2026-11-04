@@ -59,7 +59,14 @@ from app.provider.registry import open_batch_provider, provider_info, reopen_bat
 from app.repositories.batch_job_repository import BatchJobRepository
 from app.runtime import run_mode
 from app.runtime.run_mode import publish_status
-from app.services.silence_removal import SpeechTimeline, SpeechView, speech_view
+from app.services import tail_loss
+from app.services.silence_removal import (
+    Span,
+    SpeechTimeline,
+    SpeechView,
+    silences_from_serialized,
+    speech_view,
+)
 from app.services.transcription.models import TranscriptionTaskResult
 from app.tasks import older_batches
 from app.tasks.lifecycle import Task, TaskLifecycle, completed_result
@@ -525,6 +532,7 @@ class _Run:
                 self._jobs.update_file(db, file.lifecycle.task_uuid, {
                     "request_index": index,
                     "speech_view_json": json.dumps(file.view.serialized()),
+                    "silences_json": json.dumps(file.view.serialized_silences()) if file.view else None,
                 }, commit=False)
             self._jobs.move(db, self._batch_id, BatchState.POLLING, commit=False)
             db.commit()
@@ -567,6 +575,15 @@ class _Submitted:
     file_path: Optional[str]
     timeline: SpeechTimeline
     """送進模型的語音視圖怎麼對回原音檔，從序列化形式讀回。"""
+    silences: Optional[Tuple[Span, ...]]
+    """去靜音在原音檔裡找到的靜音（:attr:`SpeechView.silences`），檢查掉尾時扣掉；改版前送出的檔案
+    沒有記，是 None。"""
+
+    def known_silences(self) -> Tuple[Span, ...]:
+        """檢查掉尾時扣掉的靜音：送出時記下的；改版前送出的檔案只知道去靜音剪掉的那些。"""
+        if self.silences is None:
+            return self.timeline.cut_silences(self.duration)
+        return self.silences
     status: str
     """讀回來時的結果狀態。"""
 
@@ -714,13 +731,20 @@ def _submitted(rows: Sequence[BatchFile]) -> List[_Submitted]:
         duration=row.audio_duration_seconds or 0.0,
         file_path=row.file_path,
         timeline=SpeechTimeline.from_serialized(json.loads(row.speech_view_json or "[]")),
+        silences=_stored_silences(row),
         status=row.status,
     ) for row in sent]
 
 
+def _stored_silences(row: BatchFile) -> Optional[Tuple[Span, ...]]:
+    """送出時記下的、去靜音找到的靜音；改版前送出的檔案沒有記，是 None。"""
+    stored = cast(Optional[str], row.silences_json)
+    return None if stored is None else silences_from_serialized(json.loads(stored))
+
+
 def _result_of(status: BatchStatus, file: _Submitted) -> FileOutcome:
-    """這個檔案的結果：供應商給的轉錄結果放回原音檔的時間軸；整個批次失敗、或沒有這個檔案的結果時，
-    是讓它失敗的原因。
+    """這個檔案的結果：供應商給的轉錄結果放回原音檔的時間軸，帶著可能掉尾的起點；整個批次失敗、或沒有
+    這個檔案的結果時，是讓它失敗的原因。
 
     結果放不回原音檔的時間軸時（例如片段的時間不是數字），回傳帶著用量的失敗結果：供應商已經回應，
     照樣收費，任務生命週期和供應商回報失敗時一樣把用量記在失敗的任務紀錄上。
@@ -737,7 +761,10 @@ def _result_of(status: BatchStatus, file: _Submitted) -> FileOutcome:
     except Exception as e:
         return result.model_copy(update={
             "success": False, "segments": [], "text": f"結果放不回原音檔的時間軸: {e}"})
-    return result.model_copy(update={"segments": segments})
+    # 批次不分段，檢查整個音檔，扣掉送出時記下的靜音（#257）
+    tail = tail_loss.tail_loss_from(segments, start=0.0, end=file.duration,
+                                    silences=file.known_silences())
+    return result.model_copy(update={"segments": segments, "tail_loss_from": tail})
 
 
 def _failed_state(status: BatchStatus) -> str:

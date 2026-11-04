@@ -59,7 +59,7 @@
 | 顯卡驅動（本機轉錄） | NVIDIA 驅動 572.61 以上：免安裝版的 PyTorch 帶的是 CUDA 12.8 Update 1，版本照 [NVIDIA 的對照表](https://docs.nvidia.com/cuda/cuda-toolkit-release-notes/)。驅動太舊時，畫面會寫出目前的版本與需要的版本 |
 | Microsoft Visual C++ 可轉散發套件（本機轉錄） | 要裝 x64 的[最新版](https://aka.ms/vc14/vc_redist.x64.exe)（14.38 以上，[Microsoft 的說明](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist)），安裝要系統管理員權限。有 NVIDIA 驅動、卻沒裝或太舊時，黑色視窗在下載執行環境之前會提醒，轉錄頁也會寫出下載網址 |
 | 顯卡（Gemini） | 不需要，但要自備 Gemini API 金鑰 |
-| 磁碟空間 | 首次啟動下載約 3.5 GB 的執行環境，安裝時在解壓資料夾裡最多約佔 8 GB，裝好後刪掉執行時用不到的 PyTorch 靜態庫（約 2.8 GB），剩約 5.4 GB。下載的檔案另外解開存在 `%LOCALAPPDATA%\uv\cache`（通常在 C 槽）約 8 GB，佈建完成後可以刪掉：和解壓資料夾不在同一個磁碟時另外佔空間；在同一個磁碟時兩邊共用同一份檔案、不另外佔空間，但刪掉的那 2.8 GB 要等刪掉 `uv\cache` 才會真的空出來。本機的預設模型權重約 3.7 GB，選用模型另需約 21 GB |
+| 磁碟空間 | 首次啟動下載約 3.5 GB 的執行環境，全部放在解壓資料夾裡，不另外佔用 C 槽。安裝時最多約佔 11.7 GB（其中約 3.5 GB 是暫存在 `runtime\downloads\` 的 PyTorch 安裝檔），裝好後自動刪掉安裝檔、執行時用不到的 PyTorch 靜態庫（約 2.8 GB）與 uv 的下載快取（`runtime\uv-cache\`），剩約 5.4 GB。下載快取和裝好的套件共用同一份檔案、不另外佔空間；解壓資料夾所在的磁碟不支援硬連結時（例如 exFAT 格式的隨身碟），安裝期間會另外多佔約 8 GB，裝好後一樣刪掉。本機的預設模型權重約 3.7 GB，選用模型另需約 21 GB |
 | 網路 | 首次啟動與下載模型權重時需要；用 Gemini 轉錄時也需要 |
 
 ---
@@ -68,17 +68,17 @@
 
 Mimiji 只發布 Windows 免安裝版：下載 zip、解壓縮就能用。本機轉錄另外需要 Microsoft Visual C++ 可轉散發套件（見[系統需求](#-系統需求)）。
 
-1. 到 [**Releases**](https://github.com/Wade0325/AI_translate/releases) 下載最新的 `AI_Translate-vX.Y.Z-win64.zip`。
+1. 到 [**Releases**](https://github.com/Wade0325/AI_translate/releases) 下載最新的 `Mimiji-vX.Y.Z-win64.zip`。
 2. 解壓到任意位置（建議路徑不含中文與空白）。
-3. 雙擊 **`AI_Translate.exe`**，會開一個黑色視窗。
-   - 首次啟動會自動下載執行環境（約 3.5 GB，含 PyTorch），視網速需要數分鐘到數十分鐘；中斷後重開會接著下載。沒有 NVIDIA 顯卡的電腦也一樣會下載這些，只用 Gemini 時其中大部分用不到。
+3. 雙擊 **`Mimiji.exe`**，會開一個黑色視窗。
+   - 首次啟動會自動下載執行環境（約 3.5 GB，含 PyTorch），視網速需要數分鐘到數十分鐘；中斷後重新執行，會從中斷的地方接著下載。沒有 NVIDIA 顯卡的電腦也一樣會下載這些，只用 Gemini 時其中大部分用不到。
    - 有 NVIDIA 驅動、卻沒裝 Microsoft Visual C++ 可轉散發套件（或版本太舊）時，下載執行環境之前會先提醒並給下載網址。趁下載時裝好就不必重新開啟；下載完還沒裝，會再提醒一次。
    - 就緒後自動開啟瀏覽器。網址以黑色視窗顯示的為準：預設是 `http://127.0.0.1:8000`，8000 埠被占用時會改用其他埠。
-   - 關閉黑色視窗就停止程式。再雙擊一次 `AI_Translate.exe` 不會啟動第二個，而是打開已經在跑的那個網址。
+   - 關閉黑色視窗就停止程式。再雙擊一次 `Mimiji.exe` 不會啟動第二個，而是打開已經在跑的那個網址。
    - 出錯時黑色視窗會停住，寫出原因、下一步與日誌檔所在的資料夾，按任意鍵才關。
 4. 到 **Settings** 頁的 **Local Models (本機 GPU 模型)** 卡片按「下載模型權重」（預設模型約 3.7 GB）。下載完成後，就能在 **New Transcription** 頁用本機轉錄。
 5. 本機不能用時，轉錄頁與 Settings 頁的本機卡片會寫出原因與下一步：沒有 NVIDIA 顯卡、顯卡驅動太舊、CUDA 初始化失敗、PyTorch 載入失敗（例如沒裝 Microsoft Visual C++ 可轉散發套件，或版本太舊），或目前的 PyTorch 不支援這張顯卡。要下載的網址可以直接點。
-   - 照著更新驅動、安裝缺少的套件之後，關掉黑色視窗、重新開啟 `AI_Translate.exe` 才會重新偵測。
+   - 照著更新驅動、安裝缺少的套件之後，關掉黑色視窗、重新開啟 `Mimiji.exe` 才會重新偵測。
    - 也可以按「改用 Gemini」，再到 Settings 頁的 Gemini 卡片填入 [Gemini API 金鑰](https://aistudio.google.com/apikey)。Gemini 會把音檔上傳到 Google。
 
 > 所有資料（資料庫、模型權重）都在解壓資料夾的 `data\` 內；升級新版時把舊版 `data\` 複製過來即可保留紀錄。哪些是個人資料、怎麼清掉，見[資料與隱私](#-資料與隱私)。
@@ -127,9 +127,12 @@ Mimiji 只發布 Windows 免安裝版：下載 zip、解壓縮就能用。本機
 
 - 預覽逐字稿與時間戳。
 - 下載 `.lrc` / `.srt` / `.vtt` / `.txt`（多個檔案可以用 **Download All** 打包成 ZIP）。
+  - 檔名沿用音檔的檔名：`interview.mp3` 的 SRT 是 `interview.srt`。ZIP 裡主檔名相同的音檔保留原本的副檔名來區分（`a.mp3.srt`、`a.wav.srt`），同一個檔名上傳兩次時加編號（`a.srt`、`a (2).srt`），解壓縮時不會互相覆蓋。
+  - 以批次模式完成的檔案，結果存在 **History** 頁面，要從那裡下載；在結果頁按下載會提示到 History 頁面，打包時也不放進 ZIP，訊息會列出沒打包的檔案。
 - SRT／VTT 的字幕照實際說話的時間顯示：Multi-Speaker 開著時，另一位說話者插話，兩行字幕會同時出現，靠行首的說話者標記分辨；同一位說話者的字幕不重疊。每一行至少顯示 0.8 秒，同一位說話者緊接著說下一句時例外。部分字幕編輯器會把重疊的字幕標成錯誤，原因見 [ADR-0008](docs/adr/0008-subtitles-follow-speech-and-may-overlap.md)。
-- SRT／VTT 的字幕依說話者上色：S0 白色、S1 黃、S2 青、S3 綠，第 5 位說話者起從白色重新輪；沒有說話者標記的行不上色。SRT 的顏色在 VLC 與 mpv 看得到；VTT 的顏色寫在檔頭的 STYLE 區塊，Chrome 看得到，Firefox 不支援，照樣顯示白字。ffmpeg 7.0 之前的版本讀不了帶 STYLE 區塊的 VTT，用這類工具時請改下載 SRT。LRC、TXT 不上色。
+- SRT／VTT 的字幕依說話者上色：S0 白色、S1 黃、S2 青、S3 綠，第 5 位說話者起從白色重新輪；沒有說話者標記的行不上色。SRT 的顏色調柔過，在 VLC、mpv 與 PotPlayer 看得到。VTT 用 WebVTT 規格內建的顏色名（yellow、cyan、lime），是純色：VLC 與 PotPlayer 看得到；Chrome 與 mpv 不認得這些顏色名，照樣顯示白字（實測 VLC 3.0.20、PotPlayer 26.10.21、Chromium 153 與 mpv 0.37）。VTT 不在檔頭寫 STYLE 區塊，因為用 ffmpeg 7.0 之前版本解碼的播放器遇到它，整份字幕都不顯示。LRC、TXT 不上色。
 - 一則字幕超過兩行的量（日文 26 個、其他語言 32 個全形字寬，半形字算半個）時，SRT／VTT 照逐字時間拆成數則，優先切在「、」「，」之後；只有本機的轉錄有逐字時間，Gemini 的結果不拆。LRC、TXT 保持一句一行。
+- 檔案卡或結果卡寫著「從 mm:ss 起可能沒有轉錄到」時，轉錄結果在那之後可能少了一段：最後一句之後扣掉靜音還有一分鐘以上的聲音，模型卻沒有輸出，例如模型提早停止了輸出。任務照樣完成，已經轉出的部分照樣可以下載；**Tasks** 與 **History** 頁面也寫在檔名下面，批次取回的結果也一樣。只看音量判斷有沒有聲音，片尾音樂與環境音也算，所以請先聽一下那一段：只是音樂或環境音就不必理會，有說話的話，可以把那一段剪成另一個檔案再轉錄。
 
 ### 步驟 5️⃣ — 追蹤紀錄與費用
 
@@ -196,13 +199,21 @@ Issue 是公開的，任何人都看得到：
 目前是測試版，下面這些還沒做，之後的版本處理：
 
 - **長音檔的說話者編號**：本機一次能處理的長度約 70 分鐘，顯卡記憶體較小時更短；更長的音檔分段轉錄，每一段各自分離說話者，段與段之間的說話者編號可能對不上（例如前一段的 `[S0]` 到下一段變成 `[S1]`）。
+- **長音檔的接續**：本機的模型轉長音檔時，可能輸出約 16k token 就自己停下（實測日文 ASMR 約 50 分鐘、中文對話約 45 分鐘；朗讀的音檔 61 分鐘也可能一次轉完）。停下之後還有聲音時，app 會從停下的地方往前約 2 分鐘再轉錄一次並接回，一段最多接續 4 次；重疊的部分用來去掉重複的句子、對上說話者編號。接續的那一段是另外做說話者分離的，同一個人在接續之後可能換成新的說話者編號，例如重疊的那 2 分鐘裡這個人沒說話，或語氣變了被當成另一個人。接續失敗或一直卡在同一個地方時，畫面會寫出從哪裡起可能沒有轉錄到（見「使用教學」的步驟 4）。Gemini 目前不接續。
 - **本機轉錄要另外裝 Microsoft Visual C++ 可轉散發套件**：免安裝版沒有附這些 DLL（Microsoft [建議](https://learn.microsoft.com/cpp/windows/choosing-a-deployment-method)用可轉散發套件集中安裝，Windows Update 才更新得到），沒裝或太舊的電腦要先裝好才能用本機轉錄；Gemini 照樣能用。
 - **介面語言**：介面中英夾雜，例如左側選單、頁面標題與部分按鈕是英文。
 - **API 金鑰沒有加密**：Gemini 的 API 金鑰照原樣存在 `data\app.db`，不要把 `data\` 資料夾或 `app.db` 交給別人。
+- **首次佈建一律下載約 3.5 GB**：第一次啟動時下載的執行環境含本機轉錄用的 PyTorch，沒有 NVIDIA 顯卡、只用 Gemini 的電腦也一樣要下載，其中大部分用不到；這一版不把本機轉錄用的套件分開下載（[ADR 0003](docs/adr/0003-local-engine-is-the-default.md)）。要等多久、佔多少磁碟空間見[安裝](#-安裝)與[系統需求](#-系統需求)。
+- **還不能用自己的文字稿只補時間戳**：貼上已有的完整文字稿、只讓模型替它補上時間戳（使用者文稿），這個功能還沒做好，轉錄頁暫時不提供入口（[#66](https://github.com/Wade0325/AI_translate/issues/66)）。
 
 不會改變的設計：
 
-- **執行檔沒有數位簽章**（[ADR 0010](docs/adr/0010-no-code-signing.md)）：第一次執行 `AI_Translate.exe` 時，Windows 可能跳出 SmartScreen 的「Windows 已保護您的電腦」，按「其他資訊」→「仍要執行」即可。開著 Smart App Control 的電腦可能直接擋下、沒有「仍要執行」可以按。防毒軟體攔下 `AI_Translate.exe` 時，可以改雙擊同一個資料夾裡的 `start.bat`：做的事一樣，只是不會自動開啟瀏覽器，用法見資料夾裡的 `README.txt`。
+- **執行檔沒有數位簽章**（[ADR 0010](docs/adr/0010-no-code-signing.md)）：第一次執行 `Mimiji.exe` 時，Windows 可能跳出 SmartScreen 的「Windows 已保護您的電腦」，按「其他資訊」→「仍要執行」即可。開著 Smart App Control 的電腦可能直接擋下、沒有「仍要執行」可以按。防毒軟體攔下 `Mimiji.exe` 時，可以改雙擊同一個資料夾裡的 `start.bat`：做的事一樣，只是不會自動開啟瀏覽器，用法見資料夾裡的 `README.txt`。
+
+其他軟體的限制：
+
+- **VLC 3.0 播 VTT 時不顯示重疊的字幕**：Multi-Speaker 開著時，另一位說話者插話的那一則字幕會和正在說的那一則同時出現（[ADR 0008](docs/adr/0008-subtitles-follow-speech-and-may-overlap.md)）。VLC 3.0 播 VTT 時，後出現的那一則不會顯示，播 SRT 時兩則都會顯示，所以用 VLC 看字幕請下載 SRT（在 VLC 3.0.20 實測）。
+- **mpv 這類用 ffmpeg 讀字幕的播放器播 LRC 時，說話者標記少了開頭的 `[`**：Multi-Speaker 開著時，LRC 每一行寫成 `[00:01.00][S0] 文字`。ffmpeg 把緊接在時間戳後面的 `[` 也當成時間戳的括號略過，畫面顯示成「S0] 文字」；字幕出現的時間不受影響，換新版的 ffmpeg 也一樣（FFmpeg 6.1 到 8.0 讀時間戳的這段程式沒有改過）。PotPlayer 照原樣顯示 `[S0]`。用 mpv 看帶說話者標記的字幕請下載 SRT；Multi-Speaker 關著（預設）時 LRC 沒有說話者標記，不受影響（在 mpv 0.37、Windows 的 mpv-lazy 0.35 與 PotPlayer 26.10.21 實測，[#271](https://github.com/Wade0325/AI_translate/issues/271)）。
 
 ---
 
@@ -418,20 +429,37 @@ git config core.hooksPath .githooks
 .\build_release.ps1 -Version v1.2.3
 ```
 
-產出 `build\AI_Translate-v1.2.3-win64.zip`（約 150 MB —— Python 依賴不進 zip，
+產出 `build\Mimiji-v1.2.3-win64.zip`（約 150 MB —— Python 依賴不進 zip，
 由使用者首次啟動時以隨包 `uv` 依 `backend/requirements-standalone.txt` 自動下載）。
+其中佔九成下載量的 torch 由啟動器與 `start.py` 先以 `bin\prefetch_wheels.py`（`tools/portable/prefetch_wheels.py`）下載到 `runtime\downloads\`：斷線時可以從中斷的地方接著下載，網址、大小與 SHA-256 釘在那支程式裡，換 torch 的版本時一起換（測試會檢查）。uv 再以 `--find-links` 從那裡安裝，裝好後刪掉。
+啟動器 `Mimiji.exe`（`tools/launcher.cs`）用 Windows 內建的 `csc` 編譯，帶著圖示 `tools/portable/mimiji.ico`（換圖示時換掉這個檔，要有 16、32、48 與 256 像素）與版本資訊：檔案總管的「內容 → 詳細資料」顯示產品名稱 Mimiji、產品版本（`-Version` 原樣，例如 `v0.1.0-rc.1`）與檔案版本。檔案版本只能是 4 個數字，所以 `vX.Y.Z` 開頭的版本號取 `X.Y.Z.0`（`-rc.1` 這類標記不進檔案版本），`dev` 等其他寫法是 `0.0.0.0`，規則寫在 `build_release.ps1` 的 `ConvertTo-FileVersion`。
 發布包裡給使用者看的 `README.txt`，以及手動啟動用的 `start.bat` 與 `start.py` 放在 `tools/portable/`，建置時複製進去（`README.txt` 的 `{VERSION}` 換成版本號，`start.py` 放進 `bin\`）。`start.bat` 只能有 ASCII：cmd 遇到中文會讀錯下一行，所以它只用隨包的 Python 執行 `bin\start.py`，佈建、啟動與訊息都寫在 `start.py`。`start.py` 和啟動器用同名的 mutex 與 `data\launcher-url.txt` 互相擋住，同一個資料夾合起來只跑一個伺服器：伺服器啟動時會先把「處理中」的任務記成失敗才綁埠，第二個實例就算綁不到埠也已經記了。伺服器也和啟動器一樣放進 Job Object，只結束 `start.py` 時伺服器跟著結束。
 首次佈建成功後，啟動器與 `start.py` 都刪掉 `runtime\Lib\site-packages\torch\lib\*.lib`（約 2.8 GB，只有編譯要連結 torch 的 C++ 擴充時才用得到，#239 實測刪掉前後輸出相同），已佈建時每次啟動也補刪；刪不掉時照樣啟動。
 要在 git 的工作目錄裡、裝好 git 才能建置：後端只用 `git archive` 取白名單（腳本裡的 `$BackendPaths`）已經 commit 的檔案，沒進版控的東西不會被打包；白名單裡有還沒 commit 的改動或新檔時，建置會停下來，請先 commit 或 stash。
 Python embeddable、`uv` 與 ffmpeg 都釘版並驗 SHA-256，下載快取在 `build\cache\`；快取裡的檔案雜湊不符時會刪掉重新下載。
-推 `v*` tag 時 GitHub Actions（`.github/workflows/release.yml`）會先跑一次完整的 CI，通過後自動建置並發布 Release。
-CI 的 `portable` job 在每個 PR 上也用 Windows 建置一次（不上傳、不發布），並用 `tools/portable_zip.py` 檢查 zip：第 7 步清單裡的檔案都在、`backend\` 只有白名單裡的檔案，而且沒有使用者的音檔、資料庫、`.env` 等執行期資料；日誌裡會列出 zip 的完整內容。
+推 `v*` tag（`vX.Y.Z`，可以接 `-rc.1` 之類的標記）時 GitHub Actions（`.github/workflows/release.yml`）會先跑一次完整的 CI，通過後在 Windows 建置，先建草稿 Release、上傳附件，確認附件齊全、大小與 SHA-256 都對之後，才以 prerelease 公開；標題與 release notes 標 beta，release notes 的「已知限制」取自本 README 的[已知限制](#-已知限制)。任何一步失敗都只留下草稿，workflow 會刪掉它（tag 不動），不會半發布。附件、標題與 release notes 由 `tools/release_assets.py` 產生與檢查。
+CI 的 `portable` job 在每個 PR 上也用 Windows 建置一次（不上傳、不發布），並用 `tools/portable_zip.py` 檢查 zip：檔名與最上層資料夾是 `Mimiji`、第 7 步清單裡的檔案都在、`backend\` 只有白名單裡的檔案，而且沒有使用者的音檔、資料庫、`.env` 等執行期資料；`Mimiji.exe` 的產品名稱、版本與圖示也在這裡檢查。日誌裡會列出 zip 的完整內容。
+
+發版的 tag 由維護者自己推，代理不推 tag（[`docs/agents/merging.md`](docs/agents/merging.md)）。repo 有一條 ruleset 禁止所有人建立、更新與刪除 `v*` tag，免得誤推一個 tag 就公開發布，所以發版時照這個順序：
+1. 到 [Settings → Rules → Rulesets](https://github.com/Wade0325/AI_translate/settings/rules) 把限制 `v*` tag 的那條暫時停用（Enforcement status 改成 Disabled）。
+2. 只推要發的那一個 tag：`git push origin refs/tags/vX.Y.Z`。不要用 `git push --tags`，本機其他的 `v*` tag 會一起推上去，每一個都會發一次 Release。
+3. 推完就把那條 ruleset 改回 Active。`release.yml` 只在已經存在的 tag 上建 Release，不會建立或改動 tag。
+4. 要刪掉或移動 tag 時，一樣先停用、做完再改回。發版中途失敗時：只是暫時性的錯誤（例如網路），在 Actions 重新執行失敗的 job 就好，不必動 tag；要改程式才能修時，tag 還指向舊的 commit，修好合併後要刪掉這個 tag 再推到新的 commit，或改發下一個版本號。
+
+發布包附上授權文件（#274）：Mimiji 的 `LICENSE.txt` 與 `NOTICE.txt`，以及第三方元件的 `THIRD_PARTY_NOTICES.txt` 與 `licenses\`（原稿在 [`tools/portable/`](tools/portable/THIRD_PARTY_NOTICES.txt)）。元件換版時一起更新：
+- Python、`uv` 或 ffmpeg 升版：改 `THIRD_PARTY_NOTICES.txt` 寫的版本與來源，以及 `tools/portable/licenses/` 裡它們的授權全文；ffmpeg 另外改 `build_release.ps1` 的 `$FfmpegCommit` 與 `$BtbnCommit`。建置時會核對 Python 與 ffmpeg 自己附的授權檔，和 `licenses/` 裡的不同就停下來。
+- ffmpeg 或 `uv` 升版：在 repo 根目錄執行 `python -m tools.third_party_licenses`（要連網），重新產生 ffmpeg 靜態連入的函式庫與 Rust 套件的授權清單（`licenses/ffmpeg/libraries.txt`、`licenses/ffmpeg/rust-crates.txt`、`licenses/uv/crates.txt`）。它只解析 BtbN 的建置腳本、不執行；沒有重新產生時測試會紅燈。
+- 新增、移除或升級前端依賴：`npm ci --prefix frontend` 之後執行 `python tools/npm_licenses.py`，重新產生 `tools/portable/licenses/frontend/npm-packages.txt`；沒有重新產生時測試會紅燈。
+
+FFmpeg 的原始碼要附在發布包所在的同一個 GitHub Release。建置之後在 repo 根目錄執行 `python -m tools.release_assets prepare <版本> build\release-assets`，準備發版的全部附件並驗證：發布包、BtbN 的 build zip、對應 commit 的 FFmpeg 原始碼、BtbN 的建置腳本（後三個由 `tools/ffmpeg_sources.py` 準備），以及涵蓋全部附件的 `SHA256SUMS`；`python -m tools.release_assets check <版本> build\release-assets` 檢查附件齊全。CI 的 `portable` job 每個 PR 都用版本 `ci` 跑這兩步，`release.yml` 發版時跑同樣的兩步再上傳。
 
 ---
 
 ## 📝 授權
 
 本專案採用 [Apache License 2.0](LICENSE)，理由見 [ADR 0006](docs/adr/0006-license-apache-2.md)。
+
+免安裝版附帶的第三方元件（FFmpeg 與它靜態連入的函式庫、Python、`uv` 與它的 Rust 套件、介面打包的 npm 套件）各依自己的授權散布，見發布包裡的 `THIRD_PARTY_NOTICES.txt` 與 `licenses\`（原稿在 [`tools/portable/`](tools/portable/THIRD_PARTY_NOTICES.txt)）。FFmpeg 的原始碼附在每一版的 GitHub Release。
 
 本機的模型權重不隨本專案散布，由 app 在你的電腦上從 Hugging Face 下載，使用時依各自模型卡上的授權。Settings 頁的 Local Models 卡片列出每份權重的授權，並連到下載的那個版本的模型卡。
 

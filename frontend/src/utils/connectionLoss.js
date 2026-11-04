@@ -30,7 +30,7 @@ const COPY = Object.freeze({
   [CONNECTION.UNREACHABLE]: {
     label: '連線中斷，連不上伺服器',
     reason: '連不上伺服器，Mimiji 可能已經關閉',
-    nextStep: '請重新開啟 Mimiji（免安裝版是 AI_Translate.exe；關掉它的黑色視窗就會停止）。'
+    nextStep: '請重新開啟 Mimiji（免安裝版是 Mimiji.exe；關掉它的黑色視窗就會停止）。'
       + '重新開啟之後，這裡會自動接回任務；也可以到任務頁或歷史紀錄查看。',
     links: [
       { label: '任務頁', to: '/tasks' },

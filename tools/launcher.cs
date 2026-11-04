@@ -1,14 +1,16 @@
-// AI_Translate 免安裝版的啟動器：以免安裝模式執行整套服務。
+// Mimiji 免安裝版的啟動器（Mimiji.exe）：以免安裝模式執行整套服務。
 //
-// 以 Windows 內建 csc 編譯（.NET Framework 4.x，各 Windows 10/11 皆預裝）：
+// 以 Windows 內建 csc 編譯（.NET Framework 4.x，各 Windows 10/11 皆預裝），build_release.ps1 第 5 步：
 //   C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe /nologo /optimize
-//     /out:AI_Translate.exe tools\launcher.cs
+//     /win32icon:tools\portable\mimiji.ico /out:Mimiji.exe tools\launcher.cs build\launcher-version.cs
+// launcher-version.cs 是建置時產生的版本號（#277）；只編譯這個檔也可以，版本資訊的版本號就是 0.0.0.0。
 // 注意：內建 csc 僅支援 C# 5 語法（無字串插值、無 ?. 運算子、無 nameof）。
 //
 // 職責：
 //   1. 只允許單一實例：同一個資料夾的 exe 已在執行時，打開那個網址，不再起第二個伺服器（#268）
-//   2. 首次啟動時以隨包 uv.exe 佈建 Python 依賴（含 torch，約 3.5 GB 下載），再刪掉 torch 執行時
-//      用不到的 .lib 靜態庫（約 2.8 GB，#305）
+//   2. 首次啟動時佈建 Python 依賴（含 torch，約 3.5 GB 下載）：先以 bin\prefetch_wheels.py 下載 torch，
+//      斷線時可以接著下載（#303）；再以隨包 uv.exe 安裝，下載快取放在程式資料夾裡（#303），最後刪掉
+//      torch 執行時用不到的 .lib 靜態庫（約 2.8 GB，#305）與 uv 的下載快取
 //   3. 設定免安裝模式的環境變數 → 以隨包 Python 啟動 uvicorn（不載入使用者自己裝的套件，#301）
 //   4. 探活 /api/v1/health 後開啟預設瀏覽器
 //   5. 以 Job Object 綁定子行程：關閉視窗（或啟動器被殺）時 uvicorn 一併結束
@@ -41,10 +43,19 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 
+// exe 的「內容 → 詳細資料」（#277）：產品名稱、檔案描述與著作權固定寫在這裡（著作權和 NOTICE 相同）；
+// 檔案版本與產品版本由 build_release.ps1 在建置時產生的 launcher-version.cs 給。檔案描述也是工作管理員
+// 顯示的名稱
+[assembly: AssemblyTitle(Launcher.AppName)]
+[assembly: AssemblyProduct(Launcher.AppName)]
+[assembly: AssemblyCopyright("Copyright 2026 Wade")]
+
 static class Launcher
 {
-    const string AppName = "AI_Translate";
-    const string ExeName = "AI_Translate.exe";
+    // 產品名稱（#26）：視窗標題與訊息、單一實例的 mutex 名稱（和 tools/portable/start.py 相同）。
+    // build_release.ps1 的 $ProductName 與 exe 的檔名也是它（tests/unit/test_portable_zip.py 檢查）
+    internal const string AppName = "Mimiji";
+    const string ExeName = AppName + ".exe";
     const string IssuesUrl = "https://github.com/Wade0325/AI_translate/issues";
     const int DefaultHealthTimeoutSeconds = 180; // 首次啟動 torch import 很慢
     const int SecondInstanceCloseSeconds = 5;
@@ -373,40 +384,62 @@ static class Launcher
     }
 
     // ─── 首次佈建 ─────────────────────────────────────────────────────────
+    // 1. bin\prefetch_wheels.py 把 torch 的 wheel 下載到 runtime\downloads：斷線時自己重試，結束之後
+    //    已下載的部分也留著，下次接著下載；下載完驗 SHA-256（#303）。uv 自己下載時，中斷就要從頭再來
+    // 2. uv 照 requirements-standalone.txt 安裝，--find-links 指向 runtime\downloads：torch 用那裡的檔案，
+    //    不再下載一次（uv 遇到同一個檔名的 wheel 時用 --find-links 的）。uv 的下載快取用 --cache-dir
+    //    放在 runtime\uv-cache（#303），不放 uv 預設的 %LOCALAPPDATA%\uv\cache：程式資料夾在 D: 這類
+    //    另一顆磁碟時，預設的位置會在 C: 另外留下約 8 GB，刪掉程式資料夾也清不掉。同一顆磁碟上 uv 從
+    //    快取用硬連結裝進 site-packages，不另外佔空間；--link-mode hardlink 寫明，使用者自己設的
+    //    UV_LINK_MODE=symlink 才不會讓裝好的套件指向等一下要清掉的快取（磁碟不支援硬連結時 uv 改成複製）
+    // 3. 成功之後刪掉 runtime\downloads（約 3.5 GB）與 torch\lib 執行時用不到的 .lib（約 2.8 GB，#305），
+    //    寫完成標記，再清掉 uv 的下載快取（RemoveUvCache）。清快取要一點時間：先寫標記，清到一半時
+    //    使用者關掉視窗，下次啟動接著清就好，不會重新佈建
+    // 失敗時下載的 torch 與 uv 的快取都留著：重新執行時，已經下載完的不必再下載
 
     // 回傳這次有沒有佈建（已經佈建過時是 false）
     static bool Provision(string root, string python)
     {
         string sentinel = Path.Combine(root, "runtime", ".provisioned");
+        string downloads = Path.Combine(root, "runtime", "downloads");
+        string uv = Path.Combine(root, "bin", "uv.exe");
+        string cache = Path.Combine(root, "runtime", "uv-cache");
         if (File.Exists(sentinel))
         {
+            RemoveDownloads(downloads); // 上次佈建成功、但刪不掉（例如防毒軟體正在掃描）時再刪一次
             // 每次啟動都補刪：首次佈建時被防毒軟體鎖住沒刪掉的，或這個版本之前佈建的
             RemoveStaticLibraries(root);
+            RemoveUvCache(root, uv, cache); // 上次沒清完（清到一半關掉視窗、檔案被鎖住）時接著清
             return false;
         }
 
-        string uv = Path.Combine(root, "bin", "uv.exe");
+        string prefetch = Path.Combine(root, "bin", "prefetch_wheels.py");
         string requirements = Path.Combine(root, "backend", "requirements-standalone.txt");
-        if (!File.Exists(uv) || !File.Exists(requirements))
+        if (!File.Exists(uv) || !File.Exists(prefetch) || !File.Exists(requirements))
             throw new LaunchFailure(
-                "找不到 bin\\uv.exe 或 backend\\requirements-standalone.txt：檔案不完整。",
+                "找不到 bin\\uv.exe、bin\\prefetch_wheels.py 或 backend\\requirements-standalone.txt：檔案不完整。",
                 "請重新解壓縮整個 zip；防毒軟體隔離了 uv.exe 時，請到隔離區還原，"
                     + "並把這個資料夾加入防毒軟體的排除清單。");
 
         Log.Info("═══════════════════════════════════════════════════════");
         Log.Info(" 首次啟動：正在下載執行環境（約 3.5 GB，含 PyTorch）");
-        Log.Info(" 過程視網速需要數分鐘到數十分鐘；中斷後重開會續傳。");
+        Log.Info(" 過程視網速需要數分鐘到數十分鐘；中斷後重新執行，會從中斷的地方接著下載。");
         Log.Info(" 沒有 NVIDIA 顯卡的電腦也會下載這些，只用 Gemini 時大部分用不到。");
         Log.Info("═══════════════════════════════════════════════════════");
         Log.Detail("首次佈建開始；可用空間：" + FreeSpaceText(root));
 
+        PrefetchWheels(root, python, prefetch, downloads);
+
         var psi = new ProcessStartInfo();
         psi.FileName = uv;
         psi.Arguments = string.Format(
-            "pip install --python \"{0}\" --target \"{1}\" -r \"{2}\"",
+            "pip install --python \"{0}\" --target \"{1}\" --cache-dir \"{2}\" --link-mode hardlink"
+                + " -r \"{3}\" --find-links \"{4}\"",
             python,
             Path.Combine(root, "runtime", "Lib", "site-packages"),
-            requirements);
+            cache,
+            requirements,
+            downloads);
         psi.WorkingDirectory = root;
         psi.UseShellExecute = false; // 進度直接顯示在本 console
 
@@ -420,15 +453,18 @@ static class Launcher
             throw new LaunchFailure(
                 "執行環境佈建失敗（uv 結束代碼 " + ExitCodeText(p.ExitCode) + "）。"
                     + "上方視窗裡 uv 印出的最後幾行通常就是原因。常見的原因：",
-                "  1. 網路中斷或不穩：已下載的部分會保留，重新執行 " + ExeName + " 即可續傳。",
+                "  1. 網路中斷或不穩：PyTorch 與已下載完的套件會保留，重新執行 " + ExeName
+                    + " 會接著下載其餘的套件。",
                 "  2. 磁碟空間不足：目前 " + FreeSpaceText(root) + "；清出空間後再試。",
                 "  3. 防毒軟體攔下了下載或解壓的檔案：把這個資料夾加入防毒軟體的排除清單後再試。",
                 "  4. 公司或學校的網路擋了下載（防火牆、代理伺服器）：換一個網路再試。",
-                "  5. 資料夾的路徑太長：把整個資料夾移到較短的路徑（例如 D:\\AI_Translate）後再試。");
+                "  5. 資料夾的路徑太長：把整個資料夾移到較短的路徑（例如 D:\\Mimiji）後再試。");
 
+        RemoveDownloads(downloads);
         RemoveStaticLibraries(root);
         WriteFile(sentinel, DateTime.Now.ToString("o", CultureInfo.InvariantCulture));
         Log.Info("執行環境佈建完成。");
+        RemoveUvCache(root, uv, cache);
         return true;
     }
 
@@ -506,6 +542,112 @@ static class Launcher
         return string.IsNullOrEmpty(folder) ? Environment.SystemDirectory : folder;
     }
 
+    // 結束代碼見 tools/portable/prefetch_wheels.py 的開頭；原因它自己印在視窗裡，這裡決定下一步：
+    // 2、3、4 停下來說明怎麼辦，0 與其他的接著執行 uv
+    static void PrefetchWheels(string root, string python, string script, string downloads)
+    {
+        var psi = new ProcessStartInfo();
+        psi.FileName = python;
+        // -I：不讀使用者自己裝的套件與 PYTHON* 環境變數；-X utf8：輸出導向檔案時也是 UTF-8
+        psi.Arguments = string.Format("-I -X utf8 \"{0}\" \"{1}\"", script, downloads);
+        psi.WorkingDirectory = root;
+        psi.UseShellExecute = false; // 進度直接顯示在本 console
+
+        DateTime started = DateTime.UtcNow;
+        Process p = StartProcess(psi, "runtime\\python.exe");
+        p.WaitForExit();
+        Log.Detail(string.Format(CultureInfo.InvariantCulture,
+            "下載 PyTorch 結束，代碼 {0}，花了 {1:0} 秒；可用空間：{2}",
+            p.ExitCode, (DateTime.UtcNow - started).TotalSeconds, FreeSpaceText(root)));
+        const string reason = "原因在上方視窗的最後幾行";
+        switch (p.ExitCode)
+        {
+            case 0:
+                return;
+            case 2:
+                throw new LaunchFailure(
+                    "PyTorch 沒有下載完（" + reason + "）。",
+                    "已下載的部分會保留：網路恢復後重新執行 " + ExeName + "，會從中斷的地方接著下載。",
+                    "一直如此的話，公司或學校的網路可能擋了下載（防火牆、代理伺服器）：換一個網路再試。");
+            case 3:
+                throw new LaunchFailure(
+                    "下載的 PyTorch 和預期的不同，已經刪掉（" + reason + "）。",
+                    "請重新執行 " + ExeName + " 再下載一次；一直如此的話，可能是網路上的代理伺服器"
+                        + "改動了下載的內容，請換一個網路再試。");
+            case 4:
+                throw new LaunchFailure(
+                    "PyTorch 下載到一半時寫不進資料夾（" + reason + "）。目前 "
+                        + FreeSpaceText(root) + "。",
+                    "已下載的部分會保留：清出磁碟空間後重新執行 " + ExeName + "，會從中斷的地方接著下載。",
+                    "防毒軟體攔下了下載的檔案時，請把這個資料夾加入防毒軟體的排除清單後再試。");
+            case 5:
+                return; // 這個來源下載不到（例如伺服器上沒有這個檔案）：它已經說了改由 uv 下載
+            default:
+                // prefetch_wheels.py 自己出錯。預先下載只是讓中斷之後可以接著下載：做不到時照原本的
+                // 方式由 uv 下載，不讓首次佈建停在這裡
+                Log.Info("沒有預先下載 PyTorch（結束代碼 " + ExitCodeText(p.ExitCode)
+                    + "），改由 uv 下載；這次中斷的話，PyTorch 要從頭下載。");
+                return;
+        }
+    }
+
+    // 刪不掉不影響啟動：寫進日誌，下次啟動再刪
+    static void RemoveDownloads(string downloads)
+    {
+        if (!Directory.Exists(downloads))
+            return;
+        try
+        {
+            Directory.Delete(downloads, true);
+            Log.Detail("已刪除首次佈建下載的檔案：" + downloads);
+        }
+        catch (Exception e)
+        {
+            if (!IsIoProblem(e))
+                throw;
+            Log.Detail("刪不掉首次佈建下載的檔案（下次啟動再刪）：" + downloads + "：" + e.Message);
+        }
+    }
+
+    // 佈建完就用不到 uv 的下載快取（#303）：site-packages 裡的檔案是從快取硬連結過去的，清掉快取不影響
+    // 裝好的套件；只剩快取那一份的檔案（例如刪掉的 .lib）才真的空出空間。用 uv 自己清（uv cache clean），
+    // 不用 Directory.Delete：快取裡的路徑比 site-packages 的長約 20 個字，.NET Framework 遇到超過 260
+    // 字元的路徑會失敗，uv 不會。沒有快取時（已經清過，或這個版本之前佈建的）不執行 uv。
+    // 清不掉（例如防毒軟體正在掃描）不影響啟動：寫進日誌，下次啟動再清
+    static void RemoveUvCache(string root, string uv, string cache)
+    {
+        if (!Directory.Exists(cache))
+            return;
+        Log.Info("正在清掉首次佈建時暫存的檔案，請稍候。");
+        var psi = new ProcessStartInfo();
+        psi.FileName = uv;
+        psi.Arguments = string.Format("cache clean --quiet --cache-dir \"{0}\"", cache);
+        psi.WorkingDirectory = root;
+        psi.UseShellExecute = false; // 出錯時 uv 的訊息直接顯示在本 console
+
+        DateTime started = DateTime.UtcNow;
+        int code;
+        try
+        {
+            using (Process p = Process.Start(psi))
+            {
+                p.WaitForExit();
+                code = p.ExitCode;
+            }
+        }
+        catch (Win32Exception e)
+        {
+            Log.Detail("無法執行 bin\\uv.exe，這次沒有清 uv 的下載快取（下次啟動再清）："
+                + e.NativeErrorCode + "：" + e.Message);
+            return;
+        }
+        Log.Detail(string.Format(CultureInfo.InvariantCulture,
+            "清 uv 的下載快取（{0}）結束，代碼 {1}，花了 {2:0} 秒；可用空間：{3}",
+            cache, ExitCodeText(code), (DateTime.UtcNow - started).TotalSeconds, FreeSpaceText(root)));
+        if (code != 0 || Directory.Exists(cache))
+            Log.Detail("uv 的下載快取沒有清乾淨，下次啟動再清：" + cache);
+    }
+
     // torch 的 wheel 帶著約 2.8 GB 的 .lib 靜態庫（dnnl.lib 就有 2.3 GB），只有編譯要連結 torch 的
     // C++ 擴充時才用得到，app 執行時用不到：#239 實測刪掉前後，本機轉錄的每種輸出與 Silero 的切點都
     // 逐位元組相同。只刪 torch\lib 的：numpy 與 scikit-learn 的 .lib 合起來不到 1 MB（#305）。
@@ -559,29 +701,22 @@ static class Launcher
                 failed.Count, string.Join("、", failed.ToArray())));
     }
 
-    // 程式資料夾所在的磁碟，以及 uv 放下載快取的磁碟（%LOCALAPPDATA%\uv\cache）
+    // 程式資料夾所在的磁碟：首次佈建下載與安裝的檔案都在這裡，uv 的下載快取也是（runtime\uv-cache，#303）
     static string FreeSpaceText(string root)
     {
-        var drives = new List<string>();
-        var parts = new List<string>();
-        foreach (string path in new string[] {
-            root, Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData) })
+        try
         {
-            string drive;
-            try { drive = Path.GetPathRoot(Path.GetFullPath(path)); }
-            catch (Exception) { continue; }
-            if (string.IsNullOrEmpty(drive) || drives.Contains(drive.ToUpperInvariant()))
-                continue;
-            drives.Add(drive.ToUpperInvariant());
-            try
-            {
-                long free = new DriveInfo(drive).AvailableFreeSpace;
-                parts.Add(string.Format(CultureInfo.InvariantCulture,
-                    "{0} 剩 {1:0.0} GB 可用", drive.TrimEnd('\\'), free / 1073741824.0));
-            }
-            catch (Exception) { }
+            string drive = Path.GetPathRoot(Path.GetFullPath(root));
+            if (string.IsNullOrEmpty(drive))
+                return "（查不到）";
+            long free = new DriveInfo(drive).AvailableFreeSpace;
+            return string.Format(CultureInfo.InvariantCulture,
+                "{0} 剩 {1:0.0} GB 可用", drive.TrimEnd('\\'), free / 1073741824.0);
         }
-        return parts.Count > 0 ? string.Join("、", parts.ToArray()) : "（查不到）";
+        catch (Exception)
+        {
+            return "（查不到）";
+        }
     }
 
     // ─── 檔案與行程：失敗時用中文說明是哪個路徑、為什麼 ───────────────────
@@ -646,11 +781,11 @@ static class Launcher
     // 回傳 {原因, 下一步}
     static string[] IoReason(Exception e)
     {
-        const string move = "請把整個資料夾移到可以寫入的位置（例如 D:\\AI_Translate），不要放在 C:\\Program Files 底下，再重新執行。";
+        const string move = "請把整個資料夾移到可以寫入的位置（例如 D:\\Mimiji），不要放在 C:\\Program Files 底下，再重新執行。";
         if (e is UnauthorizedAccessException || e is System.Security.SecurityException)
             return new string[] { "沒有寫入權限（存取被拒）。", move };
         if (e is PathTooLongException)
-            return new string[] { "路徑太長。", "請把整個資料夾移到較短的路徑（例如 D:\\AI_Translate）後再試。" };
+            return new string[] { "路徑太長。", "請把整個資料夾移到較短的路徑（例如 D:\\Mimiji）後再試。" };
         if (e is DriveNotFoundException || e is DirectoryNotFoundException)
             return new string[] { "上層資料夾或磁碟不存在（隨身碟或網路磁碟被移除了嗎？）。", move };
         switch (Marshal.GetHRForException(e) & 0xFFFF)
@@ -1027,7 +1162,7 @@ static class Log
     // 資料夾名稱到這裡結束：後面不是名稱裡的字（句尾的句號不算名稱）
     const string NameEnd = @"(?![\w\-]|\.[\w\-])";
 
-    // 路徑裡和帳號名稱相同的一整層（例如 D:\王小明\AI_Translate 的「王小明」）
+    // 路徑裡和帳號名稱相同的一整層（例如 D:\王小明\Mimiji 的「王小明」）
     static Regex UserPattern(string user)
     {
         if (string.IsNullOrEmpty(user))

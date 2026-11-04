@@ -11,6 +11,9 @@
   剪不到什麼，送原音檔，切點交給分段轉錄另外找（Silero），和以前一樣。不剪靜音的模型也看這個
   門檻：幾乎全是語音的音檔不拿靜音當切點，切法和剪靜音的模型相同。
 
+語音視圖也記下去靜音找到的靜音（:attr:`SpeechView.silences`），剪不剪都有：檢查掉尾時扣掉它們，最後一個
+片段之後只剩靜音就不算沒轉到（:mod:`app.services.tail_loss`）。
+
 找靜音只看音量（RMS，見 :func:`app.services.silence_removal.preprocess.remove_silence`），用不到 Silero：
 沒有 Silero 也照樣去靜音。找不到有聲段（全段靜音、轉檔失敗）時送原音檔。開了
 ``VAD_KEEP_ARTIFACTS`` 時，只剩語音的音檔與有聲段存進 vad_artifacts/，給本機檢查切得對不對。
@@ -139,6 +142,15 @@ class SpeechTimeline:
             restored_end = restored_start
         return restored_start, restored_end
 
+    def cut_silences(self, duration: float) -> Tuple[Span, ...]:
+        """去靜音剪掉的靜音（原音檔的時間軸）：有聲段以外、到原音檔的 ``duration`` 秒為止的地方；沒有
+        剪靜音時是空的。
+
+        批次只存下時間對照，檢查掉尾時用它（:mod:`app.services.tail_loss`）。和
+        :attr:`SpeechView.silences` 不同：語音佔比不低於門檻、沒有剪靜音的音檔，這裡沒有靜音，片尾的
+        靜音也當成聲音。"""
+        return _silences_around(self.voiced, duration) if self.voiced else ()
+
     def serialized(self) -> List[Dict[str, float]]:
         """存進資料庫的形式（可以直接寫成 JSON）：有聲段在原音檔上的起訖，沒有去靜音時是空的。
 
@@ -171,6 +183,10 @@ class SpeechView:
     silence_boundaries: Tuple[float, ...] = ()
     """:attr:`audio` 裡的靜音位置（秒），分段轉錄優先切在這裡：去靜音之後是有聲段的交界，不剪
     靜音的模型是原音檔裡每段靜音的正中間；語音佔比不低於門檻時沒有，切點交給分段轉錄另外找。"""
+    silences: Tuple[Span, ...] = ()
+    """去靜音在原音檔裡找到的靜音（原音檔的時間軸）：有聲段以外的地方，剪不剪靜音都有。檢查掉尾時
+    扣掉它們（:mod:`app.services.tail_loss`）；找不到有聲段時（轉檔或找有聲段失敗）是空的，整個音檔
+    都當成有聲音。"""
     temp_files: Tuple[Path, ...] = ()
     """這裡產生的暫存檔（轉成的 wav、只剩語音的音檔），呼叫端用完要清掉；輸入音檔不在裡面。"""
 
@@ -187,6 +203,24 @@ class SpeechView:
         """存進資料庫的形式，見 :meth:`SpeechTimeline.serialized`。只留時間對照：音檔與暫存檔在
         任務結束之後就不在了，讀回來（:meth:`SpeechTimeline.from_serialized`）只用來還原時間。"""
         return self.timeline.serialized()
+
+    def serialized_silences(self) -> List[Dict[str, float]]:
+        """:attr:`silences` 存進資料庫的形式（可以直接寫成 JSON），和 :meth:`serialized` 同一個形狀；
+        讀回用 :func:`silences_from_serialized`。批次送出時存下，結果回來時檢查掉尾用。"""
+        return [{"start": start, "end": end} for start, end in self.silences]
+
+
+def silences_from_serialized(stored: Sequence[Mapping[str, float]]) -> Tuple[Span, ...]:
+    """:meth:`SpeechView.serialized_silences` 存下來的形式讀回靜音（原音檔的時間軸）。"""
+    return tuple((float(span["start"]), float(span["end"])) for span in stored)
+
+
+def _silences_around(voiced: Sequence[Span], duration: float) -> Tuple[Span, ...]:
+    """有聲段以外的地方（原音檔的時間軸）：第一個有聲段之前、兩個有聲段之間、最後一個有聲段之後到
+    ``duration`` 秒為止；沒有長度的空隙不算。``voiced`` 依時間排列、互不重疊。"""
+    edges = [0.0] + [t for span in voiced for t in span] + [duration]
+    gaps = zip(edges[0::2], edges[1::2], strict=True)
+    return tuple((start, end) for start, end in gaps if end > start)
 
 
 def worth_removing(speech_ratio: float) -> bool:
@@ -220,6 +254,8 @@ def speech_view(
         return unchanged
     voiced = tuple((segment["start"], segment["end"]) for segment in found.segments)
     use_speech_only = worth_removing(found.speech_ratio)
+    # 不論剪不剪、送哪個音檔，找到的靜音都記下，檢查掉尾時扣掉
+    unchanged = replace(unchanged, silences=_silences_around(voiced, duration))
 
     if not remove_silence:
         # 不剪靜音的模型：送原音檔。語音佔比不低於門檻時切點交給 Silero，和剪靜音的模型相同；

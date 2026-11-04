@@ -9,20 +9,27 @@
    下一個來源；連正中間都切不開，就以失敗回報，不整段送出。
 2. 逐段轉錄：依時間先後一段一段送進轉接器（Gemini 的說話者編號依送進來的先後編號），每一段送出之前
    都查一次取消。
-3. 轉一段（:meth:`_ChunkedTranscription._transcribe_chunk`）是單一的步驟，#94 的接續之後接在它的最後：
+3. 轉一段（:meth:`_ChunkedTranscription._transcribe_chunk`）是單一的步驟：
    - 暫時錯誤（429、503 之類）：等一段時間再轉這一段，已完成的段不重送。回應建議了等待秒數就照它，
      沒有時從起始等待開始每次加倍，都不超過上限；等待前廣播，期間取消就停。重試用完，整個分段轉錄以
      失敗結束。暫時錯誤不切段重試：把段切小，對配額用完與超載都沒有幫助。
    - 其他失敗：模型能力允許切段重試、這一段又不短於下限（``TRANSCRIPTION_MAX_DURATION_SECONDS``）時，
      只把這一段用同一套切點來源切成兩段，依序轉錄，兩段各自又失敗時照同一條規則；不允許或太短，整個
      分段轉錄以失敗結束。
+   - 接續（#94，規則見 :mod:`app.services.continuation`）：成功、模型能力允許接續，這一段又照掉尾的規則
+     可能掉尾時，把這一段從停下的地方附近到結尾切出來再送一次，接回這一段，直到轉到結尾或放棄。接續段
+     的暫時錯誤照樣等一段時間重試；接續失敗或卡住時保留已轉的部分，任務照樣完成。
 4. 合併：每一段的片段平移到它在語音視圖上的起點，片段 key 加上這一段的前綴。#93 的跨段說話者編號
    之後接在這裡：拿得到所有轉完的段，每一段帶著音檔、位置與段內片段。
 5. 放回原音檔的時間軸（:meth:`SpeechTimeline.in_original_order`）：時間還原回原音檔，依開始時間
    排好、重編序號。批次不分段，結果回來之後也經過同一步。
+6. 掉尾（#257）：每一段各自檢查停下的地方（轉接器回報的擔保點，沒有時是最後一個片段的結束）之後還有
+   沒有聲音（:mod:`app.services.tail_loss`，扣掉語音視圖記下的靜音），取最早的起點寫進轉錄結果；中間
+   的段也可能提早停止，最後一段卻轉到了結尾。接續放棄的段也從這裡回報。
 
-片段 key：依單次長度切出的兩段前綴是 ``a``、``b``，切段重試切出的兩段是 ``s0``、``s1``，由外往內接，
-例如 ``a.b.0003``、``b.s1.0002``；沒有分段時就是轉接器給的 key。
+片段 key：依單次長度切出的兩段前綴是 ``a``、``b``，切段重試切出的兩段是 ``s0``、``s1``，第 n 次接續
+送出的片段是 ``cn``，由外往內接，例如 ``a.b.0003``、``b.s1.0002``、``a.c1.0005``；沒有分段時就是
+轉接器給的 key（接續的是 ``c1.0005``）。
 
 用量是這個任務每一次呼叫供應商的總和，包括失敗後被切段重試取代的那次：供應商照樣收費。拋出例外的
 那次沒有回應，不算用量。處理模式每一次都相同才照記，不然算標準。失敗時回傳失敗的轉錄結果，取消時
@@ -44,6 +51,7 @@ from app.core.config import get_settings
 from app.core.error_codes import ErrorCode, Failure, describe
 from app.exceptions import TranscriptionCancelledError, TransientError
 from app.provider.base import ProgressAndCancel, Provider, TranscribeRequest
+from app.services import continuation, tail_loss
 from app.services.silence_removal import SpeechView
 from app.services.transcription.models import TranscriptionTaskResult
 from app.services.inspection_artifacts import persist_split
@@ -176,6 +184,7 @@ class _ChunkedTranscription:
         self._original_filename = original_filename
         self._single_pass = capabilities.single_pass_seconds
         self._split_retry = capabilities.split_retry_on_failure
+        self._continuation = capabilities.continuation
         self._transcribed: List[_TranscribedChunk] = []
         """轉完的段，依時間先後。"""
         self._usage: Optional[TranscriptionTaskResult] = None
@@ -218,10 +227,12 @@ class _ChunkedTranscription:
             self._transcribe_in_order(half)
 
     def _transcribe_chunk(self, chunk: _Chunk) -> None:
-        """轉一段：送進轉接器（暫時錯誤在 :meth:`_send` 裡重試）；失敗時模型能力允許、這一段又夠長，
-        只把這一段切成兩段重試。"""
+        """轉一段：送進轉接器（暫時錯誤在 :meth:`_send` 裡重試）；成功、模型能力允許接續時，可能掉尾
+        就接續（:meth:`_continued`）。失敗時模型能力允許、這一段又夠長，只把這一段切成兩段重試。"""
         result = self._send(chunk)
         if result.success:
+            if self._continuation:
+                result = self._continued(chunk, result)
             self._transcribed.append(_TranscribedChunk(chunk, result))
             return
         code = result.error_code or ErrorCode.INTERNAL
@@ -255,21 +266,103 @@ class _ChunkedTranscription:
         """「分段轉錄的第幾段（在原音檔的起訖）」；沒有分段時是空的。依時間先後，前面的段都已經轉完。"""
         if not chunk.key_prefix:
             return ""
-        timeline = self._view.timeline
-        start = timeline.to_original(chunk.start)
-        end = timeline.to_original(chunk.start + chunk.duration, end=True)
+        start, end = self._original_span(chunk)
         return f"分段轉錄的第 {len(self._transcribed) + 1} 段（{_clock(start)}–{_clock(end)}）"
 
+    def _original_span(self, chunk: _Chunk) -> Tuple[float, float]:
+        """這一段在原音檔上的起訖。"""
+        timeline = self._view.timeline
+        return (timeline.to_original(chunk.start),
+                timeline.to_original(chunk.start + chunk.duration, end=True))
+
+    # ── 接續 ─────────────────────────────────────────────────────
+    def _continued(self, chunk: _Chunk, result: TranscriptionTaskResult) -> TranscriptionTaskResult:
+        """這一段可能掉尾時接續（規則見 :mod:`app.services.continuation`）：從停下的地方附近到結尾再送
+        一次、接回，直到不再可能掉尾或放棄。回傳接回之後的轉錄結果，時間軸是這一段的音檔；
+        ``covered_until`` 是最後一次停下的地方，放棄時掉尾的檢查從那裡回報。"""
+        segments: List[Dict[str, Any]] = list(result.segments)
+        covered = result.covered_until
+        settings = get_settings()
+        attempts = settings.continuation_max_attempts
+        for attempt in range(1, attempts + 1):
+            if self._tail_loss_in(chunk, segments, covered) is None:
+                break
+            stopped = tail_loss.stopped_at(segments, covered_until=covered, default=0.0)
+            start = continuation.resume_point(stopped, chunk.silences)
+            if start <= 0:
+                logger.warning(f"{self._where(chunk, stopped)}停下，在開頭附近，接續等於重轉同一段，不接續")
+                break
+            logger.info(f"{self._where(chunk, stopped)}提早停止，從 {self._clock_at(chunk, start)} 起"
+                        f"接續（第 {attempt} 次）")
+            # 轉接器的進度從接續段的開頭重新算起，先說明為什麼；接續了幾次只寫進 log（#94 第 3 題）
+            which = self._which(chunk)
+            self._progress.report(f"{which + '：' if which else ''}"
+                                  f"接續轉錄 {self._clock_at(chunk, start)} 之後的部分...")
+            more = self._resent_from(chunk, start, attempt)
+            if more is None:
+                break
+            reached = tail_loss.stopped_at(more.segments, covered_until=more.covered_until,
+                                           default=start)
+            if reached <= stopped:
+                logger.warning(f"接續沒有轉到 {self._clock_at(chunk, stopped)} 之後，算卡住，放棄接續")
+                break
+            segments = continuation.splice(segments, more.segments, overlap=(start, stopped))
+            covered = more.covered_until
+            if (reached - stopped < settings.continuation_min_progress_seconds
+                    and self._tail_loss_in(chunk, segments, covered) is not None):
+                logger.warning(f"接續只推進 {reached - stopped:.1f} 秒，算卡住，放棄接續")
+                break
+        else:
+            if self._tail_loss_in(chunk, segments, covered) is not None:
+                logger.warning(f"接續了 {attempts} 次仍沒有轉到這一段的結尾，放棄接續")
+        return result.model_copy(update={"segments": segments, "covered_until": covered})
+
+    def _resent_from(self, chunk: _Chunk, start: float,
+                     attempt: int) -> Optional[TranscriptionTaskResult]:
+        """第 ``attempt`` 次接續：把這一段從 ``start`` 秒到結尾切出來送進轉接器。回傳的片段平移回這一段
+        的時間軸、片段 key 加上 ``c{attempt}``，``covered_until`` 也平移回來；切不出音檔、轉錄失敗或
+        暫時錯誤重試用完時回 None（放棄接續，不讓任務失敗）。"""
+        audio = self._temp_dir / f"{chunk.audio.stem}.c{attempt}.wav"
+        self._temp_files.append(audio)
+        if not slice_audio(chunk.audio, audio, start=start):
+            logger.warning(f"切不出接續的音檔（{chunk.audio.name} 從 {start:.2f} 秒），放棄接續")
+            return None
+        try:
+            result = self._send(chunk, audio=audio)
+        except _Failed as failed:
+            logger.warning(f"接續失敗，保留已轉的部分: {failed.failure.detail}")
+            return None
+        if not result.success:
+            logger.warning(f"接續失敗，保留已轉的部分: {result.text}")
+            return None
+        # 接續段在這一段裡的位置：片段照它平移回這一段，片段 key 加上 c{attempt}
+        within = _Chunk(audio=audio, duration=chunk.duration - start, silences=None,
+                        key_prefix=f"c{attempt}", offsets=(start,))
+        covered = result.covered_until
+        return result.model_copy(update={
+            "segments": [_placed(segment, within) for segment in result.segments],
+            "covered_until": None if covered is None else within.to_view(covered),
+        })
+
+    def _where(self, chunk: _Chunk, seconds: float) -> str:
+        """log 用：「（分段轉錄的第幾段）在原音檔的 mm:ss 」，沒有分段時只有後半。"""
+        return f"{self._which(chunk)}在 {self._clock_at(chunk, seconds)} "
+
+    def _clock_at(self, chunk: _Chunk, seconds: float) -> str:
+        """這一段裡的時間在原音檔上的 mm:ss。"""
+        return _clock(self._view.timeline.to_original(chunk.to_view(seconds)))
+
     # ── 送進轉接器 ───────────────────────────────────────────────
-    def _send(self, chunk: _Chunk) -> TranscriptionTaskResult:
-        """把這一段送進轉接器：暫時錯誤等一段時間再送一次，已經轉完的段不重送。
+    def _send(self, chunk: _Chunk, *, audio: Optional[Path] = None) -> TranscriptionTaskResult:
+        """把這一段送進轉接器：暫時錯誤等一段時間再送一次，已經轉完的段不重送。``audio`` 是實際送出的
+        音檔（接續時是這一段從停下的地方附近到結尾），沒給時是這一段的音檔；訊息照這一段寫。
 
         暫時錯誤不切段重試：把段切小，對配額用完與超載都沒有幫助。重試用完，整個分段轉錄以失敗結束。
         """
         retries = 0
         while True:
             try:
-                return self._send_once(chunk)
+                return self._send_once(audio or chunk.audio)
             except TransientError as error:
                 if retries >= get_settings().transient_error_retries:
                     logger.warning(f"暫時錯誤重試 {retries} 次仍失敗: {error}")
@@ -291,14 +384,14 @@ class _ChunkedTranscription:
         self._progress.report(notice)
         self._progress.wait(seconds)
 
-    def _send_once(self, chunk: _Chunk) -> TranscriptionTaskResult:
-        """把這一段送進轉接器一次；一般例外轉成失敗結果，交給上層決定要不要切段重試。
+    def _send_once(self, audio: Path) -> TranscriptionTaskResult:
+        """把這個音檔送進轉接器一次；一般例外轉成失敗結果，交給上層決定要不要切段重試。
 
         每次呼叫供應商之前都查一次取消：供應商不理會取消、照樣轉完手上這一段時，下一段也不會再送出去。
         """
         self._progress.raise_if_cancelled()
         try:
-            result = self._provider.transcribe(chunk.audio, self._request, self._progress)
+            result = self._provider.transcribe(audio, self._request, self._progress)
         except (TranscriptionCancelledError, TransientError):
             # 取消與暫時錯誤都不是這一段失敗
             raise
@@ -376,14 +469,35 @@ class _ChunkedTranscription:
         why = _why_no_segments(segments, self._transcribed)
         return self._result(success=True, text=why.text if why else "",
                             error_code=why.error_code if why else None,
-                            segments=self._view.timeline.in_original_order(segments))
+                            segments=self._view.timeline.in_original_order(segments),
+                            tail_loss_from=self._tail_loss_from())
+
+    def _tail_loss_from(self) -> Optional[float]:
+        """可能掉尾的起點（原音檔的時間軸）：每一段各自檢查（:meth:`_tail_loss_in`），取最早的；都沒有
+        時是 None。"""
+        starts = [self._tail_loss_in(piece.chunk, piece.result.segments, piece.result.covered_until)
+                  for piece in self._transcribed]
+        return min((start for start in starts if start is not None), default=None)
+
+    def _tail_loss_in(self, chunk: _Chunk, segments: Sequence[Mapping[str, Any]],
+                      covered_until: Optional[float]) -> Optional[float]:
+        """這一段轉出 ``segments``、擔保到 ``covered_until``（都是這一段的時間軸）時，可能掉尾的起點
+        （原音檔的時間軸，:func:`tail_loss.tail_loss_from`）；不可能掉尾時是 None。"""
+        timeline = self._view.timeline
+        start, end = self._original_span(chunk)
+        covered = (None if covered_until is None
+                   else timeline.to_original(chunk.to_view(covered_until), end=True))
+        return tail_loss.tail_loss_from(
+            timeline.restore([_placed(segment, chunk) for segment in segments]),
+            start=start, end=end, silences=self._view.silences, covered_until=covered)
 
     def _failed_result(self, failure: Failure) -> TranscriptionTaskResult:
         """以失敗結束的轉錄結果，帶著錯誤碼與到目前為止的用量。"""
         return self._result(success=False, text=failure.detail, error_code=failure.code)
 
     def _result(self, *, success: bool, text: str, error_code: Optional[ErrorCode] = None,
-                segments: Sequence[Dict[str, Any]] = ()) -> TranscriptionTaskResult:
+                segments: Sequence[Dict[str, Any]] = (),
+                tail_loss_from: Optional[float] = None) -> TranscriptionTaskResult:
         """帶著到目前為止的用量的轉錄結果。"""
         usage = self._usage or TranscriptionTaskResult(success=False)
         return TranscriptionTaskResult(
@@ -395,6 +509,7 @@ class _ChunkedTranscription:
             total_tokens=usage.total_tokens,
             service_tier_used=usage.service_tier_used,
             segments=list(segments),
+            tail_loss_from=tail_loss_from,
         )
 
 

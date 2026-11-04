@@ -138,7 +138,7 @@ def test_stops_writing_and_releases_the_file(log_file, tmp_path):
 
 @pytest.mark.parametrize("home, written, expected", [
     ("/home/wang.xiaoming", "/home/wang.xiaoming/音樂/x.m4a", "~/音樂/x.m4a"),
-    (r"C:\Users\王小明", r"C:\Users\王小明\Downloads\AI_Translate\data", r"~\Downloads\AI_Translate\data"),
+    (r"C:\Users\王小明", r"C:\Users\王小明\Downloads\Mimiji\data", r"~\Downloads\Mimiji\data"),
     # Windows 的路徑不分大小寫，也可能用 / 寫
     (r"C:\Users\王小明", "sqlite:///c:/users/王小明/data/app.db", "sqlite:///~/data/app.db"),
     # OSError 的訊息用 repr 寫檔名，Windows 的 \ 變成兩個
@@ -165,13 +165,13 @@ def test_writes_the_home_folder_as_tilde_in_tracebacks(log_file, tmp_path):
     handler.start(tmp_path / "logs")
 
     try:
-        raise FileNotFoundError(2, "No such file", "/home/wang.xiaoming/AI_Translate/data/x.wav")
+        raise FileNotFoundError(2, "No such file", "/home/wang.xiaoming/Mimiji/data/x.wav")
     except FileNotFoundError:
         logger.exception("讀不到檔案")
 
     text = (tmp_path / "logs" / name(DAY)).read_text(encoding="utf-8")
     assert "wang.xiaoming" not in text
-    assert "'~/AI_Translate/data/x.wav'" in text
+    assert "'~/Mimiji/data/x.wav'" in text
 
 
 def test_a_home_at_the_root_is_left_as_it_is(tmp_path):

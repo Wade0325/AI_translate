@@ -1,6 +1,6 @@
 """免安裝版的手動啟動（start.bat → bin\\start.py）與 README.txt（#267），內容在 tools/portable/。
 
-start.bat 是防毒軟體攔下 AI_Translate.exe 時的手動啟動，只用隨包的 Python 執行 start.py；佈建、啟動
+start.bat 是防毒軟體攔下 Mimiji.exe 時的手動啟動，只用隨包的 Python 執行 start.py；佈建、啟動
 與訊息都在 start.py。它要和啟動器（tools/launcher.cs）做一樣的事：設一樣的環境變數，用一樣的指令
 佈建與啟動。兩邊各寫一份（Python 與 C#），這裡檢查沒有分岔，並測 start.py 的每一條路徑。
 
@@ -10,6 +10,7 @@ Windows 10 上實測到）。發布包裡的換行、BOM 與 ASCII 由 CI 檢查
 import io
 import os
 import re
+import shutil
 import subprocess
 import sys
 import types
@@ -19,7 +20,7 @@ import pytest
 
 from app.core.config import Settings
 from tools import portable_zip
-from tools.portable import start
+from tools.portable import prefetch_wheels, start
 
 ROOT = Path(__file__).resolve().parents[2]
 PORTABLE = ROOT / "tools" / "portable"
@@ -75,7 +76,7 @@ def _relative(value: str) -> str:
 
 def _package(tmp_path: Path, *, provisioned: bool = False, skip: tuple[str, ...] = ()) -> Path:
     """在 tmp_path 做一個解壓後的發布包：start.py 啟動前檢查的檔案都在（skip 裡的除外）。"""
-    for rel in ("runtime/python.exe", "bin/uv.exe", "backend/main.py",
+    for rel in ("runtime/python.exe", "bin/uv.exe", "bin/prefetch_wheels.py", "backend/main.py",
                 "backend/requirements-standalone.txt"):
         if rel not in skip:
             (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
@@ -95,6 +96,34 @@ class _Calls:
     def __call__(self, *args, **kwargs) -> int:
         self.calls.append((args, kwargs))
         return self.code
+
+
+class _Run:
+    """假的 run：先下載 PyTorch、uv 安裝與 uv 清快取各回傳指定的結束代碼，並記下收到的指令。
+
+    uv 安裝時和真的 uv 一樣在 runtime\\uv-cache 留下快取（結束代碼是什麼都一樣）；清快取成功時刪掉它。
+    清快取時順便記下完成標記在不在（marker_when_cleaned）。
+    """
+
+    def __init__(self, *, prefetch: int = 0, uv: int = 0, clean: int = 0):
+        self.codes = {"prefetch": prefetch, "uv": uv, "clean": clean}
+        self.calls: list[tuple] = []
+        self.marker_when_cleaned: list[bool] = []
+
+    def __call__(self, cmd, **kwargs) -> int:
+        self.calls.append(((cmd,), kwargs))
+        if cmd[-2].endswith("prefetch_wheels.py"):
+            return self.codes["prefetch"]
+        root = kwargs["cwd"]
+        cache = start.uv_cache_dir(root)
+        if cmd[1:3] == ["cache", "clean"]:
+            self.marker_when_cleaned.append(start.provisioned_marker(root).exists())
+            if self.codes["clean"] == 0:
+                shutil.rmtree(cache)
+            return self.codes["clean"]
+        (cache / "archive-v0").mkdir(parents=True, exist_ok=True)
+        (cache / "archive-v0" / "torch.py").write_bytes(b"x")
+        return self.codes["uv"]
 
 
 @pytest.fixture(autouse=True)
@@ -136,7 +165,9 @@ class TestMatchesLauncher:
     def test_same_provisioning(self):
         # 佈建的指令與完成標記相同：用哪一個啟動，另一個都認得已經佈建好
         launcher = _launcher()
-        assert r'"pip install --python \"{0}\" --target \"{1}\" -r \"{2}\""' in launcher
+        assert (r'"pip install --python \"{0}\" --target \"{1}\" --cache-dir \"{2}\" --link-mode hardlink"'
+                in launcher)
+        assert r'+ " -r \"{3}\" --find-links \"{4}\"",' in launcher
         assert 'Path.Combine(root, "runtime", "Lib", "site-packages")' in launcher
         assert 'Path.Combine(root, "backend", "requirements-standalone.txt")' in launcher
         assert 'Path.Combine(root, "runtime", ".provisioned")' in launcher
@@ -145,8 +176,35 @@ class TestMatchesLauncher:
         assert [_relative(part) for part in start.provision_command(PKG)] == [
             r"bin\uv.exe", "pip", "install", "--python", r"runtime\python.exe",
             "--target", r"runtime\Lib\site-packages",
-            "-r", r"backend\requirements-standalone.txt"]
+            "--cache-dir", r"runtime\uv-cache", "--link-mode", "hardlink",
+            "-r", r"backend\requirements-standalone.txt",
+            "--find-links", r"runtime\downloads"]
         assert _relative(str(start.provisioned_marker(PKG))) == r"runtime\.provisioned"
+
+    def test_same_uv_cache(self):
+        # uv 的下載快取放在程式資料夾裡，佈建完用 uv 自己清掉；首次佈建成功後與已佈建時都清（#303）
+        launcher = _launcher()
+        assert 'string cache = Path.Combine(root, "runtime", "uv-cache");' in launcher
+        assert r'"cache clean --quiet --cache-dir \"{0}\""' in launcher
+        assert launcher.count("RemoveUvCache(root, uv, cache);") == 2
+
+        assert _relative(str(start.uv_cache_dir(PKG))) == r"runtime\uv-cache"
+        assert [_relative(part) for part in start.clean_uv_cache_command(PKG)] == [
+            r"bin\uv.exe", "cache", "clean", "--quiet", "--cache-dir", r"runtime\uv-cache"]
+
+    def test_same_prefetch(self):
+        # 先下載 PyTorch 的指令、下載的資料夾與結束代碼都和啟動器相同（#303）
+        launcher = _launcher()
+        assert r'"-I -X utf8 \"{0}\" \"{1}\""' in launcher
+        assert 'Path.Combine(root, "bin", "prefetch_wheels.py")' in launcher
+        assert 'Path.Combine(root, "runtime", "downloads")' in launcher
+
+        assert [_relative(part) for part in start.prefetch_command(PKG)] == [
+            r"runtime\python.exe", "-I", "-X", "utf8", r"bin\prefetch_wheels.py", r"runtime\downloads"]
+        assert (start.PREFETCH_INTERRUPTED, start.PREFETCH_MISMATCH, start.PREFETCH_DISK,
+                start.PREFETCH_FALLBACK) == (prefetch_wheels.EXIT_INTERRUPTED,
+                                             prefetch_wheels.EXIT_MISMATCH, prefetch_wheels.EXIT_DISK,
+                                             prefetch_wheels.EXIT_FALLBACK)
 
     def test_same_static_libraries_are_removed(self):
         # 首次佈建成功後與已佈建時都刪 torch\lib 的 .lib（#305），副檔名不分大小寫
@@ -161,12 +219,18 @@ class TestMatchesLauncher:
 class TestMain:
     def test_first_run_provisions_then_starts_the_server(self, tmp_path, capsys):
         root = _package(tmp_path)
-        run, serve = _Calls(), _Calls()
+        start.downloads_dir(root).mkdir(parents=True)  # 預先下載的 PyTorch
+        (start.downloads_dir(root) / "torch.whl").write_bytes(b"x")
+        run, serve = _Run(), _Calls()
 
         assert start.main([], root, run=run, serve=serve) == 0
 
-        assert run.calls == [((start.provision_command(root),), {"cwd": root})]
+        assert run.calls == [((start.prefetch_command(root),), {"cwd": root}),
+                             ((start.provision_command(root),), {"cwd": root}),
+                             ((start.clean_uv_cache_command(root),), {"cwd": root})]
         assert start.provisioned_marker(root).exists()
+        assert not start.downloads_dir(root).exists()  # 裝好後刪掉
+        assert not start.uv_cache_dir(root).exists()  # uv 的下載快取也清掉（#303）
         assert serve.calls == [((root, 8000), {})]
         out = capsys.readouterr().out
         assert "首次啟動：正在下載執行環境" in out
@@ -182,18 +246,68 @@ class TestMain:
         assert run.calls == []
         assert len(serve.calls) == 1
 
+    def test_leftover_downloads_are_removed_on_the_next_start(self, tmp_path):
+        # 上次佈建成功、但下載的檔案沒刪掉（例如防毒軟體正在掃描）
+        root = _package(tmp_path, provisioned=True)
+        start.downloads_dir(root).mkdir(parents=True)
+        (start.downloads_dir(root) / "torch.whl").write_bytes(b"x")
+
+        assert start.main([], root, run=_Calls(), serve=_Calls()) == 0
+
+        assert not start.downloads_dir(root).exists()
+
     def test_failed_provisioning_stops_without_the_marker(self, tmp_path, capsys):
         root = _package(tmp_path)
-        run, serve = _Calls(code=2), _Calls()
+        start.downloads_dir(root).mkdir(parents=True)
+        (start.downloads_dir(root) / "torch.whl").write_bytes(b"x")
+        run, serve = _Run(uv=2), _Calls()
 
         assert start.main([], root, run=run, serve=serve) == 1
 
         assert not start.provisioned_marker(root).exists()
+        assert (start.downloads_dir(root) / "torch.whl").exists()  # 下載好的 PyTorch 留著
         assert serve.calls == []
         out = capsys.readouterr().out
         assert "執行環境佈建失敗（結束代碼 2" in out
-        assert "重新執行 start.bat 即可續傳" in out
+        assert "PyTorch 與已下載完的套件會保留" in out
+        assert "重新執行 start.bat 會接著下載其餘的套件" in out
         assert "按任意鍵關閉" in out
+
+    @pytest.mark.parametrize("code, says", [
+        (prefetch_wheels.EXIT_INTERRUPTED, "網路恢復後重新執行 start.bat，會從中斷的地方接著下載"),
+        (prefetch_wheels.EXIT_MISMATCH, "請重新執行 start.bat 再下載一次"),
+        (prefetch_wheels.EXIT_DISK, "清出磁碟空間後重新執行 start.bat，會從中斷的地方接著下載"),
+    ], ids=["interrupted", "mismatch", "disk"])
+    def test_torch_download_that_stops_says_what_to_do(self, tmp_path, capsys, code, says):
+        root = _package(tmp_path)
+        start.downloads_dir(root).mkdir(parents=True)
+        (start.downloads_dir(root) / "torch.whl.part").write_bytes(b"x")
+        run, serve = _Run(prefetch=code), _Calls()
+
+        assert start.main([], root, run=run, serve=serve) == 1
+
+        assert run.calls == [((start.prefetch_command(root),), {"cwd": root})]  # 不執行 uv
+        assert serve.calls == []
+        assert not start.provisioned_marker(root).exists()
+        assert (start.downloads_dir(root) / "torch.whl.part").exists()  # 下次接著下載
+        out = capsys.readouterr().out
+        assert says in out
+        assert "按任意鍵關閉" in out
+
+    @pytest.mark.parametrize("code", [prefetch_wheels.EXIT_FALLBACK, 1])
+    def test_torch_that_cannot_be_prefetched_is_left_to_uv(self, tmp_path, capsys, code):
+        # 5：來源下載不到；1：prefetch_wheels.py 自己出錯。都照原本的方式由 uv 下載
+        root = _package(tmp_path)
+        run, serve = _Run(prefetch=code), _Calls()
+
+        assert start.main([], root, run=run, serve=serve) == 0
+
+        assert [call[0][0] for call in run.calls] == [start.prefetch_command(root),
+                                                      start.provision_command(root),
+                                                      start.clean_uv_cache_command(root)]
+        assert start.provisioned_marker(root).exists()
+        out = capsys.readouterr().out
+        assert ("改由 uv 下載" in out) == (code == 1)  # 5 的原因 prefetch_wheels.py 自己印了
 
     @pytest.mark.parametrize("code, shown", [
         (1, "1"),
@@ -330,7 +444,7 @@ class TestVcRuntime:
         # 佈建前說一次；佈建完還沒裝，再說一次（uv 的輸出把前一次推上去了）
         assert out.count(warning) == 2
         assert (out.index(warning) < out.index("首次啟動：正在下載執行環境")
-                < out.rindex(warning) < out.index("正在啟動 AI_Translate 伺服器"))
+                < out.rindex(warning) < out.index("正在啟動 Mimiji 伺服器"))
         assert f"請下載安裝（需要系統管理員權限）：{start.VC_REDIST_URL}" in out
         assert "再執行一次 start.bat" in out
         assert len(serve.calls) == 1  # 不擋啟動：Gemini 照樣能用
@@ -346,7 +460,7 @@ class TestVcRuntime:
         assert out.count("本機轉錄不能用") == 1
         assert (out.index("執行環境佈建完成")
                 < out.index("已經裝好 Microsoft Visual C++ 可轉散發套件")
-                < out.index("正在啟動 AI_Translate 伺服器"))
+                < out.index("正在啟動 Mimiji 伺服器"))
 
     def test_provisioned_package_warns_once(self, tmp_path, capsys):
         root = _package(tmp_path, provisioned=True)
@@ -364,7 +478,7 @@ class TestVcRuntime:
         root = _package(tmp_path)
         checked = []
 
-        assert start.main([], root, run=_Calls(code=2), serve=_Calls(),
+        assert start.main([], root, run=_Run(uv=2), serve=_Calls(),
                           vc_problem=lambda: checked.append(1) or MISSING_VC) == 1
 
         assert checked == [1]
@@ -402,6 +516,74 @@ def _install_torch(root: Path) -> tuple[Path, Path]:
     other.parent.mkdir(parents=True)
     other.write_bytes(b"x")
     return torch_lib, other
+
+
+class TestUvCache:
+    """uv 的下載快取放在 runtime\\uv-cache、佈建完清掉，和啟動器相同（#303）。
+
+    放在 uv 預設的 %LOCALAPPDATA%\\uv\\cache 時，程式資料夾在 D: 這類另一顆磁碟會在 C: 留下約 8 GB。
+    """
+
+    def test_first_run_clears_it_after_the_marker_is_written(self, tmp_path, capsys):
+        # 先寫完成標記再清：清到一半關掉視窗時，下次啟動接著清就好，不會重新佈建
+        root = _package(tmp_path)
+        run = _Run()
+
+        assert start.main([], root, run=run, serve=_Calls()) == 0
+
+        assert run.marker_when_cleaned == [True]
+        assert not start.uv_cache_dir(root).exists()
+        out = capsys.readouterr().out
+        assert out.index("執行環境佈建完成") < out.index("正在清掉首次佈建時暫存的檔案")
+        assert "沒有清乾淨" not in out
+
+    def test_failed_provisioning_keeps_it(self, tmp_path):
+        # 重新執行時，已經下載完的套件不必再下載
+        root = _package(tmp_path)
+        run = _Run(uv=2)
+
+        assert start.main([], root, run=run, serve=_Calls()) == 1
+
+        assert run.marker_when_cleaned == []
+        assert (start.uv_cache_dir(root) / "archive-v0" / "torch.py").exists()
+
+    def test_provisioned_package_clears_what_is_left(self, tmp_path):
+        # 上次清到一半時關掉視窗，或檔案被防毒軟體鎖住
+        root = _package(tmp_path, provisioned=True)
+        start.uv_cache_dir(root).mkdir(parents=True)
+        run, serve = _Run(), _Calls()
+
+        assert start.main([], root, run=run, serve=serve) == 0
+
+        assert run.calls == [((start.clean_uv_cache_command(root),), {"cwd": root})]
+        assert not start.uv_cache_dir(root).exists()
+        assert len(serve.calls) == 1
+
+    def test_one_that_cannot_be_cleared_does_not_stop_the_start(self, tmp_path, capsys):
+        root = _package(tmp_path, provisioned=True)
+        start.uv_cache_dir(root).mkdir(parents=True)
+        serve = _Calls()
+
+        assert start.main([], root, run=_Run(clean=2), serve=serve) == 0
+
+        assert start.uv_cache_dir(root).exists()
+        assert len(serve.calls) == 1
+        out = capsys.readouterr().out
+        assert "首次佈建時暫存的檔案（runtime\\uv-cache）沒有清乾淨（結束代碼 2），不影響使用，下次啟動再清" in out
+
+    def test_uv_that_cannot_run_does_not_stop_the_start(self, tmp_path, capsys):
+        root = _package(tmp_path, provisioned=True)
+        start.uv_cache_dir(root).mkdir(parents=True)
+        serve = _Calls()
+
+        def blocked(cmd, **kwargs) -> int:
+            raise PermissionError(13, "存取被拒")
+
+        assert start.main([], root, run=blocked, serve=serve) == 0
+
+        assert len(serve.calls) == 1
+        out = capsys.readouterr().out
+        assert "沒有清乾淨（無法執行 bin\\uv.exe：存取被拒）" in out
 
 
 class TestStaticLibraries:
@@ -484,7 +666,7 @@ class _Instance:
 
 
 class TestSingleInstance:
-    """同一個資料夾的 AI_Translate.exe 與 start.bat 合起來只跑一個伺服器：伺服器啟動時會先把「處理中」
+    """同一個資料夾的 Mimiji.exe 與 start.bat 合起來只跑一個伺服器：伺服器啟動時會先把「處理中」
     的任務記成失敗才綁埠，第二個實例綁不到埠也已經記了（#267 實測）。和啟動器真的互相擋住，
     在 tests/integration/test_launcher.py 的 Windows 腿測。"""
 
@@ -500,7 +682,7 @@ class TestSingleInstance:
         assert run.calls == serve.calls == []
         assert probed == ["http://127.0.0.1:8001"]
         out = capsys.readouterr().out
-        assert "AI_Translate 已經在執行，不會再啟動第二個" in out
+        assert "Mimiji 已經在執行，不會再啟動第二個" in out
         assert "請用瀏覽器開啟 http://127.0.0.1:8001" in out
         assert "按任意鍵關閉" in out
         assert start.url_file(root).exists()  # 是那個實例的，不刪
@@ -523,7 +705,7 @@ class TestSingleInstance:
         assert code == 0
         assert serve.calls == []
         out = capsys.readouterr().out
-        assert "AI_Translate 已經在另一個視窗啟動中，不會再啟動第二個" in out
+        assert "Mimiji 已經在另一個視窗啟動中，不會再啟動第二個" in out
         assert "example.com" not in out and "70000" not in out
 
     def test_url_is_written_while_serving_and_removed_after(self, tmp_path):
@@ -573,17 +755,17 @@ class TestSingleInstance:
         # 啟動器：Local\ + AppName + -launcher- + 資料夾完整路徑去掉結尾的 \ 或 /、轉大寫後
         # UTF-8 的 SHA-256 前 8 個位元組（16 個十六進位字）
         launcher = _launcher()
-        assert 'const string AppName = "AI_Translate";' in launcher
+        assert 'const string AppName = "Mimiji";' in launcher
         assert '"Local\\\\" + AppName + "-launcher-" + PathHash(root)' in launcher
         assert ".TrimEnd('\\\\', '/').ToUpperInvariant()" in launcher
         assert "for (int i = 0; i < 8; i++)" in launcher
         assert 'Path.Combine(dataDir, "launcher-url.txt")' in launcher
 
-        folder = tmp_path / "AI_Translate"
+        folder = tmp_path / "Mimiji"
         name = start.instance_name(folder)
-        assert re.fullmatch(r"Local\\AI_Translate-launcher-[0-9a-f]{16}", name)
-        assert start.instance_name(tmp_path / "ai_translate") == name  # 不分大小寫
-        assert start.instance_name(tmp_path / "AI_Translate-old") != name
+        assert re.fullmatch(r"Local\\Mimiji-launcher-[0-9a-f]{16}", name)
+        assert start.instance_name(tmp_path / "mimiji") == name  # 不分大小寫
+        assert start.instance_name(tmp_path / "Mimiji-old") != name
         assert start.url_file(folder) == folder / "data" / "launcher-url.txt"
 
     @pytest.mark.skipif(sys.platform == "win32", reason="Windows 上取得真的 mutex，在整合測試測")

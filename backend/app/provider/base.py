@@ -43,6 +43,10 @@ class ModelCapabilities:
     """執行中能不能強制終止；不能的只靠取消旗標合作式停止。"""
     split_retry_on_failure: bool
     """失敗後能不能切段重試；各段說話者編號互相獨立的模型不能。"""
+    continuation: bool
+    """某一段提早停止輸出時，要不要從停下的地方附近再轉錄一次並接回（接續，#94）。開著時，分段轉錄
+    看轉接器回報的 ``covered_until`` 與語音視圖決定要不要接續（見
+    :mod:`app.services.continuation`）。"""
     accepts_prompt: bool
     accepts_user_text: bool
     supports_batch: bool

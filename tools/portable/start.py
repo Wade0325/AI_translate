@@ -1,15 +1,16 @@
-"""免安裝版的手動啟動（#267）：防毒軟體攔下 AI_Translate.exe 時，使用者雙擊 start.bat，由它執行這支。
+"""免安裝版的手動啟動（#267）：防毒軟體攔下 Mimiji.exe 時，使用者雙擊 start.bat，由它執行這支。
 
 build_release.ps1 把它放在發布包的 bin\\start.py；start.bat 用隨包的 runtime\\python.exe 執行它::
 
     runtime\\python.exe -I -X utf8 bin\\start.py [埠號]
 
-做的事和啟動器（tools/launcher.cs）相同：第一次執行時用同一個指令佈建執行環境、刪掉 torch 執行時用不到的
-.lib、寫同一個完成標記，再以同樣的環境變數啟動伺服器（tests/unit/test_portable_start.py 檢查兩邊一致）。
-有 NVIDIA 驅動、卻沒裝 Microsoft Visual C++ 可轉散發套件（或太舊）時，也一樣在佈建之前提示安裝（#304）。
-不同的是不會自動改用空的埠，也不會自動開啟瀏覽器。
+做的事和啟動器（tools/launcher.cs）相同：第一次執行時用同樣的步驟佈建執行環境（先以
+bin\\prefetch_wheels.py 下載 PyTorch，斷線時可以接著下載；再以 uv 安裝，下載快取放在程式資料夾裡；
+#303）、刪掉 torch 執行時用不到的 .lib（#305）、寫同一個完成標記、清掉 uv 的下載快取，再以同樣的
+環境變數啟動伺服器（tests/unit/test_portable_start.py 檢查兩邊一致）。有 NVIDIA 驅動、卻沒裝
+Microsoft Visual C++ 可轉散發套件（或太舊）時，也一樣在佈建之前提示安裝（#304）。不同的是不會自動改用空的埠，也不會自動開啟瀏覽器。
 
-單一實例也和啟動器共用：同名的 mutex 與 data\\launcher-url.txt，所以同一個資料夾的 AI_Translate.exe
+單一實例也和啟動器共用：同名的 mutex 與 data\\launcher-url.txt，所以同一個資料夾的 Mimiji.exe
 與 start.bat 合起來只會跑一個伺服器（tests/integration/test_launcher.py 在 Windows 上兩個方向都測）。
 這不只是避免開兩個視窗：伺服器啟動時會先把資料庫裡「處理中」的任務記成失敗（backend/main.py 的
 啟動清掃），之後才綁埠，所以第二個實例就算綁不到埠，也已經把第一個實例正在轉錄的任務記成失敗
@@ -28,6 +29,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import shutil
 import subprocess
 import sys
 import urllib.request
@@ -38,13 +40,15 @@ from pathlib import Path
 # bin\start.py 的上一層就是發布包的根目錄。用 abspath 不用 resolve：啟動器以執行時的路徑
 # （Path.GetFullPath）替 mutex 命名，resolve 會把 subst 的磁碟機與連線的網路磁碟機換成實際路徑
 ROOT = Path(os.path.abspath(__file__)).parent.parent
+# 產品名稱（#26）：訊息與單一實例的 mutex 名稱，和啟動器的 AppName 相同（tests/unit/test_portable_start.py 檢查）
+APP_NAME = "Mimiji"
 DEFAULT_PORT = 8000
 URL_PATTERN = re.compile(r"http://127\.0\.0\.1:([0-9]{1,5})")
 
 PROVISION_BANNER = """\
 ═══════════════════════════════════════════════════════
  首次啟動：正在下載執行環境（約 3.5 GB，含 PyTorch）
- 過程視網速需要數分鐘到數十分鐘；中斷後重開會續傳。
+ 過程視網速需要數分鐘到數十分鐘；中斷後重新執行，會從中斷的地方接著下載。
  沒有 NVIDIA 顯卡的電腦也會下載這些，只用 Gemini 時大部分用不到。
 ═══════════════════════════════════════════════════════"""
 
@@ -63,6 +67,37 @@ def python_exe(root: Path) -> Path:
 def provisioned_marker(root: Path) -> Path:
     """首次佈建完成的標記，和啟動器的相同：用哪一個啟動，另一個都認得已經佈建好。"""
     return root / "runtime" / ".provisioned"
+
+
+def downloads_dir(root: Path) -> Path:
+    """首次佈建時預先下載的 wheel（PyTorch）放在這裡，裝好後刪掉；和啟動器的相同。"""
+    return root / "runtime" / "downloads"
+
+
+def uv_cache_dir(root: Path) -> Path:
+    """首次佈建時 uv 的下載快取，佈建完清掉；和啟動器的相同（#303）。
+
+    不放 uv 預設的 %LOCALAPPDATA%\\uv\\cache：程式資料夾在 D: 這類另一顆磁碟時，那裡會在 C: 另外
+    留下約 8 GB，刪掉程式資料夾也清不掉。
+    """
+    return root / "runtime" / "uv-cache"
+
+
+# bin\prefetch_wheels.py 的結束代碼（定義在 tools/portable/prefetch_wheels.py，測試檢查兩邊一致）。
+# 這三種停下來說明怎麼辦；0、5（這個來源下載不到）與其他的（它自己出錯）接著執行 uv
+PREFETCH_INTERRUPTED = 2
+PREFETCH_MISMATCH = 3
+PREFETCH_DISK = 4
+PREFETCH_FALLBACK = 5
+
+
+def prefetch_command(root: Path) -> list[str]:
+    """先下載 PyTorch 的指令，和啟動器的相同（在 root 執行）。
+
+    -I：不讀使用者自己裝的套件與 PYTHON* 環境變數；-X utf8：輸出導向檔案時也是 UTF-8。
+    """
+    return [str(python_exe(root)), "-I", "-X", "utf8",
+            str(root / "bin" / "prefetch_wheels.py"), str(downloads_dir(root))]
 
 
 def torch_lib(root: Path) -> Path:
@@ -94,11 +129,24 @@ def remove_static_libraries(root: Path) -> None:
 
 
 def provision_command(root: Path) -> list[str]:
-    """首次佈建的指令，和啟動器的相同（在 root 執行）。"""
+    """首次佈建的指令，和啟動器的相同（在 root 執行）：PyTorch 用 downloads_dir 裡預先下載的。
+
+    --link-mode hardlink：同一顆磁碟上從快取用硬連結裝進 site-packages，不另外佔空間；寫明是為了
+    蓋過使用者自己設的 UV_LINK_MODE=symlink，裝好的套件才不會指向佈建完要清掉的快取（#303）。
+    磁碟不支援硬連結時 uv 自己改成複製。
+    """
     return [str(root / "bin" / "uv.exe"), "pip", "install",
             "--python", str(python_exe(root)),
             "--target", str(root / "runtime" / "Lib" / "site-packages"),
-            "-r", str(root / "backend" / "requirements-standalone.txt")]
+            "--cache-dir", str(uv_cache_dir(root)), "--link-mode", "hardlink",
+            "-r", str(root / "backend" / "requirements-standalone.txt"),
+            "--find-links", str(downloads_dir(root))]
+
+
+def clean_uv_cache_command(root: Path) -> list[str]:
+    """清掉 uv 下載快取的指令，和啟動器的 RemoveUvCache 相同（在 root 執行）。"""
+    return [str(root / "bin" / "uv.exe"), "cache", "clean", "--quiet",
+            "--cache-dir", str(uv_cache_dir(root))]
 
 
 def server_env(root: Path) -> dict[str, str]:
@@ -131,7 +179,7 @@ def instance_name(root: Path) -> str:
     path = os.path.abspath(root).rstrip("\\/")
     # 啟動器用 ToUpperInvariant：一個字元換成一個字元。str.upper 會把 ß 換成 SS 這類，那些字元照原樣
     path = "".join(c.upper() if len(c.upper()) == 1 else c for c in path)
-    return "Local\\AI_Translate-launcher-" + hashlib.sha256(path.encode("utf-8")).hexdigest()[:16]
+    return f"Local\\{APP_NAME}-launcher-" + hashlib.sha256(path.encode("utf-8")).hexdigest()[:16]
 
 
 def url_file(root: Path) -> Path:
@@ -140,7 +188,7 @@ def url_file(root: Path) -> Path:
 
 
 def acquire_instance(root: Path) -> Callable[[], None] | None:
-    """取得這個資料夾的單一實例；回傳讓出的函式。已經有實例在執行（AI_Translate.exe 或另一個
+    """取得這個資料夾的單一實例；回傳讓出的函式。已經有實例在執行（Mimiji.exe 或另一個
     start.bat）時回傳 None。Windows 以外的平台不檢查（只有開發時的測試會在那裡執行）。"""
     if sys.platform != "win32":
         return lambda: None
@@ -206,10 +254,10 @@ def probe_health(url: str) -> bool:
 def show_running_instance(root: Path, probe: Callable[[str], bool]) -> None:
     url = read_url_file(root)
     if url is not None and probe(url):
-        print("AI_Translate 已經在執行，不會再啟動第二個。")
+        print(f"{APP_NAME} 已經在執行，不會再啟動第二個。")
         print(f"請用瀏覽器開啟 {url}")
     else:
-        print("AI_Translate 已經在另一個視窗啟動中，不會再啟動第二個。")
+        print(f"{APP_NAME} 已經在另一個視窗啟動中，不會再啟動第二個。")
         print("首次佈建可能要數分鐘到數十分鐘，請切換到那個視窗查看進度。")
 
 
@@ -246,17 +294,82 @@ def pause() -> None:
 
 def provision(root: Path, run: Callable[..., int]) -> bool:
     print(PROVISION_BANNER, flush=True)
+    if not prefetch(root, run):
+        return False
     code = run(provision_command(root), cwd=root)
     if code != 0:
         print()
         print(f"執行環境佈建失敗（結束代碼 {exit_code_text(code)}，多半是網路中斷）。"
-              "已下載的部分會保留，")
-        print("重新執行 start.bat 即可續傳。")
+              "PyTorch 與已下載完的套件會保留，")
+        print("重新執行 start.bat 會接著下載其餘的套件。")
         return False
+    remove_downloads(root)
     remove_static_libraries(root)
+    # 先寫標記再清快取（和啟動器相同）：清到一半時關掉視窗，下次啟動接著清就好，不會重新佈建
     provisioned_marker(root).write_text(datetime.now().isoformat(), encoding="utf-8")
     print("執行環境佈建完成。", flush=True)
+    remove_uv_cache(root, run)
     return True
+
+
+def prefetch(root: Path, run: Callable[..., int]) -> bool:
+    """先下載 PyTorch（和啟動器相同）。停在這裡時印出怎麼辦，回傳 False；可以接著執行 uv 時回傳 True。
+
+    原因 prefetch_wheels.py 自己印在視窗裡，這裡只說下一步。
+    """
+    code = run(prefetch_command(root), cwd=root)
+    reason = "原因在上方的最後幾行"
+    if code == PREFETCH_INTERRUPTED:
+        print()
+        print(f"PyTorch 沒有下載完（{reason}）。")
+        print("已下載的部分會保留：網路恢復後重新執行 start.bat，會從中斷的地方接著下載。")
+        print("一直如此的話，公司或學校的網路可能擋了下載（防火牆、代理伺服器）：換一個網路再試。")
+        return False
+    if code == PREFETCH_MISMATCH:
+        print()
+        print(f"下載的 PyTorch 和預期的不同，已經刪掉（{reason}）。")
+        print("請重新執行 start.bat 再下載一次；一直如此的話，可能是網路上的代理伺服器"
+              "改動了下載的內容，請換一個網路再試。")
+        return False
+    if code == PREFETCH_DISK:
+        print()
+        print(f"PyTorch 下載到一半時寫不進資料夾（{reason}）。")
+        print("已下載的部分會保留：清出磁碟空間後重新執行 start.bat，會從中斷的地方接著下載。")
+        print("防毒軟體攔下了下載的檔案時，請把這個資料夾加入防毒軟體的排除清單後再試。")
+        return False
+    if code not in (0, PREFETCH_FALLBACK):
+        # prefetch_wheels.py 自己出錯。預先下載只是讓中斷之後可以接著下載：做不到時照原本的方式
+        # 由 uv 下載，不讓首次佈建停在這裡（和啟動器相同）
+        print(f"沒有預先下載 PyTorch（結束代碼 {exit_code_text(code)}），改由 uv 下載；"
+              "這次中斷的話，PyTorch 要從頭下載。", flush=True)
+    return True
+
+
+def remove_downloads(root: Path) -> None:
+    """刪掉預先下載的檔案（約 3.5 GB）。刪不掉（例如防毒軟體正在掃描）不影響啟動，下次啟動再刪。"""
+    shutil.rmtree(downloads_dir(root), ignore_errors=True)
+
+
+def remove_uv_cache(root: Path, run: Callable[..., int]) -> None:
+    """佈建完清掉 uv 的下載快取，和啟動器的 RemoveUvCache 相同（#303）。
+
+    site-packages 裡的檔案是從快取硬連結過去的，清掉快取不影響裝好的套件。用 uv 自己清，不用
+    shutil.rmtree：快取裡的路徑比 site-packages 的長，超過 260 字元時隨包的 Python 刪不掉，uv 刪得掉。
+    沒有快取時不執行 uv；清不掉不影響啟動，下次啟動再清。
+    """
+    if not uv_cache_dir(root).exists():
+        return
+    print("正在清掉首次佈建時暫存的檔案，請稍候。", flush=True)
+    try:
+        code = run(clean_uv_cache_command(root), cwd=root)
+    except OSError as e:
+        code = None
+        reason = f"無法執行 bin\\uv.exe：{e.strerror or e}"
+    else:
+        reason = f"結束代碼 {exit_code_text(code)}"
+    if code != 0 or uv_cache_dir(root).exists():
+        print(f"注意：首次佈建時暫存的檔案（runtime\\uv-cache）沒有清乾淨（{reason}），"
+              "不影響使用，下次啟動再清。", flush=True)
 
 
 # ─── Microsoft Visual C++ 可轉散發套件（#304），和啟動器的 WarnVcRuntime 相同 ─────────────
@@ -431,8 +544,8 @@ def main(argv: Sequence[str], root: Path = ROOT, *,
         pause()
         return 1
 
-    needed = [python_exe(root), root / "bin" / "uv.exe", root / "backend" / "main.py",
-              root / "backend" / "requirements-standalone.txt"]
+    needed = [python_exe(root), root / "bin" / "uv.exe", root / "bin" / "prefetch_wheels.py",
+              root / "backend" / "main.py", root / "backend" / "requirements-standalone.txt"]
     missing = [path.relative_to(root) for path in needed if not path.exists()]
     if missing:
         print("找不到 " + "、".join(str(path) for path in missing) + "，請確認 zip 已完整解壓。")
@@ -466,7 +579,9 @@ def _start(root: Path, port: int, run: Callable[..., int],
     if problem is not None:
         warn_vc_runtime(problem)
     if provisioned_marker(root).exists():
+        remove_downloads(root)  # 上次佈建成功、但刪不掉時再刪一次（和啟動器相同）
         remove_static_libraries(root)  # 每次啟動補刪，和啟動器相同
+        remove_uv_cache(root, run)  # 上次沒清完時接著清（和啟動器相同）
     else:
         if not provision(root, run):
             return False
@@ -481,10 +596,10 @@ def _start(root: Path, port: int, run: Callable[..., int],
 
     url = f"http://127.0.0.1:{port}"
     write_url_file(root, url)
-    print(f"正在啟動 AI_Translate 伺服器（port {port}）...")
+    print(f"正在啟動 {APP_NAME} 伺服器（port {port}）...")
     print("首次啟動需載入模型函式庫，可能需要一兩分鐘，請稍候。")
     print(f"視窗出現「Uvicorn running on {url}」之後，用瀏覽器開啟 {url}")
-    print("關閉此視窗即停止 AI_Translate。")
+    print(f"關閉此視窗即停止 {APP_NAME}。")
     print(flush=True)
     code = serve(root, port)
     if code != 0:

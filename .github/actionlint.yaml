@@ -1,0 +1,9 @@
+# actionlint 的設定（本機執行 actionlint 時自動讀取；CI 只跑 zizmor，不跑 actionlint）。
+paths:
+  .github/workflows/release.yml:
+    ignore:
+      # GitHub 在 2026-07 推出 $/（self-repository）寫法，呼叫同一個 repo、同一個 commit 的 reusable workflow
+      # （https://github.blog/changelog/2026-07-30-reference-same-repository-actions-with-self-repository-syntax/），
+      # zizmor 的 self-repository 稽核也要求用它；actionlint 1.7.12 還不認得，只略過這一個呼叫。
+      # actionlint 支援 $/ 之後刪掉這一段
+      - 'reusable workflow call "\$/\.github/workflows/ci\.yml" at "uses" is not following the format'

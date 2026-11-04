@@ -27,6 +27,9 @@ export function applyFileResult(file, data) {
     next.sourceLanguage = data.result?.source_language;
     // 轉錄結果裡實際出現的說話者人數；沒有片段帶說話者編號時是 0，結果頁不顯示
     next.speakerCount = data.result?.speaker_count;
+    // 可能掉尾的起點（原音檔的秒數，utils/tailLoss.js）：檔案卡與結果頁照它寫出從哪裡起可能沒有轉錄到；
+    // 沒有掉尾時是 null
+    next.tailLossFrom = data.result?.tail_loss_from_seconds ?? null;
   } else if (data.status_code === TASK_STATUS.FAILED) {
     next.status = 'error';
     next.percent = 100;

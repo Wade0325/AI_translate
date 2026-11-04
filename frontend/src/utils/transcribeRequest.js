@@ -32,6 +32,7 @@ export const forRetranscription = (file) => ({
   task_uuid: null,
   error: null,
   failure: null,
+  tailLossFrom: null,
   sentPrompt: undefined,
 });
 

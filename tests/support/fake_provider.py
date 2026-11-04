@@ -5,6 +5,9 @@
 
 模型能力設成支援批次（``supports_batch``）時也能跑批次：送出時照劇本給每個請求一份結果，
 查到成功結束時附上，和 Gemini 一樣。
+
+劇本的一步也可以是「照收到的音檔回答」（:class:`Listen`）：不必事先知道每一段切在哪裡，用來模擬本機的
+MOSS 在長度上限提早停下、接續時從中途再轉一次（#94）。
 """
 
 from __future__ import annotations
@@ -13,6 +16,9 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
+
+import numpy as np
+import soundfile as sf
 
 from app.provider.base import (
     LOCAL_QUEUE,
@@ -33,6 +39,7 @@ CAPABILITIES = ModelCapabilities(
     queue=LOCAL_QUEUE,
     can_terminate=False,
     split_retry_on_failure=False,
+    continuation=False,
     accepts_prompt=True,
     accepts_user_text=True,
     supports_batch=False,
@@ -63,9 +70,24 @@ class ServedAs:
     lines: Sequence[Line]
 
 
-Step = Union[Sequence[Line], Fail, ServedAs, Exception]
-"""劇本的一步：這一段的轉錄結果、回報失敗、用了別的處理模式，或拋出這個例外。批次的請求只能是
-轉錄結果或回報失敗。"""
+@dataclass
+class Listen:
+    """劇本裡的這一段照收到的音檔回答，像本機的 MOSS（#94）：音檔裡每個有聲段（合成音檔的正弦波，見
+    tests/support/synthetic_audio.py）一個片段，起訖是它在這段音檔裡的位置；說話者編號照聲音的頻率在
+    這段音檔裡出場的先後，從 S0 編起，文字寫出頻率（取到 100 Hz，例如「400Hz」）。
+
+    ``stops_after`` 設定時模擬提早停止：只輸出結束在這段音檔的這麼多秒以內的有聲段，像 MOSS 輸出到約
+    16k token 就停。``reports`` 是停下時要不要回報擔保轉錄到哪一秒（``covered_until``，最後一個輸出的
+    片段的結束），像 MOSS 用完生成預算、輸出被截斷時那樣；False 模擬模型自己不知道停早了，像 MOSS 在
+    約 16k token 自己停下（輸出完整），或長段非語音之後就結束。
+    """
+    stops_after: Optional[float] = None
+    reports: bool = True
+
+
+Step = Union[Sequence[Line], Fail, ServedAs, Listen, Exception]
+"""劇本的一步：這一段的轉錄結果、回報失敗、用了別的處理模式、照收到的音檔回答，或拋出這個例外。批次的
+請求只能是轉錄結果或回報失敗。"""
 
 class Restart(BaseException):
     """查詢批次時應用程式重啟（例如關掉免安裝版再打開）：批次的這次執行停在這裡。
@@ -191,6 +213,8 @@ class FakeProvider:
         step = self.script.pop(0) if self.script else []
         if isinstance(step, Exception):
             raise step
+        if isinstance(step, Listen):
+            return self._listened(audio_path, step)
         service_tier = self.service_tier
         if isinstance(step, ServedAs):
             service_tier, step = step.service_tier, step.lines
@@ -245,6 +269,20 @@ class FakeProvider:
         if self.examine is not None:
             self.examined.append(self.examine(audio_path))
 
+    def _listened(self, audio_path: Path, listen: Listen) -> TranscriptionTaskResult:
+        """照收到的音檔回答（見 :class:`Listen`）。"""
+        heard = _heard(audio_path)
+        said = [span for span in heard
+                if listen.stops_after is None or span[1] <= listen.stops_after]
+        speakers: Dict[int, int] = {}
+        lines: List[Line] = [(start, end, speakers.setdefault(tone, len(speakers)), f"{tone}Hz")
+                             for start, end, tone in said]
+        result = self._result(lines, self.service_tier)
+        if len(said) < len(heard) and listen.reports:
+            covered = max((end for _, end, _ in said), default=0.0)
+            result = result.model_copy(update={"covered_until": covered})
+        return result
+
     def _result(self, step: Union[Sequence[Line], Fail],
                 service_tier: Optional[str]) -> TranscriptionTaskResult:
         """劇本的一步換成轉錄結果，帶著用量與處理模式。"""
@@ -256,3 +294,33 @@ class FakeProvider:
         # 和真的轉接器一樣，轉錄結果只有片段與用量，不附著 LRC 文字
         segments = [_segment(i, line) for i, line in enumerate(step)]
         return TranscriptionTaskResult(success=bool(step), segments=segments, **usage)
+
+
+HEARING_FRAME_SECONDS = 0.01
+
+
+def _heard(audio_path: Path) -> List[Tuple[float, float, int]]:
+    """音檔裡的有聲段（起, 迄, 頻率），依時間先後：音量（每 10 毫秒的 RMS）超過 0.01 的連續一段算一個，
+    頻率從過零的次數估計，取到 100 Hz。"""
+    samples, rate = sf.read(str(audio_path), dtype="float32")
+    if samples.ndim > 1:
+        samples = samples.mean(axis=1)
+    frame = int(rate * HEARING_FRAME_SECONDS)
+    count = len(samples) // frame
+    loud = np.sqrt((samples[:count * frame].reshape(count, frame) ** 2).mean(axis=1)) > 0.01
+    spans: List[Tuple[float, float, int]] = []
+    i = 0
+    while i < count:
+        if not loud[i]:
+            i += 1
+            continue
+        j = i
+        while j < count and loud[j]:
+            j += 1
+        piece = samples[i * frame:j * frame]
+        crossings = int(np.count_nonzero(np.signbit(piece[1:]) != np.signbit(piece[:-1])))
+        frequency = crossings / 2 / ((j - i) * HEARING_FRAME_SECONDS)
+        spans.append((round(i * HEARING_FRAME_SECONDS, 2), round(j * HEARING_FRAME_SECONDS, 2),
+                      int(round(frequency / 100)) * 100))
+        i = j
+    return spans

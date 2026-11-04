@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.core.version import APP_VERSION
 from app.database.models import TranscriptionLog
-from app.provider.local import weights
+from app.provider.local import packages, weights
 from app.services import diagnostics
 
 URL = "/api/v1/diagnostics"
@@ -89,6 +89,7 @@ class TestStandalone:
             "google-genai 2.6.0",
             "- NVIDIA 驅動：576.02",
             "- 顯卡：NVIDIA GeForce RTX 4080（16 GB）",
+            "- 本機模型的套件：都載入得了",
             "- 模型權重 moss-align（預設）：已下載",
             f"- 模型權重 moss-qwen3-asr（選用）：缺少 {weights.ASR_MODEL_ID}",
             f"- 模型權重 vibevoice-qwen3-asr（選用）：缺少 {weights.DIARIZATION_MODEL_ID}、"
@@ -129,6 +130,55 @@ class TestStandalone:
         assert "- 顯卡：這台電腦沒有可用的 NVIDIA 顯卡" in lines
         assert not any(line.startswith("- PyTorch 的錯誤") for line in lines)
         assert "- ffmpeg：找不到" in lines
+
+    def test_package_that_fails_to_load(self, client, machine, standalone):
+        # 原因和轉錄頁同一句，附上原始錯誤（#311）；transformers 的兩組類別壞在同一個地方時只寫一次
+        torchvision = packages.PackageUnavailable(
+            "package_load_failed", "transformers",
+            detail="RuntimeError: operator torchvision::nms does not exist")
+        packages._results[packages.QWEN3_ASR] = torchvision
+        packages._results[packages.VIBEVOICE] = torchvision
+        packages._results[packages.MOSS] = packages.PackageUnavailable(
+            "missing_package", "moss-transcribe-diarize", missing="av")
+
+        lines = report(client).splitlines()
+
+        assert ("- 本機模型的套件：缺少 av 套件（moss-transcribe-diarize 要用）；"
+                "transformers 套件載入失敗") in lines
+        assert ("- transformers 的錯誤：RuntimeError: operator torchvision::nms does not exist"
+                in lines)
+        assert sum(line.startswith("- transformers 的錯誤") for line in lines) == 1
+
+    def test_same_package_failing_in_two_ways_is_named_once(self, client, machine, standalone):
+        # transformers 的兩組類別各缺一個（版本不合）：原因只寫一次，兩個錯誤都附上
+        for package in (packages.QWEN3_ASR, packages.VIBEVOICE):
+            packages._results[package] = packages.PackageUnavailable(
+                "package_load_failed", "transformers",
+                detail=f"AttributeError: module 'transformers' has no attribute '{package.classes[0]}'")
+
+        lines = report(client).splitlines()
+
+        assert "- 本機模型的套件：transformers 套件載入失敗" in lines
+        assert [line for line in lines if line.startswith("- transformers 的錯誤")] == [
+            "- transformers 的錯誤：AttributeError: module 'transformers' has no attribute "
+            "'Qwen3ASRForConditionalGeneration'",
+            "- transformers 的錯誤：AttributeError: module 'transformers' has no attribute "
+            "'VibeVoiceAsrForConditionalGeneration'",
+        ]
+
+    @pytest.mark.parametrize("gpu", [
+        weights.NO_GPU, weights.Gpu("NVIDIA GeForce GTX 970", 4.0, False)], ids=["no-gpu", "unsupported"])
+    def test_packages_are_not_imported_without_a_usable_gpu(self, client, machine, standalone,
+                                                            monkeypatch, gpu):
+        # 和轉錄頁的就緒檢查一樣排在顯卡之後：沒有顯卡的電腦不必為了複製診斷資訊載入 transformers
+        machine["gpu"] = gpu
+        checked = []
+        monkeypatch.setattr(packages, "check", lambda package: checked.append(package))
+
+        lines = report(client).splitlines()
+
+        assert checked == []
+        assert not any(line.startswith("- 本機模型的套件") for line in lines)
 
     def test_unsupported_gpu(self, client, machine, standalone):
         machine["gpu"] = weights.Gpu("NVIDIA GeForce GTX 970", 4.0, False)

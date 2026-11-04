@@ -72,7 +72,7 @@ describe('按取消之後', () => {
 });
 
 describe('檔案卡停在處理中、任務其實已經結束時按取消：照任務紀錄顯示真正的結果（#186）', () => {
-  it('任務已經完成：檔案卡改成完成，取回轉錄結果，檔案卡可以預覽與下載', async () => {
+  it('任務已經完成：檔案卡改成完成，取回轉錄結果，檔案卡可以預覽與下載；可能掉尾的起點照樣顯示', async () => {
     const api = fakeApi({
       cancelled: notCancelled('not-started'),
       records: [recordOf('COMPLETED', {
@@ -81,6 +81,7 @@ describe('檔案卡停在處理中、任務其實已經結束時按取消：照�
         audio_duration_seconds: 61.5,
         model_used: 'gemini-3.5-flash',
         source_language: 'zh-TW',
+        tail_loss_from_seconds: 30.2,
       })],
       transcripts: { 'task-2': { lrc: '[00:00.00]你好', srt: '1\n00:00:00,000 --> 00:00:01,000\n你好', vtt: 'WEBVTT', txt: '你好' } },
     });
@@ -98,6 +99,7 @@ describe('檔案卡停在處理中、任務其實已經結束時按取消：照�
         audioDurationSec: 61.5,
         model: 'gemini-3.5-flash',
         sourceLanguage: 'zh-TW',
+        tailLossFrom: 30.2,
       },
     });
   });
