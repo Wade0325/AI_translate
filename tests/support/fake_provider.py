@@ -8,6 +8,8 @@
 
 劇本的一步也可以是「照收到的音檔回答」（:class:`Listen`）：不必事先知道每一段切在哪裡，用來模擬本機的
 MOSS 在長度上限提早停下、接續時從中途再轉一次（#94）。
+
+劇本裡空的一步（``[]``）回報失敗；要像本機的模型那樣「跑完了、沒有片段」算成功，用 :class:`Empty`。
 """
 
 from __future__ import annotations
@@ -20,6 +22,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 import numpy as np
 import soundfile as sf
 
+from app.core.error_codes import ErrorCode
 from app.provider.base import (
     LOCAL_QUEUE,
     BatchStatus,
@@ -78,16 +81,25 @@ class Listen:
 
     ``stops_after`` 設定時模擬提早停止：只輸出結束在這段音檔的這麼多秒以內的有聲段，像 MOSS 輸出到約
     16k token 就停。``reports`` 是停下時要不要回報擔保轉錄到哪一秒（``covered_until``，最後一個輸出的
-    片段的結束），像 MOSS 用完生成預算、輸出被截斷時那樣；False 模擬模型自己不知道停早了，像 MOSS 在
-    約 16k token 自己停下（輸出完整），或長段非語音之後就結束。
+    片段的結束）並說輸出被截斷（``truncated``），像 MOSS 用完生成預算時那樣；False 模擬模型自己不知道
+    停早了，像 MOSS 在約 16k token 自己停下（輸出完整），或長段非語音之後就結束。
     """
     stops_after: Optional[float] = None
     reports: bool = True
 
 
-Step = Union[Sequence[Line], Fail, ServedAs, Listen, Exception]
-"""劇本的一步：這一段的轉錄結果、回報失敗、用了別的處理模式、照收到的音檔回答，或拋出這個例外。批次的
-請求只能是轉錄結果或回報失敗。"""
+@dataclass
+class Empty:
+    """劇本裡的這一段跑完了，卻沒有轉錄出任何內容，像本機的模型遇到整段只有靜音或測試音（空段，#327）：
+    算成功、沒有片段，``text`` 寫為什麼沒有。``covered_until`` 是擔保轉錄到這段音檔的哪一秒，例如 MOSS
+    輸出一長串只有說話者標籤的段、丟掉之後（#325）；None 是沒有回報。"""
+    text: str = "假供應商：沒有轉錄出任何內容"
+    covered_until: Optional[float] = None
+
+
+Step = Union[Sequence[Line], Fail, ServedAs, Listen, Empty, Exception]
+"""劇本的一步：這一段的轉錄結果、回報失敗、用了別的處理模式、照收到的音檔回答、跑完了卻沒有內容，或拋出
+這個例外。批次的請求只能是轉錄結果或回報失敗。"""
 
 class Restart(BaseException):
     """查詢批次時應用程式重啟（例如關掉免安裝版再打開）：批次的這次執行停在這裡。
@@ -215,6 +227,10 @@ class FakeProvider:
             raise step
         if isinstance(step, Listen):
             return self._listened(audio_path, step)
+        if isinstance(step, Empty):
+            return self._result([], self.service_tier).model_copy(update={
+                "success": True, "text": step.text, "error_code": ErrorCode.NO_TRANSCRIPT,
+                "covered_until": step.covered_until})
         service_tier = self.service_tier
         if isinstance(step, ServedAs):
             service_tier, step = step.service_tier, step.lines
@@ -280,7 +296,7 @@ class FakeProvider:
         result = self._result(lines, self.service_tier)
         if len(said) < len(heard) and listen.reports:
             covered = max((end for _, end, _ in said), default=0.0)
-            result = result.model_copy(update={"covered_until": covered})
+            result = result.model_copy(update={"covered_until": covered, "truncated": True})
         return result
 
     def _result(self, step: Union[Sequence[Line], Fail],

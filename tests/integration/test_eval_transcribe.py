@@ -149,6 +149,7 @@ def test_manifest_records_the_run_without_any_transcript_text(fake, uploads, aud
     assert run["success"] is True and run["error"] is None
     assert run["segments"] == 2
     assert run["peak_vram_gb"] is None
+    assert run["peak_vram_allocated_gb"] is None
     # rtf 取到小數 4 位、seconds 取到 3 位：假供應商只跑幾十毫秒，兩邊各自捨入的差距用相對誤差框不住
     assert run["rtf"] == pytest.approx(run["seconds"] / manifest["audio"]["duration_seconds"],
                                        abs=1e-4)
@@ -202,10 +203,13 @@ def test_peak_vram_comes_from_the_gpu_this_run_used(monkeypatch):
 
     gib = 1024 ** 3
     torch = SimpleNamespace(cuda=SimpleNamespace(is_available=lambda: True,
-                                                 max_memory_reserved=lambda: int(5.5 * gib)))
+                                                 max_memory_reserved=lambda: int(5.5 * gib),
+                                                 max_memory_allocated=lambda: int(4.25 * gib)))
     monkeypatch.setitem(sys.modules, "torch", torch)
 
     assert _peak_vram_gb() == 5.5
+    # 張量實際用到的：比保留的少很多時，差的是配置器留著沒用的顯存（#326）
+    assert _peak_vram_gb("max_memory_allocated") == 4.25
 
 
 def test_asks_to_stop_other_gpu_work_before_starting(fake, uploads, audio, tmp_path, monkeypatch,

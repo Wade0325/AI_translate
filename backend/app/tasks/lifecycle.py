@@ -310,8 +310,8 @@ class TaskLifecycle:
                 # 失敗結果的 text 是錯誤描述而非 LRC，不能標成完成、產出空字幕
                 raise TaskFailedError(result.error_code or ErrorCode.INTERNAL, result.text)
             if not result.segments:
-                # 每一段都沒有內容（例如 Gemini 沒寫出任何帶時間戳的行）：沒有轉錄結果，一樣不能
-                # 標成完成；text 是供應商寫的原因
+                # 每一段都沒有內容（例如 Gemini 沒寫出任何帶時間戳的行、本機的模型沒有轉錄出任何內容）：
+                # 沒有轉錄結果，一樣不能標成完成；text 是供應商寫的原因
                 raise TaskFailedError(result.error_code or ErrorCode.NO_TRANSCRIPT, result.text)
             return self._complete(db, result)
         except Exception as e:
