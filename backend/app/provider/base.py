@@ -93,6 +93,10 @@ class TranscribeRequest:
     source_lang: Optional[str] = None
     service_tier: Optional[str] = None
     """處理模式：None／"standard" 或 "flex"；只有模型能力標明 ``supports_flex`` 的模型會收到 "flex"。"""
+    single_pass_only: bool = False
+    """整段一次送出：提示詞綁著整段音檔的內容（附了使用者文稿，#66），切開的段拿到的也是整份。分段轉錄
+    不依單次長度切段、失敗後不切段重試，也不接續；暫時錯誤照樣重送同一段。音檔超過單次長度時要不要送，
+    由呼叫端先決定。"""
 
 
 class ProgressAndCancel:

@@ -51,6 +51,7 @@ export default function TranscribePage() {
         supports,
         estimatesCost,
         disabledReasons,
+        userTextNote,
         isProcessing,
         processingMode,
         setProcessingMode,
@@ -444,8 +445,8 @@ export default function TranscribePage() {
                         onPreview={handleOpenPreview}
                         onDownload={downloadFile}
                         onReprocess={handleReprocess}
-                        // 使用者文稿到不了任務之前（#66）沒有模型吃它，入口跟著隱藏（#13 Q4）
-                        onAttachText={supports.userText ? handleAttachText : undefined}
+                        // 會送出使用者文稿時才有入口（#13 Q4）：所選的模型吃使用者文稿，而且不是批次（#66）
+                        onAttachText={disabledReasons.userText ? undefined : handleAttachText}
                         onAttachTextFromFile={handleAttachTextFromFile}
                         onVadTest={vadPreviewEnabled && file.originFileObj ? handleVadTest : undefined}
                         onCancel={file.transcribeMode === 'single' ? cancelTranscription : undefined}
@@ -514,6 +515,9 @@ export default function TranscribePage() {
                 cancelText="取消"
                 destroyOnHidden
             >
+                <Text type="secondary" style={{ display: "block", fontSize: 12, marginBottom: 8 }}>
+                    {userTextNote}
+                </Text>
                 <TextArea
                     rows={8}
                     value={textModalContent}

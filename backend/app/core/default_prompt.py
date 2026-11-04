@@ -8,6 +8,8 @@
     {translate_instruction} — 翻譯指令（可為空）
 - 補充說明：轉錄頁填的提示詞（每個檔案自己的，沒有就是全域的），空一行接在範本後面，照寫的送出、
   不代入變數：範本已經代入過，再代入一次，說話者與翻譯的指示會重複。
+- 附了使用者文稿時（#66）不用提示詞範本，改用 build_user_text_prompt：只替文稿補上時間戳，補充說明
+  一樣接在後面。
 
 DEFAULT_PROMPT_TEMPLATE 是系統內建範本的唯一真實來源：設定頁的「編輯參數」沒存過範本時從這裡帶出。
 """
@@ -61,6 +63,22 @@ SPEAKER_INSTRUCTION = (
 
 TRANSLATE_INSTRUCTION = "{n}. 請將所有轉錄內容翻譯為{target_lang}輸出。\n"
 
+# 附了使用者文稿時改用這份（#66）：模型只替文稿補上時間戳，不重新轉錄。和提示詞範本一樣要求 LRC 與
+# [mm:ss.xxx]，Gemini 轉接器照同一套規則解析。使用者文稿接在最後，不代入變數：文稿裡的大括號照寫的送出
+USER_TEXT_PROMPT_TEMPLATE = (
+    "你是一位專業的逐字稿專家。下面是使用者為這個{source_lang}音檔提供的完整逐字稿。"
+    "請不要重新轉錄，只替這份逐字稿補上時間戳，輸出 LRC 格式。\n"
+    "注意：\n"
+    "1. 逐字稿的文字照原樣寫出，不要增刪、改寫或翻譯；一句太長時可以斷成幾行。\n"
+    "2. 每一行開頭都要有時間戳，格式為 [mm:ss.xxx]（毫秒精確到三位），必須精確對應這一行開始說話的位置。\n"
+    "3. 逐字稿裡沒有的聲音不要寫出來。\n"
+    "{speaker_instruction}"
+)
+
+USER_TEXT_SPEAKER_INSTRUCTION = (
+    "4. 音檔中有多位說話者，請用 Speaker 1:、Speaker 2: 等標籤區分不同說話者。\n"
+)
+
 
 def build_prompt(
     source_lang: str = "ja-JP",
@@ -100,8 +118,37 @@ def build_prompt(
         "speaker_instruction": speaker_instruction,
         "translate_instruction": translate_instruction,
     }).rstrip("\n")
+    return _with_supplement(prompt, supplement)
+
+
+def build_user_text_prompt(
+    user_text: str,
+    source_lang: str = "ja-JP",
+    multi_speaker: bool = False,
+    supplement: Optional[str] = None,
+) -> str:
+    """附了使用者文稿時送給模型的提示詞：只替文稿補上時間戳（#66）。
+
+    取代提示詞範本：範本要求的是重新轉錄。補充說明照樣空一行接在最後。不翻譯：使用者文稿照原樣寫出。
+
+    Args:
+        user_text:     使用者文稿；前後的空白去掉，其他照寫的送出
+        source_lang:   音訊語言代碼，規則同 :func:`build_prompt`
+        multi_speaker: 是否為多人對話模式：要求模型標出說話者代號
+        supplement:    補充說明；None 或只有空白時不接
+    """
+    instructions = USER_TEXT_PROMPT_TEMPLATE.format(
+        source_lang=_language_name(source_lang),
+        speaker_instruction=USER_TEXT_SPEAKER_INSTRUCTION if multi_speaker else "",
+    )
+    prompt = f"{instructions}\n完整逐字稿：\n---\n{user_text.strip()}\n---"
+    return _with_supplement(prompt, supplement)
+
+
+def _with_supplement(prompt: str, supplement: Optional[str]) -> str:
+    """空一行接上補充說明（照寫的送出、不代入變數）；None 或只有空白時照原樣。"""
     if supplement and supplement.strip():
-        prompt = f"{prompt}\n\n{supplement.strip()}"
+        return f"{prompt}\n\n{supplement.strip()}"
     return prompt
 
 

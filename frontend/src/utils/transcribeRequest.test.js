@@ -85,6 +85,11 @@ describe('批次送出的提示詞（補充說明）', () => {
     const payload = batch({ supports: { ...NO_PROMPT, batch: true } });
     expect([payload.files.map((f) => f.prompt), 'prompt' in payload]).toEqual([[null, null], false]);
   });
+
+  it('不帶使用者文稿：批次不支援，檔案卡標成不會帶上（#66）', () => {
+    const payload = batch({ files: [uploaded({ uid: 'f1', userSuppliedText: 'おはよう。' })] });
+    expect(['user_supplied_text' in payload, 'user_supplied_text' in payload.files[0]]).toEqual([false, false]);
+  });
 });
 
 describe('檔案卡顯示的提示詞', () => {
@@ -158,6 +163,20 @@ describe('套用全域設定（Apply to All、Reset to global）', () => {
 
     const payload = singlePayload({ file, defaults: { ...DEFAULTS, prompt: '後來改過的全域提示詞' } });
     expect([payload.prompt, payload.source_lang]).toEqual(['後來改過的全域提示詞', 'zh-TW']);
+  });
+});
+
+describe('單檔任務送出的使用者文稿（#66）', () => {
+  it('所選的模型吃使用者文稿時照寫的帶上，沒附加時是 null', () => {
+    expect([
+      singlePayload({ file: untouched({ userSuppliedText: 'おはよう。\nこんにちは。' }) }).user_supplied_text,
+      singlePayload().user_supplied_text,
+    ]).toEqual(['おはよう。\nこんにちは。', null]);
+  });
+
+  it('所選的模型不吃使用者文稿時不帶', () => {
+    expect(singlePayload({ file: untouched({ userSuppliedText: 'おはよう。' }), supports: NO_PROMPT })
+      .user_supplied_text).toBeNull();
   });
 });
 
