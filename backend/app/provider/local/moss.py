@@ -9,7 +9,8 @@ torch / transformers 一律延遲匯入：只有主機 GPU worker 與免安裝�
 
 MOSS 轉長音檔時可能約輸出 16k token 就自己停下（#94）。:func:`transcribe` 用完生成預算或輸出結尾
 不完整時回報擔保轉錄到哪一秒（:func:`covered_until`）；自己停下時輸出是完整的，由分段轉錄看最後一個
-片段之後還有沒有聲音，決定要不要接續。
+片段之後還有沒有聲音，決定要不要接續。MOSS 在長段無聲處可能輸出一長串只有說話者標籤的段（#325）：
+這些段丟掉，擔保點照樣算到它們的結束。
 
 Windows：torch 沒有 Flash SDPA，memory-efficient kernel 又不接受 ``enable_gqa``，
 transformers 5.x 在無遮罩時送 GQA → 退回 math kernel，prefill 顯存 O(L²)
@@ -24,7 +25,7 @@ import re
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Callable, List, Mapping, Optional, Sequence, Tuple
 
 from app.core.config import get_settings
 from app.provider.local import packages
@@ -76,6 +77,9 @@ _UNTAGGED_SEGMENT_RE = re.compile(
     rf"\[({_TIME})\](.*?)\[({_TIME})\](?=\s*(?:\[{_TIME}\]|\Z|{_PARTIAL_TIME}))", re.S)
 # 帶標籤的段落裡夾著「[迄][起]」：後面沒有標籤的段落被併進了前一段
 _UNTAGGED_BOUNDARY_RE = re.compile(rf"\[({_TIME})\]\s*\[({_TIME})\]")
+# 說話者標籤不是說出來的話，不留在文字裡。MOSS 在長段無聲處可能重複標籤、不寫文字（#325）：
+# 「[145.80][S01][S01][146.30]」的第二個標籤落在文字的位置
+_SPEAKER_TAG_RE = re.compile(r"\[S\d+\]")
 # 進度回報只看段落開頭（後面接說話者標籤）的時間戳
 _SEGMENT_START_RE = re.compile(rf"\[({_NUM})\]\[S\d+\]")
 
@@ -222,23 +226,36 @@ def single_pass_seconds_for_vram(total_gib: Optional[float]) -> float:
 def parse_output(text: str) -> List[dict]:
     """``[起][Sxx]文字[迄]`` → ``[{Start, End, Speaker, Content}]``。
 
-    說話者 S01 → 0、S02 → 1（與 VibeVoice 的編號一致）；空文字與迄 < 起的片段丟棄。
+    說話者 S01 → 0、S02 → 1（與 VibeVoice 的編號一致）。文字裡的說話者標籤去掉；沒有文字（空白、
+    或只有說話者標籤，例如 MOSS 在長段無聲處輸出的「[起][S01][S01][迄]」，#325）與迄 < 起的片段丟棄。
     沒有說話者標籤的段落沿用前一段的說話者，前面沒有時當成第一位（#134）。生成被截斷時，沒有結束
     時間戳的最後一段丟棄，它前面完整的段照樣保留（#94）。
     """
-    return _parse(text)[0]
+    return _parse(text).segments
 
 
 def incomplete_tail(text: str) -> bool:
     """輸出在最後一個完整的段之後還有東西，例如被截斷、沒有結束時間戳的一段或半個時間戳：生成在
     一段的半途停下了。正常結束的輸出停在一段的結束時間戳。"""
     text = text or ""
-    return bool(text[_parse(text)[1]:].strip())
+    return bool(text[_parse(text).consumed:].strip())
 
 
-def _parse(text: str) -> Tuple[List[dict], int]:
-    """解析輸出（見 :func:`parse_output`），連同最後一個完整的段在 ``text`` 裡結束的位置；一段都
-    沒有時是 0。"""
+@dataclass(frozen=True)
+class _Parsed:
+    """解析一份輸出的結果。"""
+
+    segments: List[dict]
+    """有文字的片段（:func:`parse_output`）。"""
+    pieces: List[dict]
+    """每個完整、迄不早於起的段，依輸出的順序，和 ``segments`` 同一個形狀；連同沒有文字、被丟掉的段
+    （``Content`` 是空的）。看 MOSS 轉到了哪裡用（:func:`covered_until`）。"""
+    consumed: int
+    """最後一個完整的段在輸出裡結束的位置；一段都沒有時是 0。"""
+
+
+def _parse(text: str) -> _Parsed:
+    """解析輸出，見 :func:`parse_output`。"""
     text = text or ""
     # 第一個說話者標籤之前（整份都沒有標籤時就是全部）沒有說話者可以沿用，當成第一位
     first_tag = _SEGMENT_START_RE.search(text)
@@ -255,35 +272,60 @@ def _parse(text: str) -> Tuple[List[dict], int]:
             consumed = m.end()
     if untagged:
         logger.warning(f"MOSS 輸出有 {untagged} 段沒有說話者標籤，沿用前一位說話者")
-    segments = [{"Start": start, "End": end, "Speaker": speaker, "Content": body.strip()}
-                for start, speaker, body, end in pieces if body.strip() and end >= start]
-    return segments, consumed
+    timed = [(start, speaker, body, end) for start, speaker, body, end in pieces if end >= start]
+    _log_speaker_tags_in_text([body for _, _, body, _ in timed])
+    shaped = [{"Start": start, "End": end, "Speaker": speaker, "Content": _without_speaker_tags(body)}
+              for start, speaker, body, end in timed]
+    return _Parsed([piece for piece in shaped if piece["Content"]], shaped, consumed)
 
 
-def covered_until(segments: Sequence[Mapping[str, float]], *, incomplete: bool,
+def _without_speaker_tags(body: str) -> str:
+    return _SPEAKER_TAG_RE.sub("", body).strip()
+
+
+def _log_speaker_tags_in_text(bodies: Sequence[str]) -> None:
+    """文字裡有說話者標籤的段寫進 log：只有標籤、整段丟掉的有幾段，去掉標籤之後還有文字的有幾段。"""
+    tagged = [body for body in bodies if _SPEAKER_TAG_RE.search(body)]
+    labels_only = sum(1 for body in tagged if not _without_speaker_tags(body))
+    if labels_only:
+        logger.warning(f"MOSS 輸出有 {labels_only} 段只有說話者標籤、沒有文字，丟掉")
+    if len(tagged) > labels_only:
+        logger.warning(f"MOSS 輸出有 {len(tagged) - labels_only} 段的文字裡夾著說話者標籤，去掉標籤")
+
+
+def covered_until(pieces: Sequence[Mapping[str, Any]], *, incomplete: bool,
                   generated_tokens: int, max_new_tokens: int) -> Optional[float]:
-    """MOSS 可能提早停止輸出時，擔保轉錄到這段音檔的哪一秒；沒有這種跡象時是 None（#94）。
+    """MOSS 可能提早停止輸出、或最後一段沒有文字時，擔保轉錄到這段音檔的哪一秒；都不是時是 None
+    （#94、#325）。
 
-    ``segments`` 是解析出的片段（:func:`parse_output`，依輸出的順序），``incomplete`` 是輸出結尾
-    不完整（:func:`incomplete_tail`），``generated_tokens`` 是生成了幾個 token、``max_new_tokens``
-    是這次的預算。跡象有兩個：用完預算、輸出結尾不完整，都表示輸出被截斷。擔保點是最後
-    :data:`COVERED_TAIL_SEGMENTS` 段裡最晚的結束，一段都沒有時是 0。之後到底還有沒有沒轉到的語音，由
-    分段轉錄看語音視圖決定，這裡不知道。
+    ``pieces`` 是解析出的每一段，依輸出的順序，連同沒有文字、被丟掉的段（``Content`` 是空的，見
+    :class:`_Parsed`）；``incomplete`` 是輸出結尾不完整（:func:`incomplete_tail`），``generated_tokens``
+    是生成了幾個 token、``max_new_tokens`` 是這次的預算。提早停止的跡象有兩個：用完預算、輸出結尾不完整，
+    都表示輸出被截斷。擔保點是最後 :data:`COVERED_TAIL_SEGMENTS` 段裡最晚的結束，沒有文字的段也算：MOSS
+    照樣轉到了那裡；一段都沒有時是 0。之後到底還有沒有沒轉到的語音，由分段轉錄看語音視圖決定，這裡不知道。
 
     生成到約 16k token 不算跡象：#94 實測日文 ASMR 與中文對話 4 次都停在 16,341～16,354 token，但朗讀的
     《坊っちゃん》1～3 章（61 分鐘）生成到 22,654 token 才轉到檔尾（#317 的 GPU 實驗），拿它當跡象會
     誤報。MOSS 自己停下時輸出是完整的，停在最後一個片段的結束，分段轉錄沒有回報時也從那裡看之後還有
     沒有聲音，結果相同。
+
+    最後一段沒有文字時，沒有跡象也回報擔保點：MOSS 在長段無聲處可能輸出一長串只有說話者標籤的段，再在
+    約 16k token 自己停下（#325）。這些段丟掉之後，最後一個片段停在那一串之前，分段轉錄會以為 MOSS 停在
+    那裡，從那一串之前、甚至從這一段的開頭接續或回報掉尾。
     """
     signs = []
     if generated_tokens >= max_new_tokens:
         signs.append(f"用完 max_new_tokens={max_new_tokens}")
     if incomplete:
         signs.append("輸出結尾不完整")
-    if not signs:
+    textless_tail = bool(pieces) and not pieces[-1]["Content"]
+    if not signs and not textless_tail:
         return None
-    covered = max((float(s["End"]) for s in segments[-COVERED_TAIL_SEGMENTS:]), default=0.0)
-    logger.warning(f"MOSS 可能提早停止（{'、'.join(signs)}），擔保轉錄到 {covered:.2f} 秒")
+    covered = max((float(s["End"]) for s in pieces[-COVERED_TAIL_SEGMENTS:]), default=0.0)
+    if signs:
+        logger.warning(f"MOSS 可能提早停止（{'、'.join(signs)}），擔保轉錄到 {covered:.2f} 秒")
+    else:
+        logger.info(f"MOSS 輸出的最後一段沒有文字，擔保轉錄到 {covered:.2f} 秒")
     return covered
 
 
@@ -353,7 +395,7 @@ class MossOutput:
     text: str
     """未解析的輸出文字。"""
     covered_until: Optional[float]
-    """可能提早停止時擔保轉錄到哪一秒（:func:`covered_until`）；沒有跡象時是 None。"""
+    """可能提早停止、或最後一段沒有文字時，擔保轉錄到哪一秒（:func:`covered_until`）；都不是時是 None。"""
 
 
 def transcribe(
@@ -398,9 +440,9 @@ def transcribe(
         gc.collect()
         torch.cuda.empty_cache()
 
-    segments, consumed = _parse(text)
-    return MossOutput(segments, text, covered_until(
-        segments, incomplete=bool(text[consumed:].strip()),
+    parsed = _parse(text)
+    return MossOutput(parsed.segments, text, covered_until(
+        parsed.pieces, incomplete=bool(text[parsed.consumed:].strip()),
         generated_tokens=generated_tokens, max_new_tokens=max_new_tokens))
 
 
