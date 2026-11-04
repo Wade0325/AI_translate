@@ -199,6 +199,10 @@ class Settings(BaseSettings):
     # 音樂與環境音也算聲音，Gemini 的最後一行也常沒有結束時間，所以留一分鐘的餘裕；MOSS 提早停下時
     # 少的是約 16k token 之後的全部（#94）
     tail_loss_min_seconds: float = 60.0
+    # 轉接器回報了擔保轉錄到哪一秒（輸出被截斷，例如本機的 MOSS 用完生成預算，#326）時改用這個門檻：
+    # 模型是說到一半被切斷的，擔保點之後幾乎一定還有沒轉到的話，上一項的一分鐘餘裕會漏掉結尾的幾十秒。
+    # 只濾掉零星的雜音
+    tail_loss_truncated_min_seconds: float = 1.0
     # 接續（#94）：模型能力允許接續的模型（本機的 MOSS）在分段轉錄的某一段可能掉尾時（照上一項的規則），
     # 從停下的地方往前重疊這麼多秒再轉錄一次並接回；重疊的部分用來去掉重複的片段、配對說話者編號
     continuation_overlap_seconds: float = 120.0

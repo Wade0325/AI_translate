@@ -97,7 +97,8 @@ def cmd_transcribe(args) -> int:
     if not run["success"]:
         print(f"\n轉錄失敗：{run['error']}\nmanifest：{manifest_path}", file=sys.stderr)
         return 1
-    vram = "（沒有用到顯卡）" if run["peak_vram_gb"] is None else f"{run['peak_vram_gb']} GB"
+    vram = ("（沒有用到顯卡）" if run["peak_vram_gb"] is None
+            else f"{run['peak_vram_gb']} GB（張量用到 {run['peak_vram_allocated_gb']} GB）")
     print(f"\n轉錄結果：{transcript}（{run['segments']} 個片段）\nmanifest：{manifest_path}\n"
           f"耗時 {run['seconds']} 秒，RTF {run['rtf']}，峰值顯存 {vram}\n"
           f"計分：python -m tools.eval eval --reference <名稱> --transcript {transcript}")
@@ -171,6 +172,7 @@ def _run(audio: Path, provider: str, model: str, language: str, transcript: Path
         "seconds": round(seconds, 3),
         "rtf": round(seconds / duration, 4) if duration else None,
         "peak_vram_gb": _peak_vram_gb(),
+        "peak_vram_allocated_gb": _peak_vram_gb("max_memory_allocated"),
         "stages": _stages(reports, end=seconds),
     }
 
@@ -193,9 +195,13 @@ def _stages(reports: list[tuple[float, str]], end: float) -> list[dict[str, Any]
     return stages
 
 
-def _peak_vram_gb() -> float | None:
+def _peak_vram_gb(stat: str = "max_memory_reserved") -> float | None:
     """這次轉錄 PyTorch 向顯卡要過的最大顯存（``max_memory_reserved``，不含 CUDA 本身佔用的部分）；
-    沒有用到顯卡時是 None。"""
+    沒有用到顯卡時是 None。
+
+    ``stat`` 給 ``max_memory_allocated`` 時是張量實際用到的最大顯存：比保留的少很多時，差的是配置器
+    留著沒用的顯存（#326）。
+    """
     torch = sys.modules.get("torch")
     if torch is None:
         return None
@@ -203,7 +209,7 @@ def _peak_vram_gb() -> float | None:
         # is True：測試環境裡 torch 是 mock，回傳的不是 bool
         if torch.cuda.is_available() is not True:
             return None
-        return round(torch.cuda.max_memory_reserved() / 1024 ** 3, 2)
+        return round(getattr(torch.cuda, stat)() / 1024 ** 3, 2)
     except Exception:
         return None
 

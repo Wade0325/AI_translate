@@ -42,7 +42,10 @@ ATTN_IMPLEMENTATION = "sdpa_win"
 SAMPLE_RATE = 16000
 MAX_LENGTH = 131072                # 模型上下文上限（prompt + 生成）
 AUDIO_TOKENS_PER_SECOND = 12.5     # Whisper 50 Hz → 編碼器 stride 2 → 4 倍時間合併
-OUTPUT_TOKENS_PER_SECOND = 12      # 生成預算；實測中文對話約 6、日文 ASMR 約 5 token/秒
+# 生成預算：實測中文對話約 6、日文 ASMR 約 5 token/秒；多人快速對答的立法院質詢 1,815.6 秒生成了 23,132
+# token（每秒約 12.7），原本的 12 不夠、用完預算掉了結尾（#326）。只是上限：KV cache 隨實際生成的量長大，
+# 放寬不會多佔顯存，只有模型重複個不停時會多跑一段才停
+OUTPUT_TOKENS_PER_SECOND = 16
 MARKER_TOKENS_PER_SECOND = 2.0     # 每 2 秒一個時間標記，最多 4 位數
 _EXPECTED_OUTPUT_TOKENS_PER_SECOND = 8.0  # 決定單次長度時保留的生成空間（實測 5–6）
 # 每秒音訊在一次推論中佔用的 token（prompt＋預留生成）；上下文與顯存估算共用
@@ -404,6 +407,20 @@ def transcribe(
         generated_tokens=generated_tokens, max_new_tokens=max_new_tokens))
 
 
+def _vram_peaks() -> str:
+    """這個行程到目前為止 PyTorch 配置過與保留過的最大顯存，寫進 log。
+
+    保留（``max_memory_reserved``，評測的峰值顯存也是看它）遠大於配置（``max_memory_allocated``）時，
+    多出來的是配置器留著、沒有在用的顯存，例如 KV cache 一路變長留下的碎片；兩者差不多時是真的要用
+    那麼多。#326 的立法院質詢保留到 18.98 GiB，超過 16 GB 的顯卡，要靠這兩個數字分辨是哪一種。
+    """
+    import torch
+
+    gib = 2 ** 30
+    return (f"顯存峰值：配置 {torch.cuda.max_memory_allocated() / gib:.2f} GiB、"
+            f"保留 {torch.cuda.max_memory_reserved() / gib:.2f} GiB")
+
+
 def _generate(model, processor, wav_path: Path, duration: float,
               stopping_criteria, status_callback) -> Tuple[str, int, int]:
     """跑一次 generate，回傳（輸出文字, 生成了幾個 token, max_new_tokens）。"""
@@ -443,6 +460,6 @@ def _generate(model, processor, wav_path: Path, duration: float,
         )
     generated = output_ids[0][prompt_len:]
     generated_tokens = int(generated.numel())
-    logger.info(f"MOSS 生成 {generated_tokens} tokens")
+    logger.info(f"MOSS 生成 {generated_tokens} tokens；{_vram_peaks()}")
     text = processor.tokenizer.decode(generated, skip_special_tokens=True).strip()
     return text, generated_tokens, max_new_tokens

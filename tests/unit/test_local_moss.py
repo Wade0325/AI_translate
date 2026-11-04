@@ -4,6 +4,7 @@ torch 在 conftest 已被 mock，這裡只測純邏輯；模型推論與 Windows
 正確性在 lab/src/moss.py（attn-check、E7）以真實 GPU 驗證過。
 """
 import json
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -149,14 +150,20 @@ class TestMaxNewTokens:
         assert moss.max_new_tokens_for(10) == 2048
 
     def test_scales_with_duration(self):
-        # 51.8 分鐘：12 token/秒 + 1024
-        assert moss.max_new_tokens_for(3105) == 3105 * 12 + 1024
+        # 51.8 分鐘：16 token/秒 + 1024
+        assert moss.max_new_tokens_for(3105) == 3105 * 16 + 1024
+
+    def test_covers_the_densest_speech_measured(self):
+        # #326：多人快速對答的立法院質詢（30:42.35）生成到 1,815.6 秒就用完 23,132 token 的預算，
+        # 最後 26.75 秒沒轉到。照同樣的密度轉完整個檔要約 23,470 token，預算要放得下
+        duration = 1842.35
+        assert moss.max_new_tokens_for(duration) >= 23_132 / 1815.6 * duration
 
 
 class TestGenerationBudget:
     def test_uses_length_budget_when_context_has_room(self):
         # 實測 51.8 分鐘的 prompt 為 41168 token
-        assert moss.generation_budget(41168, 3105) == 3105 * 12 + 1024
+        assert moss.generation_budget(41168, 3105) == 3105 * 16 + 1024
 
     def test_clamped_to_remaining_context(self):
         assert moss.generation_budget(125000, 9000) == moss.MAX_LENGTH - 125000
@@ -173,6 +180,18 @@ class TestLatestSegmentStart:
 
     def test_no_segment_start(self):
         assert moss.latest_segment_start("西暦[2024]年") is None
+
+
+class TestVramPeaks:
+    def test_log_shows_allocated_and_reserved_peaks(self, monkeypatch):
+        # #326：保留的峰值（評測的峰值顯存）遠大於配置的峰值時，多出來的是配置器留著沒用的顯存；
+        # log 兩個都寫，才分得出來
+        gib = 2 ** 30
+        cuda = SimpleNamespace(max_memory_allocated=lambda: int(6.9 * gib),
+                               max_memory_reserved=lambda: int(18.98 * gib))
+        monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(cuda=cuda))
+
+        assert moss._vram_peaks() == "顯存峰值：配置 6.90 GiB、保留 18.98 GiB"
 
 
 class TestMaxSinglePassSeconds:
