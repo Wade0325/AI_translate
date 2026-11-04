@@ -32,7 +32,8 @@ class TranscriptionTaskResult(BaseModel):
         default=None,
         description="轉接器擔保轉錄到哪一秒（送進轉接器的那段音檔的時間軸）：模型可能提早停止輸出時"
                     "（例如本機的 MOSS 用完生成預算或輸出結尾不完整），之後的內容可能"
-                    "沒有轉錄到；沒有這種跡象時是 None。分段轉錄照它決定要不要接續"
+                    "沒有轉錄到；模型在最後一個片段之後還轉了一段、卻沒有文字時（例如 MOSS 在長段無聲處"
+                    "只輸出說話者標籤，#325），是它轉到的地方。都不是時是 None。分段轉錄照它決定要不要接續"
                     "（app.services.continuation），只在轉接器回傳與分段轉錄內部使用，不記進任務紀錄。",
     )
     tail_loss_from: Optional[float] = Field(
