@@ -36,6 +36,12 @@ class TranscriptionTaskResult(BaseModel):
                     "只輸出說話者標籤，#325），是它轉到的地方。都不是時是 None。分段轉錄照它決定要不要接續"
                     "（app.services.continuation），只在轉接器回傳與分段轉錄內部使用，不記進任務紀錄。",
     )
+    truncated: bool = Field(
+        default=False,
+        description="轉接器的輸出被截斷（例如本機的 MOSS 用完生成預算或輸出結尾不完整）：covered_until 之後"
+                    "幾乎一定還有沒轉到的話，掉尾的檢查不等一分鐘的聲音（app.services.tail_loss，#326）。"
+                    "最後一段沒有文字（#325）不算。只在轉接器回傳與分段轉錄內部使用，不記進任務紀錄。",
+    )
     tail_loss_from: Optional[float] = Field(
         default=None,
         description="可能掉尾的起點（原音檔的時間軸，秒）：從這裡起可能有內容沒有轉錄到，例如供應商"
