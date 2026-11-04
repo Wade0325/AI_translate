@@ -213,6 +213,7 @@ Issue 是公開的，任何人都看得到：
 其他軟體的限制：
 
 - **VLC 3.0 播 VTT 時不顯示重疊的字幕**：Multi-Speaker 開著時，另一位說話者插話的那一則字幕會和正在說的那一則同時出現（[ADR 0008](docs/adr/0008-subtitles-follow-speech-and-may-overlap.md)）。VLC 3.0 播 VTT 時，後出現的那一則不會顯示，播 SRT 時兩則都會顯示，所以用 VLC 看字幕請下載 SRT（在 VLC 3.0.20 實測）。
+- **mpv 這類用 ffmpeg 讀字幕的播放器播 LRC 時，說話者標記少了開頭的 `[`**：Multi-Speaker 開著時，LRC 每一行寫成 `[00:01.00][S0] 文字`。ffmpeg 把緊接在時間戳後面的 `[` 也當成時間戳的括號略過，畫面顯示成「S0] 文字」；字幕出現的時間不受影響，換新版的 ffmpeg 也一樣（FFmpeg 6.1 到 8.0 讀時間戳的這段程式沒有改過）。PotPlayer 照原樣顯示 `[S0]`。用 mpv 看帶說話者標記的字幕請下載 SRT；Multi-Speaker 關著（預設）時 LRC 沒有說話者標記，不受影響（在 mpv 0.37、Windows 的 mpv-lazy 0.35 與 PotPlayer 26.10.21 實測，[#271](https://github.com/Wade0325/AI_translate/issues/271)）。
 
 ---
 
