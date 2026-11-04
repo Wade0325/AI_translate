@@ -19,6 +19,11 @@
    - 接續（#94，規則見 :mod:`app.services.continuation`）：成功、模型能力允許接續，這一段又照掉尾的規則
      可能掉尾時，把這一段從停下的地方附近到結尾切出來再送一次，接回這一段，直到轉到結尾或放棄。接續段
      的暫時錯誤照樣等一段時間重試；接續失敗或卡住時保留已轉的部分，任務照樣完成。
+   - 空段（#327）：轉接器回報成功、卻沒有片段的段，例如整段只有靜音或測試音（Gemini 正常結束卻沒有
+     帶時間戳的行、本機的模型沒有轉錄出任何內容）。算轉完了這一段，不讓任務失敗、不切段重試，其他段
+     的片段照樣保留。這一段有沒有漏掉內容照掉尾的規則看（第 6 點）：近乎無聲（扣掉靜音不到
+     ``TAIL_LOSS_MIN_SECONDS`` 秒的聲音）時不提示，不然從這一段的開頭起可能沒有轉錄到。每一段都是空段、
+     整個任務沒有片段時，任務生命週期拿第一個寫了原因的段回報失敗。
 4. 合併：每一段的片段平移到它在語音視圖上的起點，片段 key 加上這一段的前綴。#93 的跨段說話者編號
    之後接在這裡：拿得到所有轉完的段，每一段帶著音檔、位置與段內片段。
 5. 放回原音檔的時間軸（:meth:`SpeechTimeline.in_original_order`）：時間還原回原音檔，依開始時間
@@ -233,6 +238,9 @@ class _ChunkedTranscription:
         if result.success:
             if self._continuation:
                 result = self._continued(chunk, result)
+            if not result.segments:
+                # 空段：不讓任務失敗，有沒有漏掉內容照掉尾的規則看
+                logger.warning(f"{self._which(chunk) or '音檔'}沒有轉錄出任何內容，當成空段")
             self._transcribed.append(_TranscribedChunk(chunk, result))
             return
         code = result.error_code or ErrorCode.INTERNAL
