@@ -286,3 +286,15 @@ def fake():
     registry.register("fake", previous)
 
 
+
+
+@pytest.fixture
+def embedder():
+    """換上假的說話者嵌入（見 tests/support/fake_embedder.py），測試結束後換回原本的。"""
+    from app.services import speaker_alignment
+    from tests.support.fake_embedder import FakeEmbedder
+
+    fake_embedder = FakeEmbedder()
+    previous = speaker_alignment.use_embedder(fake_embedder)
+    yield fake_embedder
+    speaker_alignment.use_embedder(previous)

@@ -268,7 +268,7 @@ def local_machine(monkeypatch):
     """免安裝模式的這台電腦：有沒有顯卡（gpu 是名稱，None 是沒有）、下載了哪些模型權重
     由測試決定；預設是有顯卡、預設模型的權重都已下載。"""
     machine = SimpleNamespace(
-        gpu="Test GPU", downloaded={weights.MOSS_MODEL_ID, weights.ALIGNER_MODEL_ID})
+        gpu="Test GPU", downloaded=set(weights.REQUIRED_REPOS))
     monkeypatch.setattr(get_settings(), "app_mode", "standalone")
     monkeypatch.setattr(weights, "detect_gpu",
                         lambda: weights.Gpu(machine.gpu, 16.0, True) if machine.gpu else weights.NO_GPU)

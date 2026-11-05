@@ -344,9 +344,11 @@ class TestMaxSinglePassSeconds:
 # ─── 權重對照 ────────────────────────────────────────────────────────────
 
 class TestWeights:
-    def test_default_model_needs_only_moss_and_aligner(self):
+    def test_default_model_needs_moss_the_aligner_and_the_speaker_embedding(self):
+        # CAM++ 在分段轉錄時對齊各段的說話者編號（#93）
         assert weights.DEFAULT_LOCAL_MODEL == weights.MOSS_ALIGN
-        assert weights.REQUIRED_REPOS == (weights.MOSS_MODEL_ID, weights.ALIGNER_MODEL_ID)
+        assert weights.REQUIRED_REPOS == (
+            weights.MOSS_MODEL_ID, weights.ALIGNER_MODEL_ID, weights.CAMPPLUS_MODEL_ID)
 
     def test_repos_per_model(self):
         assert weights.ASR_MODEL_ID in weights.repos_for_model(weights.MOSS_QWEN)
@@ -355,7 +357,7 @@ class TestWeights:
         assert weights.repos_for_model(None) == weights.REQUIRED_REPOS
 
     def test_all_repos_is_deduplicated_union(self):
-        assert len(weights.ALL_REPOS) == len(set(weights.ALL_REPOS)) == 4
+        assert len(weights.ALL_REPOS) == len(set(weights.ALL_REPOS)) == 5
 
     def test_is_moss_model(self):
         assert weights.is_moss_model(weights.MOSS_ALIGN)
@@ -490,6 +492,16 @@ class TestWeights:
         (folder / "model.safetensors").write_bytes(b"x")
         self._fake_hub(monkeypatch, folder)
         assert weights.repo_is_ready(weights.ALIGNER_MODEL_ID)
+
+    def test_speaker_embedding_is_ready_with_its_weights_file(self, monkeypatch, tmp_path):
+        # CAM++ 不是 transformers 格式（沒有 config.json 與 safetensors）：看它的權重檔在不在
+        folder = tmp_path / "s"
+        folder.mkdir()
+        (folder / "config.yaml").write_text("model: CAMPPlus")
+        self._fake_hub(monkeypatch, folder)
+        assert not weights.repo_is_ready(weights.CAMPPLUS_MODEL_ID)
+        (folder / "campplus_cn_common.bin").write_bytes(b"x")
+        assert weights.repo_is_ready(weights.CAMPPLUS_MODEL_ID)
 
     def test_ensure_local_ready_requires_gpu(self, monkeypatch):
         monkeypatch.setattr(weights, "detect_gpu", lambda: weights.NO_GPU)

@@ -35,7 +35,7 @@ def machine(monkeypatch):
     """
     state = {
         "gpu": weights.Gpu("NVIDIA GeForce RTX 4080", 15.99, True),
-        "ready": {weights.MOSS_MODEL_ID, weights.ALIGNER_MODEL_ID},
+        "ready": set(weights.REQUIRED_REPOS),
         "commands": {"nvidia-smi": "576.02\n", "ffmpeg": FFMPEG_OUTPUT},
     }
     monkeypatch.setattr(platform, "system", lambda: "Windows")
@@ -118,7 +118,7 @@ class TestStandalone:
                 "(found version 11040).") in lines
         assert not any(line.startswith("- 顯卡記憶體") for line in lines)
         assert (f"- 模型權重 moss-align（預設）：缺少 {weights.MOSS_MODEL_ID}、"
-                f"{weights.ALIGNER_MODEL_ID}") in lines
+                f"{weights.ALIGNER_MODEL_ID}、{weights.CAMPPLUS_MODEL_ID}") in lines
 
     def test_no_nvidia_driver_and_no_ffmpeg(self, client, machine, standalone):
         machine["gpu"] = weights.NO_GPU

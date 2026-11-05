@@ -61,7 +61,7 @@ def test_docker_mode_points_to_a_command_that_downloads_the_missing_weights(monk
     assert importlib.util.find_spec(module) is not None
     assert module == download_weights.__name__
     assert download_weights.main([model]) == 0
-    assert downloaded == [weights.ASR_MODEL_ID, weights.ALIGNER_MODEL_ID]
+    assert downloaded == [weights.ASR_MODEL_ID, weights.ALIGNER_MODEL_ID, weights.CAMPPLUS_MODEL_ID]
     weights.ensure_local_ready(weights.MOSS_QWEN)
 
 
@@ -71,7 +71,7 @@ def test_without_a_model_downloads_what_the_default_model_needs(hub, capsys):
     ready, downloaded = hub
     ready.add(weights.MOSS_MODEL_ID)
     assert download_weights.main([]) == 0
-    assert downloaded == [weights.ALIGNER_MODEL_ID]
+    assert downloaded == [weights.ALIGNER_MODEL_ID, weights.CAMPPLUS_MODEL_ID]
     assert weights.ALIGNER_MODEL_ID in capsys.readouterr().out
 
 
