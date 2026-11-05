@@ -69,6 +69,63 @@ class TestMatchSpeakers:
         assert [s["speaker"] for s in spliced] == [None, "S0", None]
 
 
+class TestOnePersonSplitInTwo:
+    """#322：接續段的說話者分離把同一個人分成兩位（例如語氣在重疊區裡變了）時，兩位都配回前段的同一個
+    編號；重疊區裡真的是兩個人時不併。
+
+    重疊區 10–40 秒。前段：S0 只在重疊區之前說話，重疊區裡一直是 S1，一句一句說到 40 秒停下。"""
+
+    EARLIER = [segment(0.0, 8.0, "S0"), segment(10.0, 16.0, "S1"), segment(17.0, 24.0, "S1"),
+               segment(25.0, 31.0, "S1"), segment(32.0, 36.0, "S1"), segment(37.0, 40.0, "S1")]
+    OVERLAP = (10.0, 40.0)
+
+    def test_both_halves_keep_the_earlier_number(self):
+        # ja3-jvnv：接續段把 S1 在 37 秒換語氣之前與之後分成 S0、S1。兩位都只和前段的 S1 同時說話，
+        # S0 說得久、先配；S1 同時說話 3 秒、全部和前段的 S1 重疊，也沒和 S0 同時說話，是同一個人
+        later = [segment(10.0, 16.0, "S0", "後1"), segment(17.0, 24.0, "S0", "後2"),
+                 segment(25.0, 31.0, "S0", "後3"), segment(32.0, 36.0, "S0", "後4"),
+                 segment(37.0, 40.0, "S1", "後5"), segment(41.0, 46.0, "S1", "後6")]
+
+        assert continuation.match_speakers(self.EARLIER, later, overlap=self.OVERLAP) == {
+            "S0": "S1", "S1": "S1"}
+        spliced = continuation.splice(self.EARLIER, later, overlap=self.OVERLAP)
+        assert [s["speaker"] for s in spliced] == ["S0", "S1", "S1", "S1", "S1", "S1", "S1"]
+
+    @pytest.mark.parametrize("earlier, later", [
+        # 新來的人在前段停下前 1 秒開口，前段的 S1 那句和他重疊 1 秒（例如時間戳對不準）：太短，不是證據
+        (EARLIER, [segment(10.0, 31.0, "S0"), segment(32.0, 36.0, "S0"), segment(39.0, 42.0, "S1")]),
+        # 新來的人在重疊區說了 10 秒，前段只有 3 秒認成 S1，其他時候前段沒有片段：大部分沒有證據
+        (EARLIER[:3] + [segment(25.0, 29.0, "S1")],
+         [segment(10.0, 16.0, "S0"), segment(17.0, 24.0, "S0"), segment(26.0, 36.0, "S1")]),
+        # 兩個人搶話，前段只認出 S1：新來的人整句都和前段的 S1 重疊，但他和接續段的 S0 同時在說話，
+        # 一個人不會和自己搶話
+        (EARLIER, [segment(10.0, 36.0, "S0"), segment(17.0, 24.0, "S1"), segment(37.0, 40.0, "S0")]),
+    ], ids=["brief", "mostly_unheard", "talking_over"])
+    def test_two_different_people_are_not_merged(self, earlier, later):
+        assert continuation.match_speakers(earlier, later, overlap=self.OVERLAP) == {
+            "S0": "S1", "S1": "S2"}
+
+    def test_without_enough_evidence_the_next_pair_is_matched_one_to_one(self):
+        # 兩個人搶話，前段把那段大多認成 S1、只有 1 秒認成另一位 S2：新來的人不併進 S1，照一對一配 S2
+        earlier = [*self.EARLIER[:2], segment(17.0, 24.0, "S1"), segment(20.0, 21.0, "S2"),
+                   *self.EARLIER[3:]]
+        later = [segment(10.0, 36.0, "S0"), segment(17.0, 24.0, "S1"), segment(37.0, 40.0, "S0")]
+
+        assert continuation.match_speakers(earlier, later, overlap=self.OVERLAP) == {
+            "S0": "S1", "S1": "S2"}
+
+    def test_the_log_says_why_without_what_was_said(self, app_log):
+        later = [segment(10.0, 36.0, "S0", "後1"), segment(37.0, 40.0, "S1", "後2"),
+                 segment(41.0, 46.0, "S2", "後3")]
+
+        continuation.match_speakers(self.EARLIER, later, overlap=self.OVERLAP)
+
+        assert app_log[-1].endswith(
+            "接續的說話者配對（接續段→前段）：S0→S1（同時說話 23.0 秒）；"
+            "S1→S1（同時說話 3.0 秒，佔重疊區的 100%，和 S0 是同一個人）；S2→S2（新編號）")
+        assert not any("後" in entry for entry in app_log)
+
+
 class TestResumePoint:
     def test_overlaps_back_to_the_latest_pause_before_it(self, overlap):
         # 停在 20 秒：往前 4 秒是 16 秒，之前 2 秒內最晚的靜音是 15.5 秒
