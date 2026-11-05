@@ -60,6 +60,16 @@ class TestMatchSpeakers:
         assert continuation.match_speakers(earlier, later, overlap=(6.0, 12.0)) == {
             "S0": "S0", "S1": "S1"}
 
+    def test_across_chunks_nobody_in_the_overlap_means_new_numbers(self):
+        # 分段轉錄的後一段（#93）：各段的說話者分離互相獨立，沒有證據時照原本的編號等於把不同段的 S0 當成
+        # 同一個人，所以一律用新的編號，接在前面用過的最大編號之後
+        earlier = [segment(0.0, 5.0, "S0"), segment(5.0, 6.0, "S1")]
+        later = [segment(13.0, 15.0, "S0"), segment(15.0, 16.0, "S1")]
+
+        assert continuation.match_speakers(earlier, later, overlap=(6.0, 12.0),
+                                           keep_without_evidence=False) == {
+            "S0": "S2", "S1": "S3"}
+
     def test_segments_without_a_speaker_are_left_alone(self):
         earlier = [segment(6.0, 9.0, None), segment(9.0, 11.0, "S0")]
         later = [segment(6.0, 9.0, None), segment(9.0, 11.0, "S1"), segment(12.0, 13.0, None)]

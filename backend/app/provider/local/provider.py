@@ -80,6 +80,9 @@ def _capabilities(model: str) -> ModelCapabilities:
         # MOSS 轉長音檔時可能約輸出 16k token 就自己停下（#94），從停下的地方附近接續；接續段的
         # 說話者編號靠重疊區配對回來。舊版的 VibeVoice 不接續
         continuation=weights.is_moss_model(model),
+        # 分段轉錄的後一段往前重疊，靠重疊區把說話者編號配回前一段（#93），和接續用同一套配對。
+        # 舊版的 VibeVoice 不重疊
+        match_speakers_across_chunks=weights.is_moss_model(model),
         accepts_prompt=False,
         accepts_user_text=False,
         supports_batch=False,

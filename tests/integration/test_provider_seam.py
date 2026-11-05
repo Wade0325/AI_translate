@@ -1071,6 +1071,96 @@ class TestContinuation:
         assert leftovers(data_dir) == []
 
 
+def turns(*tones: int) -> list[tuple[float, float, int]]:
+    """和 SPEAKING 同樣的節奏（每 3.5 秒說 1.5 秒），說話者照 ``tones`` 的順序輪。"""
+    return [(3.5 * i, 3.5 * i + 1.5, tone) for i, tone in enumerate(tones)]
+
+
+class TestSpeakersAcrossChunks:
+    """跨段的說話者編號（#93）：分段轉錄的後一段往前多轉一段重疊區，靠重疊區裡兩邊同時說話的時間，把
+    後一段的說話者編號配回前一段；規則和接續相同（:func:`app.services.continuation.match_speakers`）。
+
+    假供應商照收到的音檔回答（Listen），說話者編號照它在這段音檔裡聽到的先後，各段互相獨立，像本機的
+    MOSS。單次只能處理 20 秒、重疊 6.5 秒：26 秒的音檔切在最接近中點的靜音 13.0 秒，後一段從 6.5 秒
+    （之前半個重疊之內沒有靜音）送到結尾，19.5 秒。重疊區是 6.5 秒到前一段最後一句的結束 12.0 秒。
+    """
+
+    @pytest.fixture(autouse=True)
+    def _like_local(self, fake, settings, monkeypatch):
+        fake.model_capabilities = replace(
+            fake.model_capabilities, remove_silence=False, single_pass_seconds=20.0,
+            match_speakers_across_chunks=True)
+        monkeypatch.setattr(settings, "continuation_overlap_seconds", 6.5)
+
+    def test_speakers_keep_their_numbers_in_the_next_chunk(self, api, fake, data_dir):
+        # 前一段先聽到 A（S0）；後一段從第 3 句（B）聽起，自己把 B 編成 S0、A 編成 S1。重疊區裡第 3、4
+        # 句兩邊都轉了：B 和前一段的 S1、A 和前一段的 S0 同時說話，配回去。沒有重疊區時，後一段的 B 會
+        # 拿到前一段 A 的 S0
+        fake.script = [Listen(), Listen()]
+        messages = transcribe(api, "uid-chunk-speakers",
+                              voiced=turns(TONE_A, TONE_B, TONE_B, TONE_A, TONE_B, TONE_A, TONE_B, TONE_A))
+
+        assert codes(messages)[-1] == TaskStatus.COMPLETED
+        assert fake.durations == pytest.approx([13.0, 19.5], abs=0.01)
+        segments = stored_segments(api, messages[-1]["task_uuid"])
+        # 每一句剛好一次：重疊區轉了兩次的句子留前一段的
+        assert [s["start"] for s in segments] == pytest.approx(SPEAKING_STARTS, abs=0.01)
+        assert [s["seg_key"] for s in segments] == [
+            "a.0000", "a.0001", "a.0002", "a.0003", "b.0002", "b.0003", "b.0004", "b.0005"]
+        assert {(heard_tone(s), s["speaker"]) for s in segments} == {(400, "S0"), (700, "S1")}
+        assert leftovers(data_dir) == []
+
+    def test_someone_silent_in_the_overlap_gets_a_new_number(self, api, fake):
+        # 重疊區裡只有 A 說話（第 3、4 句）：A 配回 S0。B 在重疊區沒有說話，沒有證據，用新的 S2，不拿前一段
+        # 任何人的編號：寧可同一個人多一個編號，也不把不同的人併成同一個
+        fake.script = [Listen(), Listen()]
+        messages = transcribe(api, "uid-chunk-speaker-unheard",
+                              voiced=turns(TONE_A, TONE_B, TONE_A, TONE_A, TONE_B, TONE_A, TONE_B, TONE_A))
+
+        segments = stored_segments(api, messages[-1]["task_uuid"])
+        assert [(heard_tone(s), s["speaker"]) for s in segments] == [
+            (400, "S0"), (700, "S1"), (400, "S0"), (400, "S0"),
+            (700, "S2"), (400, "S0"), (700, "S2"), (400, "S0")]
+
+    def test_without_anyone_speaking_in_the_overlap_the_next_chunk_gets_new_numbers(
+            self, api, fake):
+        # 5–20 秒是靜音：切在它的正中間 12.5 秒，後一段從 6.25 秒起，前一段最後一句在 5.0 秒就結束，
+        # 兩邊都轉了的地方沒有人說話。沒有證據可以配，後一段的人都用新的編號，不沿用前一段的 S0、S1
+        # （各段的說話者分離互相獨立，照原本的編號等於把不同段的 S0 當成同一個人）
+        fake.script = [Listen(), Listen()]
+        voiced = [(0.0, 1.5, TONE_A), (3.5, 5.0, TONE_B), (20.0, 21.5, TONE_A), (23.5, 25.0, TONE_B)]
+        messages = transcribe(api, "uid-chunk-speakers-no-overlap", voiced=voiced, length=26.0)
+
+        assert fake.durations == pytest.approx([12.5, 19.75], abs=0.01)
+        segments = stored_segments(api, messages[-1]["task_uuid"])
+        assert [(heard_tone(s), s["speaker"]) for s in segments] == [
+            (400, "S0"), (700, "S1"), (400, "S2"), (700, "S3")]
+
+    def test_empty_chunk_before_does_not_drop_what_the_next_chunk_heard(self, api, fake):
+        # 前一段是空段（#327）：沒有片段可以對照，後一段在重疊區轉出的句子全部保留，不當成重複
+        fake.script = [Empty(), Listen()]
+        messages = transcribe(api, "uid-chunk-after-empty", voiced=SPEAKING)
+
+        assert codes(messages)[-1] == TaskStatus.COMPLETED
+        segments = stored_segments(api, messages[-1]["task_uuid"])
+        assert [s["start"] for s in segments] == pytest.approx(SPEAKING_STARTS[2:], abs=0.01)
+
+    def test_model_without_it_sends_the_chunks_side_by_side(self, api, fake):
+        # Gemini 還沒有（#93 第 2 題）：兩段在切點相接、不重疊，說話者編號照各段自己的
+        fake.model_capabilities = replace(
+            fake.model_capabilities, match_speakers_across_chunks=False)
+        fake.script = [Listen(), Listen()]
+        messages = transcribe(api, "uid-chunks-side-by-side",
+                              voiced=turns(TONE_A, TONE_B, TONE_B, TONE_A, TONE_B, TONE_A, TONE_B, TONE_A))
+
+        assert fake.durations == pytest.approx([13.0, 13.0], abs=0.01)
+        segments = stored_segments(api, messages[-1]["task_uuid"])
+        assert [s["seg_key"] for s in segments][4:] == ["b.0000", "b.0001", "b.0002", "b.0003"]
+        # 後一段從第 5 句（B）聽起，B 拿到 S0：和前一段的 A 同一個編號
+        assert [(heard_tone(s), s["speaker"]) for s in segments][4:] == [
+            (700, "S0"), (400, "S1"), (700, "S0"), (400, "S1")]
+
+
 class TestEmptyChunk:
     """空段（#327）：分段轉錄的一段跑完了，卻沒有轉錄出任何內容，例如會議錄影開頭的長段靜音或測試音。
     不讓任務失敗，其他段的片段照樣保留；這一段有沒有漏掉內容照掉尾的規則看。每一段都是空段時才失敗。
@@ -1798,6 +1888,7 @@ class TestModelCapabilitiesEndpoint:
             "can_terminate": False,
             "split_retry_on_failure": False,
             "continuation": False,
+            "match_speakers_across_chunks": False,
             "accepts_prompt": False,
             "accepts_user_text": True,
             "supports_batch": False,
@@ -1824,6 +1915,16 @@ class TestModelCapabilitiesEndpoint:
 
         assert models
         assert models == {(provider, model): provider == "google" for provider, model in models}
+
+    def test_only_moss_models_match_speakers_across_chunks(self, api):
+        # 跨段的說話者編號（#93）：本機的 MOSS 分段轉錄時往前重疊、配回前一段的編號；舊版的 VibeVoice
+        # 與 Gemini（#93 第 2 題）不重疊
+        listed = listed_capabilities(api)
+        models = {(provider, model): c["match_speakers_across_chunks"]
+                  for (provider, model), c in listed.items() if provider in ("local", "google")}
+
+        assert models
+        assert models == {(provider, model): model.startswith("moss-") for provider, model in models}
 
     def test_no_model_takes_user_text_until_it_reaches_the_task(self, api):
         # 使用者文稿還沒交給任務（#66），#13 Q4 定案先隱藏入口：模型能力照實說不吃，轉錄頁就不提供

@@ -527,7 +527,8 @@ def vram_notice(vram_gb: float, single_pass_seconds: float) -> str | None:
     """顯卡記憶體低於最低需求時給使用者的提示，只提示、不擋（#11 Q2）；夠的時候是 None。
 
     ``single_pass_seconds`` 是這張顯卡上單次能轉錄的長度（0 是不分段）：記憶體越小切得越短，
-    長音檔切成越多段，各段各自分離說話者，說話者編號越容易對不上（跨段對齊是 #93）。
+    長音檔切成越多段，各段各自分離說話者，說話者編號越容易對不上：跨段對齊（#93）只配得回切點前的
+    重疊區裡說過話的人。
     """
     nominal = round(vram_gb)  # 標示 12 GB 的卡回報約 11.99 GiB
     if nominal >= VRAM_MINIMUM_GB:

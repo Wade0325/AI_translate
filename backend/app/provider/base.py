@@ -47,6 +47,10 @@ class ModelCapabilities:
     """某一段提早停止輸出時，要不要從停下的地方附近再轉錄一次並接回（接續，#94）。開著時，分段轉錄
     看轉接器回報的 ``covered_until`` 與語音視圖決定要不要接續（見
     :mod:`app.services.continuation`）。"""
+    match_speakers_across_chunks: bool
+    """分段轉錄時，後一段要不要往前多轉一段重疊區，靠重疊區把後一段的說話者編號配回前一段（#93）。
+    各段的說話者分離互相獨立的模型才需要；規則和接續相同（:func:`app.services.continuation.match_speakers`），
+    見 :mod:`app.services.chunked_transcription`。"""
     accepts_prompt: bool
     accepts_user_text: bool
     supports_batch: bool

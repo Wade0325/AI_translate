@@ -19,7 +19,8 @@
 3. 接回與去重（:func:`splice`）：重疊區前段與接續段各轉了一次。接續點之前信前段、之後信接續段；
    接續點挑兩邊都在換句的地方，片段整句保留。
 4. 說話者編號（:func:`match_speakers`）：接續段的說話者分離是另外做的，靠重疊區配對回前段的編號；
-   接續段把同一個人分成兩位時，證據夠就兩位都配回同一個編號（#322）。
+   接續段把同一個人分成兩位時，證據夠就兩位都配回同一個編號（#322）。分段轉錄的後一段往前重疊時
+   （#93），接回前一段、配說話者編號也用 :func:`splice`，見 :mod:`app.services.chunked_transcription`。
 5. 放棄：接續失敗、一次沒有推進 ``CONTINUATION_MIN_PROGRESS_SECONDS`` 秒（卡住），或已經接續了
    ``CONTINUATION_MAX_ATTEMPTS`` 次。放棄時保留已轉的部分，任務照樣完成，停下的地方照掉尾的提示告訴
    使用者「從 mm:ss 起可能沒有轉錄到」（#94 第 1 題）。接續了幾次只寫進日誌，畫面不顯示（第 3 題）。
@@ -63,18 +64,23 @@ def resume_point(stopped: float, silences: Optional[Sequence[float]]) -> float:
     return round(max(candidates, default=target), 3)
 
 
-def splice(earlier: Sequence[Segment], later: Sequence[Segment], *,
-           overlap: Span) -> List[Dict[str, Any]]:
+def splice(earlier: Sequence[Segment], later: Sequence[Segment], *, overlap: Span,
+           keep_without_evidence: bool = True,
+           described_as: str = "接續的說話者配對（接續段→前段）") -> List[Dict[str, Any]]:
     """把接續段 ``later`` 接在前段 ``earlier`` 後面，回傳新的片段，依前段、接續段的順序。
 
     ``overlap`` 是（接續段的起點, 前段停下的地方），兩邊都轉了這一段。接續點（:func:`_junction`）
     之前的片段用前段的，之後用接續段的：片段的中點在接續點之前算前段，之後算接續段。接續點兩邊都不在
     片段中間時，每個片段整個落在一邊，句子不會被切開。接續段的說話者編號換成前段的
-    （:func:`match_speakers`）。
+    （:func:`match_speakers`，``keep_without_evidence`` 與 ``described_as`` 照傳）。
+
+    分段轉錄的後一段往前重疊時（#93）也用這裡接回前一段：``later`` 是後一段，``overlap`` 是（後一段的
+    起點, 前一段轉到的地方）。
     """
     begin, stopped = overlap
     cut = _junction(earlier, later, begin, stopped)
-    speakers = match_speakers(earlier, later, overlap=overlap)
+    speakers = match_speakers(earlier, later, overlap=overlap,
+                              keep_without_evidence=keep_without_evidence, described_as=described_as)
     kept = [dict(segment) for segment in earlier if _middle(segment) < cut]
     for segment in later:
         if _middle(segment) >= cut:
@@ -84,8 +90,9 @@ def splice(earlier: Sequence[Segment], later: Sequence[Segment], *,
     return kept
 
 
-def match_speakers(earlier: Sequence[Segment], later: Sequence[Segment], *,
-                   overlap: Span) -> Dict[str, str]:
+def match_speakers(earlier: Sequence[Segment], later: Sequence[Segment], *, overlap: Span,
+                   keep_without_evidence: bool = True,
+                   described_as: str = "接續的說話者配對（接續段→前段）") -> Dict[str, str]:
     """接續段的說話者編號對到前段的哪一個，回傳 {接續段的編號: 換成的編號}。
 
     接續段的說話者分離和前段無關，編號照它自己出場的先後，同一個人在兩邊的編號可能不同。``overlap``
@@ -99,7 +106,10 @@ def match_speakers(earlier: Sequence[Segment], later: Sequence[Segment], *,
       寧可同一個人多一個編號，也不把不同的人併成同一個。
 
     重疊區裡兩邊沒有任何同時說話的地方時（例如重疊區只有音樂），沒有可以依據的，照接續段原本的編號。
-    #93 的跨段說話者編號也可以拿重疊區當證據。配對的依據（同時說話幾秒）寫進日誌，不寫文字。
+    ``keep_without_evidence`` 是 False 時改成每一位都用新的編號：分段轉錄的後一段（#93）和前一段的
+    說話者分離互相獨立，照原本的編號等於把不同段的 S0 當成同一個人。
+
+    配對的依據（同時說話幾秒）以 ``described_as`` 開頭寫進日誌，不寫文字。
 
     沒有說話者編號的片段（None）不參與配對。
     """
@@ -116,7 +126,7 @@ def match_speakers(earlier: Sequence[Segment], later: Sequence[Segment], *,
                 key = (b["speaker"], a["speaker"])
                 together[key] = together.get(key, 0.0) + seconds
     named = sorted({s["speaker"] for s in later if _named(s)})
-    if not together:
+    if not together and keep_without_evidence:
         return {speaker: speaker for speaker in named}
 
     mapping: Dict[str, str] = {}
@@ -138,7 +148,7 @@ def match_speakers(earlier: Sequence[Segment], later: Sequence[Segment], *,
             mapping[speaker] = f"S{next_number}"
             evidence[speaker] = "新編號"
             next_number += 1
-    logger.info("接續的說話者配對（接續段→前段）："
+    logger.info(f"{described_as}："
                 + "；".join(f"{mine}→{mapping[mine]}（{evidence[mine]}）" for mine in named))
     return mapping
 

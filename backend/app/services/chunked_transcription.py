@@ -6,7 +6,10 @@
 1. 切段：語音視圖超過單次長度時切成兩段，遞迴到每一段都不超過單次長度；單次長度是 0 時不分段。
    切點依序來自語音視圖在這一段之內的靜音邊界（挑最接近中點的，離頭尾 1 秒內的不算）、Silero、
    正中間。Silero 切出的兩段往下改用 Silero 找：交界不在已知的靜音邊界上。某個切點切不出音檔時改用
-   下一個來源；連正中間都切不開，就以失敗回報，不整段送出。
+   下一個來源；連正中間都切不開，就以失敗回報，不整段送出。模型能力的 ``match_speakers_across_chunks``
+   開著時（#93），後一段往前多切一段重疊區，起點照接續的規則（:func:`continuation.resume_point`：往前
+   ``CONTINUATION_OVERLAP_SECONDS`` 秒、最多到切點的一半、對齊之前半個重疊之內的靜音）；往前重疊之後
+   超過單次長度的照樣再切。
 2. 逐段轉錄：依時間先後一段一段送進轉接器（Gemini 的說話者編號依送進來的先後編號），每一段送出之前
    都查一次取消。
 3. 轉一段（:meth:`_ChunkedTranscription._transcribe_chunk`）是單一的步驟：
@@ -24,8 +27,12 @@
      的片段照樣保留。這一段有沒有漏掉內容照掉尾的規則看（第 6 點）：近乎無聲（扣掉靜音不到
      ``TAIL_LOSS_MIN_SECONDS`` 秒的聲音）時不提示，不然從這一段的開頭起可能沒有轉錄到。每一段都是空段、
      整個任務沒有片段時，任務生命週期拿第一個寫了原因的段回報失敗。
-4. 合併：每一段的片段平移到它在語音視圖上的起點，片段 key 加上這一段的前綴。#93 的跨段說話者編號
-   之後接在這裡：拿得到所有轉完的段，每一段帶著音檔、位置與段內片段。
+4. 合併：每一段的片段平移到它在語音視圖上的起點，片段 key 加上這一段的前綴。往前重疊的段（#93）
+   依序接回前面已經合併的部分（:meth:`_ChunkedTranscription._joined`，規則和接續相同，見
+   :func:`continuation.splice`）：重疊區是（這一段的起點, 前面的段轉到的地方），重疊區裡的句子只留一份，
+   這一段的說話者編號靠重疊區裡兩邊同時說話的時間配回前面的；沒有證據的人用新的編號，不沿用這一段
+   自己的。前面的段沒轉到這一段的起點時（例如前一段是空段），沒有兩邊都轉了的地方：這一段整段保留，
+   說話者都用新的編號。
 5. 放回原音檔的時間軸（:meth:`SpeechTimeline.in_original_order`）：時間還原回原音檔，依開始時間
    排好、重編序號。批次不分段，結果回來之後也經過同一步。
 6. 掉尾（#257）：每一段各自檢查停下的地方（轉接器回報的擔保點，沒有時是最後一個片段的結束）之後還有
@@ -127,18 +134,20 @@ class _Chunk:
         return seconds
 
     def split_at(self, point: float, names: Tuple[str, str], audios: Tuple[Path, Path], *,
-                 keep_silences: bool) -> Tuple[_Chunk, _Chunk]:
+                 keep_silences: bool, second_from: Optional[float] = None) -> Tuple[_Chunk, _Chunk]:
         """在 ``point`` 秒切成的兩段：音檔是 ``audios``，片段 key 的前綴是 ``names``。
 
+        ``second_from`` 是後一段的起點：往前重疊時（#93）在 ``point`` 之前，沒給時就是 ``point``。
         ``keep_silences`` 時已知的靜音跟著分到兩段；Silero 切的不帶：交界不在已知的靜音上，兩段往下
         改用 Silero 找。
         """
+        start = point if second_from is None else second_from
         left = right = None
         if keep_silences and self.silences is not None:
             left = tuple(b for b in self.silences if 0 < b < point)
-            right = tuple(b - point for b in self.silences if point < b < self.duration)
+            right = tuple(b - start for b in self.silences if start < b < self.duration)
         return (self._part(names[0], audios[0], 0.0, point, left),
-                self._part(names[1], audios[1], point, self.duration - point, right))
+                self._part(names[1], audios[1], start, self.duration - start, right))
 
     def _part(self, name: str, audio: Path, offset: float, duration: float,
               silences: Optional[Tuple[float, ...]]) -> _Chunk:
@@ -191,6 +200,7 @@ class _ChunkedTranscription:
         self._single_pass = capabilities.single_pass_seconds
         self._split_retry = capabilities.split_retry_on_failure
         self._continuation = capabilities.continuation
+        self._match_speakers = capabilities.match_speakers_across_chunks
         self._transcribed: List[_TranscribedChunk] = []
         """轉完的段，依時間先後。"""
         self._usage: Optional[TranscriptionTaskResult] = None
@@ -438,11 +448,20 @@ class _ChunkedTranscription:
         audios = (self._temp_dir / f"{chunk.audio.stem}.chunk1.wav",
                   self._temp_dir / f"{chunk.audio.stem}.chunk2.wav")
         self._temp_files.extend(audios)
+        start = self._second_from(chunk, point)
         if not (slice_audio(chunk.audio, audios[0], end=point)
-                and slice_audio(chunk.audio, audios[1], start=point)):
+                and slice_audio(chunk.audio, audios[1], start=start)):
             return None
-        logger.info(f"分段轉錄: {chunk.audio.name} ({chunk.duration:.0f}s) 於 {point:.2f}s 切開")
-        return chunk.split_at(point, names, audios, keep_silences=True)
+        logger.info(f"分段轉錄: {chunk.audio.name} ({chunk.duration:.0f}s) 於 {point:.2f}s 切開"
+                    f"{_overlapping(point, start)}")
+        return chunk.split_at(point, names, audios, keep_silences=True, second_from=start)
+
+    def _second_from(self, chunk: _Chunk, point: float) -> float:
+        """在 ``point`` 秒切開時，後一段從哪裡開始：模型能力要跨段配說話者編號時往前重疊（#93，起點照
+        接續的規則 :func:`continuation.resume_point`），不然就是切點。"""
+        if not self._match_speakers:
+            return point
+        return continuation.resume_point(point, chunk.silences)
 
     def _split_with_silero(self, chunk: _Chunk,
                            names: Tuple[str, str]) -> Optional[Tuple[_Chunk, _Chunk]]:
@@ -467,13 +486,22 @@ class _ChunkedTranscription:
         self._temp_files.extend(audios)
         persist_split(task_id=self._task_id, original_filename=self._original_filename,
                       part1_path=audios[0], part2_path=audios[1], split_point=point)
-        logger.info(f"分段轉錄: {chunk.audio.name} ({chunk.duration:.0f}s) 由 Silero 於 {point:.2f}s 切開")
-        return chunk.split_at(point, names, audios, keep_silences=False)
+        start = self._second_from(chunk, point)
+        if start < point:
+            # 往前重疊（#93）：後一段從 wav 重新切，Silero 切出的後半段只存進去靜音產物
+            overlapped = self._temp_dir / f"{chunk.audio.stem}.chunk2.overlap.wav"
+            self._temp_files.append(overlapped)
+            if not slice_audio(wav, overlapped, start=start):
+                return None
+            audios = (audios[0], overlapped)
+        logger.info(f"分段轉錄: {chunk.audio.name} ({chunk.duration:.0f}s) 由 Silero 於 {point:.2f}s 切開"
+                    f"{_overlapping(point, start)}")
+        return chunk.split_at(point, names, audios, keep_silences=False, second_from=start)
 
     # ── 合併與結果 ───────────────────────────────────────────────
     def _merged(self) -> TranscriptionTaskResult:
         """合併轉完的段、放回原音檔的時間軸，回傳成功的轉錄結果。"""
-        segments = _merge(self._transcribed)
+        segments = self._merge()
         if self._view.removed_silence:
             self._progress.report("時間還原回原音檔...")
             logger.info("片段的時間還原回原音檔的時間軸")
@@ -482,6 +510,45 @@ class _ChunkedTranscription:
                             error_code=why.error_code if why else None,
                             segments=self._view.timeline.in_original_order(segments),
                             tail_loss_from=self._tail_loss_from())
+
+    def _merge(self) -> List[Dict[str, Any]]:
+        """合併轉完的段（依時間先後）：每一段的片段平移到它在語音視圖上的起點，片段 key 加上這一段的
+        前綴；模型能力要跨段配說話者編號時（#93），每一段接回前面已經合併的部分（:meth:`_joined`）。"""
+        if not self._match_speakers:
+            return [_placed(segment, piece.chunk)
+                    for piece in self._transcribed for segment in piece.result.segments]
+        merged: List[Dict[str, Any]] = []
+        reached: Optional[float] = None  # 前面的段轉到語音視圖的哪一秒（tail_loss.stopped_at）
+        for piece in self._transcribed:
+            placed = [_placed(segment, piece.chunk) for segment in piece.result.segments]
+            merged = (placed if reached is None
+                      else self._joined(merged, placed, begin=piece.chunk.start, reached=reached))
+            stopped = piece.chunk.to_view(tail_loss.stopped_at(
+                piece.result.segments, covered_until=piece.result.covered_until, default=0.0))
+            reached = stopped if reached is None else max(reached, stopped)
+        return merged
+
+    def _joined(self, merged: Sequence[Mapping[str, Any]], later: Sequence[Mapping[str, Any]], *,
+                begin: float, reached: float) -> List[Dict[str, Any]]:
+        """往前重疊的一段（``later``，從語音視圖的 ``begin`` 秒起）接回前面已經合併的部分（``merged``，
+        轉到 ``reached`` 秒），回傳新的片段（#93）。
+
+        - ``begin`` 到 ``reached`` 兩邊都轉了：照接續的規則接回（:func:`continuation.splice`），重疊區裡的
+          句子只留一份，這一段的說話者編號靠重疊區配回前面的；沒有證據的人用新的編號。
+        - 前面的段沒轉到 ``begin``（例如前一段是空段，或最後一句在重疊區之前就結束）：沒有兩邊都轉了的
+          地方，不去重，這一段整段保留，說話者都用新的編號。
+        """
+        described = "跨段的說話者配對（後一段→前面的段）"
+        if reached > begin:
+            return continuation.splice(merged, later, overlap=(begin, reached),
+                                       keep_without_evidence=False, described_as=described)
+        timeline = self._view.timeline
+        logger.info(f"前面的段只轉到 {_clock(timeline.to_original(reached))}，後一段從 "
+                    f"{_clock(timeline.to_original(begin))} 起：沒有兩邊都轉了的地方，說話者都用新的編號")
+        speakers = continuation.match_speakers(merged, later, overlap=(begin, reached),
+                                               keep_without_evidence=False, described_as=described)
+        return [*(dict(segment) for segment in merged),
+                *(_renamed(segment, speakers) for segment in later)]
 
     def _tail_loss_from(self) -> Optional[float]:
         """可能掉尾的起點（原音檔的時間軸）：每一段各自檢查（:meth:`_tail_loss_in`），取最早的；都沒有
@@ -547,13 +614,15 @@ def _nearest_to_middle(silences: Sequence[float], duration: float) -> Optional[f
     return min(candidates, key=lambda b: abs(b - duration / 2))
 
 
-def _merge(transcribed: Sequence[_TranscribedChunk]) -> List[Dict[str, Any]]:
-    """合併：每一段的片段平移到它在語音視圖上的起點，片段 key 加上這一段的前綴。
+def _overlapping(point: float, start: float) -> str:
+    """log 用：後一段往前重疊時（#93）說從哪裡起，不重疊時是空的。"""
+    return f"，後一段從 {start:.2f}s 起（往前重疊 {point - start:.1f}s）" if start < point else ""
 
-    拿到的是所有轉完的段，依時間先後。
-    """
-    return [_placed(segment, piece.chunk)
-            for piece in transcribed for segment in piece.result.segments]
+
+def _renamed(segment: Mapping[str, Any], speakers: Mapping[str, str]) -> Dict[str, Any]:
+    """片段的說話者編號照 ``speakers`` 換掉，回傳新的片段；沒有說話者編號的維持沒有。"""
+    speaker = segment.get("speaker")
+    return {**segment, "speaker": None if speaker is None else speakers.get(speaker, speaker)}
 
 
 def _placed(segment: Mapping[str, Any], chunk: _Chunk) -> Dict[str, Any]:
