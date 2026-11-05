@@ -24,7 +24,7 @@ from gevent import GreenletExit
 from starlette.websockets import WebSocketDisconnect
 
 from app.api.transcription import QUEUED_TEXT, REATTACHED_TEXT, SUBMISSION_FAILED_TEXT, TASK_GONE
-from app.core.default_prompt import build_prompt
+from app.core.default_prompt import build_prompt, build_user_text_prompt
 from app.core.error_codes import ErrorCode
 from app.core.task_status import TaskStatus
 from app.exceptions import TransientError
@@ -322,6 +322,8 @@ SCRIPT = [[
     (4.4, 5.6, 0, "またね。"),
 ]]
 TEXTS = ["おはよう。", "こんにちは。", "またね。"]
+USER_TEXT = "おはよう。\nこんにちは。\nまたね。"
+"""使用者文稿：使用者自己提供的完整文字稿，模型只替它補上時間戳（#66）。"""
 
 
 class TestSingleFileTask:
@@ -922,6 +924,17 @@ class TestContinuation:
         texts = [m["status_text"] for m in messages]
         assert "接續轉錄 00:06 之後的部分..." in texts
         assert "接續轉錄 00:13 之後的部分..." in texts
+
+    def test_task_with_user_text_is_not_continued(self, api, fake):
+        # 附了使用者文稿時不接續（#66）：接續段拿到的仍是整份文稿，時間戳會對錯地方。停下的地方照樣寫出
+        # 可能沒有轉錄到
+        fake.script = [Listen(stops_after=15.0)] * 3
+        messages = transcribe(api, "uid-user-text-not-continued", voiced=SPEAKING,
+                              user_supplied_text=USER_TEXT)
+
+        assert codes(messages)[-1] == TaskStatus.COMPLETED
+        assert len(fake.calls) == 1
+        assert tail_loss_from(messages) == pytest.approx(12.0, abs=0.01)
 
     def test_speakers_of_the_continuation_are_matched_to_the_earlier_ones(self, api, fake):
         # 接續段從第 3 句（B）聽起，B 是它的 S0、A 是 S1，和第一次相反；重疊區兩邊同時說話的配成同一位
@@ -1825,14 +1838,15 @@ class TestModelCapabilitiesEndpoint:
         assert models
         assert models == {(provider, model): provider == "google" for provider, model in models}
 
-    def test_no_model_takes_user_text_until_it_reaches_the_task(self, api):
-        # 使用者文稿還沒交給任務（#66），#13 Q4 定案先隱藏入口：模型能力照實說不吃，轉錄頁就不提供
-        # 附加的按鈕。修好 #66 時把 Gemini 的改回來
+    def test_only_gemini_models_take_user_text(self, api):
+        # 轉錄頁只在所選的模型吃使用者文稿時提供附加的按鈕（#13 Q4）：Gemini 只替文稿補上時間戳（#66），
+        # 本機的模型不支援
         listed = listed_capabilities(api)
-        models = [c for (provider, _), c in listed.items() if provider in ("local", "google")]
+        models = {(provider, model): c["accepts_user_text"] for (provider, model), c in listed.items()
+                  if provider in ("local", "google")}
 
         assert models
-        assert not any(c["accepts_user_text"] for c in models)
+        assert models == {(provider, model): provider == "google" for provider, model in models}
 
     def test_only_gemini_models_take_flex_and_batch(self, api):
         # 轉錄頁依這兩項停用本機選不了的處理模式（#162）
@@ -1947,14 +1961,6 @@ class TestInputsTheModelDoesNotTake:
 
         assert "moss-align" in reason
         assert reported in reason
-
-    def test_gemini_model_rejects_user_text_until_it_reaches_the_task(self, api):
-        # 以前 Gemini 收下使用者文稿，任務卻沒拿到（#66）：現在送出時就明確拒絕
-        reason = task_rejection(api, "uid-gemini-user-text", provider="google",
-                                model="gemini-3.5-flash", user_supplied_text="おはよう。")
-
-        assert "gemini-3.5-flash" in reason
-        assert "使用者文稿" in reason
 
     def test_model_that_takes_them_runs_as_usual(self, api, fake):
         fake.script = list(SCRIPT)
@@ -2076,6 +2082,74 @@ class TestPromptIsTemplatePlusSupplement:
         transcribe(api, "uid-template-alone", source_lang="ja-JP", prompt=prompt)
 
         assert fake.prompts == ["請把日文音檔轉成 LRC。"]
+
+
+# ─── 使用者文稿：只補時間戳（#66） ───────────────────────────────────────────
+
+class TestUserSuppliedText:
+    """附了使用者文稿時，模型只替它補上時間戳，不重新轉錄（#66）。
+
+    提示詞帶著整份文稿，切開的段拿到的也是整份，時間戳會對錯地方；所以第一版整段一次送出：不分段轉錄、
+    失敗後不切段重試，也不接續（接續的測試在 TestContinuation）。送進模型的音檔超過單次能處理的長度時，
+    什麼都不送出，以失敗結束。"""
+
+    @pytest.fixture(autouse=True)
+    def _script(self, fake):
+        fake.script = list(SCRIPT)
+
+    def test_user_text_reaches_the_task_and_only_timestamps_are_asked_for(
+            self, api, fake, saved_prompt_template):
+        # 從 WebSocket 請求一路帶到任務：送進模型的是只補時間戳的提示詞，帶著整份文稿。設定頁存的提示詞範本
+        # 要求的是重新轉錄，不用
+        saved_prompt_template("fake", "請把{source_lang}音檔轉成 LRC。")
+
+        messages = transcribe(api, "uid-user-text", source_lang="ja", user_supplied_text=USER_TEXT)
+
+        assert codes(messages)[-1] == TaskStatus.COMPLETED
+        assert fake.prompts == [build_user_text_prompt(USER_TEXT, source_lang="ja")]
+        assert USER_TEXT in fake.prompts[0]
+        # 整段一次送出：去靜音之後的 7.2 秒（見 VOICED）
+        assert fake.durations == pytest.approx([7.2], abs=0.01)
+
+    def test_supplement_and_multi_speaker_still_apply(self, api, fake):
+        # 補充說明照樣接在後面；Multi-Speaker 開著時要求標出說話者代號
+        transcribe(api, "uid-user-text-supplement", source_lang="ja", multi_speaker=True,
+                   prompt="說話者是兩位主持人", user_supplied_text=USER_TEXT)
+
+        assert fake.prompts == [build_user_text_prompt(
+            USER_TEXT, source_lang="ja", multi_speaker=True, supplement="說話者是兩位主持人")]
+
+    @pytest.mark.parametrize("user_text", [None, "", " \n"], ids=["null", "empty", "blank"])
+    def test_without_user_text_the_prompt_is_unchanged(self, api, fake, user_text):
+        transcribe(api, "uid-no-user-text", source_lang="ja", user_supplied_text=user_text)
+
+        assert fake.prompts == [build_prompt(source_lang="ja")]
+
+    def test_audio_longer_than_a_single_pass_is_refused_before_anything_is_sent(
+            self, api, fake, data_dir):
+        # 去靜音之後 7.2 秒，單次只能處理 5 秒：分段的話每一段都拿到整份文稿，所以什麼都不送出，以失敗結束，
+        # 寫明原因與下一步。暫存檔照樣清掉
+        fake.model_capabilities = replace(fake.model_capabilities, single_pass_seconds=5.0)
+
+        end = transcribe(api, "uid-user-text-too-long", user_supplied_text=USER_TEXT)[-1]
+
+        assert end["status_code"] == TaskStatus.FAILED
+        assert end["error_code"] == ErrorCode.UNSUPPORTED_REQUEST
+        assert "使用者文稿" in end["error_message"]
+        assert "單次能處理" in end["error_message"]
+        assert fake.calls == []
+        assert leftovers(data_dir) == []
+
+    def test_failure_is_not_split_and_retried(self, api, fake, settings, monkeypatch):
+        # 切段重試的兩段也各自拿到整份文稿：失敗就以失敗結束，不切段重試
+        fake.model_capabilities = replace(fake.model_capabilities, split_retry_on_failure=True)
+        monkeypatch.setattr(settings, "transcription_max_duration_seconds", 2)
+        fake.script = [Fail("回應被阻擋"), [(0.2, 0.8, 0, "おはよう。")], [(0.2, 0.8, 0, "またね。")]]
+
+        end = transcribe(api, "uid-user-text-failed", user_supplied_text=USER_TEXT)[-1]
+
+        assert end["status_code"] == TaskStatus.FAILED
+        assert len(fake.calls) == 1
 
 
 # ─── 中文一律輸出繁體（#14） ─────────────────────────────────────────────────

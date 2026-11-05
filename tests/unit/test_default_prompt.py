@@ -9,6 +9,7 @@ import pytest
 
 from app.core.default_prompt import (
     build_prompt,
+    build_user_text_prompt,
     DEFAULT_PROMPT_TEMPLATE,
     LANG_MAP,
 )
@@ -351,3 +352,60 @@ class TestSupplementAfterTemplate:
         prompt = build_prompt(source_lang="ja-JP", template=template, supplement="人名照寫：佐藤")
 
         assert prompt == build_prompt(source_lang="ja-JP") + "\n\n人名照寫：佐藤"
+
+
+# ─── 附了使用者文稿：只補時間戳（#66） ─────────────────────────────────────────
+
+class TestUserTextPrompt:
+    """附了使用者文稿時改用只補時間戳的提示詞：不用提示詞範本，文稿照寫的放在最後，補充說明接在後面。"""
+
+    def test_asks_only_for_timestamps_on_the_text_as_written(self):
+        assert build_user_text_prompt("おはよう。\nこんにちは。", source_lang="ja") == (
+            "你是一位專業的逐字稿專家。下面是使用者為這個日文音檔提供的完整逐字稿。"
+            "請不要重新轉錄，只替這份逐字稿補上時間戳，輸出 LRC 格式。\n"
+            "注意：\n"
+            "1. 逐字稿的文字照原樣寫出，不要增刪、改寫或翻譯；一句太長時可以斷成幾行。\n"
+            "2. 每一行開頭都要有時間戳，格式為 [mm:ss.xxx]（毫秒精確到三位），必須精確對應這一行開始說話的位置。\n"
+            "3. 逐字稿裡沒有的聲音不要寫出來。\n"
+            "\n"
+            "完整逐字稿：\n"
+            "---\n"
+            "おはよう。\nこんにちは。\n"
+            "---")
+
+    def test_multi_speaker_asks_for_speaker_codes(self):
+        # Gemini 轉接器照提示詞範本的說話者代號（Speaker 1:）解析
+        prompt = build_user_text_prompt("おはよう。", source_lang="ja", multi_speaker=True)
+
+        assert "4. 音檔中有多位說話者，請用 Speaker 1:、Speaker 2: 等標籤區分不同說話者。\n" in prompt
+        assert "Speaker" not in build_user_text_prompt("おはよう。", source_lang="ja")
+
+    @pytest.mark.parametrize("source_lang", ["auto", "Auto", ""])
+    def test_auto_detect_writes_no_language(self, source_lang):
+        prompt = build_user_text_prompt("おはよう。", source_lang=source_lang)
+
+        assert "為這個音檔提供" in prompt
+
+    def test_text_is_sent_as_written_braces_included(self):
+        # 文稿不代入變數：裡面的大括號與看起來像變數的字照寫的送出；前後的空白去掉
+        text = '{source_lang}は {"speaker": "S0"} です。'
+
+        prompt = build_user_text_prompt(f"\n  {text}  \n", source_lang="ja")
+
+        assert prompt.endswith(f"---\n{text}\n---")
+
+    def test_supplement_follows_the_text(self):
+        prompt = build_user_text_prompt("おはよう。", source_lang="ja", supplement=" 說話者是兩位主持人\n")
+
+        assert prompt == build_user_text_prompt("おはよう。", source_lang="ja") + "\n\n說話者是兩位主持人"
+
+    @pytest.mark.parametrize("supplement", [None, "", " \n"], ids=["null", "empty", "blank"])
+    def test_without_a_supplement_nothing_follows_the_text(self, supplement):
+        assert build_user_text_prompt("おはよう。", supplement=supplement).endswith("---")
+
+    def test_template_instructions_are_not_used(self):
+        # 提示詞範本要求的是重新轉錄（與 ASMR 聲響描述），和只補時間戳衝突
+        prompt = build_user_text_prompt("おはよう。", source_lang="ja")
+
+        assert "請將以下" not in prompt
+        assert "ASMR" not in prompt

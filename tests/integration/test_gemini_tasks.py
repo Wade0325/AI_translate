@@ -12,7 +12,7 @@ import threading
 import pytest
 from fastapi.testclient import TestClient
 
-from app.core.default_prompt import SPEAKER_INSTRUCTION
+from app.core.default_prompt import SPEAKER_INSTRUCTION, build_user_text_prompt
 from app.core.error_codes import ErrorCode
 from app.core.task_status import TaskStatus
 from app.provider import registry
@@ -256,6 +256,44 @@ def test_single_file_prompt_with_braces_reaches_gemini_as_written(
 
     assert end["status_code"] == TaskStatus.COMPLETED
     assert genai.prompts == [JSON_TEMPLATE_SENT + "\n\n人名照寫：{佐藤}、{source_lang}"]
+
+
+# ─── 使用者文稿（#66） ──────────────────────────────────────────────────────
+
+USER_TEXT = "おはよう。\nこんにちは。"
+
+
+def test_user_text_reaches_gemini_and_only_timestamps_are_asked_for(
+        api, in_process_run_mode, genai, saved_prompt_template):
+    # 附了使用者文稿：Gemini 收到只補時間戳的提示詞，帶著整份文稿；設定頁存的提示詞範本要求重新轉錄，不用。
+    # 轉錄結果是 Gemini 照文稿寫出、補上時間戳的行
+    saved_prompt_template("Google", JSON_TEMPLATE)
+    genai.replies = [Reply(text="[00:00.50]おはよう。\n[00:03.00]こんにちは。")]
+
+    end = transcribe(api, in_process_run_mode, "gemini-user-text.wav",
+                     user_supplied_text=USER_TEXT)[-1]
+
+    assert end["status_code"] == TaskStatus.COMPLETED
+    assert genai.prompts == [build_user_text_prompt(USER_TEXT, source_lang="ja")]
+    assert "こんにちは。" in end["result"]["transcripts"]["srt"]
+    assert genai.stored == {}
+
+
+def test_user_text_with_audio_longer_than_a_single_pass_is_not_uploaded(
+        api, in_process_run_mode, genai, monkeypatch):
+    # 單次只能處理 3 秒，去靜音之後還有約 7.2 秒：分段的話每一段都拿到整份文稿，所以音檔不上傳、也不送出
+    # 要收費的請求，以失敗結束
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "long_audio_split_threshold_seconds", 3)
+
+    end = transcribe(api, in_process_run_mode, "gemini-user-text-long.wav",
+                     user_supplied_text=USER_TEXT)[-1]
+
+    assert end["status_code"] == TaskStatus.FAILED
+    assert end["error_code"] == ErrorCode.UNSUPPORTED_REQUEST
+    assert genai.display_names == []
+    assert genai.prompts == []
 
 
 # ─── 分段轉錄 ────────────────────────────────────────────────────────────────

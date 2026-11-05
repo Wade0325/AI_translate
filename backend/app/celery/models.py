@@ -19,6 +19,7 @@ class TranscriptionTaskParams(BaseModel):
     prompt: Optional[str] = None
     # 設定頁為這個供應商存的提示詞範本，派送時從資料庫讀出；None 時用系統內建的範本
     prompt_template: Optional[str] = None
+    # 使用者文稿：有填時模型只替它補上時間戳，不重新轉錄（#66，app.tasks.transcribe_core）
     user_supplied_text: Optional[str] = None
     target_lang: Optional[str] = None
     multi_speaker: bool = False

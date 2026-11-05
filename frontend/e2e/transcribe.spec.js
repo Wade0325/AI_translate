@@ -1,6 +1,6 @@
 import { test, expect, download } from './support/test.js'
 import {
-    GEMINI_UPLOAD_NOTICE, PROVIDERS, QUEUED_TEXT, SUBMISSION_FAILED_TEXT, TRANSCRIPTS, UPLOAD_LIMITS, readiness,
+    GEMINI_UPLOAD_NOTICE, QUEUED_TEXT, SUBMISSION_FAILED_TEXT, TRANSCRIPTS, UPLOAD_LIMITS, readiness,
     reply, transcriptionMessages,
 } from './support/backend.js'
 
@@ -33,7 +33,7 @@ test('選 Gemini 時說明音檔會上傳到 Google 並連到條款原文；選�
 
     await page.getByLabel('供應商').selectOption('google')
 
-    await expect(page.getByText(/音檔與提示詞會上傳到 Google/)).toBeVisible()
+    await expect(page.getByText(/音檔、提示詞與使用者文稿會上傳到 Google/)).toBeVisible()
     await expect(page.getByRole('link', { name: '條款原文' })).toHaveAttribute('href', GEMINI_UPLOAD_NOTICE.terms_url)
 })
 
@@ -723,7 +723,7 @@ test('沒有可用的顯卡時仍預設本機：說明原因、停用 Start，�
 
     await expect(page.getByLabel('供應商')).toHaveValue('google')
     await expect(page.getByText(NO_GPU)).toHaveCount(0)
-    await expect(page.getByText(/音檔與提示詞會上傳到 Google/)).toBeVisible()
+    await expect(page.getByText(/音檔、提示詞與使用者文稿會上傳到 Google/)).toBeVisible()
     await expect(page.getByRole('button', { name: 'Start' })).toBeEnabled()
 
     await page.reload()
@@ -758,28 +758,20 @@ test('顯卡記憶體低於最低需求只提示，照樣可以按 Start（#11 Q
     await expect(page.getByRole('button', { name: 'Start' })).toBeEnabled()
 })
 
-/** 供應商清單，但 Gemini 的模型吃使用者文稿（#66 修好之後的樣子）。 */
-const GEMINI_TAKES_USER_TEXT = PROVIDERS.map((p) => p.provider !== 'google' ? p : {
-    ...p,
-    models: p.models.map((m) => ({ ...m, capabilities: { ...m.capabilities, accepts_user_text: true } })),
-})
-
-test('沒有模型吃使用者文稿時，檔案卡不提供附加使用者文稿的按鈕', async ({ page, mockBackend }) => {
-    // #66 修好之前使用者文稿到不了任務，#13 Q4 定案先隱藏入口
+test('選本機時，檔案卡不提供附加使用者文稿的按鈕；選 Gemini 時有（#66）', async ({ page, mockBackend }) => {
+    // 按鈕只在所選的模型吃使用者文稿時才有（#13 Q4）
     await mockBackend()
     await page.goto('/transcribe')
     await addAudio(page)
 
-    for (const provider of ['google', 'local']) {
-        await page.getByLabel('供應商').selectOption(provider)
-        await expect(page.getByRole('button', { name: '附加使用者文稿' })).toHaveCount(0)
-    }
+    await page.getByLabel('供應商').selectOption('local')
+    await expect(page.getByRole('button', { name: '附加使用者文稿' })).toHaveCount(0)
+    await page.getByLabel('供應商').selectOption('google')
+    await expect(page.getByRole('button', { name: '附加使用者文稿' })).toHaveCount(1)
 })
 
 test('所選的模型吃使用者文稿時，附加的使用者文稿隨請求送出', async ({ page, mockBackend }) => {
-    const backend = await mockBackend({
-        routes: { 'GET /providers': GEMINI_TAKES_USER_TEXT, 'POST /upload': { filename: 'meeting_1.wav' } },
-    })
+    const backend = await mockBackend({ routes: { 'POST /upload': { filename: 'meeting_1.wav' } } })
     await page.goto('/transcribe')
     await page.getByLabel('供應商').selectOption('google')
     // 假後端只模擬單檔任務
@@ -788,6 +780,8 @@ test('所選的模型吃使用者文稿時，附加的使用者文稿隨請求�
 
     await page.getByRole('button', { name: '附加使用者文稿' }).click()
     const dialog = page.getByRole('dialog', { name: '附加使用者文稿' })
+    // 整段一次送出：寫出單次能處理的長度（Gemini 是 900 秒）
+    await expect(dialog.getByText(/去掉靜音之後要在 15 分鐘以內/)).toBeVisible()
     await dialog.getByRole('textbox').fill('おはよう。')
     // antd 在兩個中文字的按鈕字中間插一個空格
     await dialog.getByRole('button', { name: /^保\s*存$/ }).click()
@@ -797,6 +791,28 @@ test('所選的模型吃使用者文稿時，附加的使用者文稿隨請求�
     expect(backend.transcriptionRequests).toEqual([
         expect.objectContaining({ provider: 'google', user_supplied_text: 'おはよう。' }),
     ])
+})
+
+test('批次不帶使用者文稿：沒有附加的按鈕，已經附加的標成不會帶上（#66）', async ({ page, mockBackend }) => {
+    await mockBackend()
+    await page.goto('/transcribe')
+    await page.getByLabel('供應商').selectOption('google')
+    await page.getByLabel('處理模式').selectOption('standard')
+    await addAudio(page)
+    await page.getByRole('button', { name: '附加使用者文稿' }).click()
+    const dialog = page.getByRole('dialog', { name: '附加使用者文稿' })
+    await dialog.getByRole('textbox').fill('おはよう。')
+    await dialog.getByRole('button', { name: /^保\s*存$/ }).click()
+
+    await page.getByLabel('處理模式').selectOption('batch')
+
+    await expect(page.getByRole('button', { name: '附加使用者文稿' })).toHaveCount(0)
+    await expect(page.getByText('批次不支援使用者文稿，送出時不會帶上；要補時間戳請改用標準或 Flex')).toBeVisible()
+
+    // 改回標準就會帶上：按鈕回來，原因消失
+    await page.getByLabel('處理模式').selectOption('standard')
+    await expect(page.getByRole('button', { name: '附加使用者文稿' })).toHaveCount(1)
+    await expect(page.getByText(/批次不支援使用者文稿/)).toHaveCount(0)
 })
 
 test('去靜音與切點預覽是開發者工具：沒開時檔案卡沒有按鈕', async ({ page, mockBackend }) => {

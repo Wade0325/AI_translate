@@ -69,7 +69,7 @@ MODELS = (
 # 「Do not submit sensitive, confidential, or personal information to the Unpaid Services.」
 # 付費層不拿去改善產品。層級看金鑰所屬的專案有沒有啟用計費，不看金鑰本身。條款改版時跟著改
 UPLOAD_NOTICE = UploadNotice(
-    text=("音檔與提示詞會上傳到 Google。金鑰所屬的專案沒有啟用計費時（免費層），"
+    text=("音檔、提示詞與使用者文稿會上傳到 Google。金鑰所屬的專案沒有啟用計費時（免費層），"
           "Google 可能拿這些內容改善產品，也可能由人工審閱；條款要求不要送出敏感或個人資訊。"),
     terms_url="https://ai.google.dev/gemini-api/terms",
 )
@@ -96,9 +96,8 @@ def _capabilities() -> ModelCapabilities:
         # v0.1 不接續（#94 第 2 題）：還沒有 Gemini 掉尾的實測紀錄；可能掉尾時照樣有提示（#257）
         continuation=False,
         accepts_prompt=True,
-        # 使用者文稿還沒交給任務（#66）：照實說不吃，送來的明確拒絕、轉錄頁也不提供入口（#13 Q4 定案
-        # 先隱藏）。修好 #66 時改回 True
-        accepts_user_text=False,
+        # 附了使用者文稿時只替它補上時間戳（#66）；第一版整段一次送出，超過單次長度的音檔以失敗結束
+        accepts_user_text=True,
         supports_batch=True,
         supports_flex=True,
         pricing="per_token",

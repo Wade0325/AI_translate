@@ -4,6 +4,7 @@
 模型能力。送什麼、切在哪裡、時間怎麼還原都在語音視圖裡，分段轉錄不必知道去靜音。內部依序：
 
 1. 切段：語音視圖超過單次長度時切成兩段，遞迴到每一段都不超過單次長度；單次長度是 0 時不分段。
+   請求要整段一次送出（``single_pass_only``，例如附了使用者文稿）時不切段、不切段重試、也不接續。
    切點依序來自語音視圖在這一段之內的靜音邊界（挑最接近中點的，離頭尾 1 秒內的不算）、Silero、
    正中間。Silero 切出的兩段往下改用 Silero 找：交界不在已知的靜音邊界上。某個切點切不出音檔時改用
    下一個來源；連正中間都切不開，就以失敗回報，不整段送出。
@@ -188,9 +189,12 @@ class _ChunkedTranscription:
         self._temp_dir = temp_dir
         self._task_id = task_id
         self._original_filename = original_filename
-        self._single_pass = capabilities.single_pass_seconds
-        self._split_retry = capabilities.split_retry_on_failure
-        self._continuation = capabilities.continuation
+        # 整段一次送出的請求（例如附了使用者文稿）：提示詞綁著整段音檔，切開的段拿到的也是整份，所以不切段、
+        # 不切段重試，也不接續
+        whole = request.single_pass_only
+        self._single_pass = 0.0 if whole else capabilities.single_pass_seconds
+        self._split_retry = capabilities.split_retry_on_failure and not whole
+        self._continuation = capabilities.continuation and not whole
         self._transcribed: List[_TranscribedChunk] = []
         """轉完的段，依時間先後。"""
         self._usage: Optional[TranscriptionTaskResult] = None
@@ -257,7 +261,8 @@ class _ChunkedTranscription:
 
     def _may_split_retry(self, chunk: _Chunk) -> bool:
         if not self._split_retry:
-            # 各段說話者編號互相獨立的模型（例如本機）：拼起來的說話者編號會錯亂，直接回報失敗
+            # 各段說話者編號互相獨立的模型（例如本機）：拼起來的說話者編號會錯亂；整段一次送出的請求：
+            # 切開的段拿到的提示詞仍是整份。都直接回報失敗
             return False
         minimum = get_settings().transcription_max_duration_seconds
         if chunk.duration < minimum:
