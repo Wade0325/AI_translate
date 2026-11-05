@@ -14,8 +14,8 @@
    長的切成不超過 :data:`WINDOW_SECONDS` 秒的窗，從長的取起，最多 :data:`MAX_SECONDS_PER_UNIT` 秒。每一窗一個
    嵌入，依長度加權平均成這個單位的重心。一窗都沒有的單位沒有重心，不和任何人併。
 3. 分群：重心兩兩的餘弦相似度，做平均連結的階層式分群，每次併平均相似度最高、又沒有 cannot-link 的兩群，
-   最高的不到 :data:`THRESHOLD` 就停。依據是 10/19 的研究（pyannote 用的是同一種結構）；門檻見研究區
-   ``research_notes/93-chunk-speakers``。
+   最高的不到 :data:`THRESHOLD` 就停。做法照 10/19 的研究；門檻與取窗的上限在 AliMeeting Eval 上調，見研究區
+   ``research_notes/93-chunk-speakers/embedding``。
 4. 編號：第一段（有說話者的段裡最早的）原本的編號不變；其他群依第一次說話的先後，接在第一段用過的最大
    編號之後編新的。只有一段時，沒併的編號也不變。
 
@@ -41,14 +41,17 @@ logger = setup_logger(__name__)
 Span = Tuple[float, float]
 Segment = Mapping[str, Any]
 
-THRESHOLD = 0.5
-"""兩群的平均餘弦相似度到這裡才併成同一個人。"""
+THRESHOLD = 0.65
+"""兩群的平均餘弦相似度到這裡才併成同一個人。AliMeeting Eval 7 場（600 秒切段）上 0.30～0.70 的結果相同，
+都是只改編號能做到的最好，0.75 起開始漏併；兩邊都取到 30 秒以上的單位，同一人最低 0.85、不同人最高 0.61。
+取 0.65：高於後者，同一次分離的 cannot-link 擋不到時（例如新的人只在後面的段說話）比較不會併錯人。"""
 MIN_SPAN_SECONDS = 1.0
 """短於這個長度的發言不取嵌入：太短的嵌入不穩。"""
 WINDOW_SECONDS = 10.0
 """長的發言切成不超過這個長度的窗，各取一個嵌入。"""
-MAX_SECONDS_PER_UNIT = 300.0
-"""一個單位最多取這麼多秒的聲音算重心，從長的發言取起；說很多話的人不必每一句都算。"""
+MAX_SECONDS_PER_UNIT = 60.0
+"""一個單位最多取這麼多秒的聲音算重心，從長的發言取起；說很多話的人不必每一句都算。AliMeeting Eval 上 60 秒
+和 300 秒的結果相同，取 60 秒，在 CPU 上算嵌入的時間少很多。"""
 
 _SPEAKER_RE = re.compile(r"S(\d+)")
 _PASS_RE = re.compile(r"(c\d+)\.")
