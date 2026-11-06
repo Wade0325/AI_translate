@@ -1152,7 +1152,7 @@ class TestSpeakersAcrossChunks:
         assert embedder.opened == 0
 
     def test_model_without_it_keeps_each_chunks_own_numbers(self, api, fake, embedder):
-        # Gemini 還沒有（#93 第 2 題）：說話者編號照各段自己的
+        # 沒開的模型（例如本機的 VibeVoice + Qwen3-ASR）：說話者編號照各段自己的
         fake.model_capabilities = replace(
             fake.model_capabilities, align_speakers_across_chunks=False)
         fake.script = [Listen(), Listen()]

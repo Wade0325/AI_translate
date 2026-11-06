@@ -5,6 +5,8 @@
 從那裡不好造出來的邊界情況。
 
 假的嵌入照「這一窗的中點是誰在說話」回答（``voices``），同一個人給同一個向量。
+
+沒寫結束時間的片段（Gemini 的 LRC 多半只寫開始時間，#335）怎麼取窗，見 TestLinesWithoutAnEnd。
 """
 from pathlib import Path
 
@@ -37,7 +39,7 @@ class Embedder:
         self.spans: list[tuple[Path, tuple]] = []
         self.opened = 0
 
-    def __call__(self):
+    def __call__(self, report=None):
         self.opened += 1
         return self
 
@@ -126,8 +128,47 @@ class TestWindows:
 
         assert speaker_alignment._spans(segments, "S0") == [(3.0, 7.0), (8.0, 11.0)]
 
-    def test_segments_without_an_end_are_not_used(self):
-        assert speaker_alignment._spans([segment(0, None, "S0")], "S0") == []
+
+
+class TestLinesWithoutAnEnd:
+    """Gemini 的 LRC 多半只寫開始時間（#335）。取嵌入時用同一段裡下一句的開始當結束，最多取一窗；最後一句
+    取到這一段音檔的結尾。只用來挑取嵌入的聲音，片段本身照樣沒有結束時間。"""
+
+    def test_a_line_ends_where_the_next_one_starts(self):
+        segments = [segment(0, None, "S0"), segment(3, None, "S1"), segment(5, None, "S0"),
+                    segment(8, 9.5, "S1")]
+
+        assert speaker_alignment._spans(segments, "S0") == [(0.0, 3.0), (5.0, 8.0)]
+        assert speaker_alignment._spans(segments, "S1") == [(3.0, 5.0), (8.0, 9.5)]
+
+    def test_only_the_first_window_of_a_long_gap_is_used(self):
+        # 下一句 25 秒後才開始：中間可能有沒轉出來的別人，只取開頭的一窗
+        segments = [segment(0, None, "S0"), segment(25, 27, "S1")]
+
+        assert speaker_alignment._spans(segments, "S0") == [(0.0, speaker_alignment.WINDOW_SECONDS)]
+
+    def test_the_last_line_ends_with_the_audio(self):
+        segments = [segment(0, None, "S0"), segment(3, None, "S1")]
+
+        assert speaker_alignment._spans(segments, "S1", duration=7.0) == [(3.0, 7.0)]
+        # 不知道音檔多長時不取
+        assert speaker_alignment._spans(segments, "S1") == []
+
+    def test_a_line_starting_at_the_same_time_does_not_end_it(self):
+        # S1 在同一刻插了一句（0–1 秒）：S0 照樣到下一個比它晚開始的 4 秒，扣掉重疊的 0–1 秒
+        segments = [segment(0, None, "S0"), segment(0, 1, "S1"), segment(4, 6, "S0")]
+
+        assert speaker_alignment._spans(segments, "S0") == [(1.0, 4.0), (4.0, 6.0)]
+
+    def test_numbers_are_matched_by_voice(self):
+        # 兩段各自先聽到誰就把誰編成 S0（像 Gemini 的「Speaker 1」）：後一段先說話的是 B，配回前一段的 S1
+        pieces = [Piece(FIRST, 0.0, [segment(0, None, "S0"), segment(3, None, "S1")], duration=6.0),
+                  Piece(SECOND, 10.0, [segment(0, None, "S0"), segment(3, None, "S1")], duration=6.0)]
+        embedder = Embedder({FIRST: [(0, 3, A), (3, 6, B)], SECOND: [(0, 3, B), (3, 6, A)]})
+
+        assert align(pieces, embedder) == [{"S0": "S0", "S1": "S1"}, {"S0": "S1", "S1": "S0"}]
+        assert embedder.spans == [(FIRST, ((0.0, 3.0),)), (FIRST, ((3.0, 6.0),)),
+                                  (SECOND, ((0.0, 3.0),)), (SECOND, ((3.0, 6.0),))]
 
 
 class TestNumbering:
@@ -155,10 +196,24 @@ class TestNumbering:
         assert separate(pieces) == [{}, {"S1": "S1"}, {"S0": "S2"}]
 
     def test_failing_embedder_is_left_to_the_caller(self):
-        def broken():
+        def broken(report):
             raise OSError("讀不到權重")
 
         pieces = [Piece(FIRST, 0.0, [segment(0, 3, "S0")]),
                   Piece(SECOND, 10.0, [segment(0, 3, "S0")])]
         with pytest.raises(OSError):
             align(pieces, broken)
+
+    def test_the_embedder_tells_the_user_what_it_is_doing(self):
+        # 例如第一次用時下載權重：建立說話者嵌入時拿到的 report 就是 align 的 report
+        reports: list[str] = []
+        embedder = Embedder({FIRST: [(0, 3, A)], SECOND: [(0, 3, A)]})
+
+        def downloading(report):
+            report("下載權重...")
+            return embedder(report)
+
+        pieces = [Piece(FIRST, 0.0, [segment(0, 3, "S0")]),
+                  Piece(SECOND, 10.0, [segment(0, 3, "S0")])]
+        assert align(pieces, downloading, report=reports.append) == [{"S0": "S0"}, {"S0": "S0"}]
+        assert reports == ["下載權重..."]

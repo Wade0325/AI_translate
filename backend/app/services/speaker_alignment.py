@@ -2,7 +2,8 @@
 
 本機的 MOSS 只在單次輸入內編號（模型卡寫明，也沒有說話者註冊），切成好幾段轉錄時，前一段的 ``S0`` 和後一段
 的 ``S0`` 可能是不同的人。接續段（#94）也是另外分離的：重疊區配不到的人拿新的編號
-（:func:`app.services.continuation.match_speakers`），其實可能是前面的某一位。
+（:func:`app.services.continuation.match_speakers`），其實可能是前面的某一位。Gemini 也一樣（#335）：每一段是
+另一次請求，Gemini 看不到前一段，「Speaker 1」只是那一段裡先說話的人。
 
 這裡只改片段的 ``speaker``，不改時間、文字與片段 key，也不改任何一段送進模型的音檔：錯字率和不對齊時
 完全相同。規則（不碰模型，嵌入由 :class:`SpeakerEmbedder` 給）：
@@ -13,6 +14,9 @@
 2. 嵌入：每個單位取它說話的片段，扣掉和別人同時說話的部分，留下至少 :data:`MIN_SPAN_SECONDS` 秒的；
    長的切成不超過 :data:`WINDOW_SECONDS` 秒的窗，從長的取起，最多 :data:`MAX_SECONDS_PER_UNIT` 秒。每一窗一個
    嵌入，依長度加權平均成這個單位的重心。一窗都沒有的單位沒有重心，不和任何人併。
+   沒寫結束時間的片段（Gemini 的 LRC 多半只寫開始時間，#335）用同一段裡下一個比它晚開始的片段的開始當結束，
+   最多一窗（離開始越遠，越可能已經換人）；後面沒有片段時到這一段音檔的結尾。這只用來挑聲音，不寫回片段：
+   字幕會把猜的結束時間當真。本機的片段都有結束時間，不受影響。
 3. 分群：重心兩兩的餘弦相似度，做平均連結的階層式分群，每次併平均相似度最高、又沒有 cannot-link 的兩群，
    最高的不到 :data:`THRESHOLD` 就停。做法照 10/19 的研究；門檻與取窗的上限在 AliMeeting Eval 上調，見研究區
    ``research_notes/93-chunk-speakers/embedding``。
@@ -25,6 +29,7 @@
 
 from __future__ import annotations
 
+import bisect
 import math
 import re
 from dataclasses import dataclass, field
@@ -58,28 +63,30 @@ _PASS_RE = re.compile(r"(c\d+)\.")
 
 
 class SpeakerEmbedder(Protocol):
-    """說話者嵌入：本機是 CAM++（:class:`app.provider.local.campplus.CamPlusPlus`）。"""
+    """說話者嵌入：CAM++（:class:`app.provider.local.campplus.CamPlusPlus`），本機與 Gemini 共用。"""
 
     def embed(self, audio: Path, spans: Sequence[Span]) -> Sequence[Optional[np.ndarray]]:
         """``audio`` 裡每一段（起, 迄，秒）的嵌入，長度 1 的向量；取不到的段是 None。"""
         ...
 
 
-EmbedderFactory = Callable[[], SpeakerEmbedder]
+Report = Callable[[str], None]
+EmbedderFactory = Callable[[Report], SpeakerEmbedder]
+"""建立說話者嵌入；參數是給使用者看的進度（例如第一次用時下載權重）。"""
 
 
-def _campplus() -> SpeakerEmbedder:
+def _campplus(report: Report) -> SpeakerEmbedder:
     # 延遲 import：會匯入 torch，只有真的要對齊時才載入
     from app.provider.local.campplus import CamPlusPlus
-    return CamPlusPlus()
+    return CamPlusPlus(report)
 
 
 _factory: EmbedderFactory = _campplus
 
 
-def open_embedder() -> SpeakerEmbedder:
-    """建立說話者嵌入（載入模型）；用不了時拋出原本的錯誤。"""
-    return _factory()
+def open_embedder(report: Report) -> SpeakerEmbedder:
+    """建立說話者嵌入（載入模型，本機沒有權重時先下載）；用不了時拋出原本的錯誤。"""
+    return _factory(report)
 
 
 def use_embedder(factory: EmbedderFactory) -> EmbedderFactory:
@@ -97,6 +104,8 @@ class Piece:
     audio: Path
     start: float
     segments: Sequence[Segment]
+    duration: Optional[float] = None
+    """``audio`` 的長度（秒）：沒寫結束時間的最後一個片段取嵌入到這裡（模組說明第 2 點）；None 時不取。"""
 
 
 @dataclass
@@ -117,11 +126,12 @@ def needs_alignment(pieces: Sequence[Piece]) -> bool:
 
 
 def align(pieces: Sequence[Piece], open_embedder: EmbedderFactory = open_embedder, *,
-          threshold: float = THRESHOLD, check: Callable[[], None] = lambda: None
-          ) -> List[Dict[str, str]]:
+          threshold: float = THRESHOLD, check: Callable[[], None] = lambda: None,
+          report: Report = lambda text: None) -> List[Dict[str, str]]:
     """對齊各段的說話者編號：回傳每一段的 {原本的編號: 對齊後的編號}，順序和 ``pieces`` 相同。
 
-    ``check`` 在每次取嵌入之前呼叫（例如查使用者取消了沒有，取消就拋例外）。
+    ``check`` 在每次取嵌入之前呼叫（例如查使用者取消了沒有，取消就拋例外）；``report`` 交給建立說話者嵌入
+    的 ``open_embedder``，回報給使用者看的進度。
 
     Raises:
         Exception: ``open_embedder`` 或取嵌入失敗時，原本的錯誤；由呼叫端改用 :func:`separate`。
@@ -129,9 +139,10 @@ def align(pieces: Sequence[Piece], open_embedder: EmbedderFactory = open_embedde
     units = _units(pieces)
     if not any(not _cannot_link(a, b) for i, a in enumerate(units) for b in units[i + 1:]):
         return _identity(units, len(pieces))
-    embedder = open_embedder()
+    embedder = open_embedder(report)
     for unit in units:
-        unit.spans = _spans(pieces[unit.piece].segments, unit.label)
+        piece = pieces[unit.piece]
+        unit.spans = _spans(piece.segments, unit.label, piece.duration)
         if unit.spans:
             check()
             unit.centroid = _centroid(unit.spans, embedder.embed(pieces[unit.piece].audio, unit.spans))
@@ -177,15 +188,15 @@ def _cannot_link(a: _Unit, b: _Unit) -> bool:
     return a.piece == b.piece and bool(a.passes & b.passes)
 
 
-def _spans(segments: Sequence[Segment], label: str) -> List[Span]:
-    """取嵌入的窗（見模組說明第 2 點），依時間先後。"""
-    others = sorted((float(s["start"]), float(s["end"])) for s in segments
-                    if s.get("speaker") not in (None, label) and s.get("end") is not None)
+def _spans(segments: Sequence[Segment], label: str, duration: Optional[float] = None) -> List[Span]:
+    """取嵌入的窗（見模組說明第 2 點），依時間先後。``duration`` 是這一段音檔的長度。"""
+    timed = _timed(segments, duration)
+    others = sorted((start, end) for start, end, speaker in timed if speaker not in (None, label))
     pieces: List[Span] = []
-    for segment in segments:
-        if segment.get("speaker") != label or segment.get("end") is None:
+    for segment_start, segment_end, speaker in timed:
+        if speaker != label:
             continue
-        for start, end in _minus(float(segment["start"]), float(segment["end"]), others):
+        for start, end in _minus(segment_start, segment_end, others):
             if end - start >= MIN_SPAN_SECONDS:
                 count = math.ceil((end - start) / WINDOW_SECONDS)
                 step = (end - start) / count
@@ -198,6 +209,23 @@ def _spans(segments: Sequence[Segment], label: str) -> List[Span]:
         chosen.append(span)
         total += span[1] - span[0]
     return sorted(chosen)
+
+
+def _timed(segments: Sequence[Segment], duration: Optional[float]) -> List[Tuple[float, float, Any]]:
+    """有結束時間的片段的（起, 迄, 說話者編號），順序和 ``segments`` 相同。沒寫結束時間的，結束是下一個比它晚
+    開始的片段的開始，最多一窗；後面沒有片段時到 ``duration``，沒給時不取（見模組說明第 2 點）。"""
+    starts = sorted({float(s["start"]) for s in segments})
+    timed: List[Tuple[float, float, Any]] = []
+    for segment in segments:
+        start = float(segment["start"])
+        if segment.get("end") is not None:
+            timed.append((start, float(segment["end"]), segment.get("speaker")))
+            continue
+        later = bisect.bisect_right(starts, start)
+        end = starts[later] if later < len(starts) else duration
+        if end is not None:
+            timed.append((start, min(end, start + WINDOW_SECONDS), segment.get("speaker")))
+    return timed
 
 
 def _minus(start: float, end: float, others: Iterable[Span]) -> List[Span]:

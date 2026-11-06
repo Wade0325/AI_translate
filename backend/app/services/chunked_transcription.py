@@ -26,8 +26,9 @@
      整個任務沒有片段時，任務生命週期拿第一個寫了原因的段回報失敗。
 4. 合併：每一段的片段平移到它在語音視圖上的起點，片段 key 加上這一段的前綴。模型能力開著
    ``align_speakers_across_chunks`` 時，先用說話者嵌入把各段（與接續段）的說話者編號對齊成同一套
-   （#93，規則見 :mod:`app.services.speaker_alignment`）：只改說話者編號，時間、文字與片段 key 不變。嵌入
-   用不了時不讓任務失敗，後面的段的每個人改用新的編號，處理中的狀態說明與日誌寫明沒有對齊。
+   （#93，規則見 :mod:`app.services.speaker_alignment`）：只改說話者編號，時間、文字與片段 key 不變。本機
+   還沒有說話者嵌入的權重時（例如只用 Gemini、沒下載過本機模型，#335）先下載，狀態說明寫明。嵌入用不了
+   時不讓任務失敗，後面的段的每個人改用新的編號，處理中的狀態說明與日誌寫明沒有對齊。
 5. 放回原音檔的時間軸（:meth:`SpeechTimeline.in_original_order`）：時間還原回原音檔，依開始時間
    排好、重編序號。批次不分段，結果回來之後也經過同一步。
 6. 掉尾（#257）：每一段各自檢查停下的地方（轉接器回報的擔保點，沒有時是最後一個片段的結束）之後還有
@@ -492,14 +493,16 @@ class _ChunkedTranscription:
         :func:`speaker_alignment.separate`：後面的段的每個人都拿新的編號。"""
         if not self._align_speakers:
             return None
-        pieces = [speaker_alignment.Piece(piece.chunk.audio, piece.chunk.start, piece.result.segments)
+        pieces = [speaker_alignment.Piece(piece.chunk.audio, piece.chunk.start, piece.result.segments,
+                                          piece.chunk.duration)
                   for piece in self._transcribed]
         if not speaker_alignment.needs_alignment(pieces):
             return None
         self._progress.report("對齊各段的說話者...")
         try:
             readable = [replace(piece, audio=self._as_wav(piece.audio)) for piece in pieces]
-            return speaker_alignment.align(readable, check=self._progress.raise_if_cancelled)
+            return speaker_alignment.align(readable, check=self._progress.raise_if_cancelled,
+                                           report=self._progress.report)
         except TranscriptionCancelledError:
             raise
         except Exception as e:

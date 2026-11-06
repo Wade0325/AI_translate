@@ -20,3 +20,42 @@ def test_network_matches_the_weights_file():
     if result.returncode == NO_TORCH:
         pytest.skip("沒裝 torch")
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+class TestFirstUse:
+    """只用 Gemini 的人多半沒下載過本機模型（#335）：第一次要對齊時在任務裡下載權重，下載前先告訴使用者。
+
+    torch 是 conftest 換上的假的，網路也換成假的；取得權重（resolve_repo：本機沒有時下載）也是假的，只記下
+    什麼時候呼叫。"""
+
+    @pytest.fixture
+    def events(self, monkeypatch, tmp_path):
+        from unittest.mock import MagicMock
+
+        from app.provider.local import campplus, weights
+
+        happened: list[str] = []
+        monkeypatch.setattr(weights, "resolve_repo",
+                            lambda repo: happened.append(f"取得權重 {repo}") or str(tmp_path))
+        monkeypatch.setattr(campplus, "_network", MagicMock)
+        return happened
+
+    def test_says_it_downloads_the_weights_before_it_does(self, monkeypatch, events):
+        from app.provider.local import campplus, weights
+
+        monkeypatch.setattr(weights, "repo_is_ready", lambda repo: False)
+
+        campplus.CamPlusPlus(events.append)
+
+        assert events == [
+            "第一次對齊各段的說話者：從 Hugging Face 下載說話者嵌入（CAM++）的權重，約 30 MB...",
+            "取得權重 funasr/campplus"]
+
+    def test_says_nothing_when_the_weights_are_already_there(self, monkeypatch, events):
+        from app.provider.local import campplus, weights
+
+        monkeypatch.setattr(weights, "repo_is_ready", lambda repo: True)
+
+        campplus.CamPlusPlus(events.append)
+
+        assert events == ["取得權重 funasr/campplus"]
