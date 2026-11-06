@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import List, Optional, Sequence, Tuple
+from typing import Callable, List, Optional, Sequence, Tuple
 
 import numpy as np
 import soundfile as sf
@@ -23,11 +23,15 @@ class FakeEmbedder:
         self.opened = 0
         # 建立時拋的錯，例如權重載入失敗
         self.open_error: Optional[Exception] = None
+        # 建立時回報給使用者的進度，例如第一次用時下載權重
+        self.notice: Optional[str] = None
         # 每次取嵌入收到的（音檔, 窗）
         self.calls: List[Tuple[Path, Tuple[Tuple[float, float], ...]]] = []
 
-    def __call__(self) -> "FakeEmbedder":
+    def __call__(self, report: Callable[[str], None]) -> "FakeEmbedder":
         self.opened += 1
+        if self.notice is not None:
+            report(self.notice)
         if self.open_error is not None:
             raise self.open_error
         return self

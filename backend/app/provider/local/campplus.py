@@ -1,4 +1,4 @@
-"""說話者嵌入：CAM++（中文 20 萬位說話者訓練，192 維），給分段轉錄對齊各段的說話者編號（#93）。
+"""說話者嵌入：CAM++（中文 20 萬位說話者訓練，192 維），給分段轉錄對齊各段的說話者編號（#93；Gemini 是 #335）。
 
 模型的網路照 3D-Speaker 的 ``speakerlab/models/campplus``（DTDNN.py、layers.py，commit
 065629c313eaf1a01c65c640c46d77e61e9607b4，Apache License 2.0，
@@ -10,15 +10,18 @@ Copyright 3D-Speaker，https://github.com/modelscope/3D-Speaker）改寫：只�
 ModelScope 的 ``iic/speech_campplus_sv_zh-cn_16k-common`` 是同一個檔案（SHA-256 相同）。用
 ``torch.load(weights_only=True)`` 載入：只讀張量，不執行權重檔裡的程式。
 
-在 CPU 上跑，不佔顯存：MOSS 轉錄完才用到，模型只有約 700 萬個參數。torch 與 torchaudio 在第一次
-建立 :class:`CamPlusPlus` 時才匯入：Gemini 與單次轉完的音檔用不到它。
+在 CPU 上跑，不佔顯存：各段轉錄完、合併時才用到，模型只有約 700 萬個參數。torch 與 torchaudio 在第一次
+建立 :class:`CamPlusPlus` 時才匯入：單次轉完的音檔用不到它。
+
+本機 MOSS 模型的必要權重包含它（設定頁下載）；只用 Gemini 的人多半沒下載過，第一次要對齊時在任務裡下載，
+狀態說明寫明（#335）。
 """
 
 from __future__ import annotations
 
 from collections import OrderedDict
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, List, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Any, Callable, List, Optional, Sequence, Tuple
 
 from app.provider.local import weights
 
@@ -33,14 +36,17 @@ EMBEDDING_SIZE = 192
 class CamPlusPlus:
     """CAM++ 說話者嵌入（:class:`app.services.speaker_alignment.SpeakerEmbedder`）。
 
-    建立時載入模型權重（本機沒有完整的權重時照 :func:`weights.resolve_repo` 下載）；載入失敗時拋出原本
-    的錯誤，由分段轉錄退回不對齊的做法。
+    建立時載入模型權重（本機沒有完整的權重時照 :func:`weights.resolve_repo` 下載，先用 ``report`` 告訴使用者）；
+    下載或載入失敗時拋出原本的錯誤，由分段轉錄退回不對齊的做法。
     """
 
-    def __init__(self) -> None:
+    def __init__(self, report: Callable[[str], None]) -> None:
         import torch
 
         repo = weights.CAMPPLUS_MODEL_ID
+        if not weights.repo_is_ready(repo):
+            report(f"第一次對齊各段的說話者：從 Hugging Face 下載說話者嵌入（CAM++）的權重，"
+                   f"約 {round(weights.REPO_SIZE_GB[repo] * 1000)} MB...")
         path = Path(weights.resolve_repo(repo)) / weights.WEIGHTS_FILES[repo]
         state = torch.load(path, map_location="cpu", weights_only=True)
         model = _network()
@@ -49,7 +55,8 @@ class CamPlusPlus:
         self._model = model
 
     def embed(self, audio: Path, spans: Sequence[Tuple[float, float]]) -> List[Optional[np.ndarray]]:
-        """``audio`` 裡每一段（起, 迄，秒）的嵌入（192 維、長度 1）；讀不到聲音的段是 None。"""
+        """``audio`` 裡每一段（起, 迄，秒）的嵌入（192 維、長度 1）；讀不到聲音的段（例如整段在音檔的結尾
+        之後：Gemini 寫的時間可能超過音檔，#335）是 None。"""
         import numpy as np
         import soundfile as sf
         import torch
@@ -59,7 +66,12 @@ class CamPlusPlus:
         with sf.SoundFile(str(audio)) as file:
             rate = file.samplerate
             for start, end in spans:
-                file.seek(max(0, int(start * rate)))
+                begin = max(0, int(start * rate))
+                if begin >= file.frames:
+                    # 跳到結尾之後 soundfile 會拋錯
+                    out.append(None)
+                    continue
+                file.seek(begin)
                 samples = file.read(max(0, int((end - start) * rate)), dtype="float32",
                                     always_2d=True)
                 if len(samples) < rate * 0.1:
