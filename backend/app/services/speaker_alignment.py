@@ -15,8 +15,9 @@
    長的切成不超過 :data:`WINDOW_SECONDS` 秒的窗，從長的取起，最多 :data:`MAX_SECONDS_PER_UNIT` 秒。每一窗一個
    嵌入，依長度加權平均成這個單位的重心。一窗都沒有的單位沒有重心，不和任何人併。
    沒寫結束時間的片段（Gemini 的 LRC 多半只寫開始時間，#335）用同一段裡下一個比它晚開始的片段的開始當結束，
-   最多一窗（離開始越遠，越可能已經換人）；後面沒有片段時到這一段音檔的結尾。這只用來挑聲音，不寫回片段：
-   字幕會把猜的結束時間當真。本機的片段都有結束時間，不受影響。
+   最多一窗（離開始越遠，越可能已經換人），也不超過這一段音檔的結尾（Gemini 寫的時間可能超過音檔）；後面
+   沒有片段時到音檔的結尾。這只用來挑聲音，不寫回片段：字幕會把推算的結束時間當真。本機的片段都有結束
+   時間，不受影響。
 3. 分群：重心兩兩的餘弦相似度，做平均連結的階層式分群，每次併平均相似度最高、又沒有 cannot-link 的兩群，
    最高的不到 :data:`THRESHOLD` 就停。做法照 10/19 的研究；門檻與取窗的上限在 AliMeeting Eval 上調，見研究區
    ``research_notes/93-chunk-speakers/embedding``。
@@ -145,7 +146,7 @@ def align(pieces: Sequence[Piece], open_embedder: EmbedderFactory = open_embedde
         unit.spans = _spans(piece.segments, unit.label, piece.duration)
         if unit.spans:
             check()
-            unit.centroid = _centroid(unit.spans, embedder.embed(pieces[unit.piece].audio, unit.spans))
+            unit.centroid = _centroid(unit.spans, embedder.embed(piece.audio, unit.spans))
     clusters = _cluster(units, threshold)
     mappings = _numbered(clusters, units, len(pieces))
     _log(units, clusters, mappings)
@@ -190,10 +191,10 @@ def _cannot_link(a: _Unit, b: _Unit) -> bool:
 
 def _spans(segments: Sequence[Segment], label: str, duration: Optional[float] = None) -> List[Span]:
     """取嵌入的窗（見模組說明第 2 點），依時間先後。``duration`` 是這一段音檔的長度。"""
-    timed = _timed(segments, duration)
-    others = sorted((start, end) for start, end, speaker in timed if speaker not in (None, label))
+    ended = _with_ends(segments, duration)
+    others = sorted((start, end) for start, end, speaker in ended if speaker not in (None, label))
     pieces: List[Span] = []
-    for segment_start, segment_end, speaker in timed:
+    for segment_start, segment_end, speaker in ended:
         if speaker != label:
             continue
         for start, end in _minus(segment_start, segment_end, others):
@@ -211,21 +212,24 @@ def _spans(segments: Sequence[Segment], label: str, duration: Optional[float] = 
     return sorted(chosen)
 
 
-def _timed(segments: Sequence[Segment], duration: Optional[float]) -> List[Tuple[float, float, Any]]:
-    """有結束時間的片段的（起, 迄, 說話者編號），順序和 ``segments`` 相同。沒寫結束時間的，結束是下一個比它晚
-    開始的片段的開始，最多一窗；後面沒有片段時到 ``duration``，沒給時不取（見模組說明第 2 點）。"""
+def _with_ends(segments: Sequence[Segment], duration: Optional[float]) -> List[Tuple[float, float, Any]]:
+    """每個片段的（起, 迄, 說話者編號），順序和 ``segments`` 相同；沒寫結束時間的推算一個（見模組說明第 2 點）：
+    下一個比它晚開始的片段的開始，最多一窗，也不超過音檔的長度 ``duration``；後面沒有片段時到 ``duration``，
+    沒給時不取。寫了結束時間的照寫的。"""
     starts = sorted({float(s["start"]) for s in segments})
-    timed: List[Tuple[float, float, Any]] = []
+    ended: List[Tuple[float, float, Any]] = []
     for segment in segments:
         start = float(segment["start"])
         if segment.get("end") is not None:
-            timed.append((start, float(segment["end"]), segment.get("speaker")))
+            ended.append((start, float(segment["end"]), segment.get("speaker")))
             continue
-        later = bisect.bisect_right(starts, start)
-        end = starts[later] if later < len(starts) else duration
-        if end is not None:
-            timed.append((start, min(end, start + WINDOW_SECONDS), segment.get("speaker")))
-    return timed
+        following = bisect.bisect_right(starts, start)
+        next_start = starts[following] if following < len(starts) else None
+        if next_start is None and duration is None:
+            continue  # 最後一個片段，又不知道音檔多長
+        end = min(t for t in (next_start, duration, start + WINDOW_SECONDS) if t is not None)
+        ended.append((start, end, segment.get("speaker")))
+    return ended
 
 
 def _minus(start: float, end: float, others: Iterable[Span]) -> List[Span]:

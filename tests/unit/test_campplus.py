@@ -59,3 +59,18 @@ class TestFirstUse:
         campplus.CamPlusPlus(events.append)
 
         assert events == ["取得權重 funasr/campplus"]
+
+
+def test_a_window_past_the_end_of_the_audio_has_no_embedding(tmp_path):
+    # Gemini 寫的時間可能超過送進去的音檔（#335）：整個在結尾之後的窗沒有嵌入，不讓整個對齊失敗
+    # （soundfile 跳到結尾之後會拋錯）。這一窗在讀聲音時就停下，用不到 torch
+    import numpy as np
+    import soundfile as sf
+
+    from app.provider.local import campplus
+
+    audio = tmp_path / "chunk.wav"
+    sf.write(str(audio), np.zeros(16000, dtype="float32"), 16000)
+    embedder = object.__new__(campplus.CamPlusPlus)
+
+    assert embedder.embed(audio, [(2.0, 4.0)]) == [None]

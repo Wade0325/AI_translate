@@ -6,7 +6,7 @@
 
 假的嵌入照「這一窗的中點是誰在說話」回答（``voices``），同一個人給同一個向量。
 
-沒寫結束時間的片段（Gemini 的 LRC 多半只寫開始時間，#335）怎麼取窗，見 TestLinesWithoutAnEnd。
+沒寫結束時間的片段（Gemini 的 LRC 多半只寫開始時間，#335）怎麼取窗，見 TestSegmentsWithoutAnEnd。
 """
 from pathlib import Path
 
@@ -129,12 +129,11 @@ class TestWindows:
         assert speaker_alignment._spans(segments, "S0") == [(3.0, 7.0), (8.0, 11.0)]
 
 
+class TestSegmentsWithoutAnEnd:
+    """Gemini 的 LRC 多半只寫開始時間（#335）。取嵌入時用同一段裡下一個片段的開始當結束，最多取一窗；最後一個
+    片段取到這一段音檔的結尾。只用來挑取嵌入的聲音，片段本身照樣沒有結束時間。"""
 
-class TestLinesWithoutAnEnd:
-    """Gemini 的 LRC 多半只寫開始時間（#335）。取嵌入時用同一段裡下一句的開始當結束，最多取一窗；最後一句
-    取到這一段音檔的結尾。只用來挑取嵌入的聲音，片段本身照樣沒有結束時間。"""
-
-    def test_a_line_ends_where_the_next_one_starts(self):
+    def test_a_segment_ends_where_the_next_one_starts(self):
         segments = [segment(0, None, "S0"), segment(3, None, "S1"), segment(5, None, "S0"),
                     segment(8, 9.5, "S1")]
 
@@ -142,20 +141,28 @@ class TestLinesWithoutAnEnd:
         assert speaker_alignment._spans(segments, "S1") == [(3.0, 5.0), (8.0, 9.5)]
 
     def test_only_the_first_window_of_a_long_gap_is_used(self):
-        # 下一句 25 秒後才開始：中間可能有沒轉出來的別人，只取開頭的一窗
+        # 下一個片段 25 秒後才開始：中間可能有沒轉出來的別人，只取開頭的一窗
         segments = [segment(0, None, "S0"), segment(25, 27, "S1")]
 
         assert speaker_alignment._spans(segments, "S0") == [(0.0, speaker_alignment.WINDOW_SECONDS)]
 
-    def test_the_last_line_ends_with_the_audio(self):
+    def test_the_last_segment_ends_with_the_audio(self):
         segments = [segment(0, None, "S0"), segment(3, None, "S1")]
 
         assert speaker_alignment._spans(segments, "S1", duration=7.0) == [(3.0, 7.0)]
         # 不知道音檔多長時不取
         assert speaker_alignment._spans(segments, "S1") == []
 
-    def test_a_line_starting_at_the_same_time_does_not_end_it(self):
-        # S1 在同一刻插了一句（0–1 秒）：S0 照樣到下一個比它晚開始的 4 秒，扣掉重疊的 0–1 秒
+    def test_nothing_past_the_end_of_the_audio_is_used(self):
+        # Gemini 寫的時間可能超過送進去的音檔：推算的結束不超過音檔的結尾，整個在結尾之後的片段不取
+        segments = [segment(0, None, "S0"), segment(5, None, "S1"), segment(9, None, "S0"),
+                    segment(12, None, "S1")]
+
+        assert speaker_alignment._spans(segments, "S1", duration=7.0) == [(5.0, 7.0)]
+        assert speaker_alignment._spans(segments, "S0", duration=7.0) == [(0.0, 5.0)]
+
+    def test_a_segment_starting_at_the_same_time_does_not_end_it(self):
+        # S1 在同一刻插了一句（0–1 秒）：S0 照樣到下一個比它晚開始的片段（4 秒），扣掉重疊的 0–1 秒
         segments = [segment(0, None, "S0"), segment(0, 1, "S1"), segment(4, 6, "S0")]
 
         assert speaker_alignment._spans(segments, "S0") == [(1.0, 4.0), (4.0, 6.0)]

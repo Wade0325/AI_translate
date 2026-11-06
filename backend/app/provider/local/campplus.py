@@ -40,7 +40,7 @@ class CamPlusPlus:
     下載或載入失敗時拋出原本的錯誤，由分段轉錄退回不對齊的做法。
     """
 
-    def __init__(self, report: Callable[[str], None] = lambda text: None) -> None:
+    def __init__(self, report: Callable[[str], None]) -> None:
         import torch
 
         repo = weights.CAMPPLUS_MODEL_ID
@@ -55,7 +55,8 @@ class CamPlusPlus:
         self._model = model
 
     def embed(self, audio: Path, spans: Sequence[Tuple[float, float]]) -> List[Optional[np.ndarray]]:
-        """``audio`` 裡每一段（起, 迄，秒）的嵌入（192 維、長度 1）；讀不到聲音的段是 None。"""
+        """``audio`` 裡每一段（起, 迄，秒）的嵌入（192 維、長度 1）；讀不到聲音的段（例如整段在音檔的結尾
+        之後：Gemini 寫的時間可能超過音檔，#335）是 None。"""
         import numpy as np
         import soundfile as sf
         import torch
@@ -65,7 +66,12 @@ class CamPlusPlus:
         with sf.SoundFile(str(audio)) as file:
             rate = file.samplerate
             for start, end in spans:
-                file.seek(max(0, int(start * rate)))
+                begin = max(0, int(start * rate))
+                if begin >= file.frames:
+                    # 跳到結尾之後 soundfile 會拋錯
+                    out.append(None)
+                    continue
+                file.seek(begin)
                 samples = file.read(max(0, int((end - start) * rate)), dtype="float32",
                                     always_2d=True)
                 if len(samples) < rate * 0.1:

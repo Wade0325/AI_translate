@@ -494,7 +494,7 @@ class _ChunkedTranscription:
         if not self._align_speakers:
             return None
         pieces = [speaker_alignment.Piece(piece.chunk.audio, piece.chunk.start, piece.result.segments,
-                                          piece.chunk.duration)
+                                          duration=piece.chunk.duration)
                   for piece in self._transcribed]
         if not speaker_alignment.needs_alignment(pieces):
             return None

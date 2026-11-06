@@ -19,7 +19,7 @@ from app.provider import registry
 from app.provider.google.provider import GeminiProvider
 from tests.support.fake_genai import FakeGenaiClient, Reply, invalid_argument, unavailable
 from tests.support.synthetic_audio import VOICED
-from tests.support.task_api import receive_until, upload
+from tests.support.task_api import receive_until, stored_segments, upload
 from tests.support.waiting import TIMEOUT, wait_until
 
 MODEL = "gemini-2.5-flash"
@@ -310,26 +310,24 @@ def two_chunks(monkeypatch):
 
 def speakers(api: TestClient, task_uuid: str) -> list[tuple]:
     """存下來的片段：（說話者編號, 文字）。"""
-    return [(s["speaker"], s["text"])
-            for s in api.get(f"/api/v1/transcripts/{task_uuid}").json()["segments"]]
+    return [(s["speaker"], s["text"]) for s in stored_segments(api, task_uuid)]
 
 
-# 每一段 Gemini 都把先聽到的人標成 Speaker 1：後一段的 Speaker 1 是 B。只寫開始時間，各段最後一句後面
-# 寫了結束時間
-TWO_SPEAKER_REPLIES = [
-    "[00:00.00]Speaker 1: おはよう。\n[00:01.50]Speaker 2: こんにちは。\n[00:03.00]",
-    "[00:00.30]Speaker 1: はい。\n[00:01.80]Speaker 2: またね。\n[00:03.30]",
-]
+def transcribe_two_speakers(api: TestClient, run_mode, genai: FakeGenaiClient, name: str) -> list[dict]:
+    """轉錄 TWO_SPEAKERS（Multi-Speaker 開）。每一段 Gemini 都把先聽到的人標成 Speaker 1：後一段的 Speaker 1
+    是 B。只寫開始時間，各段最後一個片段後面寫了結束時間。"""
+    genai.replies = [
+        Reply(text="[00:00.00]Speaker 1: おはよう。\n[00:01.50]Speaker 2: こんにちは。\n[00:03.00]"),
+        Reply(text="[00:00.30]Speaker 1: はい。\n[00:01.80]Speaker 2: またね。\n[00:03.30]"),
+    ]
+    return transcribe(api, run_mode, name, multi_speaker=True, voiced=TWO_SPEAKERS)
 
 
 def test_speaker_numbers_follow_the_voice_across_chunks(
         api, in_process_run_mode, genai, embedder, two_chunks):
     # 各段的 Speaker 1 互相獨立（每一段是另一次請求，Gemini 看不到前一段）：合併時用說話者嵌入把同一個人
     # 配成同一個說話者編號（#335）。後一段的 Speaker 1（B）配回前一段的 S1
-    genai.replies = [Reply(text=text) for text in TWO_SPEAKER_REPLIES]
-
-    messages = transcribe(api, in_process_run_mode, "gemini-chunks-speakers.wav", multi_speaker=True,
-                          voiced=TWO_SPEAKERS)
+    messages = transcribe_two_speakers(api, in_process_run_mode, genai, "gemini-chunks-speakers.wav")
 
     end = messages[-1]
     assert end["status_code"] == TaskStatus.COMPLETED
@@ -338,7 +336,7 @@ def test_speaker_numbers_follow_the_voice_across_chunks(
         ("S0", "おはよう。"), ("S1", "こんにちは。"), ("S1", "はい。"), ("S0", "またね。")]
     assert "對齊各段的說話者..." in [m["status_text"] for m in messages]
     assert embedder.opened == 1
-    # 取嵌入的窗：沒寫結束時間的句子到下一句的開始，最後一句到 Gemini 寫的結束
+    # 取嵌入的窗：沒寫結束時間的片段到下一個片段的開始，各段最後一個片段到 Gemini 寫的結束
     assert [spans for _, spans in embedder.calls] == [
         ((0.0, 1.5),), ((1.5, 3.0),), ((0.3, 1.8),), ((1.8, 3.3),)]
 
@@ -348,10 +346,8 @@ def test_without_the_embedder_later_chunks_get_new_numbers(
     # 說話者嵌入用不了（例如下載不到權重）：任務照樣完成，後一段的人都用新的編號，不沿用前一段的 S0、S1，
     # 狀態說明寫明沒有對齊（和本機一樣，#93 第 1 題）
     embedder.open_error = OSError("連不上 Hugging Face")
-    genai.replies = [Reply(text=text) for text in TWO_SPEAKER_REPLIES]
 
-    messages = transcribe(api, in_process_run_mode, "gemini-chunks-no-embedder.wav", multi_speaker=True,
-                          voiced=TWO_SPEAKERS)
+    messages = transcribe_two_speakers(api, in_process_run_mode, genai, "gemini-chunks-no-embedder.wav")
 
     end = messages[-1]
     assert end["status_code"] == TaskStatus.COMPLETED
@@ -364,10 +360,8 @@ def test_without_the_embedder_later_chunks_get_new_numbers(
 def test_first_use_of_the_embedder_is_shown(api, in_process_run_mode, genai, embedder, two_chunks):
     # 建立說話者嵌入時回報的進度（例如第一次用時下載權重）照樣廣播給畫面
     embedder.notice = "第一次對齊說話者：下載權重..."
-    genai.replies = [Reply(text=text) for text in TWO_SPEAKER_REPLIES]
 
-    messages = transcribe(api, in_process_run_mode, "gemini-chunks-first-use.wav", multi_speaker=True,
-                          voiced=TWO_SPEAKERS)
+    messages = transcribe_two_speakers(api, in_process_run_mode, genai, "gemini-chunks-first-use.wav")
 
     assert messages[-1]["status_code"] == TaskStatus.COMPLETED
     assert "第一次對齊說話者：下載權重..." in [m["status_text"] for m in messages]
