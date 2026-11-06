@@ -9,3 +9,8 @@ Python embeddable package, uv, and the npm packages bundled into the web
 interface), each distributed under its own license. See THIRD_PARTY_NOTICES.txt
 and the licenses folder in the portable build (tools/portable/ in this
 repository).
+
+This product includes code adapted from 3D-Speaker
+(https://github.com/modelscope/3D-Speaker), Copyright 3D-Speaker, licensed under
+the Apache License, Version 2.0: the CAM++ speaker embedding network in
+backend/app/provider/local/campplus.py (modified: inference only).

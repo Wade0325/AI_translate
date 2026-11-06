@@ -347,7 +347,7 @@ function LocalModelsCard() {
 
                     <Text style={{ color: '#8888a8', fontSize: 12 }}>
                         權重存放於 {status.hf_home}；首次使用 Local provider 前需完成下載。
-                        預設的 MOSS 只需非選用的兩項；選用權重供「MOSS + Qwen3-ASR」與舊版「VibeVoice + Qwen3-ASR」使用。
+                        預設的 MOSS 只需非選用的三項（含分段轉錄時對齊說話者編號用的 CAM++）；選用權重供「MOSS + Qwen3-ASR」與舊版「VibeVoice + Qwen3-ASR」使用。
                         模型權重從 Hugging Face 下載，不隨本程式散布，使用時依各自模型卡上的授權。
                     </Text>
                 </div>

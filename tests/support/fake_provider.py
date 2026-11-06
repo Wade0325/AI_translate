@@ -43,6 +43,7 @@ CAPABILITIES = ModelCapabilities(
     can_terminate=False,
     split_retry_on_failure=False,
     continuation=False,
+    align_speakers_across_chunks=False,
     accepts_prompt=True,
     accepts_user_text=True,
     supports_batch=False,
