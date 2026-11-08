@@ -318,6 +318,7 @@ test('Gemini 的卡片說明音檔會上傳到 Google，並連到條款原文；
 })
 
 const MOSS_MODEL_CARD = 'https://huggingface.co/OpenMOSS-Team/MOSS-Transcribe-Diarize/blob/704aa4a9c304e8520be88901e0d1960158ef5b15/README.md'
+const ALIGNER_MODEL_CARD = 'https://huggingface.co/Qwen/Qwen3-ForcedAligner-0.6B-hf/blob/c07281df297b9905d24a508279258cccf987a064/README.md'
 const VIBEVOICE_MODEL_CARD = 'https://huggingface.co/microsoft/VibeVoice-ASR-HF/blob/f22241c2062b3b25272bf117397e03d73381037a/README.md'
 
 /**
@@ -335,7 +336,7 @@ const localStatus = (fields) => ({
         },
         {
             repo_id: 'Qwen/Qwen3-ForcedAligner-0.6B-hf', downloaded: true, required: true, used_by: ['moss-align', 'moss-qwen3-asr', 'vibevoice-qwen3-asr'],
-            license: 'apache-2.0', model_card_url: 'https://huggingface.co/Qwen/Qwen3-ForcedAligner-0.6B-hf/blob/c07281df297b9905d24a508279258cccf987a064/README.md',
+            license: 'apache-2.0', model_card_url: ALIGNER_MODEL_CARD,
         },
         {
             repo_id: 'microsoft/VibeVoice-ASR-HF', downloaded: true, required: false, used_by: ['vibevoice-qwen3-asr'],
@@ -381,14 +382,29 @@ test('本機卡片照模型卡列出每份權重的授權，連到下載的那�
 
     const local = providerCard(page, 'Local Models')
     await expect(local.getByText('授權：apache-2.0')).toHaveCount(2)
-    await expect(local.getByText('授權：mit')).toBeVisible()
     const cards = local.getByRole('link', { name: 'Hugging Face 模型卡' })
-    await expect(cards).toHaveCount(3)
+    await expect(cards).toHaveCount(2)
     await expect(cards.first()).toHaveAttribute('href', MOSS_MODEL_CARD)
-    await expect(cards.last()).toHaveAttribute('href', VIBEVOICE_MODEL_CARD)
+    await expect(cards.last()).toHaveAttribute('href', ALIGNER_MODEL_CARD)
     await expect(cards.first()).toHaveAttribute('target', '_blank')
     await expect(cards.first()).toHaveAttribute('rel', 'noopener noreferrer')
     await expect(local.getByText(/模型權重從 Hugging Face 下載，不隨本程式散布，使用時依各自模型卡上的授權/)).toBeVisible()
+})
+
+test('本機卡片只列本機轉錄要的權重，不提供選用模型的下載（#20）', async ({ page, mockBackend }) => {
+    // 選用模型（MOSS + Qwen3-ASR、舊版 VibeVoice）不在選單上：沒下載的選用權重也不列、不提供下載
+    const models = localStatus({}).models.map((m) => (m.required ? m : { ...m, downloaded: false }))
+    await mockBackend({
+        routes: { 'GET /setting/local-models/status': localStatus({ models, optional_downloaded: false }) },
+    })
+    await page.goto('/settings')
+
+    const local = providerCard(page, 'Local Models')
+    await expect(local.getByText('OpenMOSS-Team/MOSS-Transcribe-Diarize')).toBeVisible()
+    await expect(local.getByText('microsoft/VibeVoice-ASR-HF')).toHaveCount(0)
+    await expect(local.getByText('授權：mit')).toHaveCount(0)
+    await expect(local.getByText(/選用/)).toHaveCount(0)
+    await expect(local.getByRole('button', { name: /下載/ })).toHaveCount(0)
 })
 
 test('下載權重時，進度照已下載的位元組計算（#24）', async ({ page, mockBackend }) => {

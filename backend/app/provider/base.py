@@ -86,6 +86,9 @@ class ProviderInfo:
     """設定頁的「測試」查的是執行轉錄的那台機器（例如顯卡與模型權重），不是只連一次 API。"""
     upload_notice: Optional[UploadNotice] = None
     """音檔會送出本機時要告訴使用者的事；本機轉錄不送出，是 None。"""
+    hidden_models: frozenset[str] = frozenset()
+    """畫面上不列出的模型：不在供應商清單（``GET /providers``）上，送出任務、評測與設定頁的「測試」
+    照樣接受，留給評測與之後的版本使用（#20）。"""
 
 
 @dataclass

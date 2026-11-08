@@ -255,12 +255,14 @@ function LocalModelsCard() {
     if (!status?.standalone) return null
 
     const dl = status.download
-    // model 省略＝預設模型（MOSS）所需；'all'＝連同選用模型（Qwen3-ASR、VibeVoice）
-    const handleDownload = async (model) => {
+    // 只列、只下載預設模型（MOSS）所需的權重：選用模型（MOSS + Qwen3-ASR、舊版 VibeVoice）不在
+    // 選單上，權重也不在這裡下載（#20）
+    const requiredWeights = status.models.filter(m => m.required)
+    const handleDownload = async () => {
         setStarting(true)
         setStartError(null)
         try {
-            await api.localModels.download(model)
+            await api.localModels.download()
             await refresh()
         } catch (err) {
             setStartError(err.message)
@@ -291,15 +293,15 @@ function LocalModelsCard() {
                         <Text style={{ color: '#d4a72d', fontSize: 12 }}>{status.vram_notice}</Text>
                     )}
 
-                    {status.models.map(m => (
+                    {requiredWeights.map(m => (
                         <div key={m.repo_id}>
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                                 <Text style={{ color: '#8888a8', fontSize: 12, fontFamily: 'monospace' }}>
-                                    {m.repo_id}{m.required ? '' : '（選用）'}
+                                    {m.repo_id}
                                 </Text>
                                 {m.downloaded
                                     ? <CheckCircle2 size={14} color="#2dd4a8" />
-                                    : <Text style={{ color: m.required ? '#d4a72d' : '#8888a8', fontSize: 12 }}>未下載</Text>}
+                                    : <Text style={{ color: '#d4a72d', fontSize: 12 }}>未下載</Text>}
                             </div>
                             {/* 授權照模型卡 license 欄位的原文，連到釘住版本的模型卡 */}
                             <Text style={{ color: '#8888a8', fontSize: 12, display: 'block' }}>
@@ -331,23 +333,13 @@ function LocalModelsCard() {
                             onClick={() => handleDownload()}
                             disabled={!status.gpu_available}
                         >
-                            {dl.state === 'failed' && dl.target !== 'all' ? '重試下載' : `下載模型權重 (~${status.required_size_gb} GB)`}
-                        </Button>
-                    )}
-                    {status.all_downloaded && !status.optional_downloaded && !downloading && (
-                        <Button
-                            icon={<Download size={16} />}
-                            loading={starting}
-                            onClick={() => handleDownload('all')}
-                            disabled={!status.gpu_available}
-                        >
-                            {dl.state === 'failed' && dl.target === 'all' ? '重試下載選用模型' : `下載選用模型 (~${status.optional_size_gb} GB)`}
+                            {dl.state === 'failed' ? '重試下載' : `下載模型權重 (~${status.required_size_gb} GB)`}
                         </Button>
                     )}
 
                     <Text style={{ color: '#8888a8', fontSize: 12 }}>
                         權重存放於 {status.hf_home}；首次使用 Local provider 前需完成下載。
-                        預設的 MOSS 只需非選用的三項（含分段轉錄時對齊說話者編號用的 CAM++）；選用權重供「MOSS + Qwen3-ASR」與舊版「VibeVoice + Qwen3-ASR」使用。
+                        本機轉錄要上面這三項（含分段轉錄時對齊說話者編號用的 CAM++）。
                         模型權重從 Hugging Face 下載，不隨本程式散布，使用時依各自模型卡上的授權。
                     </Text>
                 </div>

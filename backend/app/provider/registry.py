@@ -103,7 +103,8 @@ class ListedProvider:
 
 
 def providers() -> List[ListedProvider]:
-    """每個供應商（小寫名稱）與它的每個模型，不建立轉接器、不碰顯卡。"""
+    """每個供應商（小寫名稱）與它畫面上列出的模型，不建立轉接器、不碰顯卡。不列出的模型
+    （:attr:`ProviderInfo.hidden_models`）不在這裡，:func:`model_capabilities` 照樣認得。"""
     with _lock:
         factories = list(_factories.items())
     return [_listed(name, factory.info, factory.capabilities()) for name, factory in factories]
@@ -119,7 +120,8 @@ def _listed(name: str, info: ProviderInfo,
         upload_notice=info.upload_notice,
         models=tuple(ListedModel(model=model, label=info.model_labels.get(model, model),
                                  capabilities=capabilities)
-                     for model, capabilities in models.items()),
+                     for model, capabilities in models.items()
+                     if model not in info.hidden_models),
     )
 
 

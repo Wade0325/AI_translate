@@ -113,7 +113,10 @@ def _import_backend() -> None:
 
 
 def _resolve_model(provider: str, model: str | None):
-    """驗證供應商與模型，回傳供應商清單上的名稱、模型（沒指定時是預設模型）與模型能力。"""
+    """驗證供應商與模型，回傳供應商清單上的名稱、模型（沒指定時是預設模型）與模型能力。
+
+    畫面上不列出的模型（例如本機的 moss-qwen3-asr，#20）照樣可以評測。
+    """
     from app.provider import registry
 
     listed = {p.provider: p for p in registry.providers()}
@@ -125,9 +128,13 @@ def _resolve_model(provider: str, model: str | None):
                          f"這個指令只跑不需要 API 金鑰的供應商，例如 local。")
     models = [m.model for m in entry.models]
     model = model or models[0]
-    if model not in models:
-        raise UsageError(f"模型 {model} 不屬於供應商 {entry.provider}；可以用的有：{'、'.join(models)}")
-    return entry.provider, model, registry.model_capabilities(entry.provider, model)
+    try:
+        capabilities = registry.model_capabilities(entry.provider, model)
+    except registry.UnsupportedModelError:
+        models += sorted(registry.provider_info(entry.provider).hidden_models)
+        raise UsageError(f"模型 {model} 不屬於供應商 {entry.provider}；"
+                         f"可以用的有：{'、'.join(models)}") from None
+    return entry.provider, model, capabilities
 
 
 def _run(audio: Path, provider: str, model: str, language: str, transcript: Path,

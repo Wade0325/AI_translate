@@ -28,6 +28,7 @@ from app.core.default_prompt import build_prompt
 from app.core.error_codes import ErrorCode
 from app.core.task_status import TaskStatus
 from app.exceptions import TransientError
+from app.provider import registry
 from app.runtime import run_mode
 from tests.support.db_faults import writes_fail
 from tests.support.fake_provider import FAKE_MODEL, Empty, Fail, Listen, ServedAs
@@ -1928,7 +1929,7 @@ class TestModelCapabilitiesEndpoint:
         local = {model: c for (provider, model), c in listed.items() if provider == "local"}
         gemini = {model: c for (provider, model), c in listed.items() if provider == "google"}
 
-        assert set(local) == {"moss-align", "moss-qwen3-asr", "vibevoice-qwen3-asr"}
+        assert set(local) == {"moss-align"}
         assert {"gemini-3.5-flash", "gemini-2.5-flash"} <= set(gemini)
         assert not any(c["accepts_prompt"] for c in local.values())
         assert all(c["accepts_prompt"] for c in gemini.values())
@@ -1997,10 +1998,9 @@ class TestModelCapabilitiesEndpoint:
         listed = listed_providers(api)
 
         assert (listed["local"]["label"], listed["google"]["label"]) == ("本機", "Gemini")
+        # 本機只列預設的 moss-align（#20），另外兩個模型見 TestHiddenModels
         assert [(m["model"], m["label"]) for m in listed["local"]["models"]] == [
             ("moss-align", "MOSS-Transcribe-Diarize"),
-            ("moss-qwen3-asr", "MOSS + Qwen3-ASR"),
-            ("vibevoice-qwen3-asr", "VibeVoice + Qwen3-ASR（舊版）"),
         ]
         gemini = listed["google"]["models"]
         assert gemini[0]["model"] == "gemini-3.5-flash"
@@ -2050,6 +2050,30 @@ class TestModelCapabilitiesEndpoint:
                 "upload_notice", "terms_url"} <= read
         assert read <= listed_fields(api)
 
+
+
+class TestHiddenModels:
+    """畫面上不列出的模型（#20）：不在供應商清單上，送出任務照樣接受，留給評測與之後的版本。"""
+
+    def test_hidden_model_is_not_listed_but_still_transcribes(self, api, fake):
+        fake.info = replace(fake.info, hidden_models=frozenset({FAKE_MODEL}))
+        fake.script = list(SCRIPT)
+
+        assert listed_providers(api)["fake"]["models"] == []
+        messages = transcribe(api, "uid-hidden")
+
+        assert codes(messages)[-1] == TaskStatus.COMPLETED
+        assert fake.opened == 1
+
+    def test_local_lists_only_the_default_model_and_keeps_the_others(self, api):
+        # 選單只留 moss-align；moss-qwen3-asr 與舊版 VibeVoice 收起來，後端照樣認得（模型能力
+        # 與名稱都在），評測的第二假設與之後的分歧標示還要用它們
+        listed = [m["model"] for m in listed_providers(api)["local"]["models"]]
+
+        assert listed == ["moss-align"]
+        for model in ("moss-qwen3-asr", "vibevoice-qwen3-asr"):
+            assert registry.model_capabilities("local", model).pricing == "free"
+            assert registry.provider_info("local").model_labels[model]
 
 # ─── 模型不吃的輸入（#108） ─────────────────────────────────────────────────
 

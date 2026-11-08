@@ -47,7 +47,7 @@ REPO_REVISIONS = {
     CAMPPLUS_MODEL_ID: "e4b6ede7ce16997aff4ae69fbca1f0175e2afede",  # 2026-11-05
 }
 
-# 本機的模型（畫面照這裡的順序列出，第一個是預設；見 GET /providers）→ 需要的權重
+# 本機的模型（第一個是預設；畫面照這裡的順序列出 provider.HIDDEN_MODELS 以外的，見 GET /providers）→ 需要的權重
 MOSS_ALIGN = "moss-align"
 MOSS_QWEN = "moss-qwen3-asr"
 VIBEVOICE_QWEN = "vibevoice-qwen3-asr"
