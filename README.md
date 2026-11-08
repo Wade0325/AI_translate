@@ -253,7 +253,7 @@ cd backend
 
 ### Docker 模式（開發用）
 
-> ⚠️ Docker 模式只供開發，**不要開放到外網**：目前沒有帳號、權限，也沒有使用者之間的資料隔離（[ADR-0004](docs/adr/0004-ship-portable-build-only.md)）。`docker-compose.yml` 把 Postgres（5432）、Redis（6379，沒有密碼）、後端（8000）與前端（5173）的埠綁在主機的所有網路介面上，防火牆沒擋時，同一個網路的其他電腦也連得到；只在信任的網路上執行。
+> ⚠️ Docker 模式只供開發，**不要開放到外網**：目前沒有帳號、權限，也沒有使用者之間的資料隔離（[ADR-0004](docs/adr/0004-ship-portable-build-only.md)）。`docker-compose.yml` 把 Postgres（5432）與 Redis（6379，沒有密碼）只綁在本機的 `127.0.0.1`，同一個網路的其他電腦連不到；後端（8000）與前端（5173）綁在主機的所有網路介面上，方便用手機或其他電腦測試前端（要先把那個來源加進 `.env` 的 `CORS_ALLOWED_ORIGINS`），防火牆沒擋時同一個網路的其他電腦連得到，所以只在信任的網路上執行。
 
 只需要 **Docker Desktop**——Postgres / Redis / FFmpeg 全都在容器內，不必自行安裝。
 
