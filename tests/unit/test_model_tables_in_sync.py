@@ -1,9 +1,10 @@
 """模型表的同步檢查：新增、改名或拿掉一個模型時，後端相關的每張表都要跟著改（#42）。
 
-模型清單只有一份，就是 registry 列出的供應商與模型（``GET /api/v1/providers`` 回的內容）：
-Gemini 的模型寫在 backend/app/provider/google/provider.py 的 MODELS，本機的是
-backend/app/provider/local/weights.py 的 MODEL_REPOS 的鍵。價格表、本機的權重對照與本機模型在
-畫面上的名稱都要和它對得上；每條失敗時都寫明哪個模型缺了什麼、該改哪個檔。
+模型清單只有一份，就是 registry 列出的供應商與模型（``GET /api/v1/providers`` 回的內容），加上
+畫面上不列出、但送出任務照樣接受的模型（``ProviderInfo.hidden_models``，#20）：Gemini 的模型寫在
+backend/app/provider/google/provider.py 的 MODELS，本機的是 backend/app/provider/local/weights.py 的
+MODEL_REPOS 的鍵。價格表、本機的權重對照與本機模型的名稱都要和它對得上；每條失敗時都寫明哪個模型
+缺了什麼、該改哪個檔。
 
 本機模型走哪條分流是程式邏輯，這裡檢查不到，只在本機的失敗訊息裡提醒（LOCAL_DISPATCH）。
 """
@@ -25,7 +26,8 @@ LOCAL_DISPATCH = (
 
 
 def _listed() -> list[tuple[str, registry.ListedModel]]:
-    """registry 列出的每個模型，連同它的供應商名稱。
+    """每個供應商接受的每個模型，連同它的供應商名稱：registry 列出的，加上畫面上不列出的
+    （``ProviderInfo.hidden_models``）。不列出的模型照樣接受任務、照樣入帳，價格與權重一樣要有。
 
     清單是空的、或有供應商沒有任何模型時直接失敗：清單的來源改了，下面的對照不能空轉成綠燈。
     """
@@ -35,7 +37,14 @@ def _listed() -> list[tuple[str, registry.ListedModel]]:
     assert not empty, (
         f"供應商 {'、'.join(empty)} 沒有列出任何模型：清單的來源改了的話，跟著改這個測試的 "
         "_listed()；供應商不再提供任何模型的話，從 registry 拿掉它。")
-    return [(entry.provider, item) for entry in providers for item in entry.models]
+    listed = [(entry.provider, item) for entry in providers for item in entry.models]
+    for entry in providers:
+        info = registry.provider_info(entry.provider)
+        listed += [(entry.provider, registry.ListedModel(
+                        model=model, label=info.model_labels.get(model, model),
+                        capabilities=registry.model_capabilities(entry.provider, model)))
+                   for model in sorted(info.hidden_models)]
+    return listed
 
 
 def _local_models() -> set[str]:

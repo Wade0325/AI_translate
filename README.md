@@ -28,7 +28,7 @@
 
 ### 🎯 核心能力
 
-- **🖥️ 本機轉錄（預設）**：在自己的 NVIDIA 顯卡上轉錄，音檔不離開這台電腦，也沒有 API 費用。預設的 MOSS-Transcribe-Diarize 一次完成說話者分離與轉錄，再由 Qwen3-ForcedAligner 做強制對齊並斷行；另可選 MOSS + Qwen3-ASR、舊版 VibeVoice + Qwen3-ASR。
+- **🖥️ 本機轉錄（預設）**：在自己的 NVIDIA 顯卡上轉錄，音檔不離開這台電腦，也沒有 API 費用。預設的 MOSS-Transcribe-Diarize 一次完成說話者分離與轉錄，再由 Qwen3-ForcedAligner 做強制對齊並斷行。
 - **👥 說話者分離**：開啟 Multi-Speaker 時，四種輸出格式的每一行都標上說話者標記，寫成 `[S0] 文字`、`[S1] 文字`；本機與 Gemini 相同。關掉時不標，適合只有一個人說話的音檔。
 - **🌏 日文與中文**：官方支援日文與中文。中文的轉錄結果一律是台灣繁體的字形與用詞；看得出是日文時不轉，日文漢字不會被改。
 - **⏱️ 逐行時間戳**：LRC、SRT、VTT 每一行都帶時間戳（LRC 為 `[mm:ss.xx]`），TXT 只有文字；單檔任務與批次相同。
@@ -59,7 +59,7 @@
 | 顯卡驅動（本機轉錄） | NVIDIA 驅動 572.61 以上：免安裝版的 PyTorch 帶的是 CUDA 12.8 Update 1，版本照 [NVIDIA 的對照表](https://docs.nvidia.com/cuda/cuda-toolkit-release-notes/)。驅動太舊時，畫面會寫出目前的版本與需要的版本 |
 | Microsoft Visual C++ 可轉散發套件（本機轉錄） | 要裝 x64 的[最新版](https://aka.ms/vc14/vc_redist.x64.exe)（14.38 以上，[Microsoft 的說明](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist)），安裝要系統管理員權限。有 NVIDIA 驅動、卻沒裝或太舊時，黑色視窗在下載執行環境之前會提醒，轉錄頁也會寫出下載網址 |
 | 顯卡（Gemini） | 不需要，但要自備 Gemini API 金鑰 |
-| 磁碟空間 | 首次啟動下載約 3.5 GB 的執行環境，全部放在解壓資料夾裡，不另外佔用 C 槽。安裝時最多約佔 11.7 GB（其中約 3.5 GB 是暫存在 `runtime\downloads\` 的 PyTorch 安裝檔），裝好後自動刪掉安裝檔、執行時用不到的 PyTorch 靜態庫（約 2.8 GB）與 uv 的下載快取（`runtime\uv-cache\`），剩約 5.4 GB。下載快取和裝好的套件共用同一份檔案、不另外佔空間；解壓資料夾所在的磁碟不支援硬連結時（例如 exFAT 格式的隨身碟），安裝期間會另外多佔約 8 GB，裝好後一樣刪掉。本機的預設模型權重約 3.7 GB，選用模型另需約 21 GB |
+| 磁碟空間 | 首次啟動下載約 3.5 GB 的執行環境，全部放在解壓資料夾裡，不另外佔用 C 槽。安裝時最多約佔 11.7 GB（其中約 3.5 GB 是暫存在 `runtime\downloads\` 的 PyTorch 安裝檔），裝好後自動刪掉安裝檔、執行時用不到的 PyTorch 靜態庫（約 2.8 GB）與 uv 的下載快取（`runtime\uv-cache\`），剩約 5.4 GB。下載快取和裝好的套件共用同一份檔案、不另外佔空間；解壓資料夾所在的磁碟不支援硬連結時（例如 exFAT 格式的隨身碟），安裝期間會另外多佔約 8 GB，裝好後一樣刪掉。本機的模型權重約 3.7 GB |
 | 網路 | 首次啟動與下載模型權重時需要；用 Gemini 轉錄時也需要 |
 
 ---
@@ -94,8 +94,8 @@ Mimiji 只發布 Windows 免安裝版：下載 zip、解壓縮就能用。本機
 供應商分**本機**與 **Gemini** 兩個，預設用本機。設定都在左側選單的 **Settings** 頁。
 
 - **本機（預設）**：
-  1. **Local Models (本機 GPU 模型)** 卡片顯示偵測到的顯卡與模型權重的狀態。先按「下載模型權重」下載預設模型所需的三項（MOSS、強制對齊器，以及分段轉錄時對齊說話者編號用的 CAM++）；要用 MOSS + Qwen3-ASR 或舊版 VibeVoice + Qwen3-ASR 時，再按「下載選用模型」。下載中斷時已下載的部分會保留，重新下載會接著下載。沒有偵測到可用的 NVIDIA 顯卡時，下載按鈕會停用。
-  2. 本機不需要 API 金鑰，卡片上沒有金鑰欄位。本機卡片的 **Test Connection** 會檢查顯卡與預設模型的模型權重是否就緒；要檢查別的模型，在轉錄頁選好再按「測試 API」。
+  1. **Local Models (本機 GPU 模型)** 卡片顯示偵測到的顯卡與模型權重的狀態。按「下載模型權重」下載本機轉錄所需的三項（MOSS、強制對齊器，以及分段轉錄時對齊說話者編號用的 CAM++）。下載中斷時已下載的部分會保留，重新下載會接著下載。沒有偵測到可用的 NVIDIA 顯卡時，下載按鈕會停用。
+  2. 本機不需要 API 金鑰，卡片上沒有金鑰欄位。本機卡片的 **Test Connection** 會檢查顯卡與模型權重是否就緒。
 - **Gemini（選用）**：
   1. 在 **Gemini** 卡片貼上你的 [Gemini API 金鑰](https://aistudio.google.com/apikey) 並按 **Save**。只有一個金鑰欄位，清空後儲存就是刪掉金鑰。
   2. Gemini 的卡片與轉錄頁選 Gemini 時，會說明音檔會上傳到 Google、Google 怎麼使用，並連到條款原文，見[資料與隱私](#-資料與隱私)。
@@ -331,7 +331,7 @@ Docker 模式的設定頁沒有模型權重的卡片，Settings 頁的 Test Conn
 ```powershell
 cd backend
 .\.venv\Scripts\python.exe -m app.provider.local.download_weights       # 預設模型所需
-.\.venv\Scripts\python.exe -m app.provider.local.download_weights all   # 所有本機模型
+.\.venv\Scripts\python.exe -m app.provider.local.download_weights all   # 連同畫面上不列出、留給評測的模型
 ```
 
 ### 專案架構
