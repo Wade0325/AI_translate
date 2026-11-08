@@ -10,6 +10,7 @@ import os
 import subprocess
 import sys
 import textwrap
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -262,6 +263,31 @@ def test_failed_transcription_writes_only_the_manifest(fake, uploads, audio, tmp
     run = json.loads((out / "meeting.manifest.json").read_text(encoding="utf-8"))["run"]
     assert run["success"] is False
     assert "顯存不足" in run["error"]
+
+
+def test_transcribes_models_the_screen_does_not_list(fake, uploads, audio, tmp_path, no_prompt):
+    # 本機的 moss-qwen3-asr 等模型不在畫面的選單上（#20），評測照樣要能跑（例如第二假設）
+    fake.info = replace(fake.info, hidden_models=frozenset({FAKE_MODEL}))
+    fake.script = [list(LINES)]
+    out = tmp_path / "out"
+
+    assert _run(audio, out, "--yes") == 0
+
+    manifest = json.loads((out / "meeting.manifest.json").read_text(encoding="utf-8"))
+    assert manifest["request"]["model"] == FAKE_MODEL
+    assert (out / "meeting.lrc").exists()
+
+
+def test_unknown_model_lists_the_hidden_models_too(fake, audio, tmp_path, capsys, no_prompt):
+    fake.info = replace(fake.info, hidden_models=frozenset({FAKE_MODEL}))
+    out = tmp_path / "out"
+
+    assert cli.main(["transcribe", "--audio", str(audio), "--provider", "fake",
+                     "--model", "no-such-model", "--language", "zh-TW", "--out", str(out),
+                     "--yes"]) == 2
+
+    assert f"可以用的有：{FAKE_MODEL}" in capsys.readouterr().err
+    assert fake.opened == 0
 
 
 def test_refuses_providers_that_need_an_api_key(audio, tmp_path, capsys, no_prompt):

@@ -29,9 +29,8 @@ silero-vad==5.1.2
 torch==2.8.0+cu128
 torchaudio==2.8.0+cu128
 transformers==5.13.0
-accelerate==1.14.0
-bitsandbytes==0.49.2
-librosa==0.11.0
+accelerate==1.14.0 # transformers 用 device_map="auto" 載入模型時要它（provider/local/asr.py）
+librosa==0.11.0 # MOSS 的套件要求它（它的 pyproject.toml），這裡只是釘版本
 huggingface_hub==1.23.0
 # MOSS 模型程式碼（不在 PyPI，釘 GitHub commit；權重 revision 釘在 provider/local/weights.py）
 av==18.1.0

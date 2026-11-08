@@ -13,8 +13,10 @@ services:
   postgres:
     image: postgres:13-alpine
     container_name: ait-postgres
+    # 資料庫與 Redis 只綁本機（#22）：主機上的 GPU worker 走 localhost 連得到，區網的其他電腦連不到。
+    # 容器之間照舊走 compose 的內部網路（postgres:5432、redis:6379），不經過這裡的埠
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     env_file:
       - ./.env
     environment:
@@ -32,7 +34,7 @@ services:
     image: redis:6-alpine
     container_name: ait-redis
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     environment:
       - TZ=Asia/Taipei
     restart: unless-stopped
