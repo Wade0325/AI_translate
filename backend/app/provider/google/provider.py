@@ -95,8 +95,9 @@ def _capabilities() -> ModelCapabilities:
         split_retry_on_failure=True,
         # v0.1 不接續（#94 第 2 題）：還沒有 Gemini 掉尾的實測紀錄；可能掉尾時照樣有提示（#257）
         continuation=False,
-        # 各段的說話者編號先不對齊（#93 第 2 題）：沒有評測集把關，實測要使用者的金鑰
-        align_speakers_across_chunks=False,
+        # 各段是分開的請求，「Speaker 1」只是那一段裡先說話的人：合併時用說話者嵌入對齊（#335）。片段多半
+        # 沒有結束時間，取嵌入的規則見 app.services.speaker_alignment
+        align_speakers_across_chunks=True,
         accepts_prompt=True,
         # 使用者文稿還沒交給任務（#66）：照實說不吃，送來的明確拒絕、轉錄頁也不提供入口（#13 Q4 定案
         # 先隱藏）。修好 #66 時改回 True
@@ -334,7 +335,8 @@ class _SpeakerIds:
     """Gemini 寫的說話者代號（「Speaker 1:」「Speaker A:」）→ 說話者編號，一個任務一份。
 
     依代號在這個任務第一次送進來的順序編成 S0、S1……，同一個代號一律同一個編號，分段轉錄的
-    各段也一樣。各段是 Gemini 分開標的，同一個代號不保證是同一個人：跨段一致的說話者編號是 #93。
+    各段也一樣。各段是 Gemini 分開標的，同一個代號不保證是同一個人：分段轉錄合併時再用說話者嵌入對齊
+    （模型能力 ``align_speakers_across_chunks``，#335），第一段以外的編號以對齊的結果為準。
     """
 
     def __init__(self) -> None:

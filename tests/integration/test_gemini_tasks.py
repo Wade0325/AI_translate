@@ -19,7 +19,7 @@ from app.provider import registry
 from app.provider.google.provider import GeminiProvider
 from tests.support.fake_genai import FakeGenaiClient, Reply, invalid_argument, unavailable
 from tests.support.synthetic_audio import VOICED
-from tests.support.task_api import receive_until, upload
+from tests.support.task_api import receive_until, stored_segments, upload
 from tests.support.waiting import TIMEOUT, wait_until
 
 MODEL = "gemini-2.5-flash"
@@ -62,19 +62,23 @@ def gemini(genai):
 
 
 @pytest.fixture
-def api(gemini, api):
-    """供應商「google」換成接上假用戶端的 Gemini 轉接器；換回之前先等任務跑完。"""
+def api(gemini, embedder, api):
+    """供應商「google」換成接上假用戶端的 Gemini 轉接器；換回之前先等任務跑完。
+
+    說話者嵌入也換成假的（tests/support/fake_embedder.py）：分段轉錄的說話者對齊（#335）不載入、也不下載
+    CAM++。"""
     return api
 
 
 # ─── helpers ─────────────────────────────────────────────────────────────────
 
-def transcribe(api: TestClient, run_mode, name: str, **fields) -> list[dict]:
+def transcribe(api: TestClient, run_mode, name: str, voiced=VOICED, **fields) -> list[dict]:
     """上傳、送出單檔任務，收下所有廣播直到任務結束。file_uid 就是檔名。
 
-    fields 是請求的其他欄位，例如提示詞。
+    ``voiced`` 是合成音檔的有聲段（見 tests/support/synthetic_audio.py）；fields 是請求的其他欄位，例如
+    提示詞。
     """
-    filename = upload(api, name)
+    filename = upload(api, name, voiced)
     with api.websocket_connect(f"/api/v1/ws/{name}") as ws:
         ws.send_json({"filename": filename, "original_filename": name,
                       "provider": "Google", "model": MODEL, "source_lang": "ja", **fields})
@@ -291,19 +295,87 @@ def test_chunk_without_any_line_is_skipped_and_the_others_are_kept(
     assert last["start"] + 0.7 < last["end"] < VOICED[2][1] + 0.5
 
 
-def test_speaker_ids_are_consistent_across_chunks(api, in_process_run_mode, genai, three_chunks):
-    # Gemini 的同一個說話者代號在同一個任務的各段對到同一個說話者編號，依整個任務第一次出現的順序
-    genai.replies = [
-        Reply(text="[00:00.50]Speaker 2: おはよう。"),
-        Reply(text="[00:00.50]Speaker 1: こんにちは。\n[00:01.50]Speaker 2: はい。"),
-        Reply(text="[00:01.00]Speaker 2: またね。"),
-    ]
+TONE_A, TONE_B = 400, 700
+TWO_SPEAKERS = [(0.0, 1.5, TONE_A), (1.5, 3.0, TONE_B), (7.0, 8.5, TONE_B), (8.5, 10.0, TONE_A)]
+"""兩位說話者（正弦波的頻率）：A 先說、B 接著說，靜音 4 秒後換 B 先說、A 接著說。去靜音後 0–3.3、6.7–10 秒
+接成 6.6 秒，單次 4 秒時在 3.3 秒切成兩段；後一段的音檔裡 0.3–1.8 秒是 B、1.8–3.3 秒是 A。"""
 
-    end = transcribe(api, in_process_run_mode, "gemini-chunks-speakers.wav")[-1]
+
+@pytest.fixture
+def two_chunks(monkeypatch):
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "long_audio_split_threshold_seconds", 4)
+
+
+def speakers(api: TestClient, task_uuid: str) -> list[tuple]:
+    """存下來的片段：（說話者編號, 文字）。"""
+    return [(s["speaker"], s["text"]) for s in stored_segments(api, task_uuid)]
+
+
+def transcribe_two_speakers(api: TestClient, run_mode, genai: FakeGenaiClient, name: str) -> list[dict]:
+    """轉錄 TWO_SPEAKERS（Multi-Speaker 開）。每一段 Gemini 都把先聽到的人標成 Speaker 1：後一段的 Speaker 1
+    是 B。只寫開始時間，各段最後一個片段後面寫了結束時間。"""
+    genai.replies = [
+        Reply(text="[00:00.00]Speaker 1: おはよう。\n[00:01.50]Speaker 2: こんにちは。\n[00:03.00]"),
+        Reply(text="[00:00.30]Speaker 1: はい。\n[00:01.80]Speaker 2: またね。\n[00:03.30]"),
+    ]
+    return transcribe(api, run_mode, name, multi_speaker=True, voiced=TWO_SPEAKERS)
+
+
+def test_speaker_numbers_follow_the_voice_across_chunks(
+        api, in_process_run_mode, genai, embedder, two_chunks):
+    # 各段的 Speaker 1 互相獨立（每一段是另一次請求，Gemini 看不到前一段）：合併時用說話者嵌入把同一個人
+    # 配成同一個說話者編號（#335）。後一段的 Speaker 1（B）配回前一段的 S1
+    messages = transcribe_two_speakers(api, in_process_run_mode, genai, "gemini-chunks-speakers.wav")
+
+    end = messages[-1]
+    assert end["status_code"] == TaskStatus.COMPLETED
+    assert len(genai.prompts) == 2
+    assert speakers(api, end["task_uuid"]) == [
+        ("S0", "おはよう。"), ("S1", "こんにちは。"), ("S1", "はい。"), ("S0", "またね。")]
+    assert "對齊各段的說話者..." in [m["status_text"] for m in messages]
+    assert embedder.opened == 1
+    # 取嵌入的窗：沒寫結束時間的片段到下一個片段的開始，各段最後一個片段到 Gemini 寫的結束
+    assert [spans for _, spans in embedder.calls] == [
+        ((0.0, 1.5),), ((1.5, 3.0),), ((0.3, 1.8),), ((1.8, 3.3),)]
+
+
+def test_without_the_embedder_later_chunks_get_new_numbers(
+        api, in_process_run_mode, genai, embedder, two_chunks):
+    # 說話者嵌入用不了（例如下載不到權重）：任務照樣完成，後一段的人都用新的編號，不沿用前一段的 S0、S1，
+    # 狀態說明寫明沒有對齊（和本機一樣，#93 第 1 題）
+    embedder.open_error = OSError("連不上 Hugging Face")
+
+    messages = transcribe_two_speakers(api, in_process_run_mode, genai, "gemini-chunks-no-embedder.wav")
+
+    end = messages[-1]
+    assert end["status_code"] == TaskStatus.COMPLETED
+    assert speakers(api, end["task_uuid"]) == [
+        ("S0", "おはよう。"), ("S1", "こんにちは。"), ("S2", "はい。"), ("S3", "またね。")]
+    assert ("說話者嵌入用不了：各段的說話者編號沒有對齊，後面的段改用新的編號"
+            in [m["status_text"] for m in messages])
+
+
+def test_first_use_of_the_embedder_is_shown(api, in_process_run_mode, genai, embedder, two_chunks):
+    # 建立說話者嵌入時回報的進度（例如第一次用時下載權重）照樣廣播給畫面
+    embedder.notice = "第一次對齊說話者：下載權重..."
+
+    messages = transcribe_two_speakers(api, in_process_run_mode, genai, "gemini-chunks-first-use.wav")
+
+    assert messages[-1]["status_code"] == TaskStatus.COMPLETED
+    assert "第一次對齊說話者：下載權重..." in [m["status_text"] for m in messages]
+
+
+def test_audio_sent_in_one_request_needs_no_embedder(api, in_process_run_mode, genai, embedder):
+    # 一次送得完：同一次請求裡的兩個代號一定是不同的人，不必對齊，也不載入（不下載）說話者嵌入
+    genai.replies = [Reply(text="[00:00.50]Speaker 1: おはよう。\n[00:03.00]Speaker 2: こんにちは。")]
+
+    end = transcribe(api, in_process_run_mode, "gemini-one-request-speakers.wav", multi_speaker=True)[-1]
 
     assert end["status_code"] == TaskStatus.COMPLETED
-    assert stored(api, end["task_uuid"]) == [
-        (0, "S0", "おはよう。"), (1, "S1", "こんにちは。"), (1, "S0", "はい。"), (2, "S0", "またね。")]
+    assert speakers(api, end["task_uuid"]) == [("S0", "おはよう。"), ("S1", "こんにちは。")]
+    assert embedder.opened == 0
 
 
 def test_task_fails_only_when_no_chunk_has_any_line(
