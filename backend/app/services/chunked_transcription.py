@@ -19,13 +19,21 @@
    - 接續（#94，規則見 :mod:`app.services.continuation`）：成功、模型能力允許接續，這一段又照掉尾的規則
      可能掉尾時，把這一段從停下的地方附近到結尾切出來再送一次，接回這一段，直到轉到結尾或放棄。接續段
      的暫時錯誤照樣等一段時間重試；接續失敗或卡住時保留已轉的部分，任務照樣完成。
-4. 合併：每一段的片段平移到它在語音視圖上的起點，片段 key 加上這一段的前綴。#93 的跨段說話者編號
-   之後接在這裡：拿得到所有轉完的段，每一段帶著音檔、位置與段內片段。
+   - 空段（#327）：轉接器回報成功、卻沒有片段的段，例如整段只有靜音或測試音（Gemini 正常結束卻沒有
+     帶時間戳的行、本機的模型沒有轉錄出任何內容）。算轉完了這一段，不讓任務失敗、不切段重試，其他段
+     的片段照樣保留。這一段有沒有漏掉內容照掉尾的規則看（第 6 點）：近乎無聲（扣掉靜音不到
+     ``TAIL_LOSS_MIN_SECONDS`` 秒的聲音）時不提示，不然從這一段的開頭起可能沒有轉錄到。每一段都是空段、
+     整個任務沒有片段時，任務生命週期拿第一個寫了原因的段回報失敗。
+4. 合併：每一段的片段平移到它在語音視圖上的起點，片段 key 加上這一段的前綴。模型能力開著
+   ``align_speakers_across_chunks`` 時，先用說話者嵌入把各段（與接續段）的說話者編號對齊成同一套
+   （#93，規則見 :mod:`app.services.speaker_alignment`）：只改說話者編號，時間、文字與片段 key 不變。嵌入
+   用不了時不讓任務失敗，後面的段的每個人改用新的編號，處理中的狀態說明與日誌寫明沒有對齊。
 5. 放回原音檔的時間軸（:meth:`SpeechTimeline.in_original_order`）：時間還原回原音檔，依開始時間
    排好、重編序號。批次不分段，結果回來之後也經過同一步。
 6. 掉尾（#257）：每一段各自檢查停下的地方（轉接器回報的擔保點，沒有時是最後一個片段的結束）之後還有
-   沒有聲音（:mod:`app.services.tail_loss`，扣掉語音視圖記下的靜音），取最早的起點寫進轉錄結果；中間
-   的段也可能提早停止，最後一段卻轉到了結尾。接續放棄的段也從這裡回報。
+   沒有聲音（:mod:`app.services.tail_loss`，扣掉語音視圖記下的靜音；轉接器回報輸出被截斷時門檻較低，
+   #326），取最早的起點寫進轉錄結果；中間的段也可能提早停止，最後一段卻轉到了結尾。接續放棄的段也從
+   這裡回報。
 
 片段 key：依單次長度切出的兩段前綴是 ``a``、``b``，切段重試切出的兩段是 ``s0``、``s1``，第 n 次接續
 送出的片段是 ``cn``，由外往內接，例如 ``a.b.0003``、``b.s1.0002``、``a.c1.0005``；沒有分段時就是
@@ -43,7 +51,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
@@ -51,7 +59,7 @@ from app.core.config import get_settings
 from app.core.error_codes import ErrorCode, Failure, describe
 from app.exceptions import TranscriptionCancelledError, TransientError
 from app.provider.base import ProgressAndCancel, Provider, TranscribeRequest
-from app.services import continuation, tail_loss
+from app.services import continuation, speaker_alignment, tail_loss
 from app.services.silence_removal import SpeechView
 from app.services.transcription.models import TranscriptionTaskResult
 from app.services.inspection_artifacts import persist_split
@@ -185,6 +193,7 @@ class _ChunkedTranscription:
         self._single_pass = capabilities.single_pass_seconds
         self._split_retry = capabilities.split_retry_on_failure
         self._continuation = capabilities.continuation
+        self._align_speakers = capabilities.align_speakers_across_chunks
         self._transcribed: List[_TranscribedChunk] = []
         """轉完的段，依時間先後。"""
         self._usage: Optional[TranscriptionTaskResult] = None
@@ -233,6 +242,9 @@ class _ChunkedTranscription:
         if result.success:
             if self._continuation:
                 result = self._continued(chunk, result)
+            if not result.segments:
+                # 空段：不讓任務失敗，有沒有漏掉內容照掉尾的規則看
+                logger.warning(f"{self._which(chunk) or '音檔'}沒有轉錄出任何內容，當成空段")
             self._transcribed.append(_TranscribedChunk(chunk, result))
             return
         code = result.error_code or ErrorCode.INTERNAL
@@ -279,13 +291,14 @@ class _ChunkedTranscription:
     def _continued(self, chunk: _Chunk, result: TranscriptionTaskResult) -> TranscriptionTaskResult:
         """這一段可能掉尾時接續（規則見 :mod:`app.services.continuation`）：從停下的地方附近到結尾再送
         一次、接回，直到不再可能掉尾或放棄。回傳接回之後的轉錄結果，時間軸是這一段的音檔；
-        ``covered_until`` 是最後一次停下的地方，放棄時掉尾的檢查從那裡回報。"""
+        ``covered_until`` 與 ``truncated`` 是最後一次停下的地方與那次的輸出是不是被截斷，放棄時掉尾的
+        檢查照它們回報。"""
         segments: List[Dict[str, Any]] = list(result.segments)
-        covered = result.covered_until
+        covered, truncated = result.covered_until, result.truncated
         settings = get_settings()
         attempts = settings.continuation_max_attempts
         for attempt in range(1, attempts + 1):
-            if self._tail_loss_in(chunk, segments, covered) is None:
+            if self._tail_loss_in(chunk, segments, covered, truncated) is None:
                 break
             stopped = tail_loss.stopped_at(segments, covered_until=covered, default=0.0)
             start = continuation.resume_point(stopped, chunk.silences)
@@ -307,15 +320,16 @@ class _ChunkedTranscription:
                 logger.warning(f"接續沒有轉到 {self._clock_at(chunk, stopped)} 之後，算卡住，放棄接續")
                 break
             segments = continuation.splice(segments, more.segments, overlap=(start, stopped))
-            covered = more.covered_until
+            covered, truncated = more.covered_until, more.truncated
             if (reached - stopped < settings.continuation_min_progress_seconds
-                    and self._tail_loss_in(chunk, segments, covered) is not None):
+                    and self._tail_loss_in(chunk, segments, covered, truncated) is not None):
                 logger.warning(f"接續只推進 {reached - stopped:.1f} 秒，算卡住，放棄接續")
                 break
         else:
-            if self._tail_loss_in(chunk, segments, covered) is not None:
+            if self._tail_loss_in(chunk, segments, covered, truncated) is not None:
                 logger.warning(f"接續了 {attempts} 次仍沒有轉到這一段的結尾，放棄接續")
-        return result.model_copy(update={"segments": segments, "covered_until": covered})
+        return result.model_copy(update={"segments": segments, "covered_until": covered,
+                                         "truncated": truncated})
 
     def _resent_from(self, chunk: _Chunk, start: float,
                      attempt: int) -> Optional[TranscriptionTaskResult]:
@@ -462,7 +476,7 @@ class _ChunkedTranscription:
     # ── 合併與結果 ───────────────────────────────────────────────
     def _merged(self) -> TranscriptionTaskResult:
         """合併轉完的段、放回原音檔的時間軸，回傳成功的轉錄結果。"""
-        segments = _merge(self._transcribed)
+        segments = _merge(self._transcribed, self._speaker_mappings())
         if self._view.removed_silence:
             self._progress.report("時間還原回原音檔...")
             logger.info("片段的時間還原回原音檔的時間軸")
@@ -472,24 +486,58 @@ class _ChunkedTranscription:
                             segments=self._view.timeline.in_original_order(segments),
                             tail_loss_from=self._tail_loss_from())
 
+    def _speaker_mappings(self) -> Optional[List[Dict[str, str]]]:
+        """每一段的 {原本的說話者編號: 對齊後的編號}（:mod:`app.services.speaker_alignment`）；不必對齊
+        （模型能力沒開，或沒有任何兩位可能是同一個人）時是 None。嵌入用不了時改用
+        :func:`speaker_alignment.separate`：後面的段的每個人都拿新的編號。"""
+        if not self._align_speakers:
+            return None
+        pieces = [speaker_alignment.Piece(piece.chunk.audio, piece.chunk.start, piece.result.segments)
+                  for piece in self._transcribed]
+        if not speaker_alignment.needs_alignment(pieces):
+            return None
+        self._progress.report("對齊各段的說話者...")
+        try:
+            readable = [replace(piece, audio=self._as_wav(piece.audio)) for piece in pieces]
+            return speaker_alignment.align(readable, check=self._progress.raise_if_cancelled)
+        except TranscriptionCancelledError:
+            raise
+        except Exception as e:
+            logger.warning(f"說話者嵌入用不了，各段的說話者編號沒有對齊，後面的段改用新的編號: "
+                           f"{type(e).__name__}: {e}", exc_info=True)
+            self._progress.report("說話者嵌入用不了：各段的說話者編號沒有對齊，後面的段改用新的編號")
+            return speaker_alignment.separate(pieces)
+
+    def _as_wav(self, audio: Path) -> Path:
+        """取嵌入要讀得到的 wav：切出的段本來就是 wav；沒有分段時可能是原音檔，先轉成 wav（暫存檔）。"""
+        wav = convert_to_wav(audio, self._temp_dir)
+        if wav is None:
+            raise RuntimeError(f"無法把 {audio.name} 轉成 wav 取說話者嵌入")
+        if wav != audio:
+            self._temp_files.append(wav)
+        return wav
+
     def _tail_loss_from(self) -> Optional[float]:
         """可能掉尾的起點（原音檔的時間軸）：每一段各自檢查（:meth:`_tail_loss_in`），取最早的；都沒有
         時是 None。"""
-        starts = [self._tail_loss_in(piece.chunk, piece.result.segments, piece.result.covered_until)
+        starts = [self._tail_loss_in(piece.chunk, piece.result.segments, piece.result.covered_until,
+                                     piece.result.truncated)
                   for piece in self._transcribed]
         return min((start for start in starts if start is not None), default=None)
 
     def _tail_loss_in(self, chunk: _Chunk, segments: Sequence[Mapping[str, Any]],
-                      covered_until: Optional[float]) -> Optional[float]:
-        """這一段轉出 ``segments``、擔保到 ``covered_until``（都是這一段的時間軸）時，可能掉尾的起點
-        （原音檔的時間軸，:func:`tail_loss.tail_loss_from`）；不可能掉尾時是 None。"""
+                      covered_until: Optional[float], truncated: bool) -> Optional[float]:
+        """這一段轉出 ``segments``、擔保到 ``covered_until``（都是這一段的時間軸）、輸出是不是被截斷是
+        ``truncated`` 時，可能掉尾的起點（原音檔的時間軸，:func:`tail_loss.tail_loss_from`）；不可能
+        掉尾時是 None。"""
         timeline = self._view.timeline
         start, end = self._original_span(chunk)
         covered = (None if covered_until is None
                    else timeline.to_original(chunk.to_view(covered_until), end=True))
         return tail_loss.tail_loss_from(
             timeline.restore([_placed(segment, chunk) for segment in segments]),
-            start=start, end=end, silences=self._view.silences, covered_until=covered)
+            start=start, end=end, silences=self._view.silences, covered_until=covered,
+            truncated=truncated)
 
     def _failed_result(self, failure: Failure) -> TranscriptionTaskResult:
         """以失敗結束的轉錄結果，帶著錯誤碼與到目前為止的用量。"""
@@ -533,13 +581,23 @@ def _nearest_to_middle(silences: Sequence[float], duration: float) -> Optional[f
     return min(candidates, key=lambda b: abs(b - duration / 2))
 
 
-def _merge(transcribed: Sequence[_TranscribedChunk]) -> List[Dict[str, Any]]:
-    """合併：每一段的片段平移到它在語音視圖上的起點，片段 key 加上這一段的前綴。
+def _merge(transcribed: Sequence[_TranscribedChunk],
+           speakers: Optional[Sequence[Mapping[str, str]]] = None) -> List[Dict[str, Any]]:
+    """合併：每一段的片段平移到它在語音視圖上的起點，片段 key 加上這一段的前綴；``speakers`` 給了時，
+    說話者編號照它換（每一段一份 {原本的編號: 對齊後的編號}）。
 
     拿到的是所有轉完的段，依時間先後。
     """
-    return [_placed(segment, piece.chunk)
-            for piece in transcribed for segment in piece.result.segments]
+    merged: List[Dict[str, Any]] = []
+    for index, piece in enumerate(transcribed):
+        mapping = speakers[index] if speakers is not None else {}
+        for segment in piece.result.segments:
+            placed = _placed(segment, piece.chunk)
+            speaker = placed.get("speaker")
+            if speaker is not None and speaker in mapping:
+                placed["speaker"] = mapping[speaker]
+            merged.append(placed)
+    return merged
 
 
 def _placed(segment: Mapping[str, Any], chunk: _Chunk) -> Dict[str, Any]:

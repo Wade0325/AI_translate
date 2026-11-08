@@ -40,6 +40,8 @@ _MODEL_CARD_LICENSES = {
     weights.ALIGNER_MODEL_ID: ("c07281df297b9905d24a508279258cccf987a064", "apache-2.0"),
     weights.ASR_MODEL_ID: ("bcd2b5b7f32b480ab5790554cfa8347f246a14f3", "apache-2.0"),
     weights.DIARIZATION_MODEL_ID: ("f22241c2062b3b25272bf117397e03d73381037a", "mit"),
+    # 2026-11-05 照同一個 API 核對
+    weights.CAMPPLUS_MODEL_ID: ("e4b6ede7ce16997aff4ae69fbca1f0175e2afede", "apache-2.0"),
 }
 
 

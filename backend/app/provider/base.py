@@ -47,6 +47,10 @@ class ModelCapabilities:
     """某一段提早停止輸出時，要不要從停下的地方附近再轉錄一次並接回（接續，#94）。開著時，分段轉錄
     看轉接器回報的 ``covered_until`` 與語音視圖決定要不要接續（見
     :mod:`app.services.continuation`）。"""
+    align_speakers_across_chunks: bool
+    """分段轉錄合併時，要不要用說話者嵌入把各段的說話者編號對齊成同一套（#93）。各段（與接續段）的說話者
+    分離互相獨立的模型才需要；只改片段的說話者編號，送進模型的音檔不變（見
+    :mod:`app.services.speaker_alignment`）。"""
     accepts_prompt: bool
     accepts_user_text: bool
     supports_batch: bool

@@ -18,7 +18,7 @@ READINESS_URL = "/api/v1/setting/local-models/readiness"
 @pytest.fixture
 def fake_env(monkeypatch):
     """預設模型權重已下載、選用的沒有；下載執行緒只記錄不真的跑。"""
-    ready = {weights.MOSS_MODEL_ID, weights.ALIGNER_MODEL_ID}
+    ready = set(weights.REQUIRED_REPOS)
     started = []
 
     class FakeThread:
@@ -236,6 +236,7 @@ class TestModelCardLicense:
             weights.ALIGNER_MODEL_ID: "apache-2.0",
             weights.ASR_MODEL_ID: "apache-2.0",
             weights.DIARIZATION_MODEL_ID: "mit",
+            weights.CAMPPLUS_MODEL_ID: "apache-2.0",
         }
         # 連到下載的那個版本的模型卡，不是之後可能改過授權的最新版
         assert by_repo[weights.MOSS_MODEL_ID]["model_card_url"] == (

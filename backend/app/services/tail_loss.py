@@ -17,7 +17,8 @@
 接續（#94，:mod:`app.services.continuation`）用同一條規則決定要不要接續：分段轉錄的一段在這裡算起來
 可能掉尾，模型能力又允許接續時，先從停下的地方附近再轉錄一次並接回；接續放棄時，接回來的片段停在
 哪裡，起點就在哪裡，照這條路回報。轉接器回報了擔保轉錄到哪一秒（``covered_until``）時，從那裡算起，
-不看最後一個片段。
+不看最後一個片段。轉接器還回報輸出被截斷（``truncated``，例如 MOSS 用完生成預算）時，門檻改成
+``TAIL_LOSS_TRUNCATED_MIN_SECONDS``（一秒），之後還有聲音就接續，放棄時照樣寫起點（#326）。
 """
 
 from __future__ import annotations
@@ -30,16 +31,32 @@ from app.services.silence_removal import Span
 
 def tail_loss_from(segments: Sequence[Mapping[str, Any]], *, start: float, end: float,
                    silences: Sequence[Span],
-                   covered_until: Optional[float] = None) -> Optional[float]:
+                   covered_until: Optional[float] = None,
+                   truncated: bool = False) -> Optional[float]:
     """原音檔的 ``start`` 到 ``end`` 秒送去轉錄、轉出 ``segments``：可能掉尾時回傳起點，不然是 None。
 
     都在原音檔的時間軸上。起點是停下的地方（:func:`stopped_at`），不早於 ``start``。從起點到 ``end``，
-    扣掉 ``silences``（去靜音找到的靜音）之後還有至少 ``TAIL_LOSS_MIN_SECONDS`` 秒，才算可能掉尾。
+    扣掉 ``silences``（去靜音找到的靜音）之後還有至少門檻（:func:`_minimum_sounding_seconds`）這麼多秒的
+    聲音，才算可能掉尾。``truncated`` 是轉接器回報輸出被截斷。
     """
     stopped = max(stopped_at(segments, covered_until=covered_until, default=start), start)
-    if _sounding(stopped, end, silences) < get_settings().tail_loss_min_seconds:
+    if _sounding(stopped, end, silences) < _minimum_sounding_seconds(truncated):
         return None
     return stopped
+
+
+def _minimum_sounding_seconds(truncated: bool) -> float:
+    """停下的地方之後至少還有幾秒的聲音才算可能掉尾。
+
+    一般是 ``TAIL_LOSS_MIN_SECONDS``（一分鐘）：只看結果，聲音可能只是片尾音樂或環境音。轉接器回報輸出
+    被截斷時是 ``TAIL_LOSS_TRUNCATED_MIN_SECONDS``（一秒）：模型說到一半被切斷，擔保點之後幾乎一定還有
+    沒轉到的話；#326 的立法院質詢擔保點之後還有 26.75 秒的聲音，不到一分鐘，既沒有接續也沒有提示。
+    MOSS 最後一段沒有文字時也回報擔保點（#325），但那不是截斷，照樣要一分鐘。
+    """
+    settings = get_settings()
+    if truncated:
+        return settings.tail_loss_truncated_min_seconds
+    return settings.tail_loss_min_seconds
 
 
 def stopped_at(segments: Sequence[Mapping[str, Any]], *, covered_until: Optional[float],
