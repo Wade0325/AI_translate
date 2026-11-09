@@ -286,3 +286,29 @@ def fake():
     registry.register("fake", previous)
 
 
+
+
+@pytest.fixture(autouse=True)
+def no_real_embedder():
+    """測試不載入真的 CAM++：它會匯入（假的）torch，本機沒有權重時還會從 Hugging Face 下載（#335）。要對齊的
+    測試用下面的 ``embedder``；漏掉它時，說話者嵌入建立不了，分段轉錄照「嵌入用不了」的退路走。"""
+    from app.services import speaker_alignment
+
+    def refuse(report):
+        raise RuntimeError("測試不載入真的 CAM++：要對齊說話者的測試請用 embedder fixture")
+
+    previous = speaker_alignment.use_embedder(refuse)
+    yield
+    speaker_alignment.use_embedder(previous)
+
+
+@pytest.fixture
+def embedder(no_real_embedder):
+    """換上假的說話者嵌入（見 tests/support/fake_embedder.py），測試結束後換回原本的。"""
+    from app.services import speaker_alignment
+    from tests.support.fake_embedder import FakeEmbedder
+
+    fake_embedder = FakeEmbedder()
+    previous = speaker_alignment.use_embedder(fake_embedder)
+    yield fake_embedder
+    speaker_alignment.use_embedder(previous)

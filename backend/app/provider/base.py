@@ -47,6 +47,10 @@ class ModelCapabilities:
     """某一段提早停止輸出時，要不要從停下的地方附近再轉錄一次並接回（接續，#94）。開著時，分段轉錄
     看轉接器回報的 ``covered_until`` 與語音視圖決定要不要接續（見
     :mod:`app.services.continuation`）。"""
+    align_speakers_across_chunks: bool
+    """分段轉錄合併時，要不要用說話者嵌入把各段的說話者編號對齊成同一套（#93）。各段（與接續段）的說話者
+    分離互相獨立的模型才需要；只改片段的說話者編號，送進模型的音檔不變（見
+    :mod:`app.services.speaker_alignment`）。"""
     accepts_prompt: bool
     accepts_user_text: bool
     supports_batch: bool
@@ -82,6 +86,9 @@ class ProviderInfo:
     """設定頁的「測試」查的是執行轉錄的那台機器（例如顯卡與模型權重），不是只連一次 API。"""
     upload_notice: Optional[UploadNotice] = None
     """音檔會送出本機時要告訴使用者的事；本機轉錄不送出，是 None。"""
+    hidden_models: frozenset[str] = frozenset()
+    """畫面上不列出的模型：不在供應商清單（``GET /providers``）上，送出任務、評測與設定頁的「測試」
+    照樣接受，留給評測與之後的版本使用（#20）。"""
 
 
 @dataclass

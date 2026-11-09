@@ -31,7 +31,13 @@ MODEL_LABELS = {
     weights.MOSS_QWEN: "MOSS + Qwen3-ASR",
     weights.VIBEVOICE_QWEN: "VibeVoice + Qwen3-ASR（舊版）",
 }
-"""畫面上的模型名稱；列出的模型與順序依 ``weights.MODEL_REPOS``，第一個是預設。"""
+"""模型的名稱；畫面列出的模型與順序依 ``weights.MODEL_REPOS``（:data:`HIDDEN_MODELS` 除外），
+第一個是預設。"""
+
+HIDDEN_MODELS = frozenset({weights.MOSS_QWEN, weights.VIBEVOICE_QWEN})
+"""畫面上不列出的本機模型（#20）：選單只留預設的 moss-align，設定頁也不提供這兩個模型的權重下載。
+後端照樣接受，留給評測（例如 tools/eval 的第二假設）與之後的版本（校正介面的分歧標示要它們的
+``text_alt``）；權重用 ``download_weights`` 指令下載。"""
 
 
 def _single_pass_limit_seconds(model: str) -> float:
@@ -80,6 +86,9 @@ def _capabilities(model: str) -> ModelCapabilities:
         # MOSS 轉長音檔時可能約輸出 16k token 就自己停下（#94），從停下的地方附近接續；接續段的
         # 說話者編號靠重疊區配對回來。舊版的 VibeVoice 不接續
         continuation=weights.is_moss_model(model),
+        # MOSS 只在單次輸入內編號說話者：分段轉錄合併時用 CAM++ 把各段的編號對齊（#93）。舊版的
+        # VibeVoice 不對齊
+        align_speakers_across_chunks=weights.is_moss_model(model),
         accepts_prompt=False,
         accepts_user_text=False,
         supports_batch=False,
@@ -128,7 +137,7 @@ class _LocalProviderFactory:
 
     # 在使用者自己的顯卡上轉錄，不用 API 金鑰；設定頁的「測試」查轉錄那台機器的顯卡與權重
     info = ProviderInfo(label="本機", requires_api_key=False, model_labels=MODEL_LABELS,
-                        checks_transcribing_machine=True)
+                        checks_transcribing_machine=True, hidden_models=HIDDEN_MODELS)
 
     @staticmethod
     def capabilities() -> Dict[str, ModelCapabilities]:

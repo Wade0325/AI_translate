@@ -32,6 +32,9 @@ MOSS_MODEL_ID = "OpenMOSS-Team/MOSS-Transcribe-Diarize"
 DIARIZATION_MODEL_ID = "microsoft/VibeVoice-ASR-HF"
 ASR_MODEL_ID = "Qwen/Qwen3-ASR-1.7B-hf"
 ALIGNER_MODEL_ID = "Qwen/Qwen3-ForcedAligner-0.6B-hf"
+CAMPPLUS_MODEL_ID = "funasr/campplus"
+"""說話者嵌入 CAM++（:mod:`app.provider.local.campplus`）：分段轉錄時對齊各段的說話者編號（#93）。和
+ModelScope 的 ``iic/speech_campplus_sv_zh-cn_16k-common`` 是同一個權重檔（SHA-256 相同）。"""
 
 # 全部釘住 revision：上游更新不會在使用者端悄悄換掉行為，首次核對也不會在任務中途
 # 觸發大型下載。MOSS 要與固定 commit 的 moss-transcribe-diarize 套件對齊；其餘釘在
@@ -41,17 +44,19 @@ REPO_REVISIONS = {
     ALIGNER_MODEL_ID: "c07281df297b9905d24a508279258cccf987a064",
     ASR_MODEL_ID: "bcd2b5b7f32b480ab5790554cfa8347f246a14f3",
     DIARIZATION_MODEL_ID: "f22241c2062b3b25272bf117397e03d73381037a",
+    CAMPPLUS_MODEL_ID: "e4b6ede7ce16997aff4ae69fbca1f0175e2afede",  # 2026-11-05
 }
 
-# 本機的模型（畫面照這裡的順序列出，第一個是預設；見 GET /providers）→ 需要的權重
+# 本機的模型（第一個是預設；畫面照這裡的順序列出 provider.HIDDEN_MODELS 以外的，見 GET /providers）→ 需要的權重
 MOSS_ALIGN = "moss-align"
 MOSS_QWEN = "moss-qwen3-asr"
 VIBEVOICE_QWEN = "vibevoice-qwen3-asr"
 DEFAULT_LOCAL_MODEL = MOSS_ALIGN
 
+# MOSS 的模型另外要 CAM++：分段轉錄時對齊各段的說話者編號（#93）。舊版的 VibeVoice 不對齊
 MODEL_REPOS = {
-    MOSS_ALIGN: (MOSS_MODEL_ID, ALIGNER_MODEL_ID),
-    MOSS_QWEN: (MOSS_MODEL_ID, ASR_MODEL_ID, ALIGNER_MODEL_ID),
+    MOSS_ALIGN: (MOSS_MODEL_ID, ALIGNER_MODEL_ID, CAMPPLUS_MODEL_ID),
+    MOSS_QWEN: (MOSS_MODEL_ID, ASR_MODEL_ID, ALIGNER_MODEL_ID, CAMPPLUS_MODEL_ID),
     VIBEVOICE_QWEN: (DIARIZATION_MODEL_ID, ASR_MODEL_ID, ALIGNER_MODEL_ID),
 }
 
@@ -69,6 +74,7 @@ REPO_SIZE_GB = {  # 各釘住版本快照的實測大小
     ALIGNER_MODEL_ID: 1.9,
     ASR_MODEL_ID: 4.1,
     DIARIZATION_MODEL_ID: 16.7,
+    CAMPPLUS_MODEL_ID: 0.03,
 }
 
 
@@ -89,13 +95,20 @@ def repos_for_model(model: str | None) -> tuple[str, ...]:
     return MODEL_REPOS[normalize_model(model)]
 
 
-def _weights_complete(folder: Path) -> bool:
-    """快照內 config 與每個權重分片是否都在。
+WEIGHTS_FILES = {CAMPPLUS_MODEL_ID: "campplus_cn_common.bin"}
+"""不是 transformers 格式（config.json 加 safetensors）的權重：repo → 權重檔的檔名。"""
+
+
+def _weights_complete(folder: Path, repo_id: str = "") -> bool:
+    """快照內 config 與每個權重分片是否都在。不是 transformers 格式的權重（:data:`WEIGHTS_FILES`）看
+    那個權重檔在不在。
 
     huggingface_hub 的離線檢查只在快取過檔案清單時才有效（本程式一律經
     snapshot_download 下載，會先寫入清單）；舊版程式以 from_pretrained 逐檔下載中斷
     留下的快照沒有清單，至少確認最大、最可能缺的權重檔齊全。
     """
+    if repo_id in WEIGHTS_FILES:
+        return (folder / WEIGHTS_FILES[repo_id]).is_file()
     if not (folder / "config.json").is_file():
         return False
     index = folder / "model.safetensors.index.json"
@@ -116,7 +129,7 @@ def _local_snapshot(repo_id: str) -> str | None:
                                  local_files_only=True)
     except Exception:
         return None
-    return path if _weights_complete(Path(path)) else None
+    return path if _weights_complete(Path(path), repo_id) else None
 
 
 def repo_is_ready(repo_id: str) -> bool:
@@ -527,7 +540,7 @@ def vram_notice(vram_gb: float, single_pass_seconds: float) -> str | None:
     """顯卡記憶體低於最低需求時給使用者的提示，只提示、不擋（#11 Q2）；夠的時候是 None。
 
     ``single_pass_seconds`` 是這張顯卡上單次能轉錄的長度（0 是不分段）：記憶體越小切得越短，
-    長音檔切成越多段，各段各自分離說話者，說話者編號越容易對不上（跨段對齊是 #93）。
+    長音檔切成越多段，各段各自分離說話者，靠說話者嵌入對齊的地方越多，說話者編號越容易配錯（#93）。
     """
     nominal = round(vram_gb)  # 標示 12 GB 的卡回報約 11.99 GiB
     if nominal >= VRAM_MINIMUM_GB:

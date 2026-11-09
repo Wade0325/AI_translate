@@ -28,6 +28,7 @@ from app.core.default_prompt import build_prompt, build_user_text_prompt
 from app.core.error_codes import ErrorCode
 from app.core.task_status import TaskStatus
 from app.exceptions import TransientError
+from app.provider import registry
 from app.runtime import run_mode
 from tests.support.db_faults import writes_fail
 from tests.support.fake_provider import FAKE_MODEL, Empty, Fail, Listen, ServedAs
@@ -1084,6 +1085,122 @@ class TestContinuation:
         assert leftovers(data_dir) == []
 
 
+def turns(*tones: int) -> list[tuple[float, float, int]]:
+    """和 SPEAKING 同樣的節奏（每 3.5 秒說 1.5 秒），說話者照 ``tones`` 的順序輪。"""
+    return [(3.5 * i, 3.5 * i + 1.5, tone) for i, tone in enumerate(tones)]
+
+
+TONE_C = 900
+
+
+class TestSpeakersAcrossChunks:
+    """跨段的說話者編號（#93）：分段轉錄的各段各自分離說話者，合併時用說話者嵌入把同一個人配成同一個編號。
+
+    假供應商照收到的音檔回答（Listen），說話者編號照它在這段音檔裡聽到的先後，各段互相獨立，像本機的
+    MOSS；假的說話者嵌入聽頻率（tests/support/fake_embedder.py），同一位說話者的相似度是 1。單次只能處理
+    20 秒：26 秒的音檔切在最接近中點的靜音 13.0 秒，兩段各 13 秒，前一段是第 1–4 句、後一段是第 5–8 句。
+    各段照原本的切法送出，只改說話者編號。
+    """
+
+    @pytest.fixture(autouse=True)
+    def _like_local(self, fake):
+        fake.model_capabilities = replace(
+            fake.model_capabilities, remove_silence=False, single_pass_seconds=20.0,
+            align_speakers_across_chunks=True)
+
+    def test_speakers_keep_their_numbers_in_the_next_chunk(self, api, fake, embedder, data_dir):
+        # 後一段從第 5 句（B）聽起，自己把 B 編成 S0、A 編成 S1；嵌入把它們配回前一段的 S1、S0
+        fake.script = [Listen(), Listen()]
+        messages = transcribe(api, "uid-chunk-speakers",
+                              voiced=turns(TONE_A, TONE_B, TONE_B, TONE_A, TONE_B, TONE_A, TONE_B, TONE_A))
+
+        assert codes(messages)[-1] == TaskStatus.COMPLETED
+        # 送進模型的音檔和不對齊時相同
+        assert fake.durations == pytest.approx([13.0, 13.0], abs=0.01)
+        segments = stored_segments(api, messages[-1]["task_uuid"])
+        assert [s["start"] for s in segments] == pytest.approx(SPEAKING_STARTS, abs=0.01)
+        assert [s["seg_key"] for s in segments] == [
+            "a.0000", "a.0001", "a.0002", "a.0003", "b.0000", "b.0001", "b.0002", "b.0003"]
+        assert {(heard_tone(s), s["speaker"]) for s in segments} == {(400, "S0"), (700, "S1")}
+        assert "對齊各段的說話者..." in [m["status_text"] for m in messages]
+        assert embedder.opened == 1
+        assert leftovers(data_dir) == []
+
+    def test_someone_only_in_the_next_chunk_gets_a_new_number(self, api, fake, embedder):
+        # C 只在後一段說話：不是前一段的任何人，接在前一段用過的 S1 之後拿 S2
+        fake.script = [Listen(), Listen()]
+        messages = transcribe(api, "uid-chunk-speaker-new",
+                              voiced=turns(TONE_A, TONE_B, TONE_A, TONE_B, TONE_C, TONE_A, TONE_C, TONE_B))
+
+        segments = stored_segments(api, messages[-1]["task_uuid"])
+        assert [(heard_tone(s), s["speaker"]) for s in segments] == [
+            (400, "S0"), (700, "S1"), (400, "S0"), (700, "S1"),
+            (900, "S2"), (400, "S0"), (900, "S2"), (700, "S1")]
+
+    def test_without_the_embedder_the_next_chunk_gets_new_numbers(self, api, fake, embedder):
+        # 嵌入用不了（例如權重載入失敗）：任務照樣完成，後一段的人都用新的編號，不沿用前一段的 S0、S1
+        # （各段的說話者分離互相獨立，照原本的編號等於把不同段的 S0 當成同一個人），狀態說明寫明沒有對齊
+        embedder.open_error = RuntimeError("權重壞了")
+        fake.script = [Listen(), Listen()]
+        messages = transcribe(api, "uid-chunk-speakers-no-embedder",
+                              voiced=turns(TONE_A, TONE_B, TONE_B, TONE_A, TONE_B, TONE_A, TONE_B, TONE_A))
+
+        assert codes(messages)[-1] == TaskStatus.COMPLETED
+        segments = stored_segments(api, messages[-1]["task_uuid"])
+        assert [(heard_tone(s), s["speaker"]) for s in segments] == [
+            (400, "S0"), (700, "S1"), (700, "S1"), (400, "S0"),
+            (700, "S2"), (400, "S3"), (700, "S2"), (400, "S3")]
+        assert ("說話者嵌入用不了：各段的說話者編號沒有對齊，後面的段改用新的編號"
+                in [m["status_text"] for m in messages])
+
+    def test_audio_transcribed_in_one_pass_is_left_as_it_is(self, api, fake, embedder):
+        # 一次就轉得完、也沒有接續：沒有可能是同一個人的兩個編號，不取嵌入
+        fake.model_capabilities = replace(fake.model_capabilities, single_pass_seconds=30.0)
+        fake.script = [Listen()]
+        messages = transcribe(api, "uid-one-pass-speakers",
+                              voiced=turns(TONE_B, TONE_A, TONE_B, TONE_A))
+
+        segments = stored_segments(api, messages[-1]["task_uuid"])
+        assert [(heard_tone(s), s["speaker"]) for s in segments] == [
+            (700, "S0"), (400, "S1"), (700, "S0"), (400, "S1")]
+        assert embedder.opened == 0
+
+    def test_model_without_it_keeps_each_chunks_own_numbers(self, api, fake, embedder):
+        # 沒開的模型（例如本機的 VibeVoice + Qwen3-ASR）：說話者編號照各段自己的
+        fake.model_capabilities = replace(
+            fake.model_capabilities, align_speakers_across_chunks=False)
+        fake.script = [Listen(), Listen()]
+        messages = transcribe(api, "uid-chunks-own-numbers",
+                              voiced=turns(TONE_A, TONE_B, TONE_B, TONE_A, TONE_B, TONE_A, TONE_B, TONE_A))
+
+        segments = stored_segments(api, messages[-1]["task_uuid"])
+        # 後一段從第 5 句（B）聽起，B 拿到 S0：和前一段的 A 同一個編號
+        assert [(heard_tone(s), s["speaker"]) for s in segments][4:] == [
+            (700, "S0"), (400, "S1"), (700, "S0"), (400, "S1")]
+        assert embedder.opened == 0
+
+    def test_new_number_from_a_continuation_is_matched_back(
+            self, api, fake, embedder, settings, monkeypatch):
+        # 接續（#94）照 TestContinuation：一次轉得完 26 秒，但第一次只轉到 12 秒，從 6.0 秒接續。重疊區
+        # 6–12 秒裡只有 A（第 3、4 句），B 在接續段裡拿新的 S2（沒有重疊區的證據）；嵌入把它配回 S1
+        fake.model_capabilities = replace(
+            fake.model_capabilities, single_pass_seconds=30.0, continuation=True)
+        monkeypatch.setattr(settings, "tail_loss_min_seconds", 2.0)
+        monkeypatch.setattr(settings, "continuation_overlap_seconds", 4.0)
+        monkeypatch.setattr(settings, "continuation_min_progress_seconds", 2.0)
+        fake.script = [Listen(stops_after=15.0)] * 3
+        messages = transcribe(api, "uid-continuation-speakers", "voice.flac",
+                              voiced=turns(TONE_A, TONE_B, TONE_A, TONE_A, TONE_B, TONE_A, TONE_B, TONE_A))
+
+        assert codes(messages)[-1] == TaskStatus.COMPLETED
+        segments = stored_segments(api, messages[-1]["task_uuid"])
+        assert [s["start"] for s in segments] == pytest.approx(SPEAKING_STARTS, abs=0.01)
+        assert [(heard_tone(s), s["speaker"]) for s in segments] == [
+            (400, "S0"), (700, "S1"), (400, "S0"), (400, "S0"),
+            (700, "S1"), (400, "S0"), (700, "S1"), (400, "S0")]
+        assert embedder.opened == 1
+
+
 class TestEmptyChunk:
     """空段（#327）：分段轉錄的一段跑完了，卻沒有轉錄出任何內容，例如會議錄影開頭的長段靜音或測試音。
     不讓任務失敗，其他段的片段照樣保留；這一段有沒有漏掉內容照掉尾的規則看。每一段都是空段時才失敗。
@@ -1811,6 +1928,7 @@ class TestModelCapabilitiesEndpoint:
             "can_terminate": False,
             "split_retry_on_failure": False,
             "continuation": False,
+            "align_speakers_across_chunks": False,
             "accepts_prompt": False,
             "accepts_user_text": True,
             "supports_batch": False,
@@ -1824,7 +1942,7 @@ class TestModelCapabilitiesEndpoint:
         local = {model: c for (provider, model), c in listed.items() if provider == "local"}
         gemini = {model: c for (provider, model), c in listed.items() if provider == "google"}
 
-        assert set(local) == {"moss-align", "moss-qwen3-asr", "vibevoice-qwen3-asr"}
+        assert set(local) == {"moss-align"}
         assert {"gemini-3.5-flash", "gemini-2.5-flash"} <= set(gemini)
         assert not any(c["accepts_prompt"] for c in local.values())
         assert all(c["accepts_prompt"] for c in gemini.values())
@@ -1894,10 +2012,9 @@ class TestModelCapabilitiesEndpoint:
         listed = listed_providers(api)
 
         assert (listed["local"]["label"], listed["google"]["label"]) == ("本機", "Gemini")
+        # 本機只列預設的 moss-align（#20），另外兩個模型見 TestHiddenModels
         assert [(m["model"], m["label"]) for m in listed["local"]["models"]] == [
             ("moss-align", "MOSS-Transcribe-Diarize"),
-            ("moss-qwen3-asr", "MOSS + Qwen3-ASR"),
-            ("vibevoice-qwen3-asr", "VibeVoice + Qwen3-ASR（舊版）"),
         ]
         gemini = listed["google"]["models"]
         assert gemini[0]["model"] == "gemini-3.5-flash"
@@ -1947,6 +2064,30 @@ class TestModelCapabilitiesEndpoint:
                 "upload_notice", "terms_url"} <= read
         assert read <= listed_fields(api)
 
+
+
+class TestHiddenModels:
+    """畫面上不列出的模型（#20）：不在供應商清單上，送出任務照樣接受，留給評測與之後的版本。"""
+
+    def test_hidden_model_is_not_listed_but_still_transcribes(self, api, fake):
+        fake.info = replace(fake.info, hidden_models=frozenset({FAKE_MODEL}))
+        fake.script = list(SCRIPT)
+
+        assert listed_providers(api)["fake"]["models"] == []
+        messages = transcribe(api, "uid-hidden")
+
+        assert codes(messages)[-1] == TaskStatus.COMPLETED
+        assert fake.opened == 1
+
+    def test_local_lists_only_the_default_model_and_keeps_the_others(self, api):
+        # 選單只留 moss-align；moss-qwen3-asr 與舊版 VibeVoice 收起來，後端照樣認得（模型能力
+        # 與名稱都在），評測的第二假設與之後的分歧標示還要用它們
+        listed = [m["model"] for m in listed_providers(api)["local"]["models"]]
+
+        assert listed == ["moss-align"]
+        for model in ("moss-qwen3-asr", "vibevoice-qwen3-asr"):
+            assert registry.model_capabilities("local", model).pricing == "free"
+            assert registry.provider_info("local").model_labels[model]
 
 # ─── 模型不吃的輸入（#108） ─────────────────────────────────────────────────
 

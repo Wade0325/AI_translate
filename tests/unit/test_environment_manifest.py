@@ -14,6 +14,8 @@ def test_local_models_record_their_pinned_weight_revisions():
     assert described["model_revisions"] == {
         weights.MOSS_MODEL_ID: weights.REPO_REVISIONS[weights.MOSS_MODEL_ID],
         weights.ALIGNER_MODEL_ID: weights.REPO_REVISIONS[weights.ALIGNER_MODEL_ID],
+        # 分段轉錄時對齊說話者編號的 CAM++（#93）：換了它，分段轉錄的說話者編號可能不同
+        weights.CAMPPLUS_MODEL_ID: weights.REPO_REVISIONS[weights.CAMPPLUS_MODEL_ID],
     }
     # 本機的模型都不去靜音（#95）；單次長度的上限照模型能力
     assert described["settings"]["remove_silence"] is False
