@@ -310,7 +310,7 @@ test('Gemini 的卡片說明音檔會上傳到 Google，並連到條款原文；
     await page.goto('/settings')
 
     const gemini = providerCard(page, 'Gemini')
-    await expect(gemini.getByText(/音檔與提示詞會上傳到 Google/)).toBeVisible()
+    await expect(gemini.getByText(/音檔、提示詞與使用者文稿會上傳到 Google/)).toBeVisible()
     const terms = gemini.getByRole('link', { name: '條款原文' })
     await expect(terms).toHaveAttribute('href', GEMINI_UPLOAD_NOTICE.terms_url)
     await expect(terms).toHaveAttribute('rel', 'noopener noreferrer')

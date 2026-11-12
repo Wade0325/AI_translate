@@ -15,6 +15,7 @@ import {
   modelSupports,
   providerLabel,
   resolveSelection,
+  userTextNote,
   withModel,
   withProvider,
 } from '../utils/providerList';
@@ -90,7 +91,6 @@ export const TranscriptionProvider = ({ children }) => {
   // 所選模型支援哪些輸入與處理方式；模型能力還沒載入時不限制，由後端把關
   const capabilities = findModelCapabilities(providerList, provider, model);
   const supports = useMemo(() => modelSupports(capabilities), [capabilities]);
-  const reasons = useMemo(() => disabledReasonsFor(supports), [supports]);
   // 按 token 計費的模型才估算費用，本機不估（#18）
   const estimatesCost = billedPerToken(capabilities);
 
@@ -98,6 +98,8 @@ export const TranscriptionProvider = ({ children }) => {
   const processingMode = allowedProcessingMode(chosenProcessingMode, supports);
   if (processingMode !== chosenProcessingMode) setChosenProcessingMode(processingMode);
   const useBatchMode = processingMode === 'batch';
+  // 不會送出的輸入與原因：模型不吃的，以及批次不帶的使用者文稿（#66）
+  const reasons = useMemo(() => disabledReasonsFor(supports, processingMode), [supports, processingMode]);
 
   const [isPreviewModalVisible, setIsPreviewModalVisible] = useState(false);
   const [previewContent, setPreviewContent] = useState('');
@@ -287,6 +289,7 @@ export const TranscriptionProvider = ({ children }) => {
     supports,
     estimatesCost,
     disabledReasons: reasons,
+    userTextNote: userTextNote(capabilities),
     isProcessing,
     processingMode,
     setProcessingMode: setChosenProcessingMode,

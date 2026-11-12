@@ -4,6 +4,7 @@ import {
   alternativeProvider,
   billedPerToken,
   checksTranscribingMachine,
+  disabledReasonsFor,
   missingApiKey,
   modelSupports,
   modelForProvider,
@@ -14,6 +15,7 @@ import {
   requiresApiKey,
   resolveSelection,
   uploadNotice,
+  userTextNote,
   withModel,
   withProvider,
 } from './providerList.js';
@@ -266,5 +268,44 @@ describe('費用估算依模型能力（#18）', () => {
       billedPerToken({ pricing: 'free' }),
       billedPerToken(null),
     ]).toEqual([true, false, true]);
+  });
+});
+
+describe('使用者文稿：只有單檔任務帶（#66）', () => {
+  const TAKES_USER_TEXT = modelSupports({ accepts_user_text: true, supports_batch: true });
+
+  it('所選的模型吃使用者文稿、處理模式是標準或 Flex 時會帶上，沒有原因', () => {
+    expect(['standard', 'flex'].map((mode) => disabledReasonsFor(TAKES_USER_TEXT, mode).userText))
+      .toEqual([null, null]);
+  });
+
+  it('批次不帶使用者文稿，原因寫明要改用標準或 Flex', () => {
+    expect(disabledReasonsFor(TAKES_USER_TEXT, 'batch').userText)
+      .toBe('批次不支援使用者文稿，送出時不會帶上；要補時間戳請改用標準或 Flex');
+  });
+
+  it('所選的模型不吃使用者文稿時，不論處理模式都寫模型不支援', () => {
+    const local = modelSupports({ accepts_user_text: false, supports_batch: false });
+    expect(['standard', 'batch'].map((mode) => disabledReasonsFor(local, mode).userText)).toEqual([
+      '所選的模型不支援使用者文稿，送出時不會帶上',
+      '所選的模型不支援使用者文稿，送出時不會帶上',
+    ]);
+  });
+
+  it('提示詞的原因不受處理模式影響', () => {
+    expect(disabledReasonsFor(TAKES_USER_TEXT, 'batch').prompt).toBeNull();
+  });
+
+  it('附加的視窗寫出整段一次送出的長度上限，從模型能力的單次長度算', () => {
+    expect(userTextNote({ single_pass_seconds: 900, remove_silence: true })).toBe(
+      '模型只替這份文稿補上時間戳，不重新轉錄；提示詞範本不會用到，補充說明照樣送出。'
+      + '音檔整段一次送出，去掉靜音之後要在 15 分鐘以內；更長的請先把音檔和文稿切短。');
+    expect(userTextNote({ single_pass_seconds: 1000, remove_silence: false }))
+      .toContain('音檔整段一次送出，要在 16.7 分鐘以內；');
+  });
+
+  it('不分段（單次長度 0）或還不知道模型能力時，不寫長度', () => {
+    const note = '模型只替這份文稿補上時間戳，不重新轉錄；提示詞範本不會用到，補充說明照樣送出。';
+    expect([userTextNote({ single_pass_seconds: 0 }), userTextNote(null)]).toEqual([note, note]);
   });
 });

@@ -12,11 +12,11 @@ from pathlib import Path
 from app.celery.models import TranscriptionTaskParams
 from app.core.config import get_settings
 from app.core.error_codes import ErrorCode
-from app.core.default_prompt import build_prompt
+from app.core.default_prompt import build_prompt, build_user_text_prompt
 from app.provider.base import ProgressAndCancel, Provider, TranscribeRequest
 from app.provider.registry import open_provider
 from app.services import chunked_transcription
-from app.services.silence_removal import speech_view
+from app.services.silence_removal import SpeechView, speech_view
 from app.services.transcription.models import TranscriptionTaskResult
 from app.tasks.lifecycle import Task, TaskLifecycle
 from app.utils.audio import get_audio_duration
@@ -90,7 +90,12 @@ def _transcribe_speech_view(
     adapter: Provider, params: TranscriptionTaskParams, task_uuid: str, audio: Path,
     progress: ProgressAndCancel,
 ) -> TranscriptionTaskResult:
-    """去靜音拿到語音視圖，經分段轉錄轉錄它；語音視圖的暫存檔用完就清掉。"""
+    """去靜音拿到語音視圖，經分段轉錄轉錄它；語音視圖的暫存檔用完就清掉。
+
+    附了使用者文稿時整段一次送出（#66）：提示詞帶著整份文稿，分段的話每一段都拿到整份，時間戳會對錯地方。
+    語音視圖超過單次能處理的長度時什麼都不送出（音檔不上傳），以失敗結束。
+    """
+    user_text = _user_text(params)
     duration = get_audio_duration(audio)
     if duration is None:
         logger.error(f"無法取得音訊時長 {audio.name}")
@@ -103,23 +108,30 @@ def _transcribe_speech_view(
     temp_dir = get_settings().temp_uploads_path
     original_filename = params.original_filename or audio.name
     progress.report("分析靜音位置...")
+    capabilities = adapter.capabilities()[params.model]
     view = speech_view(
         audio,
         duration,
-        remove_silence=adapter.capabilities()[params.model].remove_silence,
+        remove_silence=capabilities.remove_silence,
         temp_dir=temp_dir,
         task_id=str(task_uuid),
         original_filename=original_filename,
     )
     try:
+        single_pass = capabilities.single_pass_seconds
+        if user_text and 0 < single_pass < view.duration:
+            return TranscriptionTaskResult(
+                success=False, text=_too_long_for_user_text(view, single_pass),
+                error_code=ErrorCode.UNSUPPORTED_REQUEST)
         return chunked_transcription.transcribe(
             view,
             adapter,
             TranscribeRequest(
                 model=params.model,
-                prompt=_prompt(params),
+                prompt=_prompt(params, user_text),
                 source_lang=params.source_lang,
                 service_tier=params.service_tier,
+                single_pass_only=bool(user_text),
             ),
             progress,
             temp_dir=temp_dir,
@@ -131,19 +143,34 @@ def _transcribe_speech_view(
         delete_temp_files(view.temp_files)
 
 
-def _prompt(params: TranscriptionTaskParams) -> str:
-    # 有使用者文稿時改用「對齊」的提示詞：只補時間戳，不重新轉錄
-    if params.user_supplied_text:
-        return f"""
-請你扮演一位專業的逐字稿專家。你的任務是將提供的音檔與以下的完整逐字稿內容進行對齊，並生成一個帶有時間戳的LRC格式檔案。
+def _user_text(params: TranscriptionTaskParams) -> str:
+    """這個任務的使用者文稿，去掉前後的空白；沒填、空字串或只有空白時是空字串，照一般轉錄。"""
+    return (params.user_supplied_text or "").strip()
 
-這是完整的逐字稿：
----
-{params.user_supplied_text}
----
 
-請仔細聆聽音檔，為這份逐字稿加上精確的時間戳，並以LRC格式輸出。
-"""
+def _too_long_for_user_text(view: SpeechView, single_pass: float) -> str:
+    """附了使用者文稿、語音視圖卻超過單次長度時給使用者看的原因與下一步。"""
+    length = (f"音檔去掉靜音之後還有 {_minutes(view.duration)} 分鐘" if view.removed_silence
+              else f"音檔長 {_minutes(view.duration)} 分鐘")
+    limit = _minutes(single_pass)
+    return (f"附了使用者文稿時要整段一次補上時間戳，不能分段轉錄：{length}，超過單次能處理的 {limit} 分鐘。"
+            f"請把音檔和使用者文稿切成 {limit} 分鐘以內的幾份，或拿掉使用者文稿再轉錄")
+
+
+def _minutes(seconds: float) -> str:
+    """秒數寫成分鐘，取到小數一位，整數不寫小數點：900 → 15、1000 → 16.7。"""
+    return f"{seconds / 60:.1f}".removesuffix(".0")
+
+
+def _prompt(params: TranscriptionTaskParams, user_text: str) -> str:
+    # 有使用者文稿時改用只補時間戳的提示詞，不重新轉錄（#66）
+    if user_text:
+        return build_user_text_prompt(
+            user_text,
+            source_lang=params.source_lang,
+            multi_speaker=params.multi_speaker,
+            supplement=params.prompt,
+        )
     # 設定頁存的提示詞範本，空一行接上轉錄頁填的補充說明（#144）
     return build_prompt(
         source_lang=params.source_lang,

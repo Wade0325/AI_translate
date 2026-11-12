@@ -141,12 +141,33 @@ export function modelSupports(capabilities) {
  */
 export const billedPerToken = (capabilities) => (capabilities?.pricing ?? 'per_token') === 'per_token';
 
-/** 停用輸入欄位時顯示的原因（{ prompt, userText }）；支援的那一項是 null。處理模式見 processingModeNote。 */
-export function disabledReasonsFor(supports) {
+/**
+ * 停用輸入欄位時顯示的原因（{ prompt, userText }）；會送出的那一項是 null。處理模式見 processingModeNote。
+ * processingMode 是實際用的處理模式（allowedProcessingMode）：批次的請求不帶使用者文稿，只有單檔任務
+ * 帶（#66）。
+ */
+export function disabledReasonsFor(supports, processingMode) {
+  let userText = null;
+  if (!supports.userText) userText = '所選的模型不支援使用者文稿，送出時不會帶上';
+  else if (processingMode === 'batch') userText = '批次不支援使用者文稿，送出時不會帶上；要補時間戳請改用標準或 Flex';
   return {
     prompt: supports.prompt ? null : '所選的模型不支援提示詞，送出時不會帶上',
-    userText: supports.userText ? null : '所選的模型不支援使用者文稿，送出時不會帶上',
+    userText,
   };
+}
+
+/**
+ * 附加使用者文稿的視窗裡的說明（#66）：模型只替文稿補上時間戳；整段音檔一次送出、不分段轉錄，所以送進
+ * 模型的長度不能超過單次能處理的長度（模型能力的 single_pass_seconds，0 是不分段、沒有上限）。
+ * 還不知道模型能力時不寫長度。
+ */
+export function userTextNote(capabilities) {
+  const note = '模型只替這份文稿補上時間戳，不重新轉錄；提示詞範本不會用到，補充說明照樣送出。';
+  const seconds = capabilities?.single_pass_seconds ?? 0;
+  if (!(seconds > 0)) return note;
+  const minutes = String(Math.round((seconds / 60) * 10) / 10);
+  const afterSilenceRemoval = (capabilities?.remove_silence ?? true) ? '去掉靜音之後' : '';
+  return `${note}音檔整段一次送出，${afterSilenceRemoval}要在 ${minutes} 分鐘以內；更長的請先把音檔和文稿切短。`;
 }
 
 /**
