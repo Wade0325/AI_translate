@@ -145,6 +145,7 @@ class TranscriptionLog(Base):
     # 模型版本時（Gemini），完成時補記 model_versions
     transcription_environment = Column(Text, nullable=True)
     # 送出的提示詞：範本代入之後接上補充說明的那一份，只有吃提示詞的模型（Gemini）記，本機的是 NULL。
+    # 開始時組好就記，之後才失敗、沒有真的送出的任務（例如讀不出音檔長度）也有。
     # 附了使用者文稿時，文稿換成一句說明（app.core.default_prompt.Prompt）：文稿不存進資料庫
     sent_prompt = Column(Text, nullable=True)
     # 附了使用者文稿；只記有附，內容不存

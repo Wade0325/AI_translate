@@ -18,7 +18,7 @@ DEFAULT_PROMPT_TEMPLATE 是系統內建範本的唯一真實來源：設定頁�
 
 import re
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Optional
 
 # 語言代碼 → 寫進提示詞的語言名稱。轉錄頁語言選單（frontend/src/constants/languages.js）上的
 # 每一種都要有，由 tests/unit/test_default_prompt.py 對齊。ja-JP、en-US、zh-CN 是舊紀錄與直接呼叫
@@ -172,15 +172,20 @@ class Prompt:
         return cls(text=text, recorded=text)
 
 
-def user_text_prompt(user_text: str, **options: Any) -> Prompt:
+def user_text_prompt(
+    user_text: str,
+    source_lang: str = "ja-JP",
+    multi_speaker: bool = False,
+    supplement: Optional[str] = None,
+) -> Prompt:
     """附了使用者文稿時的提示詞：送出的是 :func:`build_user_text_prompt` 組出的全文，記下的是同一個函式
-    把文稿換成 :data:`USER_TEXT_OMITTED` 組出的，指示與補充說明逐字相同。
-
-    ``options`` 是 :func:`build_user_text_prompt` 除了文稿以外的參數，照樣傳給它。
+    把文稿換成 :data:`USER_TEXT_OMITTED` 組出的，指示與補充說明逐字相同。參數同 :func:`build_user_text_prompt`。
     """
-    return Prompt(text=build_user_text_prompt(user_text, **options),
-                  recorded=build_user_text_prompt(USER_TEXT_OMITTED, **options),
-                  user_text_attached=True)
+    def build(text: str) -> str:
+        return build_user_text_prompt(text, source_lang=source_lang, multi_speaker=multi_speaker,
+                                      supplement=supplement)
+
+    return Prompt(text=build(user_text), recorded=build(USER_TEXT_OMITTED), user_text_attached=True)
 
 
 def _with_supplement(prompt: str, supplement: Optional[str]) -> str:

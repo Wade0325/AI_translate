@@ -23,7 +23,7 @@ from app.provider import registry
 from app.provider.google.provider import GeminiProvider
 from tests.support.fake_genai import FakeGenaiClient, Reply, invalid_argument, unavailable
 from tests.support.synthetic_audio import VOICED
-from tests.support.task_api import receive_until, stored_segments, upload
+from tests.support.task_api import receive_until, stored_segments, task_record, upload
 from tests.support.waiting import TIMEOUT, wait_until
 
 MODEL = "gemini-2.5-flash"
@@ -96,14 +96,6 @@ def history(api: TestClient, original_filename: str) -> dict:
     items = api.get("/api/v1/history", params={"keyword": original_filename}).json()["items"]
     assert len(items) == 1, items
     return items[0]
-
-
-def task_record(db_session, task_uuid: str):
-    """任務紀錄本身：轉錄環境與送出的提示詞不在任何 API 回應裡（畫面不顯示，#343），只能從這裡看。"""
-    from app.repositories.transcription_log_repository import TranscriptionLogRepository
-
-    db_session.expire_all()
-    return TranscriptionLogRepository().get(db_session, task_uuid)
 
 
 # ─── 單檔 ────────────────────────────────────────────────────────────────────

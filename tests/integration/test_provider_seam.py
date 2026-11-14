@@ -44,6 +44,7 @@ from tests.support.task_api import (
     ping,
     receive,
     stored_segments,
+    task_record,
     upload,
 )
 from tests.support.waiting import cancel_when_dispatched, wait_until
@@ -280,18 +281,12 @@ def frozen_original(engine, task_uuid: str) -> str | None:
         return HistoryRepository().get_log_by_uuid(db, task_uuid).lrc_content
 
 
-def started_fields(engine, task_uuid: str) -> tuple:
-    """任務開始轉錄時記下的（#343）：(轉錄環境, 送出的提示詞, 有沒有附使用者文稿)。畫面不顯示，
-    沒有讀它們的介面，只能從任務紀錄看。"""
-    from sqlalchemy.orm import sessionmaker
-
-    from app.repositories.history_repository import HistoryRepository
-
-    with sessionmaker(bind=engine)() as db:
-        record = HistoryRepository().get_log_by_uuid(db, task_uuid)
-        environment = record.transcription_environment
-        return (json.loads(environment) if environment else None, record.sent_prompt,
-                record.user_supplied_text_attached)
+def started_fields(db_session, task_uuid: str) -> tuple:
+    """任務開始轉錄時記下的（#343）：(轉錄環境, 送出的提示詞, 有沒有附使用者文稿)。"""
+    record = task_record(db_session, task_uuid)
+    environment = record.transcription_environment
+    return (json.loads(environment) if environment else None, record.sent_prompt,
+            record.user_supplied_text_attached)
 
 
 def in_voiced_region(t: float) -> bool:
@@ -2325,7 +2320,7 @@ def local_fake(fake):
     registry.register("local", previous)
 
 
-def test_a_local_task_records_its_environment_but_no_prompt(api, local_fake, test_engine, monkeypatch):
+def test_a_local_task_records_its_environment_but_no_prompt(api, local_fake, db_session, monkeypatch):
     # 本機的轉錄環境有顯卡與驅動、模型權重釘住的 revision；本機的模型不吃提示詞，不記
     fake_torch(monkeypatch, card=RTX_4080)
     monkeypatch.setattr(weights, "command_output", lambda *command: (
@@ -2335,7 +2330,7 @@ def test_a_local_task_records_its_environment_but_no_prompt(api, local_fake, tes
     end = transcribe(api, "uid-local-environment", provider="local", model=weights.MOSS_ALIGN)[-1]
 
     assert end["status_code"] == TaskStatus.COMPLETED
-    environment, prompt, user_text_attached = started_fields(test_engine, end["task_uuid"])
+    environment, prompt, user_text_attached = started_fields(db_session, end["task_uuid"])
     assert (environment["app_version"], environment["provider"], environment["model"]) == (
         APP_VERSION, "local", weights.MOSS_ALIGN)
     assert environment["model_revisions"] == {
@@ -2346,7 +2341,7 @@ def test_a_local_task_records_its_environment_but_no_prompt(api, local_fake, tes
     assert user_text_attached is False
 
 
-def test_a_task_cancelled_in_the_queue_records_no_environment(api, fake, test_engine):
+def test_a_task_cancelled_in_the_queue_records_no_environment(api, fake, db_session):
     # 轉錄環境與提示詞是開始轉錄時記的：在佇列裡就被取消、沒有開始的任務沒有
     fake.hold = threading.Event()
     fake.script = list(SCRIPT)
@@ -2363,8 +2358,8 @@ def test_a_task_cancelled_in_the_queue_records_no_environment(api, fake, test_en
         running_end = receive_until_terminal(running)[-1]
 
     assert queued_end["status_code"] == TaskStatus.CANCELLED
-    assert started_fields(test_engine, queued_end["task_uuid"]) == (None, None, None)
-    environment, prompt, _ = started_fields(test_engine, running_end["task_uuid"])
+    assert started_fields(db_session, queued_end["task_uuid"]) == (None, None, None)
+    environment, prompt, _ = started_fields(db_session, running_end["task_uuid"])
     assert environment["model"] == FAKE_MODEL
     assert prompt == fake.prompts[0]
 

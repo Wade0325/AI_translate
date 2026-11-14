@@ -48,7 +48,6 @@
 
 from __future__ import annotations
 
-import json
 import time
 import traceback
 from contextlib import contextmanager
@@ -201,7 +200,8 @@ class TaskLifecycle:
         )
         started_at = record.request_timestamp.timestamp() if record.request_timestamp else None
         return cls(str(task_uuid), task, duration=duration, started_at=started_at,
-                   environment=_parsed(cast(Optional[str], record.transcription_environment)))
+                   environment=environment_manifest.from_record(
+                       cast(Optional[str], record.transcription_environment)))
 
     @property
     def task_uuid(self) -> str:
@@ -568,12 +568,13 @@ class TaskLifecycle:
         """開始轉錄時才記的欄位（#343）：轉錄環境、送出的提示詞與有沒有附使用者文稿。"""
         prompt = self._task.prompt
         capabilities = self._capabilities()
-        if capabilities is not None and not capabilities.accepts_prompt:
-            # 本機的模型照樣收到提示詞，但不看它：不記。模型已經從清單拿掉時照記
-            prompt = None
+        # 只有吃提示詞的模型記：本機的模型照樣收到提示詞，但不看它。模型已經從清單拿掉、
+        # 不知道它吃不吃時也不記
+        reads_prompt = capabilities is not None and capabilities.accepts_prompt
         return {
-            "transcription_environment": _serialized(self._environment),
-            "sent_prompt": prompt.recorded if prompt else None,
+            "transcription_environment": environment_manifest.to_record(self._environment),
+            "sent_prompt": prompt.recorded if prompt and reads_prompt else None,
+            # 派送時驗證過：只有吃使用者文稿的模型會附上
             "user_supplied_text_attached": bool(prompt and prompt.user_text_attached),
         }
 
@@ -591,8 +592,9 @@ class TaskLifecycle:
         （這一欄加上之前開始的任務）時不動。"""
         if self._environment is None or not result.model_versions:
             return {}
-        self._environment = {**self._environment, "model_versions": result.model_versions}
-        return {"transcription_environment": _serialized(self._environment)}
+        self._environment = environment_manifest.with_model_versions(
+            self._environment, result.model_versions)
+        return {"transcription_environment": environment_manifest.to_record(self._environment)}
 
     def _cancelled_fields(self) -> dict:
         return {
@@ -736,22 +738,6 @@ def _completed_response(task_uuid, transcripts: dict, *, tokens: int, cost: floa
 def _speaker_count(segments: List[Dict[str, Any]]) -> int:
     """片段裡出現幾個不同的說話者編號（結果頁顯示的人數，#13 Q1）；沒有說話者編號的片段不算。"""
     return len({seg["speaker"] for seg in segments if seg.get("speaker")})
-
-
-def _serialized(environment: Optional[Dict[str, Any]]) -> Optional[str]:
-    """轉錄環境寫進任務紀錄的 JSON；沒有時是 None。"""
-    return None if environment is None else json.dumps(environment, ensure_ascii=False)
-
-
-def _parsed(environment: Optional[str]) -> Optional[Dict[str, Any]]:
-    """任務紀錄裡的轉錄環境；沒有記、或讀不懂時是 None。"""
-    if not environment:
-        return None
-    try:
-        parsed = json.loads(environment)
-    except ValueError:
-        return None
-    return parsed if isinstance(parsed, dict) else None
 
 
 def _discount(service_tier: Optional[str]) -> Optional[float]:

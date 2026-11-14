@@ -102,7 +102,6 @@ def _transcribe_speech_view(
     附了使用者文稿時整段一次送出（#66）：提示詞帶著整份文稿，分段的話每一段都拿到整份，時間戳會對錯地方。
     語音視圖超過單次能處理的長度時什麼都不送出（音檔不上傳），以失敗結束。
     """
-    user_text = _user_text(params)
     duration = get_audio_duration(audio)
     if duration is None:
         logger.error(f"無法取得音訊時長 {audio.name}")
@@ -126,7 +125,7 @@ def _transcribe_speech_view(
     )
     try:
         single_pass = capabilities.single_pass_seconds
-        if user_text and 0 < single_pass < view.duration:
+        if prompt.user_text_attached and 0 < single_pass < view.duration:
             return TranscriptionTaskResult(
                 success=False, text=_too_long_for_user_text(view, single_pass),
                 error_code=ErrorCode.UNSUPPORTED_REQUEST)
@@ -138,7 +137,7 @@ def _transcribe_speech_view(
                 prompt=prompt.text,
                 source_lang=params.source_lang,
                 service_tier=params.service_tier,
-                single_pass_only=bool(user_text),
+                single_pass_only=prompt.user_text_attached,
             ),
             progress,
             temp_dir=temp_dir,

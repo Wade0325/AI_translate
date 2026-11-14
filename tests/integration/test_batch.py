@@ -49,6 +49,7 @@ from tests.support.task_api import (
     receive_until,
     shown,
     stored_segments,
+    task_record,
     upload,
 )
 from tests.support.waiting import TIMEOUT, wait_until
@@ -169,14 +170,6 @@ def transcribe_single(api: TestClient, file_uid: str, name: str) -> list[dict]:
 
 def record(api: TestClient, task_uuid: str) -> dict:
     return api.get(f"/api/v1/history/{task_uuid}").json()
-
-
-def task_record(db_session, task_uuid: str):
-    """任務紀錄本身：轉錄環境與送出的提示詞不在任何 API 回應裡（畫面不顯示，#343），只能從這裡看。"""
-    from app.repositories.transcription_log_repository import TranscriptionLogRepository
-
-    db_session.expire_all()
-    return TranscriptionLogRepository().get(db_session, task_uuid)
 
 
 # ─── 每個檔案都走任務生命週期 ───────────────────────────────────────────────

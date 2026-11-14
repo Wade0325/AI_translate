@@ -157,3 +157,24 @@ def test_the_gpu_is_asked_once_per_process(monkeypatch):
     assert first["gpu"] == second["gpu"]
     assert first["gpu"]["driver"] == "576.02"
     assert [command[0] for command in commands] == ["nvidia-smi"]
+
+
+def test_the_recorded_environment_reads_back_with_the_model_versions_added():
+    # 任務紀錄存 JSON（中文不跳脫）；批次的檔案結果在重啟之後才回來時，從任務紀錄讀回再補記模型版本
+    environment = {"app_version": APP_VERSION, "provider": "google", "model": GEMINI_MODEL,
+                   "settings": {"說明": "中文照寫"}}
+
+    recorded = environment_manifest.to_record(environment)
+    read_back = environment_manifest.from_record(recorded)
+
+    assert "中文照寫" in recorded
+    assert read_back == environment
+    assert environment_manifest.with_model_versions(read_back, ["gemini-2.5-flash-001"]) == {
+        **environment, "model_versions": ["gemini-2.5-flash-001"]}
+    assert environment_manifest.to_record(None) is None
+
+
+@pytest.mark.parametrize("recorded", [None, "", "不是 JSON", "[1, 2]"])
+def test_an_unreadable_recorded_environment_reads_back_as_none(recorded):
+    # 這一欄加上之前的任務沒有記；讀不懂的也當成沒有，任務照樣結束
+    assert environment_manifest.from_record(recorded) is None

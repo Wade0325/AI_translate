@@ -14,7 +14,7 @@ import functools
 import json
 import os
 from importlib import metadata
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Sequence
 
 from app.core import version
 from app.core.config import get_settings
@@ -53,13 +53,35 @@ def for_task(provider: str, model: str) -> Dict[str, Any]:
     }
 
 
+def with_model_versions(environment: Dict[str, Any], versions: Sequence[str]) -> Dict[str, Any]:
+    """轉錄環境補上回應寫明的模型版本（Gemini 回應的 ``model_version``）：任務完成時才知道（#343）。"""
+    return {**environment, "model_versions": list(versions)}
+
+
+def to_record(environment: Optional[Dict[str, Any]]) -> Optional[str]:
+    """轉錄環境寫進任務紀錄的 JSON；沒有時是 None。"""
+    return None if environment is None else json.dumps(environment, ensure_ascii=False)
+
+
+def from_record(recorded: Optional[str]) -> Optional[Dict[str, Any]]:
+    """任務紀錄裡的轉錄環境（:func:`to_record` 寫的）；沒有記、或讀不懂時是 None。"""
+    if not recorded:
+        return None
+    try:
+        environment = json.loads(recorded)
+    except ValueError:
+        return None
+    return environment if isinstance(environment, dict) else None
+
+
 @functools.cache
 def _gpu_of_this_process() -> Optional[Dict[str, Any]]:
+    # 問到 None（例如當時 CUDA 還沒準備好）也沿用到行程結束：換了顯卡或驅動要重開程式才看得到
     return gpu()
 
 
 def forget_gpu() -> None:
-    """忘掉這個行程問過的顯卡，下一個本機的任務重新問（測試換了假的 torch 時用）。"""
+    """忘掉這個行程問過的顯卡，下一個本機的任務重新問。只給測試用：每個測試換一個假的 torch。"""
     _gpu_of_this_process.cache_clear()
 
 
