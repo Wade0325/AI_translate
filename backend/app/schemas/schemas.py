@@ -156,6 +156,8 @@ class HistoryLogResponse(BaseModel):
     service_tier_used: Optional[str] = None
     # 可能掉尾的起點（原音檔的秒數，app.services.tail_loss）；畫面照它寫「從 mm:ss 起可能沒有轉錄到」
     tail_loss_from_seconds: Optional[float] = None
+    # 能不能校正（app.services.correctability）：History 照它決定要不要給「校正」的入口（#347）
+    correctable: bool = False
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -241,6 +243,10 @@ class TranscriptResponse(BaseModel):
     original_filename: Optional[str] = None
     audio_duration_seconds: Optional[float] = None
     audio_available: bool = False
+    # 能不能校正，不能時的原因（app.services.correctability.Uncorrectable 的值）：直接開校正頁的網址時，
+    # 畫面照原因寫出一句說明（#347）
+    correctable: bool = False
+    uncorrectable_reason: Optional[str] = None
     segment_count: int = 0
     segments: List[TranscriptSegmentResponse] = []
 
