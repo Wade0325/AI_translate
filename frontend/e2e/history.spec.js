@@ -7,7 +7,7 @@ const RECORDS = [
         status: 'COMPLETED', original_filename: 'meeting.wav', audio_duration_seconds: 300.0,
         model_used: 'moss-align', source_language: 'zh-TW', total_tokens: 0, cost: 0.0,
         error_code: null, error_message: null, is_batch: false, session_id: 'session-1', file_uid: 'file-1',
-        service_tier_used: 'standard', tail_loss_from_seconds: null,
+        service_tier_used: 'standard', tail_loss_from_seconds: null, correctable: true,
     },
     {
         task_uuid: 'task-2', request_timestamp: '2026-10-21T09:00:00', completed_at: null,
@@ -15,7 +15,7 @@ const RECORDS = [
         model_used: 'gemini-3.5-flash', source_language: 'ja-JP', total_tokens: 1200, cost: 0.0042,
         error_code: 'GEMINI_UNAVAILABLE', error_message: '503 UNAVAILABLE: The model is overloaded.',
         is_batch: false, session_id: 'session-2', file_uid: 'file-2',
-        service_tier_used: 'standard', tail_loss_from_seconds: null,
+        service_tier_used: 'standard', tail_loss_from_seconds: null, correctable: false,
     },
 ]
 

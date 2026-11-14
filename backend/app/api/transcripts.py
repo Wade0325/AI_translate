@@ -22,7 +22,7 @@ from app.schemas.schemas import (
     TranscriptSegmentResponse,
     TranscriptWord,
 )
-from app.services import audio_store
+from app.services import audio_store, correctability
 from app.utils.audio import get_mime_type
 from app.utils.identifiers import coerce_uuid
 from app.utils.logger import setup_logger
@@ -70,12 +70,15 @@ def get_transcript(task_uuid: str, db: Session = Depends(get_db)):
             words=[TranscriptWord(**w) for w in words] if words else None,
         ))
 
+    blocker = correctability.reason(log, has_segments=bool(segments))
     return TranscriptResponse(
         task_uuid=str(log.task_uuid),
         status=log.status,
         original_filename=log.original_filename,
         audio_duration_seconds=log.audio_duration_seconds,
         audio_available=audio_store.resolve(log.audio_filename) is not None,
+        correctable=blocker is None,
+        uncorrectable_reason=blocker,
         segment_count=len(segments),
         segments=segments,
     )
