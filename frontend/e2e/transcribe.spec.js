@@ -87,46 +87,103 @@ test('語言選單分官方支援與未驗證，沒有簡體中文；選了未�
     await expect(shown('Japanese')).toHaveCount(3)
 })
 
-test('Multi-Speaker 只有開關：沒有人數滑桿，也沒有 Timestamps 開關（#13 Q1、Q2）', async ({ page, mockBackend }) => {
+test('Speakers 是 Auto 與 1 到 8 的選單；沒有 Multi-Speaker 開關、人數滑桿與 Timestamps 開關（#351、#13 Q2）', async ({ page, mockBackend }) => {
     await mockBackend()
     await page.goto('/transcribe')
     await addAudio(page)
-    await expect(page.getByText('Single', { exact: true })).toBeVisible()
+    const menu = page.locator('.ant-select-dropdown:visible')
 
-    // 全域與每檔設定都只有開關；打開也不會冒出人數滑桿，檔案卡的標籤只寫開或關
-    await page.getByRole('switch', { name: 'Multi-Speaker', exact: true }).click()
+    // 檔案卡的標籤寫出所選的人數，預設 Auto
+    await expect(page.getByText('Speakers: Auto', { exact: true })).toBeVisible()
+    await expect(page.getByRole('switch', { name: /Multi-Speaker/ })).toHaveCount(0)
+
+    await page.getByRole('combobox', { name: 'Speakers', exact: true }).click()
+    await expect(menu.locator('.ant-select-item-option')).toHaveText(['Auto', '1', '2', '3', '4', '5', '6', '7', '8'])
+    await menu.locator('.ant-select-item-option[title="3"]').click()
+    await expect(page.getByText('Speakers: 3', { exact: true })).toBeVisible()
+
+    // 每檔設定也是同一個選單，跟著全域的值
     await page.getByRole('button', { name: '每檔設定' }).click()
-    await expect(page.getByRole('switch', { name: '這個檔案的 Multi-Speaker' })).toBeChecked()
-
-    await expect(page.getByText('Multi-speaker', { exact: true })).toBeVisible()
+    await expect(page.getByRole('combobox', { name: '這個檔案的 Speakers' })).toBeVisible()
     await expect(page.getByRole('slider')).toHaveCount(0)
     await expect(page.getByText(/^(No )?timestamps$/i)).toHaveCount(0)
 })
 
-test('Multi-Speaker 預設關、記住上次：重新開頁還是上次的開關，送出的檔案照它（#13 Q1）', async ({ page, mockBackend }) => {
+test('Speakers 預設 Auto、記住上次：重新開頁還是上次選的人數，送出的檔案照它；舊的 Multi-Speaker 開關不沿用（#351）', async ({ page, mockBackend }) => {
     const backend = await mockBackend({ routes: { 'POST /upload': { filename: 'meeting_1.wav' } } })
+    // 以前打開過 Multi-Speaker 的人：舊的鍵不沿用，從 Auto 開始
+    // eslint-disable-next-line no-restricted-syntax -- 測試先放舊版 Multi-Speaker 開關存的 true，不是金鑰
+    await page.addInitScript(() => localStorage.setItem('ai_translate_last_multi_speaker', 'true'))
     await page.goto('/transcribe')
-    const multiSpeaker = page.getByRole('switch', { name: 'Multi-Speaker', exact: true })
+    const speakers = page.getByRole('combobox', { name: 'Speakers', exact: true })
+    const menu = page.locator('.ant-select-dropdown:visible')
+    // antd 另有一個看不到的無障礙區塊也寫選到的值，只數看得到的
+    const shown = (text) => page.getByText(text, { exact: true }).filter({ visible: true })
 
-    // 第一次開頁是關；沒動過就不寫進儲存空間
-    await expect(multiSpeaker).not.toBeChecked()
-    expect(await page.evaluate(() => localStorage.getItem('ai_translate_last_multi_speaker'))).toBeNull()
+    // 第一次開頁是 Auto；沒動過就不寫進儲存空間
+    await expect(shown('Auto')).toHaveCount(1)
+    expect(await page.evaluate(() => localStorage.getItem('ai_translate_last_speaker_count'))).toBeNull()
 
-    await multiSpeaker.click()
+    await speakers.click()
+    await menu.locator('.ant-select-item-option[title="2"]').click()
     await page.reload()
 
-    await expect(multiSpeaker).toBeChecked()
+    await expect(shown('2')).toHaveCount(1)
     await addAudio(page)
-    await expect(page.getByText('Multi-speaker', { exact: true })).toBeVisible()
+    await expect(page.getByText('Speakers: 2', { exact: true })).toBeVisible()
     await page.getByRole('button', { name: 'Start' }).click()
     await expect(page.getByText('轉錄完成')).toBeVisible()
-    expect(backend.transcriptionRequests).toEqual([expect.objectContaining({ multi_speaker: true })])
+    expect(backend.transcriptionRequests).toEqual([expect.objectContaining({ speaker_count: 2 })])
+    expect(backend.transcriptionRequests[0]).not.toHaveProperty('multi_speaker')
 
-    // 關掉也記住
-    await multiSpeaker.click()
+    // 選回 Auto 也記住
+    await speakers.click()
+    await menu.locator('.ant-select-item-option[title="Auto"]').click()
     await page.reload()
-    await expect(multiSpeaker).not.toBeChecked()
-    expect(await page.evaluate(() => localStorage.getItem('ai_translate_last_multi_speaker'))).toBe('false')
+    await expect(shown('Auto')).toHaveCount(1)
+    expect(await page.evaluate(() => localStorage.getItem('ai_translate_last_speaker_count'))).toBe('"auto"')
+})
+
+test('每檔設定的 Speakers 優先於全域：選 1 人的檔案送出 1（#352）', async ({ page, mockBackend }) => {
+    const backend = await mockBackend({ routes: { 'POST /upload': { filename: 'meeting_1.wav' } } })
+    await page.goto('/transcribe')
+    const menu = page.locator('.ant-select-dropdown:visible')
+    await addAudio(page)
+
+    await page.getByRole('combobox', { name: 'Speakers', exact: true }).click()
+    await menu.locator('.ant-select-item-option[title="3"]').click()
+    // 等全域的選單收起來，下面找的才是每檔設定的選單
+    await expect(menu).toHaveCount(0)
+    await page.getByRole('button', { name: '每檔設定' }).click()
+    await page.getByRole('combobox', { name: '這個檔案的 Speakers' }).click()
+    // 9 個選項一次列完：選了 3 再打開，1 也看得到、點得到
+    await menu.locator('.ant-select-item-option[title="1"]').click()
+
+    await expect(page.getByText('Speakers: 1', { exact: true })).toBeVisible()
+    await page.getByRole('button', { name: 'Start' }).click()
+    await expect(page.getByText('轉錄完成')).toBeVisible()
+    expect(backend.transcriptionRequests).toEqual([expect.objectContaining({ speaker_count: 1 })])
+})
+
+test('選的人數和結果不同時，結果頁的檔案卡多一行提醒（#351 第 4 點）', async ({ page, mockBackend }) => {
+    await mockBackend({
+        routes: { 'POST /upload': { filename: 'meeting_1.wav' } },
+        transcribe: async (request, send) => {
+            const { processing, completed } = transcriptionMessages(request)
+            send(processing)
+            send({ ...completed, result: { ...completed.result, speaker_count: 3 } })
+        },
+    })
+    await page.goto('/transcribe')
+    await addAudio(page)
+    await page.getByRole('combobox', { name: 'Speakers', exact: true }).click()
+    await page.locator('.ant-select-dropdown:visible .ant-select-item-option[title="2"]').click()
+    await page.getByRole('button', { name: 'Start' }).click()
+    await expect(page.getByText('轉錄完成')).toBeVisible()
+
+    await page.getByRole('link', { name: 'Result Viewer' }).click()
+    await expect(page.getByText('3 speaker(s)')).toBeVisible()
+    await expect(page.getByTestId('speaker-count-notice')).toHaveText('選了 2 人，結果有 3 位說話者')
 })
 
 test('語言預設 Auto Detect、記住上次：重新開頁還是上次選的語言，送出的檔案照它（#261）', async ({ page, mockBackend }) => {
@@ -204,8 +261,9 @@ test('選本機送出一個檔案，顯示處理中，完成後到結果頁下�
     await page.getByRole('link', { name: 'Result Viewer' }).click()
     await expect(page).toHaveURL(/\/result$/)
     await expect(page.getByText(AUDIO.name)).toBeVisible()
-    // 說話者人數是後端從轉錄結果算的，不是轉錄頁填的人數（#13 Q1）
+    // 說話者人數是後端從轉錄結果算的，不是轉錄頁選的人數（#13 Q1）；選 Auto 時不提醒人數不同（#351）
     await expect(page.getByText('2 speaker(s)')).toBeVisible()
+    await expect(page.getByTestId('speaker-count-notice')).toHaveCount(0)
     await expect(page.getByTestId('tail-loss-notice')).toHaveCount(0)
 
     await page.getByRole('button', { name: 'Download', exact: true }).hover()

@@ -25,8 +25,11 @@ export function applyFileResult(file, data) {
     next.audioDurationSec = data.result?.audio_duration_seconds;
     next.model = data.result?.model ?? file.model;
     next.sourceLanguage = data.result?.source_language;
-    // 轉錄結果裡實際出現的說話者人數；沒有片段帶說話者編號時是 0，結果頁不顯示
-    next.speakerCount = data.result?.speaker_count;
+    // 這份輸出裡有幾位說話者（整份當成同一位說話者時是 1，沒有任何一行時是 0，結果頁不顯示 0），以及
+    // 轉錄前選的人數（'auto' 或 1 到 8；人數做出來之前的任務是 null）：選了 2 到 8 人、結果不同時結果頁
+    // 提醒（utils/speakerCount.js 的 speakerCountMismatch）。檔案的 speakerCount 是每檔設定的人數，不能共用名稱
+    next.resultSpeakerCount = data.result?.speaker_count;
+    next.selectedSpeakerCount = data.result?.selected_speaker_count;
     // 可能掉尾的起點（原音檔的秒數，utils/tailLoss.js）：檔案卡與結果頁照它寫出從哪裡起可能沒有轉錄到；
     // 沒有掉尾時是 null
     next.tailLossFrom = data.result?.tail_loss_from_seconds ?? null;

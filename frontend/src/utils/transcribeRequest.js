@@ -33,6 +33,8 @@ export const forRetranscription = (file) => ({
   error: null,
   failure: null,
   tailLossFrom: null,
+  resultSpeakerCount: undefined,
+  selectedSpeakerCount: undefined,
   sentPrompt: undefined,
 });
 
@@ -41,20 +43,20 @@ export const forRetranscription = (file) => ({
  * 設定的欄位用它補上。globalPrompt 是轉錄頁的全域提示詞；processingMode 是 'standard'、
  * 'flex' 或 'batch'，只有 Flex 要帶 service_tier。
  */
-export const requestDefaults = ({ language, multiSpeaker, processingMode, globalPrompt }) => ({
+export const requestDefaults = ({ language, speakerCount, processingMode, globalPrompt }) => ({
   sourceLang: language,
-  multiSpeaker,
+  speakerCount,
   serviceTier: processingMode === 'flex' ? 'flex' : null,
   prompt: globalPrompt,
 });
 
 /**
  * 把一個檔案的每檔設定改回全域預設（Apply to All、Reset to global）時要更新的欄位。
- * 語言與 Multi-Speaker 複製全域當下的值；提示詞清掉，讓檔案跟著全域提示詞走，之後改的也會送出。
+ * 語言與說話者人數複製全域當下的值；提示詞清掉，讓檔案跟著全域提示詞走，之後改的也會送出。
  */
 export const globalSettingsPatch = (globalConfig) => ({
   language: globalConfig.language,
-  isMultiSpeaker: globalConfig.isMultiSpeaker,
+  speakerCount: globalConfig.speakerCount,
   prompt: undefined,
   hasOverride: false,
 });
@@ -68,7 +70,10 @@ export function promptToSend(file, globalPrompt, supports) {
   return blankToNull(filePrompt(file, globalPrompt));
 }
 
-/** defaults：全域預設 { sourceLang, multiSpeaker, serviceTier, prompt }，prompt 是全域提示詞。 */
+/**
+ * defaults：全域預設 { sourceLang, speakerCount, serviceTier, prompt }，prompt 是全域提示詞。說話者人數是
+ * 'auto' 或 1 到 8（utils/speakerCount.js），每檔設定的優先。
+ */
 export function buildSinglePayload({ serverFilename, file, provider, model, defaults, supports, sessionId }) {
   return {
     filename: serverFilename,
@@ -78,7 +83,7 @@ export function buildSinglePayload({ serverFilename, file, provider, model, defa
     source_lang: file.language || defaults.sourceLang,
     prompt: promptToSend(file, defaults.prompt, supports),
     user_supplied_text: supports.userText ? (file.userSuppliedText || null) : null,
-    multi_speaker: file.isMultiSpeaker ?? defaults.multiSpeaker,
+    speaker_count: file.speakerCount ?? defaults.speakerCount,
     service_tier: defaults.serviceTier,
     session_id: sessionId,
   };
@@ -96,12 +101,12 @@ export function buildBatchPayload({ files, provider, model, defaults, supports, 
       file_uid: f.uid,
       source_lang: f.language || defaults.sourceLang,
       prompt: promptToSend(f, defaults.prompt, supports),
-      multi_speaker: f.isMultiSpeaker ?? defaults.multiSpeaker,
+      speaker_count: f.speakerCount ?? defaults.speakerCount,
     })),
     provider,
     model,
     source_lang: defaults.sourceLang,
-    multi_speaker: defaults.multiSpeaker,
+    speaker_count: defaults.speakerCount,
     session_id: sessionId,
   };
 }

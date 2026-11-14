@@ -2,6 +2,9 @@ from pydantic import BaseModel, Field
 from typing import List, Optional
 from pydantic import ConfigDict
 
+from app.core import speaker_count as speakers
+from app.core.speaker_count import SpeakerCount
+
 
 class ProviderConfigRequest(BaseModel):
     """用於接收前端發送的模型介面設定的請求體。"""
@@ -63,7 +66,8 @@ class WebSocketTranscriptionRequest(BaseModel):
     target_lang: Optional[str] = None
     prompt: Optional[str] = None  # 補充說明：接在設定頁存的提示詞範本後面送出（#144）
     user_supplied_text: Optional[str] = None
-    multi_speaker: bool = False
+    # 說話者人數：照模型判斷（"auto"，預設）或 1 到 8 人（app.core.speaker_count）
+    speaker_count: SpeakerCount = speakers.DEFAULT
     service_tier: Optional[str] = None  # 'flex' 啟用 Flex 推論
     session_id: Optional[str] = None  # 同一次 Start 的任務群組 ID
 
@@ -76,7 +80,7 @@ class BatchFileItem(BaseModel):
     source_lang: Optional[str] = None
     target_lang: Optional[str] = None
     prompt: Optional[str] = None
-    multi_speaker: Optional[bool] = None
+    speaker_count: Optional[SpeakerCount] = None
 
 
 class WebSocketBatchRequest(BaseModel):
@@ -88,7 +92,7 @@ class WebSocketBatchRequest(BaseModel):
     source_lang: str
     target_lang: Optional[str] = None
     prompt: Optional[str] = None  # 補充說明：補給沒帶自己的檔案，一樣接在提示詞範本後面
-    multi_speaker: bool = False
+    speaker_count: SpeakerCount = speakers.DEFAULT  # 補給沒帶自己人數的檔案
     session_id: Optional[str] = None
 
 

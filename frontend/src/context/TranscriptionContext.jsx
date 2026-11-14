@@ -21,11 +21,11 @@ import {
 } from '../utils/providerList';
 import {
   loadLastLanguage,
-  loadLastMultiSpeaker,
   loadLastSelection,
+  loadLastSpeakerCount,
   saveLastLanguage,
-  saveLastMultiSpeaker,
   saveLastSelection,
+  saveLastSpeakerCount,
 } from '../utils/lastSelection';
 import { forRetranscription, requestDefaults } from '../utils/transcribeRequest';
 import { cancelFile } from '../utils/cancelOutcome';
@@ -54,12 +54,12 @@ export const TranscriptionProvider = ({ children }) => {
   // 使用者選的處理模式：'standard' | 'flex' | 'batch'。實際用的是下面的 processingMode。
   // 預設標準：結果直接回到這一頁，批次要到 Tasks 頁取回（#18）
   const [chosenProcessingMode, setChosenProcessingMode] = useState('standard');
-  // Multi-Speaker 開關決定輸出格式帶不帶說話者標記（#13 Q1）：第一次開頁是關，之後照上次的選擇。
-  // 使用者切換時才記下，沒動過就不寫進儲存空間（utils/lastSelection.js）
-  const [multiSpeaker, setChosenMultiSpeaker] = useState(loadLastMultiSpeaker);
-  const setMultiSpeaker = useCallback((next) => {
-    setChosenMultiSpeaker(next);
-    saveLastMultiSpeaker(next);
+  // 說話者人數（#351）：Auto 或 1 到 8（utils/speakerCount.js）。第一次開頁是 Auto，之後照上次的選擇。
+  // 使用者選了才記下，沒動過就不寫進儲存空間（utils/lastSelection.js）
+  const [speakerCount, setChosenSpeakerCount] = useState(loadLastSpeakerCount);
+  const setSpeakerCount = useCallback((next) => {
+    setChosenSpeakerCount(next);
+    saveLastSpeakerCount(next);
   }, []);
   // 轉錄頁的全域提示詞：補充說明，送給沒有每檔設定提示詞的檔案（不必先按 Apply to All），
   // 後端接在提示詞範本後面
@@ -246,7 +246,7 @@ export const TranscriptionProvider = ({ children }) => {
       return;
     }
 
-    const defaults = requestDefaults({ language: sourceLang, multiSpeaker, processingMode, globalPrompt });
+    const defaults = requestDefaults({ language: sourceLang, speakerCount, processingMode, globalPrompt });
 
     setIsProcessing(true);
 
@@ -265,7 +265,7 @@ export const TranscriptionProvider = ({ children }) => {
     providerListFailed,
     getProviderConfig,
     sourceLang,
-    multiSpeaker,
+    speakerCount,
     globalPrompt,
     processingMode,
     useBatchMode,
@@ -293,8 +293,8 @@ export const TranscriptionProvider = ({ children }) => {
     isProcessing,
     processingMode,
     setProcessingMode: setChosenProcessingMode,
-    multiSpeaker,
-    setMultiSpeaker,
+    speakerCount,
+    setSpeakerCount,
     globalPrompt,
     setGlobalPrompt,
     handleStartTranscription,

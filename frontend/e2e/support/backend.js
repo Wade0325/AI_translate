@@ -180,6 +180,8 @@ export function transcriptionMessages(request) {
                 source_language: request.source_lang,
                 audio_duration_seconds: 5.0,
                 speaker_count: 2,
+                // 請求帶的說話者人數（#352）；和 speaker_count 不同、又是 2 到 8 人時，結果頁會提醒
+                selected_speaker_count: request.speaker_count ?? 'auto',
                 // 轉到了結尾：沒有可能掉尾的起點（#257）
                 tail_loss_from_seconds: null,
             },

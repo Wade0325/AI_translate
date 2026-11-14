@@ -17,7 +17,7 @@ import {
     Scissors,
     Ban,
 } from "lucide-react"
-import { Button, Select, Switch, Tag, Typography, Input, Dropdown, Spin, Tooltip, Popconfirm } from "antd"
+import { Button, Select, Tag, Typography, Input, Dropdown, Spin, Tooltip, Popconfirm } from "antd"
 import { LoadingOutlined } from "@ant-design/icons"
 import { ReasonText } from "@/components/disabled-reason"
 import { FailureNotice } from "@/components/FailureNotice"
@@ -26,6 +26,7 @@ import { TailLossNotice } from "@/components/TailLossNotice"
 import { languages, formatLang } from "@/constants/languages"
 import { downloadFormats } from "@/constants/downloadFormats"
 import { globalSettingsPatch } from "@/utils/transcribeRequest"
+import { SPEAKER_MENU_HEIGHT, formatSpeakerCount, speakerCountOptions } from "@/utils/speakerCount"
 import { describeConnection } from "@/utils/connectionLoss"
 
 const { Text } = Typography
@@ -101,7 +102,7 @@ export function FileConfigCard({
 
     const tags = [
         { label: formatLang(config.language), icon: Languages, overridden: isOverridden("language") },
-        { label: config.isMultiSpeaker ? "Multi-speaker" : "Single", icon: Users, overridden: isOverridden("isMultiSpeaker") },
+        { label: formatSpeakerCount(config.speakerCount), icon: Users, overridden: isOverridden("speakerCount") },
         ...(shownPrompt || (typedPrompt && notSentReason(disabledReasons.prompt))
             ? [{
                 label: "Prompt",
@@ -381,14 +382,15 @@ export function FileConfigCard({
                             <Text style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, color: "#8888a8" }}>
                                 <Users size={12} /> Speakers
                             </Text>
-                            <div style={{ display: "flex", alignItems: "center", gap: 8, height: 32 }}>
-                                <Switch
-                                    size="small"
-                                    aria-label="這個檔案的 Multi-Speaker"
-                                    checked={config.isMultiSpeaker}
-                                    onChange={(v) => update({ isMultiSpeaker: v })}
-                                />
-                            </div>
+                            <Select
+                                value={config.speakerCount}
+                                onChange={(v) => update({ speakerCount: v })}
+                                options={speakerCountOptions}
+                                listHeight={SPEAKER_MENU_HEIGHT}
+                                aria-label="這個檔案的 Speakers"
+                                style={{ width: "100%" }}
+                                size="small"
+                            />
                         </div>
                     </div>
 

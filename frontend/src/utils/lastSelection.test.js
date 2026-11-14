@@ -1,11 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   loadLastLanguage,
-  loadLastMultiSpeaker,
   loadLastSelection,
+  loadLastSpeakerCount,
   saveLastLanguage,
-  saveLastMultiSpeaker,
   saveLastSelection,
+  saveLastSpeakerCount,
 } from './lastSelection.js';
 
 const NOTHING_CHOSEN = { provider: null, model: null };
@@ -73,54 +73,60 @@ describe('轉錄頁記住上次選的供應商與模型', () => {
   });
 });
 
-describe('轉錄頁記住上次的 Multi-Speaker 開關（#13 Q1）', () => {
-  it('第一次開頁是關', () => {
+describe('轉錄頁記住上次選的說話者人數（#351）', () => {
+  it('第一次開頁是 Auto', () => {
     stubStorage();
 
-    expect(loadLastMultiSpeaker()).toBe(false);
+    expect(loadLastSpeakerCount()).toBe('auto');
   });
 
-  it('打開之後讀回開，再關掉讀回關', () => {
+  it('存了之後讀回同一個人數，選回 Auto 也記住', () => {
     stubStorage();
 
-    saveLastMultiSpeaker(true);
-    expect(loadLastMultiSpeaker()).toBe(true);
+    saveLastSpeakerCount(3);
+    expect(loadLastSpeakerCount()).toBe(3);
 
-    saveLastMultiSpeaker(false);
-    expect(loadLastMultiSpeaker()).toBe(false);
+    saveLastSpeakerCount('auto');
+    expect(loadLastSpeakerCount()).toBe('auto');
   });
 
   it('和供應商與模型分開存，互不影響', () => {
     const items = stubStorage();
 
     saveLastSelection({ provider: 'local', model: 'moss-align' });
-    saveLastMultiSpeaker(true);
+    saveLastSpeakerCount(2);
 
     expect(items).toEqual({
       ai_translate_last_selection: JSON.stringify({ provider: 'local', model: 'moss-align' }),
-      ai_translate_last_multi_speaker: 'true',
+      ai_translate_last_speaker_count: '2',
     });
     expect(loadLastSelection()).toEqual({ provider: 'local', model: 'moss-align' });
   });
 
-  it('存的內容壞掉或不是開關時當成關', () => {
-    for (const saved of ['{壞掉', '"true"', '1', '{"on":true}', 'null']) {
-      stubStorage({ ai_translate_last_multi_speaker: saved });
-      expect(loadLastMultiSpeaker()).toBe(false);
+  it('舊的 Multi-Speaker 開關不沿用：開著的人也從 Auto 開始', () => {
+    stubStorage({ ai_translate_last_multi_speaker: 'true' });
+
+    expect(loadLastSpeakerCount()).toBe('auto');
+  });
+
+  it('存的內容壞掉或不是選單上的人數時當成 Auto', () => {
+    for (const saved of ['{壞掉', '"3"', '0', '9', '2.5', 'true', '"Auto"', 'null']) {
+      stubStorage({ ai_translate_last_speaker_count: saved });
+      expect(loadLastSpeakerCount()).toBe('auto');
     }
   });
 
-  it('瀏覽器擋下儲存空間或沒有儲存空間時，讀不到就是關，存不進去也不影響轉錄', () => {
+  it('瀏覽器擋下儲存空間或沒有儲存空間時，讀不到就是 Auto，存不進去也不影響轉錄', () => {
     vi.stubGlobal('localStorage', {
       getItem: () => { throw new Error('SecurityError'); },
       setItem: () => { throw new Error('QuotaExceededError'); },
     });
-    expect(loadLastMultiSpeaker()).toBe(false);
-    expect(() => saveLastMultiSpeaker(true)).not.toThrow();
+    expect(loadLastSpeakerCount()).toBe('auto');
+    expect(() => saveLastSpeakerCount(2)).not.toThrow();
 
     vi.stubGlobal('localStorage', undefined);
-    expect(loadLastMultiSpeaker()).toBe(false);
-    expect(() => saveLastMultiSpeaker(true)).not.toThrow();
+    expect(loadLastSpeakerCount()).toBe('auto');
+    expect(() => saveLastSpeakerCount(2)).not.toThrow();
   });
 });
 
@@ -140,16 +146,16 @@ describe('轉錄頁記住上次選的語言（#261）', () => {
     }
   });
 
-  it('和供應商、模型與 Multi-Speaker 分開存，只存語言代碼', () => {
+  it('和供應商、模型與說話者人數分開存，只存語言代碼', () => {
     const items = stubStorage();
 
     saveLastSelection({ provider: 'local', model: 'moss-align' });
-    saveLastMultiSpeaker(true);
+    saveLastSpeakerCount(2);
     saveLastLanguage('ja');
 
     expect(items).toEqual({
       ai_translate_last_selection: JSON.stringify({ provider: 'local', model: 'moss-align' }),
-      ai_translate_last_multi_speaker: 'true',
+      ai_translate_last_speaker_count: '2',
       ai_translate_last_language: '"ja"',
     });
   });

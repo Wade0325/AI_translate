@@ -4,7 +4,7 @@
 - 提示詞範本：設定頁為供應商存的範本；沒存過（或只有空白）時用 DEFAULT_PROMPT_TEMPLATE，裡面要求
   輸出 LRC 與時間戳。範本代入下面三個變數，其他大括號（例如 JSON）照寫的送出，見 _fill：
     {source_lang}           — 音訊語言名稱（如 "日文"）；選 Auto Detect 時是空字串，不寫語言（#261）
-    {speaker_instruction}   — 多人模式指令（可為空）
+    {speaker_instruction}   — 說話者的指示，照說話者人數（見 speaker_instruction；選 1 人時是空的）
     {translate_instruction} — 翻譯指令（可為空）
 - 補充說明：轉錄頁填的提示詞（每個檔案自己的，沒有就是全域的），空一行接在範本後面，照寫的送出、
   不代入變數：範本已經代入過，再代入一次，說話者與翻譯的指示會重複。
@@ -16,6 +16,9 @@ DEFAULT_PROMPT_TEMPLATE 是系統內建範本的唯一真實來源：設定頁�
 
 import re
 from typing import Optional
+
+from app.core import speaker_count as speakers
+from app.core.speaker_count import SpeakerCount
 
 # 語言代碼 → 寫進提示詞的語言名稱。轉錄頁語言選單（frontend/src/constants/languages.js）上的
 # 每一種都要有，由 tests/unit/test_default_prompt.py 對齊。ja-JP、en-US、zh-CN 是舊紀錄與直接呼叫
@@ -57,8 +60,16 @@ DEFAULT_PROMPT_TEMPLATE = (
     "{translate_instruction}"
 )
 
-SPEAKER_INSTRUCTION = (
-    "6. 音檔中有多位說話者，請用 Speaker 1:、Speaker 2: 等標籤區分不同說話者。\n"
+# 說話者的指示（#351 第 2 點）：照模型判斷時請它有多位說話者才標，2 到 8 人時寫明有幾位，1 人時不提。
+# 說話者代號照 Gemini 轉接器解析的寫法（Speaker 1:），見 app.provider.google.provider
+_SPEAKER_LABELS = "請用 Speaker 1:、Speaker 2: 等標籤區分不同說話者"
+AUTO_SPEAKER_INSTRUCTION = f"音檔中有多位說話者時，{_SPEAKER_LABELS}；只有一位說話者時不要加標籤。"
+# 分段轉錄時每一段是分開的請求，同一份提示詞送給每一段（app.services.chunked_transcription）：寫明這一段
+# 不一定每一位都出現，不逼它在每一段都湊滿人數。整段一次送出時這句也成立
+COUNTED_SPEAKER_INSTRUCTION = (
+    "整份音檔共有 {n} 位說話者，" + _SPEAKER_LABELS + "。"
+    "你收到的可能只是整份音檔的其中一段，這一段不一定每一位都出現，"
+    "不要為了湊滿 {n} 位而把同一個人分成不同的說話者。"
 )
 
 TRANSLATE_INSTRUCTION = "{n}. 請將所有轉錄內容翻譯為{target_lang}輸出。\n"
@@ -75,15 +86,36 @@ USER_TEXT_PROMPT_TEMPLATE = (
     "{speaker_instruction}"
 )
 
-USER_TEXT_SPEAKER_INSTRUCTION = (
-    "4. 音檔中有多位說話者，請用 Speaker 1:、Speaker 2: 等標籤區分不同說話者。\n"
-)
+# 附了使用者文稿時整段一次送出、不分段轉錄（app.tasks.transcribe_core），2 到 8 人只寫有幾位
+USER_TEXT_COUNTED_SPEAKER_INSTRUCTION = "音檔中共有 {n} 位說話者，" + _SPEAKER_LABELS + "。"
+
+
+def speaker_instruction(speaker_count: SpeakerCount) -> str:
+    """提示詞範本的 ``{speaker_instruction}``：範本的第 6 條，換行結尾；選 1 人時是空字串。"""
+    return _numbered(6, _speaker_sentence(speaker_count, COUNTED_SPEAKER_INSTRUCTION))
+
+
+def user_text_speaker_instruction(speaker_count: SpeakerCount) -> str:
+    """附了使用者文稿時的說話者指示：第 4 條，換行結尾；選 1 人時是空字串。"""
+    return _numbered(4, _speaker_sentence(speaker_count, USER_TEXT_COUNTED_SPEAKER_INSTRUCTION))
+
+
+def _speaker_sentence(speaker_count: SpeakerCount, counted: str) -> str:
+    if speaker_count == speakers.AUTO:
+        return AUTO_SPEAKER_INSTRUCTION
+    if speakers.is_single(speaker_count):
+        return ""
+    return counted.format(n=speaker_count)
+
+
+def _numbered(number: int, sentence: str) -> str:
+    return f"{number}. {sentence}\n" if sentence else ""
 
 
 def build_prompt(
     source_lang: str = "ja-JP",
     target_lang: Optional[str] = None,
-    multi_speaker: bool = False,
+    speaker_count: SpeakerCount = speakers.DEFAULT,
     template: Optional[str] = None,
     supplement: Optional[str] = None,
 ) -> str:
@@ -93,7 +125,7 @@ def build_prompt(
     Args:
         source_lang:   音訊語言代碼 (如 "ja")；"auto" 或空字串時提示詞不寫語言
         target_lang:   翻譯目標語言代碼 (如 "zh-TW")，None 表示不翻譯
-        multi_speaker: 是否為多人對話模式
+        speaker_count: 說話者人數：照模型判斷（預設）或 1 到 8 人，見 :func:`speaker_instruction`
         template:      設定頁存的提示詞範本；None 或只有空白時用 DEFAULT_PROMPT_TEMPLATE
         supplement:    補充說明（每個檔案的，沒有就是全域的提示詞）；None 或只有空白時只送範本
     """
@@ -101,12 +133,12 @@ def build_prompt(
 
     source_name = _language_name(source_lang)
 
-    speaker_instruction = SPEAKER_INSTRUCTION if multi_speaker else ""
+    speakers_line = speaker_instruction(speaker_count)
 
-    # 計算翻譯指令的編號（第 6 或第 7 條，取決於是否有多人指令）
+    # 翻譯指令是第 6 條，有說話者的指示時它佔了第 6 條，翻譯改成第 7 條
     if target_lang and target_lang != source_lang:
         target_name = LANG_MAP.get(target_lang, target_lang)
-        n = 7 if multi_speaker else 6
+        n = 7 if speakers_line else 6
         translate_instruction = TRANSLATE_INSTRUCTION.format(
             n=n, target_lang=target_name
         )
@@ -115,7 +147,7 @@ def build_prompt(
 
     prompt = _fill(base_template, {
         "source_lang": source_name,
-        "speaker_instruction": speaker_instruction,
+        "speaker_instruction": speakers_line,
         "translate_instruction": translate_instruction,
     }).rstrip("\n")
     return _with_supplement(prompt, supplement)
@@ -124,7 +156,7 @@ def build_prompt(
 def build_user_text_prompt(
     user_text: str,
     source_lang: str = "ja-JP",
-    multi_speaker: bool = False,
+    speaker_count: SpeakerCount = speakers.DEFAULT,
     supplement: Optional[str] = None,
 ) -> str:
     """附了使用者文稿時送給模型的提示詞：只替文稿補上時間戳（#66）。
@@ -134,12 +166,12 @@ def build_user_text_prompt(
     Args:
         user_text:     使用者文稿；前後的空白去掉，其他照寫的送出
         source_lang:   音訊語言代碼，規則同 :func:`build_prompt`
-        multi_speaker: 是否為多人對話模式：要求模型標出說話者代號
+        speaker_count: 說話者人數，見 :func:`user_text_speaker_instruction`
         supplement:    補充說明；None 或只有空白時不接
     """
     instructions = USER_TEXT_PROMPT_TEMPLATE.format(
         source_lang=_language_name(source_lang),
-        speaker_instruction=USER_TEXT_SPEAKER_INSTRUCTION if multi_speaker else "",
+        speaker_instruction=user_text_speaker_instruction(speaker_count),
     )
     prompt = f"{instructions}\n完整逐字稿：\n---\n{user_text.strip()}\n---"
     return _with_supplement(prompt, supplement)

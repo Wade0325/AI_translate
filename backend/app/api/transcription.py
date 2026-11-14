@@ -120,7 +120,7 @@ def _submit(request_data: WebSocketTranscriptionRequest, file_uid: str,
         prompt=request_data.prompt,
         prompt_template=prompt_template,
         user_supplied_text=request_data.user_supplied_text,
-        multi_speaker=request_data.multi_speaker,
+        speaker_count=request_data.speaker_count,
         service_tier=request_data.service_tier,
         session_id=request_data.session_id,
     )

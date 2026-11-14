@@ -300,43 +300,71 @@ def test_a_batch_sent_before_silences_were_stored_still_skips_the_cut_silences(
     assert end["result"]["tail_loss_from_seconds"] is None
 
 
-MULTI_SPEAKER_NAMES = ["labelled.wav", "unlabelled.wav"]
-MULTI_SPEAKER_REQUEST = {"multi_speaker": True,
-                         "fields_per_file": {"unlabelled.wav": {"multi_speaker": False}}}
-"""批次層級開著 Multi-Speaker，第二個檔案在每檔設定裡關掉。"""
+SPEAKER_COUNT_NAMES = ["labelled.wav", "unlabelled.wav"]
+SPEAKER_COUNT_REQUEST = {"speaker_count": 3,
+                         "fields_per_file": {"unlabelled.wav": {"speaker_count": 1}}}
+"""批次層級選 3 人，第二個檔案在每檔設定裡選 1 人（整份當成同一位說話者）。"""
+TWO_SPEAKERS_EACH = [[(0.2, 1.5, 0, "一つ目。"), (2.3, 3.6, 1, "はい。")],
+                     [(0.2, 1.5, 0, "二つ目。"), (2.3, 3.6, 1, "うん。")]]
+"""兩個檔案都分出兩位說話者。"""
 
 
-def test_each_file_follows_its_own_multi_speaker_switch(api, in_process_run_mode, batch_fake):
-    # 個別檔案的設定優先，沒設定的用批次的（#13 Q1）：完成時廣播的與下載的輸出格式照各自的開關
-    # 帶或不帶說話者標記；關掉的檔案，片段照樣存說話者編號
-    batch_fake.script = [[(0.2, 1.5, 1, "一つ目。")], [(0.2, 1.5, 1, "二つ目。")]]
+def test_each_file_follows_its_own_speaker_count(api, in_process_run_mode, batch_fake, db_session):
+    # 個別檔案的設定優先，沒設定的用批次的（#352）：任務紀錄記下各自的人數，提示詞、完成時廣播的與下載的
+    # 輸出格式照各自的人數；選 1 人的檔案，片段照樣存說話者編號
+    from app.repositories.transcription_log_repository import TranscriptionLogRepository
 
-    messages = run_batch(api, in_process_run_mode, "batch-multi-speaker", MULTI_SPEAKER_NAMES,
-                         **MULTI_SPEAKER_REQUEST)
+    batch_fake.script = [list(script) for script in TWO_SPEAKERS_EACH]
 
-    labelled, unlabelled = ends(messages, MULTI_SPEAKER_NAMES)
-    assert download(api, labelled["task_uuid"], "txt") == "[S1] 一つ目。"
-    assert download(api, unlabelled["task_uuid"], "txt") == "二つ目。"
+    messages = run_batch(api, in_process_run_mode, "batch-speaker-count", SPEAKER_COUNT_NAMES,
+                         **SPEAKER_COUNT_REQUEST)
+
+    labelled, unlabelled = ends(messages, SPEAKER_COUNT_NAMES)
+    db_session.expire_all()
+    records = [TranscriptionLogRepository().get(db_session, end["task_uuid"]) for end in (labelled, unlabelled)]
+    assert [(r.speaker_count, r.multi_speaker) for r in records] == [("3", None), ("1", None)]
+    assert batch_fake.prompts == [build_prompt(source_lang="ja", speaker_count=3),
+                                  build_prompt(source_lang="ja", speaker_count=1)]
+    assert download(api, labelled["task_uuid"], "txt") == "[S0] 一つ目。\n[S1] はい。"
+    assert download(api, unlabelled["task_uuid"], "txt") == "二つ目。\nうん。"
     for end in (labelled, unlabelled):
         for fmt in ("srt", "vtt", "lrc", "txt"):
             assert end["result"]["transcripts"][fmt] == download(api, end["task_uuid"], fmt)
-    assert [s["speaker"] for s in stored_segments(api, unlabelled["task_uuid"])] == ["S1"]
+    assert [s["speaker"] for s in stored_segments(api, unlabelled["task_uuid"])] == ["S0", "S1"]
+    # 結果頁：選 3 人、結果 2 位；選 1 人時人數是 1
+    assert [(end["result"]["speaker_count"], end["result"]["selected_speaker_count"])
+            for end in (labelled, unlabelled)] == [(2, 3), (1, 1)]
 
 
-def test_files_finished_from_recovery_keep_their_multi_speaker_switch(
+def test_batch_without_a_count_is_auto(api, in_process_run_mode, batch_fake, db_session):
+    from app.repositories.transcription_log_repository import TranscriptionLogRepository
+
+    batch_fake.script = [list(TWO_SPEAKERS_EACH[0])]
+
+    end = of_file(run_batch(api, in_process_run_mode, "batch-speaker-auto", ["auto.wav"]), "auto.wav")[-1]
+
+    db_session.expire_all()
+    assert TranscriptionLogRepository().get(db_session, end["task_uuid"]).speaker_count == "auto"
+    assert batch_fake.prompts == [build_prompt(source_lang="ja", speaker_count="auto")]
+    assert end["result"]["transcripts"]["txt"] == "[S0] 一つ目。\n[S1] はい。"
+
+
+def test_files_finished_from_recovery_keep_their_speaker_count(
         api, in_process_run_mode, batch_fake):
-    # 輪詢時應用程式重啟，之後從復原入口接回每個檔案的任務：開關從任務紀錄讀回來，不會變成預設
-    batch_fake.script = [[(0.2, 1.5, 1, "一つ目。")], [(0.2, 1.5, 1, "二つ目。")]]
+    # 輪詢時應用程式重啟，之後從復原入口接回每個檔案的任務：人數從任務紀錄讀回來，不會變成預設
+    batch_fake.script = [list(script) for script in TWO_SPEAKERS_EACH]
     batch_fake.batch_polls = [Restart()]
-    submit_batch(api, in_process_run_mode, "batch-multi-speaker-restarted", MULTI_SPEAKER_NAMES,
-                 **MULTI_SPEAKER_REQUEST)
+    submit_batch(api, in_process_run_mode, "batch-speaker-count-restarted", SPEAKER_COUNT_NAMES,
+                 **SPEAKER_COUNT_REQUEST)
 
-    recovered = ends(recover(api, "batch-multi-speaker-restarted"), MULTI_SPEAKER_NAMES)
+    recovered = ends(recover(api, "batch-speaker-count-restarted"), SPEAKER_COUNT_NAMES)
     in_process_run_mode.close(wait=True)  # 等復原整個跑完再查 API
 
-    assert [end["result"]["transcripts"]["txt"] for end in recovered] == ["[S1] 一つ目。", "二つ目。"]
+    assert [end["result"]["transcripts"]["txt"] for end in recovered] == [
+        "[S0] 一つ目。\n[S1] はい。", "二つ目。\nうん。"]
     assert [download(api, end["task_uuid"], "txt") for end in recovered] == [
-        "[S1] 一つ目。", "二つ目。"]
+        "[S0] 一つ目。\n[S1] はい。", "二つ目。\nうん。"]
+    assert [end["result"]["selected_speaker_count"] for end in recovered] == [3, 1]
 
 
 def test_a_failed_file_does_not_stop_the_others(api, in_process_run_mode, batch_fake):

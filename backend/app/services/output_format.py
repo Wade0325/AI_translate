@@ -6,7 +6,7 @@
 * 沒有片段的任務（片段上線前的任務、#110 之前的 Gemini 任務、#115 之前批次裡的任務）退回解析
   存下來的 LRC：LRC、TXT 和以前相同，SRT／VTT 的結束時間照下面同一套規則。
 * 存下來的 LRC 是凍結的原始轉錄副本（ADR-0007）：任務完成時從轉錄結果產生（:func:`frozen_copy`），
-  不論 Multi-Speaker 開關都帶說話者標記，和開關開著時下載的 LRC 相同；有片段時下載不讀它。
+  不論說話者人數都帶說話者標記，和一律帶標記時下載的 LRC 相同；有片段時下載不讀它。
   #154 之前存的副本差在一點：秒數取到 0.01 是 60 的行寫成 [00:60.00] 這種時間戳，下載寫成
   下一分鐘的 [01:00.00]（見 :func:`_lrc_timestamp`）。
 
@@ -30,8 +30,8 @@
 
 版本目前只有原始轉錄，校正後版本留給 v0.2。
 
-四種格式由同一串行產生，說話者標記跟著任務的 Multi-Speaker 開關（#13 Q1，見
-:func:`shows_speaker_labels`）：開時寫成「[S0] 文字」；關時四種格式都不寫，片段照樣存說話者編號，
+四種格式由同一串行產生，帶不帶說話者標記照任務的說話者人數（#351 第 3 點，規則見
+:class:`SpeakerLabels`）：帶時寫成「[S0] 文字」；不帶時四種格式都不寫，片段照樣存說話者編號，
 沒有標記的行都算同一位說話者，不重疊也不上色（ADR-0008）。LRC 一行一個時間戳；TXT 只留文字；
 SRT／VTT 另有結束時間，照實際說話的時間顯示（ADR-0008，規則見 :func:`_subtitles`）：不同說話者
 的字幕可以重疊，同一位說話者的不疊，每一行至少 0.8 秒，字幕依開始時間排序。有片段的任務和沒有
@@ -59,6 +59,7 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple, cast
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app.core.speaker_count import SpeakerCount, from_column, is_single
 from app.database.models import TranscriptionLog
 from app.repositories.history_repository import HistoryRepository
 from app.repositories.transcript_segment_repository import TranscriptSegmentRepository
@@ -78,6 +79,18 @@ class OutputFormat(StrEnum):
 class Version(StrEnum):
     ORIGINAL = "original"
     """原始轉錄。校正後版本（v0.2）加在這裡。"""
+
+
+class SpeakerLabels(StrEnum):
+    """一份輸出帶不帶說話者標記（#351 第 3 點）。任務的規則由 :func:`speaker_labels_for` 決定。"""
+
+    NONE = "none"
+    """整份當成同一位說話者：都不帶。"""
+    IF_SEVERAL = "if_several"
+    """這份輸出裡有兩位以上的說話者才帶；只有一位（或行都沒有說話者編號）時不帶。"""
+    ALWAYS = "always"
+    """一律帶，只有一位說話者也帶：人數做出來之前、Multi-Speaker 開著或沒有記錄的舊任務（下載結果
+    和以前相同），以及凍結的原始轉錄副本與評測的 LRC。"""
 
 
 class OutputFiles(BaseModel):
@@ -102,46 +115,68 @@ def for_task(
     任務沒有轉錄結果（沒有片段，也沒有存下來的 LRC）時回傳 None；沒有片段的任務，存下來的
     LRC 解析不出任何一行時，SRT／VTT／TXT 是空字串。版本目前只有原始轉錄一種。
 
-    說話者標記照任務記下的 Multi-Speaker 開關（:func:`shows_speaker_labels`）。沒有片段的任務都在
-    開關做出來之前，照以前從存下來的 LRC 轉換：任務完成時一定存了片段（見
-    :mod:`app.tasks.lifecycle`）。
+    說話者標記照任務記下的說話者人數（:func:`speaker_labels_for`）。沒有片段的任務都在 Multi-Speaker
+    開關做出來之前，照以前從存下來的 LRC 轉換：任務完成時一定存了片段（見 :mod:`app.tasks.lifecycle`）。
     """
     segments = TranscriptSegmentRepository.segments_for_task(db, task.task_uuid)
     if segments:
-        labels = shows_speaker_labels(cast(Optional[bool], task.multi_speaker))
-        return _render(_lines(segments, labels=labels), fmt)
+        return _render(_labelled_lines(segments, task_speaker_labels(task)), fmt)
     stored_lrc = HistoryRepository().resolve_lrc_content(db, task, backfill=True)
     if not stored_lrc:
         return None
     return getattr(convert_from_lrc(stored_lrc), fmt.value)
 
 
-def for_result(result: TranscriptionTaskResult, *, speaker_labels: bool = True) -> OutputFiles:
+def for_result(result: TranscriptionTaskResult, *,
+               speaker_labels: SpeakerLabels = SpeakerLabels.ALWAYS) -> OutputFiles:
     """一份轉錄結果的四種輸出格式，任務完成時送給畫面。
 
-    從片段產生，``speaker_labels`` 給任務的 Multi-Speaker 開關換算的值（:func:`shows_speaker_labels`）
-    時和之後下載的內容相同；是 False 時四種格式都不帶說話者標記。轉錄結果的 text 不讀。沒有任何
+    從片段產生，``speaker_labels`` 給任務的規則（:func:`speaker_labels_for`）時和之後下載的內容相同。
+    預設一律帶說話者標記，和凍結的原始轉錄副本相同（評測用它）。轉錄結果的 text 不讀。沒有任何
     一行時四種都是空的。
     """
-    lines = _lines(result.segments, labels=speaker_labels)
+    lines = _labelled_lines(result.segments, speaker_labels)
     if not lines:
         return OutputFiles(lrc="", srt="", vtt="", txt="")
     return OutputFiles(**{fmt.value: _render(lines, fmt) for fmt in OutputFormat})
 
 
 def frozen_copy(result: TranscriptionTaskResult) -> str:
-    """凍結的原始轉錄副本（ADR-0007）：從片段產生的 LRC，不論 Multi-Speaker 開關都帶說話者標記，
-    原始轉錄不少資訊（#13 Q1）；和開關開著時下載的 LRC 相同。沒有任何一行時是空字串。"""
+    """凍結的原始轉錄副本（ADR-0007）：從片段產生的 LRC，不論說話者人數都帶說話者標記，原始轉錄
+    不少資訊（#13 Q1）；和一律帶標記時下載的 LRC 相同。沒有任何一行時是空字串。"""
     return _render(_lines(result.segments, labels=True), OutputFormat.LRC)
 
 
-def shows_speaker_labels(multi_speaker: Optional[bool]) -> bool:
-    """任務記下的 Multi-Speaker 開關換成輸出格式帶不帶說話者標記（#13 Q1）。
+def speaker_labels_for(speaker_count: Optional[SpeakerCount],
+                       multi_speaker: Optional[bool]) -> SpeakerLabels:
+    """任務的說話者人數換成帶不帶說話者標記的規則（#351 第 3 點）。下載與完成時送給畫面的輸出用同一條。
 
-    開關做出來之前（#259）的任務沒有這個值（None），當成開：下載結果和以前一樣，本機的舊任務
-    一直都帶標記。
+    * 選 1 人：整份當成同一位說話者，不帶。
+    * 照模型判斷、2 到 8 人：這份輸出裡有兩位以上的說話者才帶。選了 2 到 8 人、結果卻只有一位時也不帶。
+    * 人數做出來之前的任務（``speaker_count`` 是 None）照當時 Multi-Speaker 開關（#13 Q1）的規則，
+      下載結果不變：關著的不帶（等於整份當成同一位），開著的與更早沒有記錄的（None，#259 之前）一律帶。
+      新任務不寫 ``multi_speaker``，有人數時不看它。
     """
-    return multi_speaker is not False
+    if speaker_count is None:
+        return SpeakerLabels.NONE if multi_speaker is False else SpeakerLabels.ALWAYS
+    return SpeakerLabels.NONE if is_single(speaker_count) else SpeakerLabels.IF_SEVERAL
+
+
+def task_speaker_labels(task: TranscriptionLog) -> SpeakerLabels:
+    """任務紀錄的說話者標記規則（:func:`speaker_labels_for`）。"""
+    return speaker_labels_for(from_column(cast(Optional[str], task.speaker_count)),
+                              cast(Optional[bool], task.multi_speaker))
+
+
+def speakers_in_output(segments: Sequence[Mapping[str, Any]], rule: SpeakerLabels) -> int:
+    """這份輸出裡有幾位說話者，結果頁顯示它（#351）：整份當成同一位說話者時是 1；否則是不同的說話者
+    編號有幾個，行都沒有說話者編號時算一位（沒有標記的行都算同一位說話者，ADR-0008）。沒有任何一行時
+    是 0。和說話者標記一樣只看有文字的片段。"""
+    if not any(_one_line(s.get("text") or "") for s in segments):
+        return 0
+    if rule is SpeakerLabels.NONE:
+        return 1
+    return max(len(_speaker_ids(segments)), 1)
 
 
 def convert_from_lrc(lrc_text: str) -> OutputFiles:
@@ -202,11 +237,23 @@ class _Line:
     """這一行的逐字時間，依序對應 text 斷出來的詞；整段一行（沒有逐字時間）時是 None。"""
 
 
+def _labelled_lines(segments: Sequence[Mapping[str, Any]], rule: SpeakerLabels) -> List[_Line]:
+    """照規則決定這份輸出帶不帶說話者標記，再產生行（:func:`_lines`）。"""
+    labels = (rule is SpeakerLabels.ALWAYS
+              or (rule is SpeakerLabels.IF_SEVERAL and len(_speaker_ids(segments)) >= 2))
+    return _lines(segments, labels=labels)
+
+
+def _speaker_ids(segments: Sequence[Mapping[str, Any]]) -> set:
+    """有文字的片段裡出現的說話者編號；沒有文字的片段不產生行，不算在這份輸出裡。"""
+    return {s["speaker"] for s in segments if s.get("speaker") and _one_line(s.get("text") or "")}
+
+
 def _lines(segments: Sequence[Mapping[str, Any]], *, labels: bool) -> List[_Line]:
     """依開始時間排序（和存下來的片段順序相同）後，逐段斷行。本機寫 LRC 時照模型給的順序，
     模型給的片段不照時間時，兩者的行序才會不同。沒有文字的片段不產生行。
 
-    ``labels`` 是 False 時（Multi-Speaker 關）每一行都不帶說話者，從這裡起就沒有說話者標記：
+    ``labels`` 是 False 時（不帶說話者標記）每一行都不帶說話者，從這裡起就沒有說話者標記：
     SRT／VTT 的結束時間看行首的標記分辨說話者（:func:`_subtitles`），所有行因此算同一位說話者、
     不重疊，也不上色（ADR-0008）。先產生標記再拿掉的話，不同說話者的字幕會重疊，畫面上卻看不出
     是誰。

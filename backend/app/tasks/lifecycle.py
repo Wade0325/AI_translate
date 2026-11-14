@@ -16,8 +16,9 @@
   執行模式不重試整個任務。萬一有暫時錯誤漏到這裡，一律照失敗處理，任務不會停在處理中。
 - 完成和片段一起寫：任務紀錄記成完成（連同凍結的原始轉錄副本）和片段在同一個交易，片段
   寫不進去就照失敗處理。同一個任務再完成一次時，使用者動過的片段不刪、不覆寫（ADR-0007）。
-- 說話者標記跟著 Multi-Speaker 開關：任務紀錄記下開關，完成時送給畫面的輸出格式照它帶或不帶
-  說話者標記，和之後下載的相同；片段與凍結的原始轉錄副本不論開關都有說話者編號（#13 Q1、ADR-0007）。
+- 說話者標記照說話者人數：任務紀錄記下人數，完成時送給畫面的輸出格式照
+  :func:`app.services.output_format.speaker_labels_for` 帶或不帶說話者標記，和之後下載的相同；人數做出來
+  之前的任務照當時的 Multi-Speaker 開關。片段與凍結的原始轉錄副本不論人數都有說話者編號（#351、ADR-0007）。
 - 可能掉尾時記下起點：轉錄結果帶著可能掉尾的起點（:mod:`app.services.tail_loss`）時，完成時記進
   任務紀錄、隨完成的廣播送給畫面，畫面照它告訴使用者從哪裡起可能沒有轉錄到；任務照樣完成（#257）。
 - 中文一律輸出繁體：完成時先把片段轉成繁體輸出（:mod:`app.services.traditional_output`），
@@ -50,12 +51,14 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterator, List, Optional, Union, cast
+from typing import Callable, Iterator, Optional, Union, cast
 
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from app.core import speaker_count as speakers
 from app.core.config import get_settings
+from app.core.speaker_count import SpeakerCount
 from app.core.error_codes import ErrorCode, Failure, TaskFailedError, describe
 from app.core.task_status import TaskStatus
 from app.database.session import SessionLocal, without_db_details
@@ -95,13 +98,21 @@ class Task:
     provider: str
     model: str
     source_lang: str
-    multi_speaker: Optional[bool]
-    """Multi-Speaker 開關：輸出格式帶不帶說話者標記（見 :func:`app.services.output_format.shows_speaker_labels`）。
-    只有接回開關做出來之前開始的任務（:meth:`TaskLifecycle.resume`）時是 None。"""
+    speaker_count: Optional[SpeakerCount]
+    """說話者人數（:mod:`app.core.speaker_count`）：輸出格式帶不帶說話者標記照它（見
+    :func:`app.services.output_format.speaker_labels_for`）。只有接回人數做出來之前開始的任務
+    （:meth:`TaskLifecycle.resume`）時是 None，這時照 ``multi_speaker`` 的舊規則。"""
     target_lang: Optional[str] = None
     session_id: Optional[str] = None
     batch_id: Optional[str] = None
     """所屬的批次；單檔任務是 None。批次的檔案記在批次底下，狀態廣播也帶著它。"""
+    multi_speaker: Optional[bool] = None
+    """舊的 Multi-Speaker 開關，只有接回人數做出來之前開始的任務時從任務紀錄讀回來；新任務不寫。"""
+
+    @property
+    def speaker_labels(self) -> output_format.SpeakerLabels:
+        """這個任務的輸出帶不帶說話者標記（:func:`app.services.output_format.speaker_labels_for`）。"""
+        return output_format.speaker_labels_for(self.speaker_count, self.multi_speaker)
 
 
 @dataclass(frozen=True)
@@ -182,10 +193,11 @@ class TaskLifecycle:
             provider=record.provider or "",
             model=record.model_used or "",
             source_lang=record.source_language or "",
-            multi_speaker=cast(Optional[bool], record.multi_speaker),
+            speaker_count=speakers.from_column(cast(Optional[str], record.speaker_count)),
             target_lang=record.target_language,
             session_id=record.session_id,
             batch_id=record.batch_id,
+            multi_speaker=cast(Optional[bool], record.multi_speaker),
         )
         started_at = record.request_timestamp.timestamp() if record.request_timestamp else None
         return cls(str(task_uuid), task, duration=duration, started_at=started_at)
@@ -369,9 +381,8 @@ class TaskLifecycle:
             target_lang=self._task.target_lang)})
 
         self._progress.report("正在轉換字幕格式...")
-        transcripts = output_format.for_result(
-            result, speaker_labels=output_format.shows_speaker_labels(self._task.multi_speaker),
-        ).model_dump()
+        labels = self._task.speaker_labels
+        transcripts = output_format.for_result(result, speaker_labels=labels).model_dump()
 
         self._progress.report("正在計算費用...")
         elapsed = self._elapsed()
@@ -385,7 +396,7 @@ class TaskLifecycle:
             "total_tokens": tokens,
             "cost": cost,
             "completed_at": datetime.now(),
-            # 凍結的原始轉錄副本（ADR-0007）：不論 Multi-Speaker 開關都帶說話者標記
+            # 凍結的原始轉錄副本（ADR-0007）：不論說話者人數都帶說話者標記
             "lrc_content": output_format.frozen_copy(result) or None,
             "service_tier_used": result.service_tier_used or "standard",
             # 沒有掉尾時寫 None：同一個任務再完成一次時，不留著上一次的起點
@@ -406,7 +417,8 @@ class TaskLifecycle:
         response = _completed_response(
             self._task_uuid, transcripts, tokens=tokens, cost=cost, model=self._task.model,
             source_language=self._task.source_lang, duration=self._duration,
-            speaker_count=_speaker_count(result.segments), tail_loss_from=result.tail_loss_from)
+            speaker_count=output_format.speakers_in_output(result.segments, labels),
+            selected_speaker_count=self._task.speaker_count, tail_loss_from=result.tail_loss_from)
         return _Outcome(TaskStatus.COMPLETED, _COMPLETED_TEXT, broadcast_result=response,
                         return_value={"raw_lrc_text": transcripts["lrc"]})
 
@@ -538,7 +550,8 @@ class TaskLifecycle:
             "original_filename": task.original_filename,
             "model_used": task.model,
             "source_language": task.source_lang,
-            "multi_speaker": task.multi_speaker,
+            # 新任務只寫說話者人數，不寫舊的 multi_speaker
+            "speaker_count": speakers.to_column(task.speaker_count),
             "task_uuid": self._task_uuid,
             "provider": task.provider,
             "target_language": task.target_lang,
@@ -633,10 +646,13 @@ def completed_result(db: Session, task_uuid) -> Optional[dict]:
     transcripts = {fmt.value: output_format.for_task(db, record, fmt) or ""
                    for fmt in output_format.OutputFormat}
     segments = TranscriptSegmentRepository.segments_for_task(db, record.task_uuid)
+    labels = output_format.task_speaker_labels(record)
     return _completed_response(
         record.task_uuid, transcripts, tokens=record.total_tokens or 0, cost=record.cost or 0.0,
         model=record.model_used or "", source_language=record.source_language or "",
-        duration=record.audio_duration_seconds or 0.0, speaker_count=_speaker_count(segments),
+        duration=record.audio_duration_seconds or 0.0,
+        speaker_count=output_format.speakers_in_output(segments, labels),
+        selected_speaker_count=speakers.from_column(cast(Optional[str], record.speaker_count)),
         tail_loss_from=cast(Optional[float], record.tail_loss_from_seconds))
 
 
@@ -665,8 +681,9 @@ def ended_status(db: Session, task_uuid) -> Optional[dict]:
 
 def _completed_response(task_uuid, transcripts: dict, *, tokens: int, cost: float, model: str,
                         source_language: str, duration: float, speaker_count: int,
+                        selected_speaker_count: Optional[SpeakerCount],
                         tail_loss_from: Optional[float]) -> dict:
-    """完成時送給畫面的結果：四種輸出格式、計價、說話者人數與可能掉尾的起點。"""
+    """完成時送給畫面的結果：四種輸出格式、計價、結果與所選的說話者人數，以及可能掉尾的起點。"""
     response = TranscriptionResponse(
         task_uuid=task_uuid,
         transcripts=transcripts,
@@ -676,15 +693,11 @@ def _completed_response(task_uuid, transcripts: dict, *, tokens: int, cost: floa
         source_language=source_language,
         audio_duration_seconds=duration,
         speaker_count=speaker_count,
+        selected_speaker_count=selected_speaker_count,
         tail_loss_from_seconds=tail_loss_from,
     ).model_dump()
     response["task_uuid"] = response["task_uuid"].hex
     return response
-
-
-def _speaker_count(segments: List[Dict[str, Any]]) -> int:
-    """片段裡出現幾個不同的說話者編號（結果頁顯示的人數，#13 Q1）；沒有說話者編號的片段不算。"""
-    return len({seg["speaker"] for seg in segments if seg.get("speaker")})
 
 
 def _discount(service_tier: Optional[str]) -> Optional[float]:
