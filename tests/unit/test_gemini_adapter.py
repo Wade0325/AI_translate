@@ -72,6 +72,12 @@ class TestTranscribe:
         assert (result.input_tokens, result.output_tokens, result.total_tokens) == (1000, 200, 1200)
         assert result.service_tier_used == "standard"
 
+    def test_the_model_version_the_response_names_is_reported(self, gemini, genai, audio):
+        # 任務完成時補記進轉錄環境（#343）：Gemini 的模型沒有可以釘住的 revision
+        genai.replies = [Reply(model_version="gemini-2.5-flash-002")]
+
+        assert gemini.transcribe(audio, request(), PROGRESS).model_versions == ["gemini-2.5-flash-002"]
+
     def test_waits_until_gemini_has_processed_the_upload(self, gemini, genai, audio):
         # 假用戶端和 Gemini 一樣：檔案還在處理中就拿來轉錄會回 400
         genai.processing_polls = 3
@@ -516,6 +522,8 @@ class TestBatch:
             [(0.0, None, "轉錄 A")], [(0.0, None, "轉錄 B")]]
         assert [(r.success, r.total_tokens, r.service_tier_used) for r in final.results] == [
             (True, 1200, "batch")] * 2
+        # 每個請求的回應寫明的模型版本，和單檔一樣帶在轉錄結果上（#343）
+        assert [r.model_versions for r in final.results] == [[MODEL]] * 2
 
     def test_each_request_numbers_its_own_speakers(self, gemini, genai, tmp_path):
         # 每個請求是一個任務：說話者編號各自依代號第一次出現的順序從 S0 起算

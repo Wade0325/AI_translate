@@ -280,15 +280,19 @@ def _transcription_result(
             output_tokens=output_tokens, total_tokens=total_tokens, service_tier_used=tier)
     # 正常結束卻沒有任何帶時間戳、有文字的行（例如這一段沒人說話）：算成功、沒有片段，不必切段
     # 重試；text 寫為什麼沒有，整個任務合併完都沒有片段時，任務用它回報失敗
+    # 回應寫明的模型版本，任務完成時補記進轉錄環境（#343）
+    versions = [response.model_version] if response.model_version else []
     if segments:
         return TranscriptionTaskResult(
             success=True, input_tokens=input_tokens, output_tokens=output_tokens,
-            total_tokens=total_tokens, service_tier_used=tier, segments=segments)
+            total_tokens=total_tokens, service_tier_used=tier, segments=segments,
+            model_versions=versions)
     logger.warning("Gemini 的回應沒有任何帶時間戳的文字，這一段沒有片段")
     return TranscriptionTaskResult(
         success=True, text="Gemini 的回應沒有任何帶時間戳的文字",
         error_code=ErrorCode.NO_TRANSCRIPT, input_tokens=input_tokens,
-        output_tokens=output_tokens, total_tokens=total_tokens, service_tier_used=tier)
+        output_tokens=output_tokens, total_tokens=total_tokens, service_tier_used=tier,
+        model_versions=versions)
 
 
 def _block_reason(response: Any) -> Optional[str]:

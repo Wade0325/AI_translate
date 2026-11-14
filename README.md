@@ -160,7 +160,7 @@ app 不收集任何遙測，也不自動回報錯誤（[ADR-0005](docs/adr/0005-
   - Settings 的 Gemini 卡片與轉錄頁都有這段說明，並連到 [Gemini API 條款](https://ai.google.dev/gemini-api/terms)。條款常改，以原文為準。
   - 分段轉錄的長音檔（去掉靜音之後超過 15 分鐘）要對齊各段的說話者編號時，電腦上還沒有說話者嵌入（CAM++）的權重就先從 Hugging Face 下載，約 30 MB，存在 `models`，轉錄頁的狀態會寫明。只下載權重，不送出音檔或轉錄內容；聲音特徵在你的電腦上計算。
 - **資料放在哪**：免安裝版的所有資料都在解壓資料夾的 `data\`。
-  - `app.db`：任務紀錄、轉錄結果與 API 金鑰
+  - `app.db`：任務紀錄、轉錄結果、Gemini 任務送出的提示詞（不含使用者文稿）與 API 金鑰
   - `audio_store`：保留音檔
   - `temp_uploads`：上傳後還沒轉錄完的音檔
   - `vad_artifacts`：去靜音與切點預覽留下的音檔

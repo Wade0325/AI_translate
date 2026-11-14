@@ -27,11 +27,14 @@ from app.api.transcription import QUEUED_TEXT, REATTACHED_TEXT, SUBMISSION_FAILE
 from app.core.default_prompt import build_prompt, build_user_text_prompt
 from app.core.error_codes import ErrorCode
 from app.core.task_status import TaskStatus
+from app.core.version import APP_VERSION
 from app.exceptions import TransientError
 from app.provider import registry
+from app.provider.local import weights
 from app.runtime import run_mode
 from tests.support.db_faults import writes_fail
 from tests.support.fake_provider import FAKE_MODEL, Empty, Fail, Listen, ServedAs
+from tests.support.fake_torch import RTX_4080, fake_torch
 from tests.support.synthetic_audio import VOICED, synthetic_audio
 from tests.support.synthetic_video import stream_types
 from tests.support.task_api import (
@@ -275,6 +278,20 @@ def frozen_original(engine, task_uuid: str) -> str | None:
 
     with sessionmaker(bind=engine)() as db:
         return HistoryRepository().get_log_by_uuid(db, task_uuid).lrc_content
+
+
+def started_fields(engine, task_uuid: str) -> tuple:
+    """任務開始轉錄時記下的（#343）：(轉錄環境, 送出的提示詞, 有沒有附使用者文稿)。畫面不顯示，
+    沒有讀它們的介面，只能從任務紀錄看。"""
+    from sqlalchemy.orm import sessionmaker
+
+    from app.repositories.history_repository import HistoryRepository
+
+    with sessionmaker(bind=engine)() as db:
+        record = HistoryRepository().get_log_by_uuid(db, task_uuid)
+        environment = record.transcription_environment
+        return (json.loads(environment) if environment else None, record.sent_prompt,
+                record.user_supplied_text_attached)
 
 
 def in_voiced_region(t: float) -> bool:
@@ -2291,6 +2308,65 @@ class TestUserSuppliedText:
 
         assert end["status_code"] == TaskStatus.FAILED
         assert len(fake.calls) == 1
+
+
+# ─── 轉錄環境與送出的提示詞（#343） ──────────────────────────────────────────
+
+@pytest.fixture
+def local_fake(fake):
+    """註冊成「local」的假供應商：模型與模型能力照本機的 moss-align（不吃提示詞、在 GPU 佇列上轉錄），
+    轉錄照劇本；測試結束後換回真的本機。"""
+    from app.provider.local.provider import local_provider
+
+    fake.model = weights.MOSS_ALIGN
+    fake.model_capabilities = local_provider.capabilities()[weights.MOSS_ALIGN]
+    previous = registry.register("local", fake)
+    yield fake
+    registry.register("local", previous)
+
+
+def test_a_local_task_records_its_environment_but_no_prompt(api, local_fake, test_engine, monkeypatch):
+    # 本機的轉錄環境有顯卡與驅動、模型權重釘住的 revision；本機的模型不吃提示詞，不記
+    fake_torch(monkeypatch, card=RTX_4080)
+    monkeypatch.setattr(weights, "command_output", lambda *command: (
+        "576.02\n" if command[0] == "nvidia-smi" else None))
+    local_fake.script = list(SCRIPT)
+
+    end = transcribe(api, "uid-local-environment", provider="local", model=weights.MOSS_ALIGN)[-1]
+
+    assert end["status_code"] == TaskStatus.COMPLETED
+    environment, prompt, user_text_attached = started_fields(test_engine, end["task_uuid"])
+    assert (environment["app_version"], environment["provider"], environment["model"]) == (
+        APP_VERSION, "local", weights.MOSS_ALIGN)
+    assert environment["model_revisions"] == {
+        repo: weights.REPO_REVISIONS[repo] for repo in weights.MODEL_REPOS[weights.MOSS_ALIGN]}
+    assert (environment["gpu"]["name"], environment["gpu"]["driver"]) == (RTX_4080[0], "576.02")
+    assert "model_versions" not in environment
+    assert prompt is None
+    assert user_text_attached is False
+
+
+def test_a_task_cancelled_in_the_queue_records_no_environment(api, fake, test_engine):
+    # 轉錄環境與提示詞是開始轉錄時記的：在佇列裡就被取消、沒有開始的任務沒有
+    fake.hold = threading.Event()
+    fake.script = list(SCRIPT)
+    running_file, queued_file = upload(api, "a.wav"), upload(api, "b.wav")
+
+    with api.websocket_connect("/api/v1/ws/uid-running-environment") as running, \
+            api.websocket_connect("/api/v1/ws/uid-queued-environment") as queued:
+        submit(running, running_file)
+        assert fake.started.wait(TIMEOUT)
+        submit(queued, queued_file)  # GPU 佇列只有一個 worker：排在佇列裡
+        cancel_when_dispatched(api, "uid-queued-environment")
+        queued_end = receive_until_terminal(queued)[-1]
+        fake.hold.set()
+        running_end = receive_until_terminal(running)[-1]
+
+    assert queued_end["status_code"] == TaskStatus.CANCELLED
+    assert started_fields(test_engine, queued_end["task_uuid"]) == (None, None, None)
+    environment, prompt, _ = started_fields(test_engine, running_end["task_uuid"])
+    assert environment["model"] == FAKE_MODEL
+    assert prompt == fake.prompts[0]
 
 
 # ─── 中文一律輸出繁體（#14） ─────────────────────────────────────────────────

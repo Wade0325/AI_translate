@@ -8,11 +8,12 @@ Docker 模式由 `app.celery.task.transcribe_media_task` 包裝執行，免安�
 """
 
 from pathlib import Path
+from typing import Optional
 
 from app.celery.models import TranscriptionTaskParams
 from app.core.config import get_settings
 from app.core.error_codes import ErrorCode
-from app.core.default_prompt import build_prompt, build_user_text_prompt
+from app.core.default_prompt import Prompt, build_prompt, user_text_prompt
 from app.provider.base import ProgressAndCancel, Provider, TranscribeRequest
 from app.provider.registry import open_provider
 from app.services import chunked_transcription
@@ -32,8 +33,10 @@ def run_transcription(task_params_dict: dict, task_uuid: str) -> dict:
     暫時錯誤在分段轉錄裡重試出錯的那一段，執行模式不重試整個任務。
     """
     params = TranscriptionTaskParams.model_validate(task_params_dict)
-    return TaskLifecycle(task_uuid, _task(params)).run(
-        lambda audio, progress: transcribe_audio(params, task_uuid, audio, progress))
+    # 只組一次：送出的和任務紀錄記下的是同一份（#343）
+    prompt = _prompt(params)
+    return TaskLifecycle(task_uuid, _task(params, prompt)).run(
+        lambda audio, progress: transcribe_audio(params, task_uuid, audio, progress, prompt))
 
 
 def abandon_transcription(task_params_dict: dict, task_uuid: str, *, cancelled: bool) -> None:
@@ -45,7 +48,7 @@ def abandon_transcription(task_params_dict: dict, task_uuid: str, *, cancelled: 
     TaskLifecycle(task_uuid, _task(params)).abandon(cancelled=cancelled)
 
 
-def _task(params: TranscriptionTaskParams) -> Task:
+def _task(params: TranscriptionTaskParams, prompt: Optional[Prompt] = None) -> Task:
     return Task(
         file_path=params.file_path,
         file_uid=params.file_uid,
@@ -57,16 +60,19 @@ def _task(params: TranscriptionTaskParams) -> Task:
         multi_speaker=params.multi_speaker,
         target_lang=params.target_lang,
         session_id=params.session_id,
+        prompt=prompt,
     )
 
 
 def transcribe_audio(
     params: TranscriptionTaskParams, task_uuid: str, audio: Path, progress: ProgressAndCancel,
+    prompt: Optional[Prompt] = None,
 ) -> TranscriptionTaskResult:
     """轉錄一段音檔：建立供應商轉接器，去靜音拿到語音視圖，經分段轉錄轉錄它，最後釋放轉接器。
 
     不碰任務紀錄與狀態廣播（那些在任務生命週期）；評測指令（``python -m tools.eval transcribe``）
-    也直接呼叫這裡，評的就是正式的轉錄路徑。
+    也直接呼叫這裡，評的就是正式的轉錄路徑。``prompt`` 是任務已經組好、記進任務紀錄的提示詞；沒給時
+    照參數組一份。
 
     暫存檔寫在設定的 ``temp_uploads_path``，呼叫端要先建立它：應用程式由 API 模組在 import 時
     建立。資料夾不存在時 WAV 以外的音檔轉不成 WAV，去靜音會退回送原音檔。
@@ -77,7 +83,8 @@ def transcribe_audio(
     try:
         progress.report("正在初始化模型...")
         logger.info(f"Starting transcription. Task ID : {task_uuid}")
-        return _transcribe_speech_view(adapter, params, task_uuid, audio, progress)
+        return _transcribe_speech_view(adapter, params, task_uuid, audio, progress,
+                                       prompt or _prompt(params))
     finally:
         # 供應商這次用到的遠端與暫存資源；輸入音檔由任務生命週期保留或清理
         try:
@@ -88,7 +95,7 @@ def transcribe_audio(
 
 def _transcribe_speech_view(
     adapter: Provider, params: TranscriptionTaskParams, task_uuid: str, audio: Path,
-    progress: ProgressAndCancel,
+    progress: ProgressAndCancel, prompt: Prompt,
 ) -> TranscriptionTaskResult:
     """去靜音拿到語音視圖，經分段轉錄轉錄它；語音視圖的暫存檔用完就清掉。
 
@@ -128,7 +135,7 @@ def _transcribe_speech_view(
             adapter,
             TranscribeRequest(
                 model=params.model,
-                prompt=_prompt(params, user_text),
+                prompt=prompt.text,
                 source_lang=params.source_lang,
                 service_tier=params.service_tier,
                 single_pass_only=bool(user_text),
@@ -162,20 +169,22 @@ def _minutes(seconds: float) -> str:
     return f"{seconds / 60:.1f}".removesuffix(".0")
 
 
-def _prompt(params: TranscriptionTaskParams, user_text: str) -> str:
+def _prompt(params: TranscriptionTaskParams) -> Prompt:
+    """這個任務送出的提示詞，以及記進任務紀錄的那一份（#343）。"""
+    user_text = _user_text(params)
     # 有使用者文稿時改用只補時間戳的提示詞，不重新轉錄（#66）
     if user_text:
-        return build_user_text_prompt(
+        return user_text_prompt(
             user_text,
             source_lang=params.source_lang,
             multi_speaker=params.multi_speaker,
             supplement=params.prompt,
         )
     # 設定頁存的提示詞範本，空一行接上轉錄頁填的補充說明（#144）
-    return build_prompt(
+    return Prompt.plain(build_prompt(
         source_lang=params.source_lang,
         target_lang=params.target_lang,
         multi_speaker=params.multi_speaker,
         template=params.prompt_template,
         supplement=params.prompt,
-    )
+    ))

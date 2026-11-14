@@ -10,12 +10,15 @@
   不代入變數：範本已經代入過，再代入一次，說話者與翻譯的指示會重複。
 - 附了使用者文稿時（#66）不用提示詞範本，改用 build_user_text_prompt：只替文稿補上時間戳，補充說明
   一樣接在後面。
+- 任務記下送出的提示詞（#343，見 :class:`Prompt`）：Gemini 的任務記在任務紀錄上。使用者文稿和音檔一起
+  送到 Google、不存進資料庫，所以記下的那一份把文稿換成 USER_TEXT_OMITTED，其他和送出的逐字相同。
 
 DEFAULT_PROMPT_TEMPLATE 是系統內建範本的唯一真實來源：設定頁的「編輯參數」沒存過範本時從這裡帶出。
 """
 
 import re
-from typing import Optional
+from dataclasses import dataclass
+from typing import Any, Optional
 
 # 語言代碼 → 寫進提示詞的語言名稱。轉錄頁語言選單（frontend/src/constants/languages.js）上的
 # 每一種都要有，由 tests/unit/test_default_prompt.py 對齊。ja-JP、en-US、zh-CN 是舊紀錄與直接呼叫
@@ -143,6 +146,41 @@ def build_user_text_prompt(
     )
     prompt = f"{instructions}\n完整逐字稿：\n---\n{user_text.strip()}\n---"
     return _with_supplement(prompt, supplement)
+
+
+USER_TEXT_OMITTED = "（使用者文稿不存進資料庫）"
+"""記進任務紀錄的提示詞裡，使用者文稿換成這一句（#343）。"""
+
+
+@dataclass(frozen=True)
+class Prompt:
+    """一個任務送出的提示詞，以及記進任務紀錄的那一份（#343）。
+
+    兩份由同一個函式組出：記下的就是送出的，只有使用者文稿換成 :data:`USER_TEXT_OMITTED`。
+    """
+
+    text: str
+    """送給模型的全文。"""
+    recorded: str
+    """記進任務紀錄的那一份：沒附使用者文稿時和 ``text`` 相同。"""
+    user_text_attached: bool = False
+    """附了使用者文稿；任務紀錄只記有附，不記內容。"""
+
+    @classmethod
+    def plain(cls, text: str) -> "Prompt":
+        """沒附使用者文稿的提示詞（:func:`build_prompt` 組出的）：記下的就是送出的全文。"""
+        return cls(text=text, recorded=text)
+
+
+def user_text_prompt(user_text: str, **options: Any) -> Prompt:
+    """附了使用者文稿時的提示詞：送出的是 :func:`build_user_text_prompt` 組出的全文，記下的是同一個函式
+    把文稿換成 :data:`USER_TEXT_OMITTED` 組出的，指示與補充說明逐字相同。
+
+    ``options`` 是 :func:`build_user_text_prompt` 除了文稿以外的參數，照樣傳給它。
+    """
+    return Prompt(text=build_user_text_prompt(user_text, **options),
+                  recorded=build_user_text_prompt(USER_TEXT_OMITTED, **options),
+                  user_text_attached=True)
 
 
 def _with_supplement(prompt: str, supplement: Optional[str]) -> str:

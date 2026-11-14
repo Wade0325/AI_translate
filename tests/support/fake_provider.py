@@ -133,6 +133,8 @@ class FakeProvider:
 
     def __init__(self, script: Sequence[Step] = ()):
         self.script: List[Step] = list(script)
+        # 唯一的模型：名稱與模型能力。註冊成別的供應商時可以換成那個供應商的模型（例如本機的 moss-align）
+        self.model = FAKE_MODEL
         self.model_capabilities = CAPABILITIES
         # 模型清單拿掉了這個模型（例如升級之後）：查模型能力時列不出它，建立轉接器照樣可以
         self.withdrawn = False
@@ -155,6 +157,8 @@ class FakeProvider:
         # 和 Gemini 的回應被阻擋時一樣照樣收費
         self.usage: Tuple[int, int] = (0, 0)
         self.service_tier: Optional[str] = None
+        # 成功的結果寫明的模型版本（像 Gemini 回應的 model_version）；None 是不寫
+        self.model_version: Optional[str] = None
         # hold 設定後，轉錄會停在這裡直到 hold 被 set 或使用者取消
         self.hold: Optional[threading.Event] = None
         self.started = threading.Event()
@@ -189,7 +193,7 @@ class FakeProvider:
 
     # ── ProviderFactory ──────────────────────────────────────────
     def capabilities(self):
-        return {} if self.withdrawn else {FAKE_MODEL: self.model_capabilities}
+        return {} if self.withdrawn else {self.model: self.model_capabilities}
 
     def __call__(self, model: str, api_key: str) -> "FakeProvider":
         self.opened += 1
@@ -310,7 +314,9 @@ class FakeProvider:
             return TranscriptionTaskResult(success=False, text=f"[[{step.message}]]", **usage)
         # 和真的轉接器一樣，轉錄結果只有片段與用量，不附著 LRC 文字
         segments = [_segment(i, line) for i, line in enumerate(step)]
-        return TranscriptionTaskResult(success=bool(step), segments=segments, **usage)
+        versions = [self.model_version] if self.model_version and step else []
+        return TranscriptionTaskResult(success=bool(step), segments=segments, model_versions=versions,
+                                       **usage)
 
 
 HEARING_FRAME_SECONDS = 0.01

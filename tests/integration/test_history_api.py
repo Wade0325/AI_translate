@@ -374,6 +374,55 @@ class TestDownloadWithoutSegments:
         assert response.json()["detail"] == "無法產生此格式的字幕內容"
 
 
+# ─── 轉錄環境與送出的提示詞（#343） ───────────────────────────────────────────
+
+STARTED_FIELDS = {
+    "transcription_environment": json.dumps({"app_version": "v0.2.0", "model": "gemini-2.5-flash"}),
+    "sent_prompt": "請轉錄日文音檔。\n\n王小明的會議，人名照寫",
+    "user_supplied_text_attached": True,
+}
+
+
+class TestStartedFields:
+    """任務開始轉錄時記下的轉錄環境與提示詞只在任務紀錄上：畫面不顯示，這些欄位加上之前的任務是 NULL。"""
+
+    def _pair(self, db_session: Session, name: str):
+        """同樣片段的兩個任務：加上這些欄位之前的（NULL），以及記了轉錄環境與提示詞的。"""
+        old = _create_log(db_session, original_filename=f"{name}-old.m4a")
+        new = _create_log(db_session, original_filename=f"{name}-new.m4a", **STARTED_FIELDS)
+        for log in (old, new):
+            TranscriptSegmentRepository.replace_untouched(db_session, log.task_uuid, SEGMENTS)
+        db_session.commit()
+        assert (old.transcription_environment, old.sent_prompt, old.user_supplied_text_attached) == (
+            None, None, None)
+        return old, new
+
+    def test_history_shows_neither_the_environment_nor_the_prompt(
+            self, client: TestClient, db_session: Session):
+        old, new = self._pair(db_session, "started-fields-shown")
+
+        listed = client.get("/api/v1/history", params={"keyword": "started-fields-shown"}).json()["items"]
+        details = [client.get(f"/api/v1/history/{log.task_uuid}").json() for log in (old, new)]
+
+        assert len(listed) == 2
+        for item in (*listed, *details):
+            assert not set(item) & set(STARTED_FIELDS)
+            assert "王小明" not in json.dumps(item, ensure_ascii=False)
+        # 除了 id 與檔名，兩筆在 History 上看起來一樣
+        ignored = {"task_uuid", "original_filename", "request_timestamp"}
+        assert ({k: v for k, v in details[0].items() if k not in ignored}
+                == {k: v for k, v in details[1].items() if k not in ignored})
+
+    @pytest.mark.parametrize("fmt", ["lrc", "srt", "vtt", "txt"])
+    def test_downloads_do_not_change(self, client: TestClient, db_session: Session, fmt):
+        old, new = self._pair(db_session, f"started-fields-download-{fmt}")
+
+        for log in (old, new):
+            response = client.get(f"/api/v1/history/{log.task_uuid}/download/{fmt}")
+            assert response.status_code == 200
+            assert response.text == FROM_SEGMENTS[fmt]
+
+
 # ─── 用量彙總 API ─────────────────────────────────────────────────────────────
 
 class TestHistoryUsage:
