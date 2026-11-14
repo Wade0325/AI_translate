@@ -73,3 +73,17 @@ body.sidebar-resizing {
   user-select: none;
   cursor: col-resize !important;
 }
+
+/* 校正頁（#347）：逐字時間的一個字，點了從那裡播放 */
+.correction-word {
+  border-radius: 3px;
+  cursor: pointer;
+}
+.correction-word:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.correction-word-active {
+  background: #2dd4a8;
+  color: #1a1a2e;
+}

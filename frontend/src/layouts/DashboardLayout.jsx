@@ -33,9 +33,16 @@ const pageConfig = {
     },
 }
 
+/** 校正頁的網址帶任務 id（/correction/<task_uuid>），不在上面的對照表裡；頁面的文字用中文，和 History 一致（#347） */
+const correctionConfig = {
+    title: "校正",
+    description: "邊聽保留音檔，邊看每個片段的文字",
+}
+
 export function DashboardLayout() {
     const { pathname } = useLocation()
-    const config = pageConfig[pathname] || { title: "Mimiji", description: "" }
+    const config = pageConfig[pathname]
+        || (pathname.startsWith("/correction/") ? correctionConfig : { title: "Mimiji", description: "" })
     const [collapsed, setCollapsed] = useState(false)
     const [sidebarWidth, setSidebarWidth] = useState(240)
 

@@ -1,5 +1,6 @@
 // @ts-nocheck
 import { Button, Tag, Dropdown, Typography } from "antd"
+import { Link } from "react-router-dom"
 import {
     FileAudio,
     ChevronDown,
@@ -8,10 +9,12 @@ import {
     Coins,
     Languages,
     Users,
+    PencilLine,
 } from "lucide-react"
 import { downloadFormatsDetailed } from "@/constants/downloadFormats"
 import { formatDuration } from "@/utils/formatters"
 import { TailLossNotice } from "@/components/TailLossNotice"
+import { correctionPath } from "@/utils/correction"
 
 const { Text } = Typography
 
@@ -21,6 +24,19 @@ const COMPLETED_STYLE = {
     iconColor: '#2dd4a8',
     borderColor: 'rgba(45, 212, 168, 0.3)',
     text: '#2dd4a8',
+}
+
+/** 「校正」做成連結而不是按鈕：在同一個 app 裡換頁，這一頁存在瀏覽器記憶體裡的結果才不會不見；樣式和旁邊的 Download 一樣 */
+const CORRECTION_LINK_STYLE = {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 6,
+    height: 24,
+    padding: '0 8px',
+    border: '1px solid #3a3a5c',
+    borderRadius: 6,
+    color: '#e8e8e8',
+    fontSize: 14,
 }
 
 export function ResultFileCard({ file, onDownload }) {
@@ -104,6 +120,13 @@ export function ResultFileCard({ file, onDownload }) {
                 </div>
 
                 <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
+                    {/* 校正頁（#347）：這裡的檔案都是這次開 app 之後完成的；沒收到任務 id 的（例如批次結果
+                        只存進了 History）沒有入口，到 History 校正 */}
+                    {fData.task_uuid && (
+                        <Link to={correctionPath(fData.task_uuid)} style={CORRECTION_LINK_STYLE}>
+                            <PencilLine size={14} /> 校正
+                        </Link>
+                    )}
                     <Dropdown
                         menu={{
                             items: downloadMenuItems,
