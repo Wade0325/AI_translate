@@ -1,3 +1,4 @@
+import { generatePath } from 'react-router-dom';
 import { ApiError } from '../services/api';
 
 /**
@@ -9,7 +10,7 @@ export const CORRECTION_PATH = '/correction/:taskUuid';
 
 /** @param {string} taskUuid */
 export function correctionPath(taskUuid) {
-  return `/correction/${taskUuid}`;
+  return generatePath(CORRECTION_PATH, { taskUuid });
 }
 
 /** 播放列的速度選項（倍）。 */
@@ -21,8 +22,8 @@ export const PLAYBACK_RATES = [0.75, 1, 1.25, 1.5, 2];
  */
 const REASON_MESSAGES = {
   not_completed: '這個任務還沒完成，完成之後才能校正。',
-  no_segments: '這個任務沒有可以逐段校正的片段（較早版本轉錄的任務只存了整份轉錄結果），轉錄結果仍可以在 History 下載。',
-  translation: '這是翻譯的任務，翻譯結果不能校正。',
+  no_segments: '這個任務沒有可以逐段校正的片段：轉錄結果是空的，或是較早版本轉錄、只存了整份轉錄結果的任務。',
+  with_translation: '這個任務是轉錄並翻譯，翻譯過的結果不能校正。',
 };
 
 const NOT_FOUND = '找不到這個任務，可能已經在 History 刪掉了。';

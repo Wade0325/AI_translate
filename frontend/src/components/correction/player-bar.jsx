@@ -51,7 +51,8 @@ export function PlayerBar({ playing, time, total, rate, notice, onToggle, onSeek
             />
             <span
                 aria-label="目前時間與總長"
-                style={{ color: "#e8e8e8", fontFamily: "'Cascadia Mono', Consolas, 'SF Mono', Menlo, monospace", fontSize: 13, whiteSpace: "nowrap" }}
+                className="correction-clock"
+                style={{ color: "#e8e8e8", fontSize: 13, whiteSpace: "nowrap" }}
             >
                 {formatClock(time)} / {formatClock(max)}
             </span>

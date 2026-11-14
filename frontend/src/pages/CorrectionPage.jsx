@@ -7,7 +7,7 @@ import { CorrectionView } from "@/components/correction/correction-view"
 
 /**
  * 校正頁（#347）：網址帶任務 id，從 History 或 Result 頁的「校正」進來，重新整理或之後再回來都開得到。
- * 直接開不能校正的任務的網址時（任務不存在、還沒完成、沒有片段、翻譯的任務），寫一句說明，不出錯。
+ * 直接開不能校正的任務的網址時（任務不存在、還沒完成、沒有片段、轉錄並翻譯的任務），寫一句說明，不出錯。
  */
 export default function CorrectionPage() {
     const { taskUuid } = useParams()

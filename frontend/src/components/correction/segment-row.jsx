@@ -26,7 +26,6 @@ const TIME_STYLE = {
     border: 0,
     background: "none",
     color: "#2dd4a8",
-    fontFamily: "'Cascadia Mono', Consolas, 'SF Mono', Menlo, monospace",
     fontSize: 12,
     lineHeight: "26px",
     textAlign: "left",
@@ -63,6 +62,7 @@ function SegmentRowView({ segment, active, activeWord, canPlay, onSeek }) {
             {canPlay ? (
                 <button
                     type="button"
+                    className="correction-clock"
                     title="從這個片段的開頭播放"
                     onClick={() => onSeek(segment.start)}
                     style={{ ...TIME_STYLE, cursor: "pointer" }}
@@ -70,7 +70,7 @@ function SegmentRowView({ segment, active, activeWord, canPlay, onSeek }) {
                     {clock}
                 </button>
             ) : (
-                <span style={{ ...TIME_STYLE, color: "#8888a8" }}>{clock}</span>
+                <span className="correction-clock" style={{ ...TIME_STYLE, color: "#8888a8" }}>{clock}</span>
             )}
             <span
                 style={{

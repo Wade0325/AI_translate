@@ -449,7 +449,7 @@ class TestHistoryUsage:
 
 
 # ─── 能不能校正（#347）─────────────────────────────────────────────────────────
-# 能校正的任務：已完成、有片段，而且不是翻譯的任務（#345 第 1 節）。History 照這個值決定要不要
+# 能校正的任務：已完成、有片段，而且不是轉錄並翻譯的任務（#345 第 1 節）。History 照這個值決定要不要
 # 顯示「校正」按鈕
 
 def _with_segments(db: Session, log: TranscriptionLog) -> TranscriptionLog:
@@ -485,15 +485,15 @@ class TestCorrectable:
                           lrc_content="[00:01.00]只有凍結的副本")
         assert _listed(client, log)["correctable"] is False
 
-    def test_translation_task_is_not_correctable(self, client: TestClient, db_session: Session):
+    def test_task_with_translation_is_not_correctable(self, client: TestClient, db_session: Session):
         log = _with_segments(db_session, _create_log(
             db_session, original_filename="translated-347.wav",
             source_language="ja-JP", target_language="zh-TW"))
         assert _listed(client, log)["correctable"] is False
 
-    def test_target_language_same_as_source_is_not_a_translation(
+    def test_target_language_same_as_source_is_not_with_translation(
             self, client: TestClient, db_session: Session):
-        # 和提示詞同一條規則（app.core.default_prompt.build_prompt）：目標語言和來源相同時沒有翻譯
+        # 和提示詞同一條規則（app.core.default_prompt.build_prompt）：目標語言和來源相同時沒有翻譯，不是轉錄並翻譯
         log = _with_segments(db_session, _create_log(
             db_session, original_filename="same-language-347.wav",
             source_language="ja-JP", target_language="ja-JP"))

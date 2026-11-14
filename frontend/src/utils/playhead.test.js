@@ -171,6 +171,15 @@ describe('wordPieces：片段的文字切成一個個字，標點照樣顯示', 
     ]);
   });
 
+  it('一個字不能跨過空白：對齊器在空白斷字，AB CD 是兩個字', () => {
+    expect(wordPieces('AB CD', words('ABCD'))).toBeNull();
+    expect(wordPieces('AB CD', words('AB', 'CD'))).toEqual([
+      { text: 'AB', word: 0 },
+      { text: ' ', word: null },
+      { text: 'CD', word: 1 },
+    ]);
+  });
+
   it('罕用字（兩個 UTF-16 單位）也是一個字', () => {
     expect(wordPieces('𠮷野', words('𠮷', '野'))).toEqual([
       { text: '𠮷', word: 0 },

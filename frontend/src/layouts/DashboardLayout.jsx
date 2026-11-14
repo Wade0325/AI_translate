@@ -1,7 +1,8 @@
 import { useState } from "react"
-import { Outlet, useLocation } from "react-router-dom"
+import { Outlet, matchPath, useLocation } from "react-router-dom"
 import { Layout, Typography } from "antd"
 import { AppSidebar } from "@/components/app-sidebar"
+import { CORRECTION_PATH } from "@/utils/correction"
 
 const { Content, Header } = Layout
 const { Title, Text } = Typography
@@ -42,7 +43,7 @@ const correctionConfig = {
 export function DashboardLayout() {
     const { pathname } = useLocation()
     const config = pageConfig[pathname]
-        || (pathname.startsWith("/correction/") ? correctionConfig : { title: "Mimiji", description: "" })
+        || (matchPath(CORRECTION_PATH, pathname) ? correctionConfig : { title: "Mimiji", description: "" })
     const [collapsed, setCollapsed] = useState(false)
     const [sidebarWidth, setSidebarWidth] = useState(240)
 

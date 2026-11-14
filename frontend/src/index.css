@@ -74,6 +74,11 @@ body.sidebar-resizing {
   cursor: col-resize !important;
 }
 
+/* 校正頁（#347）：時間用等寬字，和 main.jsx 的 fontFamilyCode 相同 */
+.correction-clock {
+  font-family: 'Cascadia Mono', Consolas, 'SF Mono', Menlo, monospace;
+}
+
 /* 校正頁（#347）：逐字時間的一個字，點了從那裡播放 */
 .correction-word {
   border-radius: 3px;

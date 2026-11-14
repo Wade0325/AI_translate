@@ -32,13 +32,14 @@ export function CorrectionView({ transcript }) {
     const canPlay = transcript.audio_available && !failed
 
     const spans = useMemo(() => segmentSpans(segments, total), [segments, total])
-    const active = useMemo(() => segmentsAt(spans, time), [spans, time])
+    // 不能播放時沒有正在唸的片段：不反白、不跟著捲動，也不出現「回到正在播放的片段」
+    const active = useMemo(() => (canPlay ? segmentsAt(spans, time) : []), [canPlay, spans, time])
     const activeSet = useMemo(() => new Set(active), [active])
     const activeWords = useMemo(
         () => new Map(active.map((i) => [i, wordAt(segments[i].words, time, spans[i].end)])),
         [active, segments, spans, time],
     )
-    const followIndex = lastStarted(spans, time)
+    const followIndex = canPlay ? lastStarted(spans, time) : -1
     const [following, setFollowing] = useState(true)
 
     const onSeek = useCallback((seconds) => {

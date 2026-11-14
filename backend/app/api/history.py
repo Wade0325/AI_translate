@@ -62,16 +62,12 @@ def _log_to_response(log: TranscriptionLog, *, correctable: bool) -> HistoryLogR
     )
 
 
-def _responses(db: Session, logs: list[TranscriptionLog]) -> list[HistoryLogResponse]:
+def _with_correctable(db: Session, logs: list[TranscriptionLog]) -> list[HistoryLogResponse]:
     """任務紀錄的回應，各帶能不能校正（app.services.correctability）；有沒有片段一次查完。"""
     with_segments = segment_repo.tasks_with_segments(db, [log.task_uuid for log in logs])
     return [
         _log_to_response(log, correctable=correctability.reason(
-            cast(Optional[str], log.status),
-            cast(Optional[str], log.source_language),
-            cast(Optional[str], log.target_language),
-            has_segments=str(log.task_uuid) in with_segments,
-        ) is None)
+            log, has_segments=str(log.task_uuid) in with_segments) is None)
         for log in logs
     ]
 
@@ -124,7 +120,7 @@ def get_active_single_tasks(
     屬於批次的任務不包含在此（已由 GET /api/v1/batch/tasks 提供）。
     """
     logs = history_repo.get_active_single_tasks(db, recent_hours=hours)
-    return _responses(db, logs)
+    return _with_correctable(db, logs)
 
 
 @router.get("", response_model=HistoryListResponse)
@@ -146,7 +142,7 @@ def get_history(
         keyword=keyword,
     )
 
-    items = _responses(db, logs)
+    items = _with_correctable(db, logs)
     total_pages = math.ceil(total / page_size) if total > 0 else 1
 
     return HistoryListResponse(
@@ -164,7 +160,7 @@ def get_history_detail(task_uuid: str, db: Session = Depends(get_db)):
     log = history_repo.get_log_by_uuid(db, task_uuid)
     if not log:
         raise HTTPException(status_code=404, detail="找不到此任務紀錄")
-    return _responses(db, [log])[0]
+    return _with_correctable(db, [log])[0]
 
 
 @router.get("/{task_uuid}/download/{fmt}")

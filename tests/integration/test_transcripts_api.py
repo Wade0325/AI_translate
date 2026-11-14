@@ -170,9 +170,9 @@ class TestCorrectable:
         assert data["correctable"] is False
         assert data["uncorrectable_reason"] == "no_segments"
 
-    def test_translation_task(self, client: TestClient, db_session: Session):
+    def test_task_with_translation(self, client: TestClient, db_session: Session):
         log = _create_log(db_session, source_language="ja-JP", target_language="zh-TW")
         _create_segment(db_session, log.task_uuid)
         data = self._get(client, log)
         assert data["correctable"] is False
-        assert data["uncorrectable_reason"] == "translation"
+        assert data["uncorrectable_reason"] == "with_translation"

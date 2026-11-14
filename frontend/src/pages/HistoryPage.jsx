@@ -221,7 +221,7 @@ export default function HistoryPage() {
             fixed: "right",
             render: (_, record) => (
                 <Space size={0}>
-                    {/* 能校正的任務才有入口：已完成、有片段、不是翻譯的任務，由後端判斷（#347）。和旁邊一樣只放圖示，
+                    {/* 能校正的任務才有入口：已完成、有片段、不是轉錄並翻譯的任務，由後端判斷（#347）。和旁邊一樣只放圖示，
                         這一欄不變寬：視窗窄的時候檔名那一欄已經只剩幾個字 */}
                     {record.correctable && (
                         <Tooltip title="校正">

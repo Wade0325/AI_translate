@@ -46,21 +46,21 @@ export function SegmentList({ segments, activeSet, activeWords, followIndex, fol
     useEffect(() => {
         const container = containerRef.current
         if (!container) return undefined
-        const leave = () => onUserScroll()
+        const stopFollowing = () => onUserScroll()
         // 按在捲軸上：事件的對象是列表本身，不是裡面的某一列
         const onPointerDown = (event) => {
-            if (event.target === container) leave()
+            if (event.target === container) stopFollowing()
         }
         const onKeyDown = (event) => {
-            if (SCROLL_KEYS.has(event.key)) leave()
+            if (SCROLL_KEYS.has(event.key)) stopFollowing()
         }
-        container.addEventListener("wheel", leave, { passive: true })
-        container.addEventListener("touchmove", leave, { passive: true })
+        container.addEventListener("wheel", stopFollowing, { passive: true })
+        container.addEventListener("touchmove", stopFollowing, { passive: true })
         container.addEventListener("pointerdown", onPointerDown)
         container.addEventListener("keydown", onKeyDown)
         return () => {
-            container.removeEventListener("wheel", leave)
-            container.removeEventListener("touchmove", leave)
+            container.removeEventListener("wheel", stopFollowing)
+            container.removeEventListener("touchmove", stopFollowing)
             container.removeEventListener("pointerdown", onPointerDown)
             container.removeEventListener("keydown", onKeyDown)
         }

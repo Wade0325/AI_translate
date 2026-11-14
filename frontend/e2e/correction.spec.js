@@ -174,8 +174,10 @@ test('Gemini 的片段沒有逐字時間：只標出片段，沒有可以點的�
 })
 
 test('保留音檔已經不在時，播放列換成一句說明，文字照樣看得到', async ({ page, mockBackend }) => {
+    // 第一段從 0 秒開始（Gemini 常見）：沒有在播放，就不能反白它
+    const fromZero = [segment(0, 0, 3.5, 'S0', '大家早安，今天先看進度。'), ...MEETING.slice(1)]
     const backend = await mockBackend({
-        routes: { 'GET /transcripts/task-1': transcript('task-1', MEETING, { audio_available: false }) },
+        routes: { 'GET /transcripts/task-1': transcript('task-1', fromZero, { audio_available: false }) },
     })
     await page.goto('/correction/task-1')
 
@@ -184,7 +186,13 @@ test('保留音檔已經不在時，播放列換成一句說明，文字照樣�
     await expect(row(page, '大家早安')).toBeVisible()
     // 時間與字不能點，也不去要音檔
     await expect(page.locator('[data-index] button')).toHaveCount(0)
+    await expect(page.locator('.correction-word')).toHaveCount(0)
     expect(backend.requests.map((r) => r.path)).not.toContain('/transcripts/task-1/audio')
+    // 沒有正在唸的片段：不反白，捲動之後也沒有「回到正在播放的片段」
+    await expect(page.locator('[data-active]')).toHaveCount(0)
+    await page.getByLabel('片段列表').hover()
+    await page.mouse.wheel(0, 300)
+    await expect(page.getByRole('button', { name: '回到正在播放的片段' })).toHaveCount(0)
 })
 
 test('打開之後保留音檔才讀不到時，播放列也換成一句說明', async ({ page, mockBackend }) => {
@@ -203,9 +211,9 @@ test.describe('直接開不能校正的任務的網址：寫一句說明，不�
         ['還沒完成', transcript('task-1', [], { status: 'PROCESSING', correctable: false, uncorrectable_reason: 'not_completed' }),
             '這個任務還沒完成，完成之後才能校正。'],
         ['沒有片段', transcript('task-1', [], { correctable: false, uncorrectable_reason: 'no_segments' }),
-            '這個任務沒有可以逐段校正的片段（較早版本轉錄的任務只存了整份轉錄結果），轉錄結果仍可以在 History 下載。'],
-        ['翻譯的任務', transcript('task-1', MEETING, { correctable: false, uncorrectable_reason: 'translation' }),
-            '這是翻譯的任務，翻譯結果不能校正。'],
+            '這個任務沒有可以逐段校正的片段：轉錄結果是空的，或是較早版本轉錄、只存了整份轉錄結果的任務。'],
+        ['轉錄並翻譯的任務', transcript('task-1', MEETING, { correctable: false, uncorrectable_reason: 'with_translation' }),
+            '這個任務是轉錄並翻譯，翻譯過的結果不能校正。'],
     ]) {
         test(name, async ({ page, mockBackend }) => {
             await mockBackend({ routes: { 'GET /transcripts/task-1': response } })

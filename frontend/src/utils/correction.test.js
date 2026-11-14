@@ -12,8 +12,8 @@ describe('correctionPath：校正頁的網址帶任務 id', () => {
 describe('unavailableMessage：直接開不能校正的任務的網址時，畫面寫的那一句', () => {
   it.each([
     ['not_completed', '這個任務還沒完成，完成之後才能校正。'],
-    ['no_segments', '這個任務沒有可以逐段校正的片段（較早版本轉錄的任務只存了整份轉錄結果），轉錄結果仍可以在 History 下載。'],
-    ['translation', '這是翻譯的任務，翻譯結果不能校正。'],
+    ['no_segments', '這個任務沒有可以逐段校正的片段：轉錄結果是空的，或是較早版本轉錄、只存了整份轉錄結果的任務。'],
+    ['with_translation', '這個任務是轉錄並翻譯，翻譯過的結果不能校正。'],
   ])('後端說 %s 時', (reason, message) => {
     expect(unavailableMessage({ reason })).toBe(message);
   });

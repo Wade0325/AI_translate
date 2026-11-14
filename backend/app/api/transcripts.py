@@ -70,12 +70,7 @@ def get_transcript(task_uuid: str, db: Session = Depends(get_db)):
             words=[TranscriptWord(**w) for w in words] if words else None,
         ))
 
-    blocker = correctability.reason(
-        cast(Optional[str], log.status),
-        cast(Optional[str], log.source_language),
-        cast(Optional[str], log.target_language),
-        has_segments=bool(segments),
-    )
+    blocker = correctability.reason(log, has_segments=bool(segments))
     return TranscriptResponse(
         task_uuid=str(log.task_uuid),
         status=log.status,
@@ -83,7 +78,7 @@ def get_transcript(task_uuid: str, db: Session = Depends(get_db)):
         audio_duration_seconds=log.audio_duration_seconds,
         audio_available=audio_store.resolve(log.audio_filename) is not None,
         correctable=blocker is None,
-        uncorrectable_reason=None if blocker is None else blocker.value,
+        uncorrectable_reason=blocker,
         segment_count=len(segments),
         segments=segments,
     )

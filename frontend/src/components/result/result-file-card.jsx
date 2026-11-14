@@ -120,8 +120,9 @@ export function ResultFileCard({ file, onDownload }) {
                 </div>
 
                 <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
-                    {/* 校正頁（#347）：這裡的檔案都是這次開 app 之後完成的；沒收到任務 id 的（例如批次結果
-                        只存進了 History）沒有入口，到 History 校正 */}
+                    {/* 校正頁（#347）：這裡的檔案都是這次開 app 之後從轉錄頁送出、完成了的任務。轉錄頁不送目標語言
+                        （沒有轉錄並翻譯的任務），轉錄結果是空的任務算失敗不算完成，所以都有片段、都能校正，不必再問後端。
+                        沒收到任務 id 的（例如批次結果只存進了 History）沒有入口，到 History 校正 */}
                     {fData.task_uuid && (
                         <Link to={correctionPath(fData.task_uuid)} style={CORRECTION_LINK_STYLE}>
                             <PencilLine size={14} /> 校正

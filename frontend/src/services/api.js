@@ -128,7 +128,7 @@ export const api = {
       return request(`/history/active?hours=${hours}`);
     },
   },
-  /** 校正頁用的轉錄文件（#347） */
+  /** 校正頁讀的轉錄結果（#347） */
   transcripts: {
     /**
      * 片段（含逐字時間）、保留音檔在不在，以及能不能校正（不能時帶原因 uncorrectable_reason）；

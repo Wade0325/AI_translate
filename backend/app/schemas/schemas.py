@@ -244,7 +244,7 @@ class TranscriptResponse(BaseModel):
     audio_duration_seconds: Optional[float] = None
     audio_available: bool = False
     # 能不能校正，不能時的原因（app.services.correctability.Uncorrectable 的值）：直接開校正頁的網址時，
-    # 畫面照原因寫出一句說明（#347）
+    # 畫面照原因寫出一句說明（#347）。schemas 不依賴 services，所以型別寫 str
     correctable: bool = False
     uncorrectable_reason: Optional[str] = None
     segment_count: int = 0

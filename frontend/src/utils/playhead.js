@@ -50,7 +50,7 @@ export function segmentSpans(segments, duration) {
 /** segmentsAt 用的索引：片段照開始時間排的順序，以及到每個位置為止最晚的結束。 */
 const INDEX = new WeakMap();
 
-function indexOf(spans) {
+function startOrder(spans) {
   let index = INDEX.get(spans);
   if (!index) {
     const order = spans.map((_, i) => i).sort((a, b) => spans[a].start - spans[b].start || a - b);
@@ -79,7 +79,7 @@ function indexOf(spans) {
  * @returns {number[]}
  */
 export function segmentsAt(spans, t) {
-  const { order, starts, latestEnd } = indexOf(spans);
+  const { order, starts, latestEnd } = startOrder(spans);
   const active = [];
   for (let k = firstAbove(starts, t) - 1; k >= 0 && latestEnd[k] > t; k -= 1) {
     if (spans[order[k]].end > t) active.push(order[k]);
@@ -95,7 +95,7 @@ export function segmentsAt(spans, t) {
  * @param {number} t
  */
 export function lastStarted(spans, t) {
-  const { order, starts } = indexOf(spans);
+  const { order, starts } = startOrder(spans);
   const k = firstAbove(starts, t) - 1;
   return k >= 0 ? order[k] : -1;
 }
@@ -125,12 +125,15 @@ export function wordAt(words, t, segmentEnd) {
 
 /** 對齊器算成字的字元：字母（含假名與漢字）、數字與 '（backend/app/services/output_format.py 的 aligner_words）。 */
 const WORD_CHAR = /^[\p{L}\p{N}']$/u;
+/** 空白：對齊器在這裡斷開兩個字，所以一個字不能跨過它。 */
+const SPACE = /^\s$/u;
 
 /**
  * 片段的文字切成一段段：逐字時間的每個字一段（word 是它在逐字時間裡的位置），夾在字之間的標點與空白
  * 也各成一段（word 是 null），接起來就是原本的文字。
  *
- * 對齊器斷字時丟掉標點與符號（「ABC-DEF」是一個字「ABCDEF」），所以一個字可以跨過中間的符號。文字和
+ * 對齊器斷字時丟掉標點與符號（「ABC-DEF」是一個字「ABCDEF」），所以一個字可以跨過中間的符號，但不能跨過
+ * 空白（對齊器在空白斷字）。文字和
  * 逐字時間對不上時（字數不同、有字不一樣）回 null，整段照原樣顯示、不標字；下載的輸出格式遇到這種片段
  * 也是整段一行（output_format 的 _words_match）。
  *
@@ -154,7 +157,8 @@ export function wordPieces(text, words) {
     let at = pos;
     for (const char of wanted) {
       while (at < chars.length && chars[at] !== char) {
-        if (WORD_CHAR.test(chars[at])) return null;
+        // 字和字之間可以有標點與空白；一個字的中間只能有標點（對齊器丟掉的符號）
+        if (WORD_CHAR.test(chars[at]) || (from >= 0 && SPACE.test(chars[at]))) return null;
         at += 1;
       }
       if (at === chars.length) return null;
