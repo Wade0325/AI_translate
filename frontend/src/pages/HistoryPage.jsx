@@ -7,7 +7,9 @@ import {
     ReloadOutlined,
     FileTextOutlined,
     DownloadOutlined,
+    EditOutlined,
 } from "@ant-design/icons"
+import { Link } from "react-router-dom"
 import { FileAudio, Coins, Clock, TrendingUp } from "lucide-react"
 import { api } from "../services/api"
 import { downloadFormats } from "../constants/downloadFormats"
@@ -17,6 +19,7 @@ import { STATUS_META, TASK_STATUS } from "../constants/taskStatus"
 import { FailureSummary } from "../components/FailureNotice"
 import { TailLossSummary } from "../components/TailLossNotice"
 import { failureOf } from "../utils/failure"
+import { correctionPath } from "../utils/correction"
 
 const { Text } = Typography
 
@@ -218,6 +221,19 @@ export default function HistoryPage() {
             fixed: "right",
             render: (_, record) => (
                 <Space size={0}>
+                    {/* 能校正的任務才有入口：已完成、有片段、不是轉錄並翻譯的任務，由後端判斷（#347）。和旁邊一樣只放圖示，
+                        這一欄不變寬：視窗窄的時候檔名那一欄已經只剩幾個字 */}
+                    {record.correctable && (
+                        <Tooltip title="校正">
+                            <Link
+                                to={correctionPath(record.task_uuid)}
+                                aria-label="校正"
+                                style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 24, height: 24, color: "#2dd4a8" }}
+                            >
+                                <EditOutlined />
+                            </Link>
+                        </Tooltip>
+                    )}
                     {record.status === TASK_STATUS.COMPLETED && (
                         <Dropdown
                             menu={{

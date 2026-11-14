@@ -142,6 +142,7 @@ Mimiji 只發布 Windows 免安裝版：下載 zip、解壓縮就能用。本機
 ### 步驟 5️⃣ — 追蹤紀錄與費用
 
 - **History**：列出所有完成的任務，可重新下載轉錄結果。成功率是「完成 ÷（完成＋失敗）」，處理中與已取消的任務不算在內。
+- **校正**：History 那一列的鉛筆圖示，或 Result Viewer 檔案卡上的「校正」，打開那個任務的校正頁，邊聽保留音檔邊看每個片段的文字。播放時正在唸的片段會反白並跟著捲動，自己捲走時不會被拉回去，按「回到正在播放的片段」再跟上；點片段的時間從那裡播，本機的任務還會標出正在唸的字，點一個字就從那個字開始播（Gemini 的結果沒有逐字時間，只標片段）。播放速度可選 0.75 到 2 倍。保留音檔已經刪掉時不能播放，文字照樣看得到。已完成、有片段的任務才能校正（直接呼叫 API 送出的轉錄並翻譯的任務不能）；目前只能看，改文字的功能之後加上。
 - **計費（Gemini）**：只對 Gemini 有意義，側欄沒有入口，要對帳時直接開 `/billing`。依日期、模型查詢 Token 用量與成本；失敗與取消的任務已經用掉的 Token 與費用也算在內，檔案數只算完成的。
 - 轉錄頁的費用估算只在選 Gemini 時出現；選本機時只顯示檔案數與大小。
 
@@ -380,7 +381,7 @@ AI_translate/
 │   └── main.py
 ├── frontend/                # React 19 + Vite 6
 │   └── src/
-│       ├── pages/           # Transcribe / Result / Tasks / History / Billing / Settings
+│       ├── pages/           # Transcribe / Result / Tasks / History / Correction / Billing / Settings
 │       ├── components/      # UI 元件（含 ModelManager）
 │       └── context/         # TranscriptionContext（單檔/批次/WS 狀態管理）
 ├── docker-compose.yml       # Docker 模式（5 個容器）

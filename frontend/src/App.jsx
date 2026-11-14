@@ -6,6 +6,8 @@ import TaskPage from './pages/TaskPage'
 import HistoryPage from './pages/HistoryPage'
 import BillingPage from './pages/BillingPage'
 import SettingsPage from './pages/SettingsPage'
+import CorrectionPage from './pages/CorrectionPage'
+import { CORRECTION_PATH } from './utils/correction'
 import ModelManagerProvider from './components/ModelManager'
 import { TranscriptionProvider } from './context/TranscriptionContext'
 
@@ -21,6 +23,8 @@ export default function App() {
                         <Route path="/result" element={<ResultPage />} />
                         <Route path="/tasks" element={<TaskPage />} />
                         <Route path="/history" element={<HistoryPage />} />
+                        {/* 校正頁：從 History 與 Result 頁進來，網址帶任務 id（#347） */}
+                        <Route path={CORRECTION_PATH} element={<CorrectionPage />} />
                         {/* 側欄沒有入口（#18），網址直接開仍可對帳 Gemini 的費用 */}
                         <Route path="/billing" element={<BillingPage />} />
                         <Route path="/settings" element={<SettingsPage />} />
