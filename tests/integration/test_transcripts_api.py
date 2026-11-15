@@ -4,6 +4,7 @@
   GET    /api/v1/transcripts/{task_uuid}（片段是校正後版本，另外帶著原始轉錄，#341）
   GET    /api/v1/transcripts/{task_uuid}/audio
   PATCH  /api/v1/transcripts/{task_uuid}/segments/{seg_key}（改文字、說話者、確認狀態，#341）
+  POST   /api/v1/transcripts/{task_uuid}/replace-all（全部取代，#356）
   POST   /api/v1/transcripts/{task_uuid}/operations/{operation_id}/undo（復原一次操作，#341）
   DELETE /api/v1/history/{task_uuid} 連帶刪除片段
   寫入校正或確認狀態時，保留音檔的保留天數重新起算（#350）
@@ -506,6 +507,191 @@ class TestUndo:
 
         assert [(s["seg_key"], s["text"], s["deleted"]) for s in body["segments"]] == [
             ("0001", "另一段", False)]
+
+
+# ─── 全部取代（#356） ─────────────────────────────────────────────────────────
+
+REPLACE_ALL_CASES = json.loads(
+    (Path(__file__).resolve().parents[1] / "fixtures" / "replace_all" / "cases.json").read_text(encoding="utf-8"))
+"""前端算符合數目與會改到幾處的單元測試（frontend/src/utils/segmentSearch.test.js）用同一份案例：
+兩邊對同一份期望值，前端算的就和伺服器實際改到的一致。"""
+
+
+def _replace_url(task_uuid) -> str:
+    return f"/api/v1/transcripts/{task_uuid}/replace-all"
+
+
+def _task_with_texts(db: Session, *texts: str) -> TranscriptionLog:
+    """一個能校正的任務，片段 0000、0001……的原始轉錄依序是 texts。"""
+    log = _create_log(db)
+    for seq, text in enumerate(texts):
+        _create_segment(db, log.task_uuid, seg_key=f"{seq:04d}", seq=seq, start_sec=seq * 5.0,
+                        end_sec=seq * 5.0 + 4.0, text=text)
+    return log
+
+
+def _texts(client: TestClient, task_uuid) -> list:
+    return [s["text"] for s in client.get(f"/api/v1/transcripts/{task_uuid}").json()["segments"]]
+
+
+class TestReplaceAll:
+    @pytest.mark.parametrize("case", REPLACE_ALL_CASES, ids=[c["name"] for c in REPLACE_ALL_CASES])
+    def test_the_shared_cases(self, client, db_session, case):
+        log = _task_with_texts(db_session, *case["texts"])
+
+        response = client.post(_replace_url(log.task_uuid),
+                               json={"find": case["find"], "replacement": case["replacement"]})
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        expected = case["expected"]
+        assert (body["changed_segments"], body["occurrences"]) == (
+            expected["changed_segments"], expected["occurrences"])
+        assert _texts(client, log.task_uuid) == expected["texts"]
+        records = _records(db_session, log.task_uuid)
+        assert len(records) == expected["changed_segments"]
+        assert {r[3] for r in records} == ({body["operation_id"]} if records else set())
+
+    def test_each_changed_segment_gets_one_record_sharing_one_operation(self, client, db_session):
+        log = _task_with_texts(db_session, "王曉明先說明進度。", "謝謝王曉明，王曉明的報告很清楚。", "下一位請準備。")
+        original_download = _download(client, log.task_uuid, "original")
+
+        response = client.post(_replace_url(log.task_uuid), json={"find": "王曉明", "replacement": "王小明"})
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert (body["changed_segments"], body["occurrences"]) == (2, 3)
+        assert body["operation_id"]
+        assert _records(db_session, log.task_uuid) == [
+            ("text", "王曉明先說明進度。", "王小明先說明進度。", body["operation_id"]),
+            ("text", "謝謝王曉明，王曉明的報告很清楚。", "謝謝王小明，王小明的報告很清楚。", body["operation_id"]),
+        ]
+        segments = client.get(f"/api/v1/transcripts/{log.task_uuid}").json()["segments"]
+        # 回應帶改到的片段的新內容，和讀回來的相同；第三個片段沒有改到，不在回應裡
+        assert body["segments"] == segments[:2]
+        assert (segments[2]["text"], segments[2]["has_correction_records"]) == ("下一位請準備。", False)
+        # 原始轉錄不變
+        assert [s["original_text"] for s in segments] == [
+            "王曉明先說明進度。", "謝謝王曉明，王曉明的報告很清楚。", "下一位請準備。"]
+        assert _download(client, log.task_uuid, "original") == original_download
+        assert "王小明" in _download(client, log.task_uuid, "corrected")
+
+    def test_english_is_case_insensitive_and_the_replacement_is_inserted_as_typed(self, client, db_session):
+        log = _task_with_texts(db_session, "mimiji 很好用", "我用 MIMIJI 轉錄", "Mimiji")
+
+        body = client.post(_replace_url(log.task_uuid), json={"find": "MiMiJi", "replacement": "Mimiji"}).json()
+
+        # 第三個片段取代之後和原本相同，不記校正紀錄、不算改到
+        assert (body["changed_segments"], body["occurrences"]) == (2, 2)
+        assert _texts(client, log.task_uuid) == ["Mimiji 很好用", "我用 Mimiji 轉錄", "Mimiji"]
+        assert len(_records(db_session, log.task_uuid)) == 2
+
+    def test_a_deleted_segment_is_not_changed(self, client, db_session):
+        log = _task_with_texts(db_session, "王曉明先說", "王曉明再說")
+        client.patch(_url(log.task_uuid, "0001"), json={"text": ""})
+
+        body = client.post(_replace_url(log.task_uuid), json={"find": "王曉明", "replacement": "王小明"}).json()
+
+        assert (body["changed_segments"], body["occurrences"]) == (1, 1)
+        deleted = _segment(client, log.task_uuid, "0001")
+        # 還是刪掉的，還原時拿回的是刪掉之前的文字
+        assert (deleted["text"], deleted["deleted"], deleted["deleted_text"]) == ("", True, "王曉明再說")
+
+    def test_it_searches_the_corrected_version(self, client, db_session):
+        log = _task_with_texts(db_session, "今天先看進度", "王曉明報告")
+        client.patch(_url(log.task_uuid, "0000"), json={"text": "王曉明先看進度"})
+        client.patch(_url(log.task_uuid, "0001"), json={"text": "主持人報告"})
+
+        body = client.post(_replace_url(log.task_uuid), json={"find": "王曉明", "replacement": "王小明"}).json()
+
+        assert (body["changed_segments"], body["occurrences"]) == (1, 1)
+        assert _texts(client, log.task_uuid) == ["王小明先看進度", "主持人報告"]
+
+    def test_undoing_it_brings_everything_back(self, client, db_session):
+        log = _task_with_texts(db_session, "王曉明先說明進度。", "嗯", "謝謝王曉明。")
+        replaced = client.post(_replace_url(log.task_uuid), json={"find": "王曉明", "replacement": "王小明"}).json()
+        emptied = client.post(_replace_url(log.task_uuid), json={"find": "嗯", "replacement": ""}).json()
+        assert _segment(client, log.task_uuid, "0001")["deleted"] is True
+
+        first = client.post(_undo_url(log.task_uuid, emptied["operation_id"])).json()
+        second = client.post(_undo_url(log.task_uuid, replaced["operation_id"])).json()
+
+        assert (first["restored"], first["skipped"], second["restored"], second["skipped"]) == (1, 0, 2, 0)
+        assert [s["seg_key"] for s in second["segments"]] == ["0000", "0002"]
+        segments = client.get(f"/api/v1/transcripts/{log.task_uuid}").json()["segments"]
+        assert [(s["text"], s["corrected"], s["deleted"]) for s in segments] == [
+            ("王曉明先說明進度。", False, False), ("嗯", False, False), ("謝謝王曉明。", False, False)]
+
+    def test_undo_skips_a_segment_changed_again_afterwards(self, client, db_session):
+        log = _task_with_texts(db_session, "王曉明一", "王曉明二", "王曉明三")
+        replaced = client.post(_replace_url(log.task_uuid), json={"find": "王曉明", "replacement": "王小明"}).json()
+        client.patch(_url(log.task_uuid, "0001"), json={"text": "主持人二"})
+
+        undo = client.post(_undo_url(log.task_uuid, replaced["operation_id"])).json()
+
+        assert (undo["restored"], undo["skipped"]) == (2, 1)
+        assert _texts(client, log.task_uuid) == ["王曉明一", "主持人二", "王曉明三"]
+
+    def test_nothing_to_replace_records_nothing(self, client, db_session):
+        log = _task_with_texts(db_session, "今天先看進度。")
+
+        response = client.post(_replace_url(log.task_uuid), json={"find": "明天", "replacement": "後天"})
+
+        assert response.status_code == 200, response.text
+        assert response.json() == {"operation_id": None, "changed_segments": 0, "occurrences": 0, "segments": []}
+        assert _records(db_session, log.task_uuid) == []
+
+    def test_a_result_too_long_refuses_the_whole_replacement(self, client, db_session):
+        log = _task_with_texts(db_session, "短的王曉明", "王曉明" * 3)
+
+        response = client.post(_replace_url(log.task_uuid), json={"find": "王曉明", "replacement": "字" * 2000})
+
+        assert response.status_code == 400, response.text
+        assert "5000" in response.json()["detail"]
+        assert _records(db_session, log.task_uuid) == []
+        assert _texts(client, log.task_uuid) == ["短的王曉明", "王曉明" * 3]
+
+    @pytest.mark.parametrize("body", [
+        {"find": "", "replacement": "A"},
+        {"find": "字" * 5001, "replacement": "A"},
+        {"find": "A", "replacement": "字" * 5001},
+    ])
+    def test_refused_requests(self, client, db_session, body):
+        log = _task_with_texts(db_session, "A 和 B")
+
+        response = client.post(_replace_url(log.task_uuid), json=body)
+
+        assert response.status_code == 400, response.text
+        assert isinstance(response.json()["detail"], str)
+        assert _records(db_session, log.task_uuid) == []
+
+    @pytest.mark.parametrize("body", [{"replacement": "A"}, {"find": "A", "replacement": "B", "regex": True}])
+    def test_malformed_requests(self, client, db_session, body):
+        log = _task_with_texts(db_session, "A 和 B")
+
+        assert client.post(_replace_url(log.task_uuid), json=body).status_code == 422
+        assert _records(db_session, log.task_uuid) == []
+
+    def test_a_task_that_cannot_be_corrected(self, client, db_session):
+        log = _create_log(db_session, source_language="ja-JP", target_language="zh-TW")
+        _create_segment(db_session, log.task_uuid)
+
+        response = client.post(_replace_url(log.task_uuid), json={"find": "實作層", "replacement": "十座城"})
+
+        assert response.status_code == 409
+        assert "翻譯" in response.json()["detail"]
+        assert _records(db_session, log.task_uuid) == []
+
+    def test_unknown_or_malformed_task(self, client):
+        assert client.post(_replace_url(uuid.uuid4()), json={"find": "A"}).status_code == 404
+        assert client.post(_replace_url("not-a-uuid"), json={"find": "A"}).status_code == 400
+
+    def test_the_searched_text_is_not_logged(self, client, db_session, app_log):
+        log = _task_with_texts(db_session, "王曉明先說明進度。")
+
+        client.post(_replace_url(log.task_uuid), json={"find": "王曉明", "replacement": "王小明"})
+
+        assert not [entry for entry in app_log if "曉明" in entry or "小明" in entry]
 
 
 class TestRefusedWrites:

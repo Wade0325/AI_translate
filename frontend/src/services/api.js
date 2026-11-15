@@ -152,6 +152,14 @@ export const api = {
     correctSegment(taskUuid, segKey, body) {
       return request(`/transcripts/${taskUuid}/segments/${encodeURIComponent(segKey)}`, { method: 'PATCH', body });
     },
+    /**
+     * 全部取代（#356）：把校正後版本裡每一處 find 換成 replacement（英文不分大小寫，不支援正規表示式），刪掉的片段
+     * 不改。回 { operation_id, changed_segments, occurrences, segments }：實際改到的片段數與處數，以及那些片段的新內容；
+     * 一個片段都沒有改到時 operation_id 是 null
+     */
+    replaceAll(taskUuid, find, replacement) {
+      return request(`/transcripts/${taskUuid}/replace-all`, { method: 'POST', body: { find, replacement } });
+    },
     /** 復原一次操作（#341）：回 { restored, skipped, operation_id, segments }，segments 是那次操作改到的片段的新內容 */
     undo(taskUuid, operationId) {
       return request(`/transcripts/${taskUuid}/operations/${operationId}/undo`, { method: 'POST' });

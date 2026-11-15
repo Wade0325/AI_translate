@@ -7,9 +7,10 @@
 音檔用 FileResponse 直接服務；Starlette 會處理 Range 請求，播放器才能拖曳。
 
 校正（#341，ADR 0011）：讀到的片段是校正後版本，另外帶著原始轉錄；改一個片段的文字、說話者與確認狀態，
-以及復原一次操作，都從這裡寫。一個片段的歷程（它的每一筆校正紀錄，#355）也從這裡讀；回到某一版與整批復原
-不另開端點，用上面兩個寫入端點。校正後版本與校正紀錄的規則在 ``app.repositories.correction_repository``，
-這裡只檢查請求。寫入端點和 History 的清單、讀取端點用同一個「能不能校正」的判斷
+全部取代（#356），以及復原一次操作，都從這裡寫。一個片段的歷程（它的每一筆校正紀錄，#355）也從這裡讀；回到某一版
+與整批復原不另開端點，用上面的寫入端點。校正後版本與校正紀錄的規則在 ``app.repositories.correction_repository``，
+這裡只檢查請求，以及把請求換成要記的校正（全部取代怎麼比對在 ``app.core.text_replacement``）。寫入端點和
+History 的清單、讀取端點用同一個「能不能校正」的判斷
 （``app.services.correctability``）。轉錄的文字不寫進日誌（#25 故事 84）。
 
 寫入端點沒有使用者驗證：免安裝模式只收 app 自己的頁面送的寫入請求，做在 ``app.core.api_access``，
@@ -24,6 +25,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
+from app.core import text_replacement
 from app.database.models import TranscriptionLog, TranscriptSegment
 from app.database.session import get_db
 from app.repositories.correction_repository import (
@@ -31,10 +33,13 @@ from app.repositories.correction_repository import (
     CorrectionField,
     CorrectionRepository,
     ReviewState,
+    SegmentContent,
 )
 from app.repositories.transcript_segment_repository import TranscriptSegmentRepository
 from app.schemas.schemas import (
     CorrectionRecordResponse,
+    ReplaceAllRequest,
+    ReplaceAllResponse,
     SegmentCorrectionRecordsResponse,
     SegmentCorrectionRequest,
     SegmentCorrectionResponse,
@@ -126,6 +131,20 @@ def _normalized_text(text: str) -> str:
     return _LINE_BREAKS.sub(" ", text.strip())
 
 
+def _text_to_store(text: str, original_text: str) -> str:
+    """使用者送出的文字（或全部取代之後的文字）要存成什麼；太長時回 400。
+
+    回到原始轉錄是把原始轉錄用 PATCH 送回來，所以收成一行之後和原始轉錄相同的文字照原始轉錄存（原始轉錄
+    可能有換行），也不套用長度上限。這樣回到原始轉錄之後才不會一直算成校正過。
+    """
+    text = _normalized_text(text)
+    if text == _normalized_text(original_text):
+        return original_text
+    if len(text) > TEXT_MAX_LENGTH:
+        raise HTTPException(status_code=400, detail=f"文字太長：一個片段最多 {TEXT_MAX_LENGTH} 字")
+    return text
+
+
 def _segment(db: Session, log: TranscriptionLog, seg_key: str) -> TranscriptSegment:
     """這個任務的一個片段（原始轉錄）；沒有就回 404。"""
     rows = segment_repo.list_for_task(db, log.task_uuid, [seg_key])
@@ -139,8 +158,8 @@ def _segment_changes(segment: TranscriptSegment, body: SegmentCorrectionRequest,
     """PATCH 的 body → 要記的校正（文字、說話者）與要寫的確認狀態；不合規則時回 400。
 
     回到原始轉錄是把原始轉錄用 PATCH 送回來，所以和原始轉錄相同的內容照原始轉錄存，不套用下面的規則：
-    文字收成一行之後和原始轉錄相同就存原始轉錄（原始轉錄可能有換行），說話者編號和原始轉錄相同就照收
-    （較早的任務可能有別的寫法）。這樣回到原始轉錄之後才不會一直算成校正過。
+    文字見 :func:`_text_to_store`，說話者編號和原始轉錄相同就照收（較早的任務可能有別的寫法）。這樣回到
+    原始轉錄之後才不會一直算成校正過。
     """
     sent = body.model_fields_set
     if not sent:
@@ -150,12 +169,7 @@ def _segment_changes(segment: TranscriptSegment, body: SegmentCorrectionRequest,
     if "text" in sent:
         if body.text is None:
             raise HTTPException(status_code=400, detail="文字不能是 null；要刪掉片段請送空字串")
-        text = _normalized_text(body.text)
-        original_text = cast(Optional[str], segment.text) or ""
-        if text == _normalized_text(original_text):
-            text = original_text
-        elif len(text) > TEXT_MAX_LENGTH:
-            raise HTTPException(status_code=400, detail=f"文字太長：一個片段最多 {TEXT_MAX_LENGTH} 字")
+        text = _text_to_store(body.text, cast(Optional[str], segment.text) or "")
         corrections.append(Correction(seg_key, CorrectionField.TEXT, text))
     if "speaker" in sent:
         speaker = body.speaker
@@ -191,6 +205,45 @@ def correct_segment(task_uuid: str, seg_key: str, body: SegmentCorrectionRequest
     if not segments:  # 寫完之後任務剛好被刪掉
         raise HTTPException(status_code=404, detail="找不到此片段")
     return SegmentCorrectionResponse(operation_id=operation_id, segment=segments[0])
+
+
+@router.post("/{task_uuid}/replace-all", response_model=ReplaceAllResponse)
+def replace_all(task_uuid: str, body: ReplaceAllRequest, db: Session = Depends(get_db)):
+    """全部取代（#356）：把校正後版本裡每一處 ``find`` 換成 ``replacement``，刪掉的片段不改。
+
+    比對的規則見 :mod:`app.core.text_replacement`（一般文字比對、英文不分大小寫）。在同一個交易裡做完，
+    改到的每個片段各記一筆校正紀錄，共用一個操作編號，可以整批復原；結果和原本相同的片段不記。取代之後的
+    文字照改一個片段的規則存：前後的空白去掉、換行收成一個空白，變成空的就等於刪掉這個片段。回應帶實際
+    改到的片段數與處數。要找與取代的文字都不寫進日誌。
+    """
+    log = _correctable_log(db, task_uuid)
+    if not body.find:
+        raise HTTPException(status_code=400, detail="要找的文字不能是空的")
+    if len(body.find) > TEXT_MAX_LENGTH or len(body.replacement) > TEXT_MAX_LENGTH:
+        raise HTTPException(status_code=400, detail=f"要找與取代的文字最多 {TEXT_MAX_LENGTH} 字")
+
+    occurrences: Dict[str, int] = {}
+
+    def plan(segment: SegmentContent) -> List[Correction]:
+        if segment.deleted:
+            return []
+        text, count = text_replacement.replace_occurrences(segment.text, body.find, body.replacement)
+        if not count:
+            return []
+        occurrences[segment.seg_key] = count
+        return [Correction(segment.seg_key, CorrectionField.TEXT, _text_to_store(text, segment.original_text))]
+
+    try:
+        result = CorrectionRepository.record_operation_over_segments(db, log.task_uuid, plan)
+    except ValueError as e:
+        # 任務剛好被刪掉：什麼都沒寫
+        raise HTTPException(status_code=404, detail="找不到此任務紀錄") from e
+    return ReplaceAllResponse(
+        operation_id=result.operation_id,
+        changed_segments=len(result.seg_keys),
+        occurrences=sum(occurrences[seg_key] for seg_key in result.seg_keys),
+        segments=_segments(db, log, result.seg_keys) if result.seg_keys else [],
+    )
 
 
 @router.get("/{task_uuid}/segments/{seg_key}/correction-records",
