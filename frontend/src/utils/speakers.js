@@ -8,12 +8,20 @@ import { textCorrected } from './segmentCorrections';
  * PATCH /transcripts/{task_uuid}/segments/{seg_key}；把這位說話者全部換成另一位用
  * POST /transcripts/{task_uuid}/speakers/reassign，一次操作，可以整批復原。
  *
+ * 說話者名稱（#359）：替說話者編號取的名字，每個任務各取各的，用
+ * PUT /transcripts/{task_uuid}/speakers/{speaker}/name 設定或清掉，算一次校正，可以復原。畫面上取了名字的說話者寫名稱，
+ * 沒取的寫編號。
+ *
  * @typedef {import('./segmentCorrections').Segment} Segment
  * @typedef {{ speaker: string, isNew: boolean }} SpeakerChoice 選單上的一個選項；isNew 是新的說話者
+ * @typedef {Record<string, string>} SpeakerNames 這個任務的說話者名稱：{說話者編號: 名稱}，只列取了名字的
  */
 
 /** 沒有說話者的片段在片段列與選單裡的寫法。 */
 export const NO_SPEAKER_LABEL = '未指定';
+
+/** 說話者名稱最多幾個字（去掉前後的空白之後算；backend/app/api/transcripts.py 的 SPEAKER_NAME_MAX_LENGTH）。 */
+export const SPEAKER_NAME_MAX_LENGTH = 30;
 
 /**
  * 說話者編號的號碼（S12 → 12）；不是 S 加數字時是 null。
@@ -111,7 +119,58 @@ export function showsAsCorrected(segment, singleSpeaker) {
  *
  * @param {number} changed 改到幾個片段
  * @param {string} toSpeaker 換成哪一位
+ * @param {SpeakerNames} [names]
  */
-export function reassignMessage(changed, toSpeaker) {
-  return `已把 ${changed} 個片段換成 ${toSpeaker}`;
+export function reassignMessage(changed, toSpeaker, names = {}) {
+  return `已把 ${changed} 個片段換成 ${speakerLabel(toSpeaker, names)}`;
+}
+
+/**
+ * 片段那一列寫的說話者（#359）：取了名字的寫名稱，沒取的寫說話者編號，沒有說話者的寫「未指定」。
+ *
+ * @param {string | null} speaker
+ * @param {SpeakerNames} names
+ */
+export function speakerLabel(speaker, names) {
+  if (!speaker) return NO_SPEAKER_LABEL;
+  return names[speaker] || speaker;
+}
+
+/**
+ * 說話者選單上一個選項的寫法：取了名字的寫「名稱（編號）」，同名的人不會有，但編號讓人對得上下載的原始轉錄；
+ * 沒取的寫編號；新的說話者寫「新的說話者（編號）」。
+ *
+ * @param {SpeakerChoice} choice
+ * @param {SpeakerNames} names
+ */
+export function choiceLabel(choice, names) {
+  if (choice.isNew) return `新的說話者（${choice.speaker}）`;
+  const name = names[choice.speaker];
+  return name ? `${name}（${choice.speaker}）` : choice.speaker;
+}
+
+/**
+ * 名稱哪裡不合規則，給取名字的輸入框馬上寫出來；合規則時是 null。和後端同一套規則（backend/app/api/transcripts.py 的
+ * _speaker_name），存的時候後端還會再擋一次，同一個任務裡重複的名稱也由後端擋。前後的空白不算，空的是清掉名稱。
+ * 輸入框只有一行，打不出換行。
+ *
+ * @param {string} draft 輸入框裡的字
+ * @returns {string | null}
+ */
+export function speakerNameProblem(draft) {
+  const name = draft.trim();
+  if (Array.from(name).length > SPEAKER_NAME_MAX_LENGTH) return `名稱最多 ${SPEAKER_NAME_MAX_LENGTH} 個字`;
+  if (/[[\]]/.test(name)) return '名稱不能有方括號（[ 或 ]）';
+  if (/^s\d+$/i.test(name.normalize('NFKC'))) return '名稱不能寫成 S 加數字，會和說話者編號分不出來';
+  return null;
+}
+
+/**
+ * 取名字之後，「復原」旁邊寫的結果。
+ *
+ * @param {string} speaker 說話者編號
+ * @param {string | null} name 現在的名稱；清掉時是 null
+ */
+export function renameMessage(speaker, name) {
+  return name ? `已把 ${speaker} 叫做「${name}」` : `${speaker} 已改回顯示說話者編號`;
 }

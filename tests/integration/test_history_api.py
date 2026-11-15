@@ -425,6 +425,23 @@ FOUR_CORRECTIONS = [
 ]
 
 
+# 說話者名稱（#359）：S0 取了名字「田中」，S1 沒有。校正後版本四種格式都只把方括號裡的編號換成名稱，SRT／VTT
+# 的顏色照說話者編號（S1 照樣是黃色）；原始轉錄照舊寫編號，和 FOUR_ORIGINAL 逐位元組相同
+FOUR_NAMED = {
+    "lrc": ("[00:01.00][田中] おはよう。\n[00:03.00][S1] えーと。\n"
+            "[00:05.00][S1] こんにちは。\n[00:07.00][田中] さようなら。"),
+    "srt": ("1\n00:00:01,000 --> 00:00:02,000\n[田中] おはよう。\n\n"
+            "2\n00:00:03,000 --> 00:00:04,000\n<font color=\"#FFDD55\">[S1] えーと。</font>\n\n"
+            "3\n00:00:05,000 --> 00:00:06,000\n<font color=\"#FFDD55\">[S1] こんにちは。</font>\n\n"
+            "4\n00:00:07,000 --> 00:00:08,000\n[田中] さようなら。\n"),
+    "vtt": ("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n[田中] おはよう。\n\n"
+            "00:00:03.000 --> 00:00:04.000\n<c.yellow>[S1] えーと。</c>\n\n"
+            "00:00:05.000 --> 00:00:06.000\n<c.yellow>[S1] こんにちは。</c>\n\n"
+            "00:00:07.000 --> 00:00:08.000\n[田中] さようなら。\n"),
+    "txt": "[田中] おはよう。\n[S1] えーと。\n[S1] こんにちは。\n[田中] さようなら。",
+}
+
+
 def _download(client: TestClient, log: TranscriptionLog, fmt: str, version: Optional[str] = None):
     params = {"version": version} if version else {}
     return client.get(f"/api/v1/history/{log.task_uuid}/download/{fmt}", params=params)
@@ -501,6 +518,18 @@ class TestDownloadVersions:
 
         assert _download(client, log, "txt").text == "おはようございます。\nこんにちは。\nさようなら。"
         assert "color" not in _download(client, log, "srt").text
+
+    @pytest.mark.parametrize("fmt", ["lrc", "srt", "vtt", "txt"])
+    def test_corrected_version_writes_speaker_names_and_the_original_stays(
+            self, client: TestClient, db_session: Session, fmt):
+        log = _with_segments(db_session, _create_log(db_session), FOUR_SEGMENTS)
+
+        named = client.put(f"/api/v1/transcripts/{log.task_uuid}/speakers/S0/name", json={"name": "田中"})
+
+        assert named.status_code == 200, named.text
+        for version in (None, "corrected"):
+            assert _download(client, log, fmt, version).text == FOUR_NAMED[fmt]
+        assert _download(client, log, fmt, "original").text == FOUR_ORIGINAL[fmt]
 
     def test_unknown_version_is_rejected(self, client: TestClient, db_session: Session):
         log = _corrected_task(db_session)

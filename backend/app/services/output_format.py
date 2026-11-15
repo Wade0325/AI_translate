@@ -36,7 +36,9 @@
 
 四種格式由同一串行產生，說話者標記跟著任務的 Multi-Speaker 開關（#13 Q1，見
 :func:`shows_speaker_labels`）：開時寫成「[S0] 文字」；關時四種格式都不寫，片段照樣存說話者編號，
-沒有標記的行都算同一位說話者，不重疊也不上色（ADR-0008）。LRC 一行一個時間戳；TXT 只留文字；
+沒有標記的行都算同一位說話者，不重疊也不上色（ADR-0008）。校正後版本裡取了說話者名稱的說話者，標記寫名稱，
+例如「[王小明] 文字」（#359）；原始轉錄一律寫編號。每一行另外帶著說話者編號，字幕的重疊與上色看編號，
+不看標記的文字（見 :class:`_Line`），標記的文字到寫出時才決定（見 :func:`_label`）。LRC 一行一個時間戳；TXT 只留文字；
 SRT／VTT 另有結束時間，照實際說話的時間顯示（ADR-0008，規則見 :func:`_subtitles`）：不同說話者
 的字幕可以重疊，同一位說話者的不疊，每一行至少 0.8 秒，字幕依開始時間排序。有片段的任務和沒有
 片段的任務（從存下來的 LRC 轉換）用同一套規則。SRT／VTT 的開始時間取 LRC 時間戳的值（0.01 秒），
@@ -85,10 +87,10 @@ class Version(StrEnum):
     """下載哪一個版本（#346）。字串是下載端點的 ``version`` 參數，前端照它送，不要改既有的值。"""
 
     CORRECTED = "corrected"
-    """校正後版本：原始轉錄套上片段的校正（文字、說話者、刪掉的片段不在裡面）。下載端點的預設。
-    說話者名稱還沒寫進輸出，由 #359 加上。"""
+    """校正後版本：原始轉錄套上片段的校正（文字、說話者、刪掉的片段不在裡面），取了說話者名稱的說話者
+    標記寫名稱（#359）。下載端點的預設。"""
     ORIGINAL = "original"
-    """原始轉錄：校正之前由模型產生的版本，和校正做出來之前的下載逐位元組相同。"""
+    """原始轉錄：校正之前由模型產生的版本，和校正做出來之前的下載逐位元組相同；說話者標記一律寫編號。"""
 
 
 class OutputFiles(BaseModel):
@@ -116,14 +118,16 @@ def for_task(
     四種格式都是空字串，和 :func:`for_result` 相同（VTT 不只寫檔頭）。
 
     校正後版本的片段由 :meth:`CorrectionRepository.corrected_version` 算出，文字是空的（刪掉的）片段
-    不產生行；沒有校正的任務兩個版本相同。說話者標記照任務記下的 Multi-Speaker 開關
+    不產生行；說話者標記寫這個任務現在的說話者名稱（:meth:`CorrectionRepository.speaker_names`，#359），
+    沒取名字的說話者寫編號。沒有校正的任務兩個版本相同。說話者標記照任務記下的 Multi-Speaker 開關
     （:func:`shows_speaker_labels`），對著被下載的那個版本的片段產生。沒有片段的任務都在開關做出來
     之前，照以前從存下來的 LRC 轉換，兩個版本相同：任務完成時一定存了片段（見 :mod:`app.tasks.lifecycle`）。
     """
     segments = _segments(db, task, version)
     if segments:
-        lines = _lines(segments, labels=shows_speaker_labels(cast(Optional[bool], task.multi_speaker)))
-        return _render(lines, fmt) if lines else ""
+        names = CorrectionRepository.speaker_names(db, task.task_uuid) if version == Version.CORRECTED else {}
+        return for_segments(segments, fmt, speaker_labels=shows_speaker_labels(cast(Optional[bool], task.multi_speaker)),
+                            speaker_names=names)
     stored_lrc = HistoryRepository().resolve_lrc_content(db, task, backfill=True)
     if not stored_lrc:
         return None
@@ -137,23 +141,41 @@ def _segments(db: Session, task: TranscriptionLog, version: Version) -> List[Dic
     return TranscriptSegmentRepository.segments_for_task(db, task.task_uuid)
 
 
+def for_segments(
+    segments: Sequence[Mapping[str, Any]],
+    fmt: OutputFormat,
+    *,
+    speaker_labels: bool,
+    speaker_names: Optional[Mapping[str, str]] = None,
+) -> str:
+    """片段（形狀和 :meth:`TranscriptSegmentRepository.segments_for_task` 相同）的一種輸出格式。沒有任何一行時
+    是空字串。
+
+    ``speaker_labels`` 是帶不帶說話者標記（:func:`shows_speaker_labels`）。``speaker_names`` 是
+    {說話者編號: 說話者名稱}（#359）：帶標記時，有名稱的說話者寫「[名稱]」，其他的寫「[編號]」；字幕的重疊與
+    上色照樣看編號。不帶標記時名稱也不寫。
+    """
+    lines = _lines(segments, labels=speaker_labels)
+    return _render(lines, fmt, speaker_names or {}) if lines else ""
+
+
 def for_result(result: TranscriptionTaskResult, *, speaker_labels: bool = True) -> OutputFiles:
     """一份轉錄結果的四種輸出格式，任務完成時送給畫面。
 
     從片段產生，``speaker_labels`` 給任務的 Multi-Speaker 開關換算的值（:func:`shows_speaker_labels`）
     時和之後下載的內容相同；是 False 時四種格式都不帶說話者標記。轉錄結果的 text 不讀。沒有任何
-    一行時四種都是空的。
+    一行時四種都是空的。剛轉錄完還沒有說話者名稱，標記一律寫編號。
     """
     lines = _lines(result.segments, labels=speaker_labels)
     if not lines:
         return OutputFiles(lrc="", srt="", vtt="", txt="")
-    return OutputFiles(**{fmt.value: _render(lines, fmt) for fmt in OutputFormat})
+    return OutputFiles(**{fmt.value: _render(lines, fmt, {}) for fmt in OutputFormat})
 
 
 def frozen_copy(result: TranscriptionTaskResult) -> str:
     """凍結的原始轉錄副本（ADR-0007）：從片段產生的 LRC，不論 Multi-Speaker 開關都帶說話者標記，
     原始轉錄不少資訊（#13 Q1）；和開關開著時下載的 LRC 相同。沒有任何一行時是空字串。"""
-    return _render(_lines(result.segments, labels=True), OutputFormat.LRC)
+    return _render(_lines(result.segments, labels=True), OutputFormat.LRC, {})
 
 
 def shows_speaker_labels(multi_speaker: Optional[bool]) -> bool:
@@ -179,11 +201,14 @@ def convert_from_lrc(lrc_text: str) -> OutputFiles:
 
 @dataclass(frozen=True)
 class Cue:
-    """字幕的一行：開始時間（秒）、文字與真實結束時間（秒，不知道時是 None）。"""
+    """字幕的一行：開始時間（秒）、文字（帶說話者標記）與真實結束時間（秒，不知道時是 None）。"""
 
     time: float
     text: str
     end: Optional[float] = None
+    speaker: Optional[str] = None
+    """說話者編號，字幕的重疊與上色看它（見 :func:`_speaker`）。從存下來的 LRC 解析的行、不帶說話者標記的行
+    沒有（None），改看行首的說話者標記。"""
 
 
 _LRC_LINE_RE = re.compile(r"\[(\d{2,3}):(\d{2})\.(\d{2,3})\](.*)")
@@ -210,14 +235,17 @@ _CLAUSE_END_RE = re.compile(r"(?<=[、，,])")
 
 @dataclass(frozen=True)
 class _Line:
+    """一行：說的話與說話者編號分開帶著。說話者標記的文字（編號或說話者名稱）到寫出時才加上（:func:`_label`），
+    字幕的重疊與上色看說話者編號，取了名字也不變（#359、ADR-0008）。"""
+
     start: float
     """原音檔時間軸上的秒數。"""
     text: str
-    """帶說話者標記的文字。"""
+    """說的話，不帶說話者標記。"""
     end: Optional[float]
     """真實結束時間（原音檔時間軸上的秒數），不知道時是 None。"""
     speaker: Optional[str] = None
-    """說話者編號，例如 S0；沒有時是 None，text 也就沒有說話者標記。"""
+    """說話者編號，例如 S0；沒有時是 None，寫出時也就沒有說話者標記。"""
     words: Optional[Tuple[Mapping[str, Any], ...]] = None
     """這一行的逐字時間，依序對應 text 斷出來的詞；整段一行（沒有逐字時間）時是 None。"""
 
@@ -265,8 +293,12 @@ def _one_line(text: str) -> str:
     return _LINE_BREAK_RE.sub(" ", text).strip()
 
 
-def _labelled(speaker: Optional[str], text: str) -> str:
-    return f"[{speaker}] {text}" if speaker else text
+def _label(speaker: Optional[str], names: Mapping[str, str]) -> str:
+    """寫在行首的說話者標記，連同後面的空白：有說話者名稱時是「[名稱] 」，沒有時是「[S0] 」；沒有說話者時是空的。
+    說話者名稱不會有方括號與換行（寫入時擋，見 :mod:`app.api.transcripts`）。"""
+    if not speaker:
+        return ""
+    return f"[{names.get(speaker) or speaker}] "
 
 
 def _segment_lines(
@@ -299,7 +331,7 @@ def _segment_lines(
     絕對時間相減會多出浮點誤差）。去靜音剪掉的靜音若落在一句中間，量到的長度包含那段靜音，
     本機當時量的是剪掉之後的長度。
     """
-    whole = [_Line(segment_start, _labelled(speaker, text), segment_end, speaker)]
+    whole = [_Line(segment_start, text, segment_end, speaker)]
     if not words:
         return whole
 
@@ -321,7 +353,7 @@ def _segment_lines(
         # 每一段的最後一個詞在下一段的第一個詞前面；最後一段的是這一句的最後一個詞
         lasts = [first - 1 for _, first in pieces[1:]] + [offset + count - 1]
         for (piece, first), last in zip(pieces, lasts, strict=True):
-            lines.append(_Line(words[first]["start"], _labelled(speaker, piece.strip()),
+            lines.append(_Line(words[first]["start"], piece.strip(),
                                words[last]["end"], speaker, tuple(words[first:last + 1])))
         offset += count
     if pending and lines:
@@ -376,19 +408,21 @@ MAX_SUBTITLE_WIDTH_JAPANESE = 26.0
 _READING_MARKS = "、，,"
 
 
-def _subtitle_pieces(line: _Line) -> List[_Line]:
-    """一行在 SRT／VTT 裡拆成的字幕（#12）：字寬（見 :func:`_width`，連同行首的說話者標記）超過
-    上限時，用逐字時間拆成數則，每則都帶說話者標記，時間是它第一個詞的開始到最後一個詞的結束；
+def _subtitle_pieces(line: _Line, label: str) -> List[_Line]:
+    """一行在 SRT／VTT 裡拆成的字幕（#12）：字寬（見 :func:`_width`，連同行首的說話者標記 ``label``）超過
+    上限時，用逐字時間拆成數則，寫出時每則都帶說話者標記，時間是它第一個詞的開始到最後一個詞的結束；
     之後的結束時間照 :func:`_subtitles` 的規則。切點見 :func:`_cut`，拆完還超過上限的段再拆，
     直到不超過或沒有切點。
+
+    用日文的上限與否看說的話有沒有假名，不看說話者名稱（#359）。說話者名稱很長、標記佔掉上限一半以上時，
+    說的話照樣有一半的字寬，不會拆成一詞一則。
 
     沒有逐字時間的行（Gemini、整段一行、沒有片段的任務）不拆：拆了只能猜時間。
     """
     limit = MAX_SUBTITLE_WIDTH_JAPANESE if _has_kana(line.text) else MAX_SUBTITLE_WIDTH
-    if line.words is None or _width(line.text) <= limit:
+    if line.words is None or _width(label + line.text) <= limit:
         return [line]
-    label = _labelled(line.speaker, "") if line.speaker else ""
-    pieces = _split_to_width(line.text[len(label):], limit - _width(label))
+    pieces = _split_to_width(line.text, max(limit - _width(label), limit / 2))
     counts = [_count_words(piece) for piece in pieces]
     if len(pieces) == 1 or sum(counts) != len(line.words):
         return [line]
@@ -396,8 +430,7 @@ def _subtitle_pieces(line: _Line) -> List[_Line]:
     first = 0
     for piece, count in zip(pieces, counts, strict=True):
         words = line.words[first:first + count]
-        subtitles.append(_Line(words[0]["start"], label + piece, words[-1]["end"],
-                               line.speaker, words))
+        subtitles.append(_Line(words[0]["start"], piece, words[-1]["end"], line.speaker, words))
         first += count
     return subtitles
 
@@ -477,17 +510,20 @@ def _is_hiragana(char: str) -> bool:
 
 # ─── 行 → 檔案內容 ───────────────────────────────────────────────────────────
 
-def _render(lines: Sequence[_Line], fmt: OutputFormat) -> str:
+def _render(lines: Sequence[_Line], fmt: OutputFormat, names: Mapping[str, str]) -> str:
+    """行寫成檔案內容；說話者標記在這裡才加上，``names`` 是 {說話者編號: 說話者名稱}（見 :func:`_label`）。"""
     if fmt == OutputFormat.LRC:
-        return "\n".join(_lrc_timestamp(line.start) + line.text for line in lines)
+        return "\n".join(_lrc_timestamp(line.start) + _label(line.speaker, names) + line.text for line in lines)
     if fmt == OutputFormat.TXT:
-        return _txt(_cues(lines))
-    subtitles = _cues([piece for line in lines for piece in _subtitle_pieces(line)])
+        return _txt(_cues(lines, names))
+    pieces = [piece for line in lines for piece in _subtitle_pieces(line, _label(line.speaker, names))]
+    subtitles = _cues(pieces, names)
     return _srt(subtitles) if fmt == OutputFormat.SRT else _vtt(subtitles)
 
 
-def _cues(lines: Sequence[_Line]) -> List[Cue]:
-    return [Cue(_lrc_seconds(line.start), line.text.strip(), line.end) for line in lines]
+def _cues(lines: Sequence[_Line], names: Mapping[str, str]) -> List[Cue]:
+    return [Cue(_lrc_seconds(line.start), (_label(line.speaker, names) + line.text).strip(), line.end, line.speaker)
+            for line in lines]
 
 
 def _lrc_timestamp(seconds: float) -> str:
@@ -537,8 +573,8 @@ _LAST_LINE_SECONDS = 5.0
 """沒有真實結束時間時，最後一行顯示的秒數（以前的規則）。"""
 
 
-def _subtitles(cues: Sequence[Cue]) -> List[Tuple[str, int, int]]:
-    """SRT／VTT 的每一行：(文字, 開始, 結束)，時間是毫秒，依開始時間排序（ADR-0008）。
+def _subtitles(cues: Sequence[Cue]) -> List[Tuple[Cue, int, int]]:
+    """SRT／VTT 的每一行：(行, 開始, 結束)，時間是毫秒，依開始時間排序（ADR-0008）。
 
     WebVTT 規定字幕依開始時間排列，SRT 照做。行依片段的開始排序，一個片段斷成的幾行可能和別人
     的片段交錯，所以這裡重新排序，同時開始的行照原本的順序；LRC、TXT 照片段的順序，不排序。
@@ -551,8 +587,8 @@ def _subtitles(cues: Sequence[Cue]) -> List[Tuple[str, int, int]]:
        字幕可以重疊，靠說話者標記分辨。沒有真實結束時間（沒有片段的任務、片段沒有結束時間）時
        照以前，顯示到下一行（任何人的）開始，最後一行加 :data:`_LAST_LINE_SECONDS`。
     2. 至少顯示 :data:`MIN_CUE_SECONDS`；真實結束時間是零長度或顛倒時，就顯示這麼久。
-    3. 同一位說話者的字幕不疊：不晚於他自己下一行的開始（說話者見 :func:`_speaker`）。同一位
-       說話者緊接著說下一句時，這一行因此可能不到 0.8 秒。
+    3. 同一位說話者的字幕不疊：不晚於他自己下一行的開始（說話者見 :func:`_speaker`，看說話者編號，
+       取了說話者名稱也一樣）。同一位說話者緊接著說下一句時，這一行因此可能不到 0.8 秒。
 
     沒有說話者標記的行都算同一位說話者，所以沒有說話者標記、也沒有真實結束時間的輸出和以前逐字
     相同；只有開始時間倒退或重複的行不同，以前會輸出開始晚於結束、或零長度的字幕。
@@ -568,7 +604,7 @@ def _subtitles(cues: Sequence[Cue]) -> List[Tuple[str, int, int]]:
     for speaker, start in zip(speakers, starts, strict=True):
         starts_by_speaker.setdefault(speaker, []).append(start)
 
-    subtitles: List[Tuple[str, int, int]] = []
+    subtitles: List[Tuple[Cue, int, int]] = []
     for cue, start, speaker in zip(ordered, starts, speakers, strict=True):
         next_start = _first_after(starts, start)
         if cue.end is not None:
@@ -581,7 +617,7 @@ def _subtitles(cues: Sequence[Cue]) -> List[Tuple[str, int, int]]:
         own_next_start = _first_after(starts_by_speaker[speaker], start)
         if own_next_start is not None:
             end = min(end, own_next_start)
-        subtitles.append((cue.text, start, end))
+        subtitles.append((cue, start, end))
     return subtitles
 
 
@@ -592,13 +628,21 @@ def _first_after(sorted_starts: Sequence[int], start: int) -> Optional[int]:
 
 
 _SPEAKER_LABEL_RE = re.compile(r"\[S\d+\]|Speaker\s*(?:[0-9]+|[A-Z])\s*[:：]")
+_SPEAKER_ID_RE = re.compile(r"S(\d+)")
+"""轉錄時產生的說話者編號：S 加數字。"""
 
 
 def _speaker(cue: Cue) -> Optional[str]:
-    """這一行的說話者，看行首的說話者標記：[S0]，或存下來的 Gemini LRC 裡的「Speaker 1:」
-    （空白與全形冒號不計）。同一個標記就是同一位說話者；沒有標記時是 None，這些行都算同一位。"""
+    """這一行的說話者。同一個值就是同一位說話者；None 時這些行都算同一位。
+
+    有說話者編號的行（從片段產生、帶說話者標記的行）看編號，取了說話者名稱也一樣（#359）；不是 S 加數字的編號
+    當成 None，和以前看行首的「[編號]」時相同。沒有編號的行（存下來的 LRC、不帶說話者標記的行）看行首的說話者
+    標記：[S0]，或存下來的 Gemini LRC 裡的「Speaker 1:」（方括號、空白與全形冒號不計，[S0] 和編號 S0 相同）。
+    """
+    if cue.speaker is not None:
+        return cue.speaker if _SPEAKER_ID_RE.fullmatch(cue.speaker) else None
     match = _SPEAKER_LABEL_RE.match(cue.text)
-    return re.sub(r"[\s:：]", "", match.group(0)) if match else None
+    return re.sub(r"[\s:：\[\]]", "", match.group(0)) if match else None
 
 
 SPEAKER_COLORS: Tuple[Optional[str], ...] = (None, "#FFDD55", "#66CCFF", "#7FE0A0")
@@ -606,7 +650,8 @@ SPEAKER_COLORS: Tuple[Optional[str], ...] = (None, "#FFDD55", "#66CCFF", "#7FE0A
 S1、S5… 黃，S2、S6… 青，S3、S7… 綠。照 BBC Subtitle Guidelines §8.3 的順序（白、黃、青、綠）
 把純色調柔：對黑色的對比 11.6:1 以上，兩色之間的色差（CIEDE2000）一般視覺 25 以上、紅綠色弱
 13 以上，純色在紅色弱的眼裡黃和綠只差 4。顏色只看行首的 [Sn]：Gemini 舊 LRC 的「Speaker 1:」
-與沒有標記的行都不上色。VTT 用不了這些顏色，改用 :data:`VTT_COLOR_CLASSES`。"""
+與沒有標記的行都不上色；取了說話者名稱的行照它的說話者編號上色（#359）。VTT 用不了這些顏色，改用
+:data:`VTT_COLOR_CLASSES`。"""
 
 VTT_COLOR_CLASSES: Tuple[Optional[str], ...] = (None, "yellow", "cyan", "lime")
 """VTT 的說話者顏色（#271）：WebVTT 規格預設的顏色類別（§5.1 Default text colors），和
@@ -617,9 +662,13 @@ S3 綠（lime，規格說它就是字幕慣稱的 green）。這些是純色，�
 _APP_LABEL_RE = re.compile(r"\[S(\d+)\]")
 
 
-def _color_index(text: str) -> int:
-    """這一行在 :data:`SPEAKER_COLORS` 裡的位置；0 是白色，不上色。"""
-    match = _APP_LABEL_RE.match(text)
+def _color_index(cue: Cue) -> int:
+    """這一行在 :data:`SPEAKER_COLORS` 裡的位置；0 是白色，不上色。看的和 :func:`_speaker` 相同：有說話者編號
+    時看編號（取了說話者名稱也一樣），沒有時看行首的 [Sn]。"""
+    if cue.speaker is not None:
+        match = _SPEAKER_ID_RE.fullmatch(cue.speaker)
+    else:
+        match = _APP_LABEL_RE.match(cue.text)
     return int(match.group(1)) % len(SPEAKER_COLORS) if match else 0
 
 
@@ -632,9 +681,9 @@ def _srt(cues: Sequence[Cue]) -> str:
     寫不出來的只有字面上的格式標籤：文字裡的 ``<i>…</i>`` 這類標籤，播放器一律當成格式。
     """
     blocks: List[str] = []
-    for number, (text, start, end) in enumerate(_subtitles(cues), start=1):
-        color = SPEAKER_COLORS[_color_index(text)]
-        colored = f'<font color="{color}">{text}</font>' if color else text
+    for number, (cue, start, end) in enumerate(_subtitles(cues), start=1):
+        color = SPEAKER_COLORS[_color_index(cue)]
+        colored = f'<font color="{color}">{cue.text}</font>' if color else cue.text
         blocks += [str(number), f"{_timestamp(start, ',')} --> {_timestamp(end, ',')}", colored, ""]
     return "\n".join(blocks)
 
@@ -650,13 +699,13 @@ def _vtt(cues: Sequence[Cue]) -> str:
 
     文字依 WebVTT 規格跳脫（#24）：字幕文字裡的 & 與 < 要寫成字元參照（§4.2.2），字幕內容
     不能有「-->」（§4.1），所以 &、<、> 寫成 &amp;、&lt;、&gt;。沒跳脫時，Chromium 與 ffmpeg
-    都把 ``<笑>`` 當成標籤吃掉；Chromium 遇到「-->」整則字幕的文字都不見。說話者與顏色看的是
-    跳脫前的文字。
+    都把 ``<笑>`` 當成標籤吃掉；Chromium 遇到「-->」整則字幕的文字都不見。說話者名稱跟著文字一起跳脫（#359）。
+    說話者與顏色看的是說話者編號，或跳脫前的文字。
     """
     blocks = ["WEBVTT", ""]
-    for text, start, end in _subtitles(cues):
-        escaped = html.escape(text, quote=False)
-        color = VTT_COLOR_CLASSES[_color_index(text)]
+    for cue, start, end in _subtitles(cues):
+        escaped = html.escape(cue.text, quote=False)
+        color = VTT_COLOR_CLASSES[_color_index(cue)]
         blocks += [f"{_timestamp(start, '.')} --> {_timestamp(end, '.')}",
                    f"<c.{color}>{escaped}</c>" if color else escaped, ""]
     return "\n".join(blocks)

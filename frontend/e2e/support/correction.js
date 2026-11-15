@@ -1,5 +1,7 @@
+import { reply } from './backend.js'
+
 /**
- * 校正頁的瀏覽器測試共用的假資料：片段、轉錄文件、保留音檔，以及記得每次校正的假後端（#347、#348、#354）。
+ * 校正頁的瀏覽器測試共用的假資料：片段、轉錄文件、保留音檔，以及記得每次校正的假後端（#347、#348、#354、#359）。
  *
  * 形狀照 backend/app/schemas/schemas.py 的 TranscriptResponse 與 TranscriptSegmentResponse；欄位一改名，這裡要跟著改。
  */
@@ -124,25 +126,35 @@ function replaceText(text, find, replacement) {
 }
 
 /**
- * 記得每次校正的假後端（#348、#354、#355、#356）：照 ADR 0011 的規則，每次校正記一筆校正紀錄（和現在的內容相同的
- * 不記），校正後版本由原始轉錄加上最新的紀錄算出來，GET、PATCH、把這位說話者全部換成另一位、全部取代、復原與片段的
- * 歷程讀的都是同一份。「整份當成同一位說話者」的切換是任務的設定，記在 settings，不留紀錄。回傳的 routes 交給
- * mockBackend；records 是記下的紀錄，settings 是任務的設定，給測試檢查；bulk 直接記一次改很多個片段的操作，回傳
+ * 記得每次校正的假後端（#348、#354、#355、#356、#359）：照 ADR 0011 的規則，每次校正記一筆校正紀錄（和現在的內容相同的
+ * 不記），校正後版本由原始轉錄加上最新的紀錄算出來，GET、PATCH、把這位說話者全部換成另一位、全部取代、取說話者名稱、
+ * 復原與片段的歷程讀的都是同一份。「整份當成同一位說話者」的切換是任務的設定，記在 settings，不留紀錄。回傳的 routes
+ * 交給 mockBackend；records 是記下的紀錄，settings 是任務的設定，給測試檢查；bulk 直接記一次改很多個片段的操作，回傳
  * 操作編號。
+ *
+ * 說話者名稱的紀錄（field 是 speaker_name）的對象是說話者編號，記在 seg_key；同一個任務裡重複的名稱（英文不分大小寫）
+ * 回 409，和後端一樣寫明是哪一位已經用了。
  *
  * @param {ReturnType<typeof segment>[]} segments 原始轉錄
  */
 export function correctionsBackend(segments, fields = {}) {
     const originals = new Map(segments.map((s) => [s.seg_key, s]))
     const settings = { single_speaker: Boolean(fields.single_speaker) }
-    /** @type {{ id: number, seg_key: string, field: 'text' | 'speaker', before: string | null, after: string | null,
-     *   operation_id: string, created_at: string }[]} */
+    /** @type {{ id: number, seg_key: string, field: 'text' | 'speaker' | 'speaker_name', before: string | null,
+     *   after: string | null, operation_id: string, created_at: string }[]} */
     const records = []
     let operations = 0
 
     const current = (segKey, field) => {
         const latest = records.findLast((r) => r.seg_key === segKey && r.field === field)
-        return latest ? latest.after : originals.get(segKey)[field]
+        if (latest) return latest.after
+        return field === 'speaker_name' ? '' : originals.get(segKey)[field]
+    }
+    /** 這個任務現在的說話者名稱：{說話者編號: 名稱}，只列取了名字的。 */
+    const speakerNames = () => {
+        const names = {}
+        for (const r of records) if (r.field === 'speaker_name') names[r.seg_key] = r.after
+        return Object.fromEntries(Object.entries(names).filter(([, name]) => name))
     }
     const view = (segKey) => {
         const original = originals.get(segKey)
@@ -179,6 +191,7 @@ export function correctionsBackend(segments, fields = {}) {
 
     const nextSpeaker = () => nextSpeakerOf([
         ...segments.map((s) => s.speaker), ...records.filter((r) => r.field === 'speaker').map((r) => r.after),
+        ...records.filter((r) => r.field === 'speaker_name').map((r) => r.seg_key),
     ])
 
     return {
@@ -192,8 +205,23 @@ export function correctionsBackend(segments, fields = {}) {
         },
         routes: {
             'GET /transcripts/task-1': () => transcript('task-1', segments.map((s) => view(s.seg_key)), {
-                ...fields, ...settings, next_speaker: nextSpeaker(),
+                ...fields, ...settings, next_speaker: nextSpeaker(), speaker_names: speakerNames(),
             }),
+            'PUT /transcripts/task-1/speakers/:speaker/name': ({ params, body }) => {
+                const name = body.name.trim()
+                const taken = Object.entries(speakerNames())
+                    .find(([speaker, other]) => speaker !== params.speaker && other.toLowerCase() === name.toLowerCase())
+                if (name && taken) {
+                    return reply(409, { detail: `${taken[0]} 已經叫「${taken[1]}」：同一個任務裡兩位說話者不能取同一個名稱` })
+                }
+                const operationId = `op-${operations += 1}`
+                const recorded = record(params.speaker, 'speaker_name', name, operationId)
+                const names = speakerNames()
+                return {
+                    operation_id: recorded ? operationId : null, speaker: params.speaker, name: names[params.speaker] ?? null,
+                    speaker_names: names,
+                }
+            },
             'PATCH /transcripts/task-1': ({ body }) => {
                 settings.single_speaker = body.single_speaker
                 return { ...settings }
@@ -240,10 +268,10 @@ export function correctionsBackend(segments, fields = {}) {
                     record(r.seg_key, r.field, r.before, undoId)
                     restored += 1
                 }
-                const segKeys = [...new Set(undone.map((r) => r.seg_key))]
+                const segKeys = [...new Set(undone.filter((r) => r.field !== 'speaker_name').map((r) => r.seg_key))]
                 return {
                     restored, skipped: undone.length - restored, operation_id: restored ? undoId : null,
-                    segments: segKeys.map(view),
+                    segments: segKeys.map(view), speaker_names: speakerNames(),
                 }
             },
             'GET /transcripts/task-1/segments/:seg_key/correction-records': ({ params }) => {

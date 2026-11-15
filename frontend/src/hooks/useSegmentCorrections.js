@@ -11,7 +11,7 @@ import {
   savesReducer,
   undoMessage,
 } from '../utils/segmentCorrections';
-import { nextSpeakerAfter, reassignMessage } from '../utils/speakers';
+import { nextSpeakerAfter, reassignMessage, renameMessage } from '../utils/speakers';
 
 /** 「已存」顯示幾毫秒之後收起來。 */
 const SAVED_SHOWN_MS = 3000;
@@ -28,9 +28,9 @@ const SAVED_LABEL = '已存檔';
  */
 
 /**
- * 校正頁改文字、刪掉與還原片段（#348）、改說話者（#354），以及全部取代（#356）：片段的校正後版本、每個片段的
- * 存檔狀態、正在改哪一個片段、新的說話者編號，以及剛存的那一次操作（「已存檔，復原」用）。校正的歷程（#355）：
- * 讀一個片段的歷程、回到某一版、整批復原。
+ * 校正頁改文字、刪掉與還原片段（#348）、改說話者（#354）、全部取代（#356），以及替說話者取名字（#359）：片段的
+ * 校正後版本、每個片段的存檔狀態、正在改哪一個片段、新的說話者編號、說話者名稱，以及剛存的那一次操作（「已存檔，
+ * 復原」用）。校正的歷程（#355）：讀一個片段的歷程、回到某一版、整批復原。
  *
  * 每一次校正就是一個請求，存檔的結果（後端回的片段新內容）直接換進列表。actions 裡的函式身分不變，片段列表的
  * 每一列可以照常用 memo，只有改到的那幾列重畫。
@@ -38,18 +38,20 @@ const SAVED_LABEL = '已存檔';
  * @param {string} taskUuid
  * @param {import('../utils/segmentCorrections').Segment[]} initialSegments GET /transcripts/{task_uuid} 的片段
  * @param {string} [initialNextSpeaker] GET /transcripts/{task_uuid} 的 next_speaker（新的說話者編號）
+ * @param {import('../utils/speakers').SpeakerNames} [initialSpeakerNames] GET /transcripts/{task_uuid} 的 speaker_names
  */
-export function useSegmentCorrections(taskUuid, initialSegments, initialNextSpeaker = 'S0') {
+export function useSegmentCorrections(taskUuid, initialSegments, initialNextSpeaker = 'S0', initialSpeakerNames = {}) {
   const [segments, setSegments] = useState(initialSegments);
   const [saves, dispatch] = useReducer(savesReducer, {});
   const [editing, setEditing] = useState(/** @type {import('../utils/segmentCorrections').Editing | null} */ (null));
   const [lastOperation, setLastOperation] = useState(/** @type {LastOperation | null} */ (null));
   const [nextSpeaker, setNextSpeaker] = useState(() => nextSpeakerAfter(initialNextSpeaker, initialSegments));
+  const [speakerNames, setSpeakerNames] = useState(initialSpeakerNames);
 
   // 事件處理讀最新的內容：actions 的身分才能不變（每改一次就換一份函式，列表的每一列都得重畫）
-  const latest = useRef({ segments, saves, editing, lastOperation });
+  const latest = useRef({ segments, saves, editing, lastOperation, speakerNames });
   useLayoutEffect(() => {
-    latest.current = { segments, saves, editing, lastOperation };
+    latest.current = { segments, saves, editing, lastOperation, speakerNames };
   });
 
   const settleTimers = useRef(/** @type {Map<string, ReturnType<typeof setTimeout>>} */ (new Map()));
@@ -134,6 +136,8 @@ export function useSegmentCorrections(taskUuid, initialSegments, initialNextSpea
         const result = await api.transcripts.undo(taskUuid, operationId);
         applySegments(result.segments);
         dropEditingIn(result.segments);
+        // 復原的是取名字時，名稱跟著回去（#359）
+        if (result.speaker_names) setSpeakerNames(result.speaker_names);
         const { type, content } = messageOf(result);
         message[type](content);
         return result;
@@ -220,12 +224,38 @@ export function useSegmentCorrections(taskUuid, initialSegments, initialNextSpea
           const result = await api.transcripts.reassignSpeaker(taskUuid, fromSpeaker, toSpeaker);
           applySegments(result.segments);
           if (result.operation_id) {
-            setLastOperation({ id: result.operation_id, label: reassignMessage(result.changed, toSpeaker) });
+            setLastOperation({
+              id: result.operation_id,
+              label: reassignMessage(result.changed, toSpeaker, latest.current.speakerNames),
+            });
           } else {
             message.info('沒有要換的片段');
           }
         } catch (error) {
           message.error(`沒有換：${saveFailureMessage(error)}`);
+        }
+      },
+
+      /**
+       * 替說話者取名字（#359）：name 是空的時清掉，回到顯示說話者編號。一次校正，存完出現「已把 S0 叫做「王小明」，
+       * 復原」，這位說話者的所有片段一起換成新名稱。回 null 表示存好了（或名稱沒變）；沒存時回寫給使用者看的原因，
+       * 例如另一位說話者已經用了這個名稱，取名字的輸入框把它寫出來。
+       *
+       * @param {string} speaker 說話者編號
+       * @param {string} name
+       * @returns {Promise<string | null>}
+       */
+      async renameSpeaker(speaker, name) {
+        setLastOperation(null);
+        try {
+          const result = await api.transcripts.setSpeakerName(taskUuid, speaker, name);
+          setSpeakerNames(result.speaker_names);
+          if (result.operation_id) {
+            setLastOperation({ id: result.operation_id, label: renameMessage(speaker, result.name) });
+          }
+          return null;
+        } catch (error) {
+          return saveFailureMessage(error);
         }
       },
 
@@ -296,5 +326,5 @@ export function useSegmentCorrections(taskUuid, initialSegments, initialNextSpea
     };
   }, [taskUuid]);
 
-  return { segments, saves, editing, lastOperation, nextSpeaker, actions };
+  return { segments, saves, editing, lastOperation, nextSpeaker, speakerNames, actions };
 }
