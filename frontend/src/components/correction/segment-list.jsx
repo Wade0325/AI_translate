@@ -30,6 +30,9 @@ function fullyVisible(container, index) {
  * 觸控、拖捲軸、鍵盤）時呼叫 onUserScroll，由頁面停止跟著播放，不把畫面搶回去；在文字框裡打字用的
  * 空白鍵與方向鍵不算捲動。用快捷鍵換到的片段（reveal）不在看得到的範圍時捲到看得到。
  *
+ * 尋找（#356）：matches 是每個符合的片段裡符合的字（鍵是 seg_key），currentMatch 是現在跳到的那一個；revealMatch
+ * （在 segments 裡的位置）換成新的物件時，把那一列捲到列表中間（沒畫出來的片段也找得到）。
+ *
  * @param {{
  *   segments: any[],
  *   visible: number[],
@@ -46,13 +49,23 @@ function fullyVisible(container, index) {
  *   editing: import("@/utils/segmentCorrections").Editing | null,
  *   saves: import("@/utils/segmentCorrections").Saves,
  *   actions: import("./correction-view").RowActions,
+ *   matches: Map<string, import("@/utils/segmentSearch").TextRange[]>,
+ *   currentMatch: string | null,
+ *   revealMatch: { index: number } | null,
+ *   ref?: import("react").Ref<HTMLDivElement>,
  * }} props
  */
 export function SegmentList({
     segments, visible, currentIndex, reveal, emptyText,
     activeSet, activeWords, followIndex, following, canPlay, onUserScroll, onSeek, editing, saves, actions,
+    matches, currentMatch, revealMatch, ref,
 }) {
     const containerRef = useRef(/** @type {HTMLDivElement | null} */ (null))
+    const setContainer = useCallback((element) => {
+        containerRef.current = element
+        if (typeof ref === "function") ref(element)
+        else if (ref) ref.current = element
+    }, [ref])
     /** 片段在 segments 裡的位置 → 在列表裡的第幾列；篩選掉的不在裡面。 */
     const rowOf = useMemo(() => new Map(visible.map((index, row) => [index, row])), [visible])
     const editingIndex = useMemo(() => {
@@ -114,9 +127,19 @@ export function SegmentList({
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [reveal])
 
+    // 尋找跳到的片段：沒有整列看得到時捲到列表中間（沒畫出來的片段也找得到）
+    useEffect(() => {
+        const container = containerRef.current
+        const row = revealMatch ? rowOf.get(revealMatch.index) ?? -1 : -1
+        if (row < 0 || !container) return
+        if (!fullyVisible(container, row)) virtualizer.scrollToIndex(row, { align: "center" })
+        // 只在跳到下一個符合的片段（revealMatch 換了一個新的）時捲
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [revealMatch])
+
     return (
         <div
-            ref={containerRef}
+            ref={setContainer}
             tabIndex={0}
             aria-label="片段列表"
             // 撐滿外層（position: relative 的那一格）：高度不靠百分比，外層的高度由 flex 算出來，
@@ -147,6 +170,8 @@ export function SegmentList({
                                 editing={item.index === editingIndex ? editing : null}
                                 save={saves[segment.seg_key]}
                                 actions={actions}
+                                matchRanges={matches.get(segment.seg_key)}
+                                currentMatch={segment.seg_key === currentMatch}
                             />
                         </div>
                     )

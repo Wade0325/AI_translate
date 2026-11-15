@@ -31,7 +31,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
-from typing import Any, Collection, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple, cast
+from typing import Any, Callable, Collection, Dict, Iterable, Iterator, List, Mapping, Optional, Sequence, Set, Tuple, cast
 
 from sqlalchemy import case, distinct, func, update
 from sqlalchemy.orm import Session
@@ -76,6 +76,32 @@ class Correction:
     target: str
     field: CorrectionField
     new_value: Optional[str]
+
+
+@dataclass(frozen=True)
+class SegmentContent:
+    """寫校正紀錄時，一個片段現在的內容（鎖住任務之後讀的）：校正後版本的文字，以及原始轉錄的文字。
+    文字的「沒有」是空字串，和校正後版本相同。之後一次改很多個片段的說話者（#354）要用時再加說話者。
+    """
+
+    seg_key: str
+    text: str
+    original_text: str
+
+    @property
+    def deleted(self) -> bool:
+        """刪掉的片段（文字是空的，只有空白也算）。"""
+        return _is_deleted(self.text)
+
+
+@dataclass(frozen=True)
+class OperationResult:
+    """一次改很多個片段的操作的結果。"""
+
+    operation_id: Optional[uuid.UUID]
+    """這次操作的操作編號；一筆都沒有記時是 None。"""
+    seg_keys: Tuple[str, ...] = ()
+    """記了校正紀錄的片段的鍵，依 seq 排序；和現在的內容相同、沒有記的不在內。"""
 
 
 @dataclass(frozen=True)
@@ -265,6 +291,15 @@ class _CurrentContent:
             original = cast(Optional[str], segment.speaker)
         return _current(self._latest, key, original)
 
+    def segments(self) -> Iterator[SegmentContent]:
+        """每個片段現在的內容，依 seq 排序；同一次操作裡已經記下的紀錄也算進去。"""
+        for seg_key in list(self._segments):
+            yield SegmentContent(
+                seg_key=seg_key,
+                text=self.value((CorrectionField.TEXT, seg_key)) or "",
+                original_text=cast(Optional[str], self._segments[seg_key].text) or "",
+            )
+
     def review_state(self, seg_key: str) -> Optional[ReviewState]:
         """片段現在的確認狀態；沒有標是 None（資料庫裡的 NULL 與空字串都算沒有標）。"""
         if seg_key not in self._segments:
@@ -377,6 +412,28 @@ class CorrectionRepository:
                        if seg_key in wanted and content.review_state(seg_key) == only_if]
             content.set_review_states(changed, review_state)
         return changed
+
+    @staticmethod
+    def record_operation_over_segments(db: Session, task_uuid,
+                                       plan: Callable[[SegmentContent], Iterable[Correction]],
+                                       ) -> OperationResult:
+        """一次改很多個片段的操作（全部取代，#356）：鎖住任務之後，依 seq 把每個片段現在的內容交給
+        ``plan``，``plan`` 回的校正有變的各記一筆，共用一個新的操作編號，在同一個交易裡寫完並 commit。
+        結果和現在的內容相同的片段不記；一筆都沒有記時沒有操作編號。
+
+        ``plan`` 看到的是鎖住任務之後讀的內容，所以比對與取代都以寫入當下的內容為準，不會蓋掉剛存的另一次
+        校正。``plan`` 丟出例外時什麼都不記，例外照樣丟出；任務紀錄不在、或 ``plan`` 回了不在這個任務裡
+        的片段時丟 ``ValueError``。
+        """
+        operation_id = uuid.uuid4()
+        with _CurrentContent(db, _task_uuid(task_uuid)) as content:
+            for segment in content.segments():
+                for correction in plan(segment):
+                    content.change((CorrectionField(correction.field), correction.target),
+                                   correction.new_value, operation_id)
+            seg_keys = tuple(dict.fromkeys(str(r.target) for r in content.recorded
+                                           if CorrectionField(r.field) in SEGMENT_FIELDS))
+        return OperationResult(operation_id=operation_id if content.recorded else None, seg_keys=seg_keys)
 
     @staticmethod
     def undo_operation(db: Session, task_uuid, operation_id) -> Optional[UndoResult]:

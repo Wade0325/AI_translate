@@ -311,6 +311,27 @@ class ReviewStatesResponse(BaseModel):
     """實際改到的片段，依 seq 排序。"""
 
 
+class ReplaceAllRequest(BaseModel):
+    """POST /transcripts/{task_uuid}/replace-all（#356）：把校正後版本裡每一處 find 換成 replacement。
+    比對的規則見 ``app.core.text_replacement``；replacement 可以是空字串。"""
+    model_config = ConfigDict(extra="forbid")
+
+    find: str
+    replacement: str = ""
+
+
+class ReplaceAllResponse(BaseModel):
+    """全部取代的結果：實際改到的片段數與處數（結果和原本相同的片段不算），以及那些片段的新內容。"""
+    operation_id: Optional[UUID] = None
+    """這次全部取代的操作編號（整批復原時用）；一個片段都沒有改到時是 None。"""
+    changed_segments: int
+    """實際改到幾個片段。"""
+    occurrences: int
+    """改到的片段裡一共換了幾處。"""
+    segments: List[TranscriptSegmentResponse] = []
+    """改到的片段的新內容，依 seq 排序。"""
+
+
 class CorrectionRecordResponse(BaseModel):
     """一筆校正紀錄（校正的歷程，#355）。"""
     id: int

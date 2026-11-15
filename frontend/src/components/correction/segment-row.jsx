@@ -5,6 +5,7 @@ import { formatClock } from "@/utils/formatters"
 import { wordPieces } from "@/utils/playhead"
 import { FLAGGED, VERIFIED } from "@/utils/reviewStates"
 import { isUserDeleted, keepEditorFocus, shownText } from "@/utils/segmentCorrections"
+import { splitByMatches } from "@/utils/segmentSearch"
 import { SegmentEditor } from "./segment-editor"
 import { SegmentHistory } from "./segment-history"
 
@@ -94,6 +95,21 @@ function selectionIn(container) {
 }
 
 /**
+ * 一段文字裡符合尋找的字標出來（#356）；沒有符合的字時照原樣。
+ *
+ * @param {string} text
+ * @param {import("@/utils/segmentSearch").TextRange[] | undefined} ranges 整個片段文字裡符合的字
+ * @param {string} className 符合的字的 class
+ * @param {number} [offset] text 在片段文字裡的開始位置
+ */
+function marked(text, ranges, className, offset = 0) {
+    if (!ranges) return text
+    return splitByMatches(text, ranges, offset).map((part, i) => (
+        part.match ? <mark key={i} className={className}>{part.text}</mark> : part.text
+    ))
+}
+
+/**
  * 片段列表的一列：開始時間、說話者與文字（#347），以及改文字、刪掉與還原（#348）。
  *
  * - 播放到這段時反白；有逐字時間時標出正在唸的字。點時間從片段的開頭播。
@@ -105,6 +121,7 @@ function selectionIn(container) {
  * - 確認狀態（#349）：已確認與待查各一個按鈕，按一下標上，再按一次清掉；和校正互不影響。用滑鼠按時不拿走焦點：
  *   焦點留在按鈕上時，接著按空白鍵會再按一次這個按鈕，不是播放。
  * - 目前這個片段（快捷鍵作用的片段，#349）加一圈框。點這一列的任何地方，這一列就是目前這個片段。
+ * - 尋找時標出符合的字（#356），現在跳到的那個片段標得更明顯。
  *
  * 播放時頁面每一格畫面都重畫，這裡用 memo：只有反白、正在唸的字、存檔狀態或內容變了的那幾列才重畫。
  *
@@ -120,9 +137,13 @@ function selectionIn(container) {
  *   editing: import("@/utils/segmentCorrections").Editing | null,
  *   save: import("@/utils/segmentCorrections").SaveState | undefined,
  *   actions: import("./correction-view").RowActions,
+ *   matchRanges?: import("@/utils/segmentSearch").TextRange[],
+ *   currentMatch?: boolean,
  * }} props
  */
-function SegmentRowView({ segment, active, current, activeWord, canPlay, onSeek, editing, save, actions }) {
+function SegmentRowView({
+    segment, active, current, activeWord, canPlay, onSeek, editing, save, actions, matchRanges, currentMatch,
+}) {
     const [expanded, setExpanded] = useState(false)
     const key = segment.seg_key
     const deleted = isUserDeleted(segment)
@@ -132,6 +153,9 @@ function SegmentRowView({ segment, active, current, activeWord, canPlay, onSeek,
         () => (deleted || text !== segment.text ? null : wordPieces(segment.text, segment.words)),
         [deleted, text, segment],
     )
+    // 找的是校正後版本的文字：存檔中與失敗時寫的是送出的內容，對不上，不標
+    const matchesShown = !deleted && text === segment.text ? matchRanges : undefined
+    const matchClass = currentMatch ? "correction-match correction-match-current" : "correction-match"
     const clock = formatClock(segment.start)
     const saving = save?.status === "saving"
     // 這一列正在改時，按這一列的按鈕不讓文字框失去焦點
@@ -160,19 +184,24 @@ function SegmentRowView({ segment, active, current, activeWord, canPlay, onSeek,
     } else if (!text) {
         body = <span style={{ color: "#686888" }}>（沒有文字）</span>
     } else if (pieces) {
-        body = pieces.map((piece, i) => (piece.word == null || !canPlay ? (
-            <span key={i}>{piece.text}</span>
-        ) : (
-            <span
-                key={i}
-                data-word={piece.word}
-                className={piece.word === activeWord ? "correction-word correction-word-active" : "correction-word"}
-            >
-                {piece.text}
-            </span>
-        )))
+        let offset = 0
+        body = pieces.map((piece, i) => {
+            const content = marked(piece.text, matchesShown, matchClass, offset)
+            offset += piece.text.length
+            return piece.word == null || !canPlay ? (
+                <span key={i}>{content}</span>
+            ) : (
+                <span
+                    key={i}
+                    data-word={piece.word}
+                    className={piece.word === activeWord ? "correction-word correction-word-active" : "correction-word"}
+                >
+                    {content}
+                </span>
+            )
+        })
     } else {
-        body = text
+        body = marked(text, matchesShown, matchClass)
     }
 
     return (
@@ -182,6 +211,7 @@ function SegmentRowView({ segment, active, current, activeWord, canPlay, onSeek,
             data-deleted={deleted || undefined}
             data-review-state={segment.review_state || undefined}
             onClick={() => actions.select(key)}
+            data-current-match={currentMatch || undefined}
             style={{
                 ...ROW_STYLE,
                 background: active ? "rgba(45, 212, 168, 0.12)" : "transparent",

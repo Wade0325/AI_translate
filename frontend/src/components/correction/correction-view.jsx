@@ -1,19 +1,22 @@
-import { useCallback, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Link } from "react-router-dom"
 import { Button, Progress } from "antd"
-import { ArrowLeft, Download, LocateFixed } from "lucide-react"
+import { ArrowLeft, Download, LocateFixed, Search } from "lucide-react"
 import { api } from "@/services/api"
 import { useAudioPlayer } from "@/hooks/useAudioPlayer"
 import { useCorrectionShortcuts } from "@/hooks/useCorrectionShortcuts"
 import { useReviewStates } from "@/hooks/useReviewStates"
 import { useSegmentCorrections } from "@/hooks/useSegmentCorrections"
+import { useSegmentSearch } from "@/hooks/useSegmentSearch"
 import { lastStarted, segmentSpans, segmentsAt, wordAt } from "@/utils/playhead"
 import {
     FLAGGED, VERIFIED, cursorAfterSeek, filterCounts, keysWithoutReviewState, matchesFilter, nearestVisible,
     reviewProgress, stepVisible, visibleIndexes,
 } from "@/utils/reviewStates"
 import { REWIND_SECONDS, keepEditorFocus } from "@/utils/segmentCorrections"
+import { isFindShortcut } from "@/utils/segmentSearch"
 import { TranscriptDownloadMenu } from "@/components/transcript-download-menu"
+import { FindBar } from "./find-bar"
 import { PlayerBar } from "./player-bar"
 import { ReviewToolbar } from "./review-toolbar"
 import { SegmentList } from "./segment-list"
@@ -50,6 +53,18 @@ function releaseFocus() {
     if (document.activeElement instanceof HTMLElement) document.activeElement.blur()
 }
 
+/**
+ * 按 Ctrl+F 時選起來的字（一行、不太長時）拿來當要找的字，和瀏覽器的尋找一樣：片段的文字，或正在改的文字框裡
+ * 選起來的字。焦點在尋找列的輸入框裡時不算。
+ */
+function selectedSearchText() {
+    const active = document.activeElement
+    let text = ""
+    if (active instanceof HTMLTextAreaElement) text = active.value.slice(active.selectionStart, active.selectionEnd)
+    else if (!(active instanceof HTMLInputElement)) text = window.getSelection()?.toString() ?? ""
+    return text && !/[\r\n]/.test(text) && text.length <= 100 ? text : ""
+}
+
 /** @type {import("react").CSSProperties} */
 const TOAST_STYLE = {
     display: "flex",
@@ -75,6 +90,9 @@ const TOAST_STYLE = {
  * 還沒看過的；整個流程可以只用鍵盤做完。快捷鍵作用在「目前這個片段」（加一圈框）：↑、↓ 換片段時播放位置跟著跳到
  * 它的開頭；點一列、拖播放進度也會換。播放往下走時不跟著換，聽完一段才按 V 也標得到剛聽完的那一段
  * （見 reviewStates.js）。
+ *
+ * 尋找與全部取代（#356）：在這一頁按 Ctrl+F 開的是頁面自己的尋找列（FindBar），不是瀏覽器內建的尋找。跳到一個
+ * 符合的片段時停止跟著播放捲動；那個片段被篩選掉了時篩選換回全部，才看得到它。尋找不換目前這個片段。
  *
  * @param {{ transcript: {
  *   task_uuid: string,
@@ -192,10 +210,10 @@ export function CorrectionView({ transcript }) {
         }
     }, !confirmOpen)
 
-    const changeFilter = (kind) => {
+    /** 換篩選；目前這個片段被篩選掉了時，換到它後面最近的片段。 */
+    const applyFilter = (kind) => {
         const kept = new Set(segments.filter((s) => matchesFilter(s, kind)).map((s) => s.seg_key))
         setFilter({ kind, kept })
-        // 目前這個片段被篩選掉了：換到它後面最近的片段
         const nextVisible = visibleIndexes(segments, kind, kept)
         if (current >= 0 && !nextVisible.includes(current)) {
             const nearest = nearestVisible(nextVisible, current)
@@ -204,8 +222,37 @@ export function CorrectionView({ transcript }) {
                 setReveal({ index: nearest })
             }
         }
+    }
+
+    /** 在工具列選篩選：選完把焦點放掉，方向鍵與空白鍵才是快捷鍵。 */
+    const changeFilter = (kind) => {
+        applyFilter(kind)
         releaseFocus()
     }
+
+    /** 尋找跳到一個符合的片段（在 segments 裡的位置）：停止跟著播放捲動；它被篩選掉了時換回全部，才看得到它。 */
+    const onFindReveal = (index) => {
+        setFollowing(false)
+        if (!visibleSet.has(index)) applyFilter("all")
+    }
+    const search = useSegmentSearch(segments, { onReveal: onFindReveal })
+    const { openFind, close: closeFind } = search.actions
+    const listRef = useRef(/** @type {HTMLDivElement | null} */ (null))
+    const onCloseFind = useCallback(() => {
+        closeFind()
+        listRef.current?.focus({ preventScroll: true })
+    }, [closeFind])
+
+    // 在校正頁按 Ctrl+F 開頁面自己的尋找：片段列表只畫看得到的那幾列，瀏覽器內建的尋找找不到其他片段
+    useEffect(() => {
+        const onKeyDown = (event) => {
+            if (!isFindShortcut(event)) return
+            event.preventDefault()
+            openFind(selectedSearchText())
+        }
+        window.addEventListener("keydown", onKeyDown)
+        return () => window.removeEventListener("keydown", onKeyDown)
+    }, [openFind])
 
     let notice = null
     if (!transcript.audio_available) notice = AUDIO_GONE
@@ -244,7 +291,16 @@ export function CorrectionView({ transcript }) {
                     />
                 </span>
                 {/* 預設給校正後版本，另有原始轉錄（檔名多一段 .original） */}
-                <div style={{ marginLeft: "auto", flexShrink: 0 }}>
+                <div style={{ marginLeft: "auto", flexShrink: 0, display: "flex", gap: 8 }}>
+                    <Button
+                        size="small"
+                        icon={<Search size={14} />}
+                        title="尋找與取代（Ctrl+F）"
+                        autoInsertSpace={false}
+                        onClick={() => openFind()}
+                    >
+                        尋找
+                    </Button>
                     <TranscriptDownloadMenu
                         taskUuid={transcript.task_uuid}
                         fileName={transcript.original_filename}
@@ -255,6 +311,7 @@ export function CorrectionView({ transcript }) {
                     </TranscriptDownloadMenu>
                 </div>
             </div>
+            {search.open && <FindBar search={search} onReplaceAll={actions.replaceAll} onClose={onCloseFind} />}
             <PlayerBar
                 playing={playing}
                 time={time}
@@ -283,6 +340,7 @@ export function CorrectionView({ transcript }) {
             />
             <div style={{ position: "relative", flex: 1, minHeight: 0 }}>
                 <SegmentList
+                    ref={listRef}
                     segments={segments}
                     visible={visible}
                     currentIndex={current}
@@ -298,6 +356,9 @@ export function CorrectionView({ transcript }) {
                     editing={editing}
                     saves={saves}
                     actions={rowActions}
+                    matches={search.ranges}
+                    currentMatch={search.currentKey}
+                    revealMatch={search.reveal}
                 />
                 <div style={{ position: "absolute", left: "50%", bottom: 16, transform: "translateX(-50%)", display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
                     {!following && followIndex >= 0 && (
@@ -320,7 +381,7 @@ export function CorrectionView({ transcript }) {
                     )}
                     {lastOperation && (
                         <div role="status" style={TOAST_STYLE}>
-                            已存檔
+                            {lastOperation.label}
                             <Button type="link" size="small" onMouseDown={keepEditorFocus} onClick={actions.undo}>
                                 復原
                             </Button>

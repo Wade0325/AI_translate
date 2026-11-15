@@ -70,8 +70,11 @@ export function shortcutAction(event, owner) {
   return action;
 }
 
-/** 打開的選單、對話框、下拉清單：按鍵都是給它們的。 */
-const POPUP = '[role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"]';
+/**
+ * 打開的選單、對話框、下拉清單、antd 的彈出框（Popover、Popconfirm），以及尋找列（#356，role="search"）：
+ * 焦點在裡面時按鍵都是給它們的。
+ */
+const POPUP = '[role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"], .ant-popover, [role="search"]';
 const SLIDER = '[role="slider"]';
 /** 按下去的元素：自己用空白鍵與 Enter。 */
 const PRESSABLE = 'button, a[href], summary, [role="button"], [role="link"], [role="menuitem"], [role="tab"], '

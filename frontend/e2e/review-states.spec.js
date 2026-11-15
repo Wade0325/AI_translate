@@ -291,6 +291,37 @@ test('其餘全部標成已確認：先問一次寫明幾個，做完可以馬�
     expect(fake.records).toEqual([])
 })
 
+test('尋找跳到被篩選掉的片段時篩選換回全部；焦點在尋找列裡時快捷鍵不動作', async ({ page, mockBackend }) => {
+    const segments = [MEETING[0], { ...MEETING[1], review_state: 'flagged' }, MEETING[2], MEETING[3]]
+    const fake = correctionsBackend(segments)
+    const backend = await openCorrection(page, mockBackend, { segments, routes: fake.routes })
+    await expectCurrent(page, 0)
+
+    await filterOption(page, '只看待查的 1').click()
+    await expect(page.locator('[data-index]')).toHaveCount(1)
+    await expectCurrent(page, 0)
+
+    // 第 1 段被篩選掉了：跳過去時換回全部，標出符合的字；目前這個片段不換
+    await page.keyboard.press('Control+f')
+    const findBar = page.getByRole('search', { name: '尋找與取代' })
+    await findBar.getByRole('textbox', { name: '尋找', exact: true }).fill('進度')
+    await expect(page.locator('[data-index]')).toHaveCount(4)
+    await expect(page.getByRole('radiogroup', { name: '篩選片段' }).getByRole('radio', { name: /^全部/ })).toBeChecked()
+    await expect(rowAt(page, 0).locator('[data-current-match]')).toHaveCount(1)
+    await expectCurrent(page, 1)
+
+    // 焦點在尋找列的按鈕上：V 不標
+    await findBar.getByRole('button', { name: '下一個符合的片段' }).click()
+    await page.keyboard.press('v')
+    // Esc 收起尋找列，焦點回到列表：V 標目前這個片段
+    await findBar.getByRole('textbox', { name: '尋找', exact: true }).press('Escape')
+    await expect(findBar).toHaveCount(0)
+    await page.keyboard.press('v')
+    await expect(reviewButton(page, 1, '已確認')).toHaveAttribute('aria-pressed', 'true')
+    await expectCurrent(page, 2)
+    expect(patches(backend)).toEqual([['0.0001', { review_state: 'verified' }]])
+})
+
 test('頁面上列出快捷鍵', async ({ page, mockBackend }) => {
     const fake = correctionsBackend(MEETING)
     await openCorrection(page, mockBackend, { routes: fake.routes })

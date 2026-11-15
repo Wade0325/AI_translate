@@ -5,9 +5,8 @@
   回到某一版：把那一版的內容用 PATCH /api/v1/transcripts/{task_uuid}/segments/{seg_key} 送出（#341）
   整批復原：POST /api/v1/transcripts/{task_uuid}/operations/{operation_id}/undo（#341）
 
-全部從 HTTP API 驗（#25 的測試決策）。一次改很多個片段的操作（全部取代 #356、把這位說話者全部換成另一位
-#354）的端點還沒有合併，這裡直接用 repository 記一次改了 5 個片段的操作，形狀和那兩個端點寫的相同：
-同一個操作編號，每個改到的片段各記一筆。
+全部從 HTTP API 驗（#25 的測試決策）。一次改很多個片段的操作用全部取代（#356）的端點做：同一個操作編號，
+每個改到的片段各記一筆。
 """
 import uuid
 from typing import List, Optional
@@ -140,13 +139,14 @@ class TestBulkUndo:
     def test_restores_the_untouched_segments_and_skips_the_one_changed_afterwards(self, client, db_session):
         texts = ["今天看進度", "進度落後", "進度表", "下次看進度", "進度會議"]
         log = _task(db_session, texts)
-        # 全部取代「進度」→「進展」：一次操作，5 個片段各記一筆
-        replace_all = CorrectionRepository.record_operation(db_session, log.task_uuid, [
-            Correction(f"{i:04d}", CorrectionField.TEXT, text.replace("進度", "進展"))
-            for i, text in enumerate(texts)])
+        # 全部取代「進度」→「進展」（#356）：一次操作，5 個片段各記一筆
+        replaced = client.post(f"/api/v1/transcripts/{log.task_uuid}/replace-all",
+                               json={"find": "進度", "replacement": "進展"}).json()
+        assert (replaced["changed_segments"], replaced["occurrences"]) == (5, 5)
+        replace_all = replaced["operation_id"]
         records = _history(client, log.task_uuid, "0002")["records"]
         assert [(r["operation_id"], r["operation_record_count"], r["operation_segment_count"])
-                for r in records] == [(str(replace_all), 5, 5)]
+                for r in records] == [(replace_all, 5, 5)]
         # 之後手動再改其中 1 個
         _patch(client, log.task_uuid, "0002", text="進展表（修訂）")
 
