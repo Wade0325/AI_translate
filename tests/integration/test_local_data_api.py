@@ -2,7 +2,7 @@
 
 測試範圍：
   GET    /api/v1/local-data                 資料放在哪、保留音檔留幾天、目前留了多少
-  DELETE /api/v1/local-data/retained-audio  立即刪除全部保留音檔
+  DELETE /api/v1/local-data/retained-audio  立即刪除全部保留音檔（有校正的任務的也刪，#350）
 """
 import uuid
 from pathlib import Path
@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
-from app.database.models import TranscriptionLog
+from app.database.models import TranscriptionLog, TranscriptSegment
 from app.services import audio_store
 
 URL = "/api/v1/local-data"
@@ -107,6 +107,27 @@ class TestDeleteRetainedAudio:
 
         assert client.get(f"/api/v1/history/{task_uuid}").status_code == 200
         assert client.get(f"/api/v1/transcripts/{task_uuid}/audio").status_code == 404
+
+    def test_also_deletes_the_audio_of_a_corrected_task(self, client: TestClient, store: Path,
+                                                        db_session: Session):
+        # 校正會讓保留天數重新起算（#350），但使用者按下去就是全部刪掉：隱私優先。校正照樣留著
+        task_uuid = uuid.uuid4()
+        name = f"{task_uuid}.m4a"
+        retain(store, name, 10)
+        db_session.add(TranscriptionLog(task_uuid=task_uuid, status="COMPLETED", source_language="zh-TW",
+                                        original_filename="meeting.m4a", audio_filename=name))
+        db_session.add(TranscriptSegment(task_uuid=task_uuid, seg_key="0000", seq=0, start_sec=0.0,
+                                         end_sec=2.0, speaker="S0", text="原始轉錄"))
+        db_session.commit()
+        corrected = client.patch(f"/api/v1/transcripts/{task_uuid}/segments/0000", json={"text": "校正後"})
+        assert corrected.status_code == 200, corrected.text
+
+        assert client.delete(DELETE_URL).json() == {"deleted": 1, "failed": 0}
+
+        assert list(store.iterdir()) == []
+        transcript = client.get(f"/api/v1/transcripts/{task_uuid}").json()
+        assert transcript["audio_available"] is False
+        assert transcript["segments"][0]["text"] == "校正後"
 
     def test_counts_files_it_could_not_delete(self, client: TestClient, store: Path,
                                               monkeypatch, app_log):
