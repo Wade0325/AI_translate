@@ -19,6 +19,9 @@
 確認狀態（``review_state``）留在片段上，不是校正，不進校正紀錄；它是片段上唯一會在寫入後改的欄位，
 原始轉錄的欄位（文字、說話者、時間等）照舊不改。寫的時候和校正紀錄一樣先鎖住任務
 （:meth:`CorrectionRepository.record_operation` 的 ``review_states``）。
+
+校正紀錄與確認狀態一律經過 :class:`_CurrentContent` 寫（它鎖住任務）。每寫完一次，這個任務的保留音檔
+的保留天數就從現在重新起算（#350），做在它 commit 的地方，之後新的寫入也不必各自記得。
 """
 
 from __future__ import annotations
@@ -34,6 +37,7 @@ from sqlalchemy.orm import Session
 from app.core import word_timings
 from app.database.models import CorrectionRecord, TranscriptionLog, TranscriptSegment
 from app.repositories.transcript_segment_repository import TranscriptSegmentRepository
+from app.services import audio_store
 from app.utils.identifiers import coerce_uuid
 
 
@@ -172,17 +176,23 @@ def _lock_task(db: Session, task_uuid: uuid.UUID) -> None:
 class _CurrentContent:
     """寫校正紀錄用：鎖住任務後讀它現在的內容（原始轉錄套上最新的校正紀錄），照它記下新的紀錄。
 
-    讀兩次資料庫（片段一次、校正紀錄一次），之後的比對都在記憶體裡；記下的紀錄也算進現在的內容，
-    同一次操作裡的下一筆就以它為改前。
+    現在的內容讀兩次資料庫（片段一次、校正紀錄一次；另外讀一次保留音檔的檔名），之後的比對都在記憶體裡；
+    記下的紀錄也算進現在的內容，同一次操作裡的下一筆就以它為改前。
 
     當成 context manager 用：區塊順利結束時，記下的紀錄和鎖一起 commit（沒有記任何一筆時只放掉鎖）；
     區塊裡出錯時 rollback，一筆都不寫。
+
+    commit 之後，這個任務的保留音檔的保留天數從現在重新起算（:func:`app.services.audio_store.renew`，
+    #350）：校正到一半不會突然聽不到。和現在的內容相同、什麼都沒記的寫入也算，使用者一樣是在校正；
+    保留音檔不在或改不了時校正照樣存。
     """
 
     def __init__(self, db: Session, task_uuid: uuid.UUID):
         _lock_task(db, task_uuid)
         self._db = db
         self._task_uuid = task_uuid
+        self._audio_filename = cast(Optional[str], db.query(TranscriptionLog.audio_filename)
+                                    .filter(TranscriptionLog.task_uuid == task_uuid).scalar())
         self._segments = {str(row.seg_key): row
                           for row in TranscriptSegmentRepository.list_for_task(db, task_uuid)}
         self._latest = _latest(_records(db, task_uuid))
@@ -197,6 +207,7 @@ class _CurrentContent:
             return
         self._db.add_all(self.recorded)
         self._db.commit()
+        audio_store.renew(self._audio_filename)
 
     def value(self, key: _Key) -> Optional[str]:
         field, target = key

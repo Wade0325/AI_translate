@@ -8,8 +8,10 @@
 暫時性錯誤的重試會回來找同一個檔案。
 
 搬移而非複製：同一份音檔不會同時存在兩個地方。
-保留期限由 ``audio_retention_days`` 控制，啟動時清掃一次。使用者也能在設定頁看到留了多少，
-一次刪掉全部（:func:`usage`、:func:`delete_all`，#231 Q1）。
+保留期限由 ``audio_retention_days`` 控制，啟動時清掃一次，只看檔案的修改時間。修改時間原本是上傳的
+時間；寫入校正或確認狀態時改成現在（:func:`renew`，#350），校正到一半不會突然聽不到，放著不動的
+任務照樣過期。使用者也能在設定頁看到留了多少，一次刪掉全部，有校正的任務的也刪（:func:`usage`、
+:func:`delete_all`，#231 Q1）。
 
 沒有任務可以收尾的上傳檔也不留在暫存區：請求被拒絕時直接刪掉（:func:`discard_upload`）；
 沒機會收尾的任務（例如應用程式被直接關掉時還在排隊）留下的，啟動時清掉超過
@@ -21,6 +23,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import time
 from dataclasses import dataclass
@@ -84,6 +87,26 @@ def resolve(filename: Optional[str]) -> Optional[Path]:
         return None
     path = store_path() / name
     return path if path.exists() else None
+
+
+def renew(filename: Optional[str]) -> bool:
+    """保留天數從現在重新起算：把保留音檔的修改時間改成現在，回傳有沒有改到。
+
+    寫入校正或確認狀態時呼叫（``app.repositories.correction_repository``，#350）。過期清掃照舊只看
+    修改時間，不查資料庫。檔案不在時不做任何事，也不會建出一個空檔；其他失敗只記 log、不往外丟，
+    校正照樣存。
+    """
+    try:
+        path = resolve(filename)
+        if path is None:
+            return False
+        os.utime(path)  # 不用 Path.touch：檔案剛好被刪掉時它會建出一個空檔
+        return True
+    except FileNotFoundError:
+        return False  # 找到之後、改之前剛好被刪掉
+    except Exception as e:
+        logger.warning(f"保留音檔的保留天數沒能重新起算 ({filename}): {e}")
+        return False
 
 
 def delete(filename: Optional[str]) -> bool:
@@ -169,8 +192,8 @@ def delete_all() -> Deleted:
 def purge_expired() -> int:
     """刪除超過保留天數的音檔，回傳刪除數量。
 
-    只看檔案 mtime，不動資料庫：``audio_filename`` 指向已刪除的檔案時，
-    端點會回 404，前端據此顯示「音檔已過期」。
+    只看檔案 mtime，不查也不動資料庫：校正過的任務靠 :func:`renew` 把 mtime 改成最後一次寫入的時間。
+    ``audio_filename`` 指向已刪除的檔案時，端點會回 404，前端據此顯示「音檔已過期」。
     """
     settings = get_settings()
     directory = store_path()

@@ -6,19 +6,26 @@
   PATCH  /api/v1/transcripts/{task_uuid}/segments/{seg_key}（改文字、說話者、確認狀態，#341）
   POST   /api/v1/transcripts/{task_uuid}/operations/{operation_id}/undo（復原一次操作，#341）
   DELETE /api/v1/history/{task_uuid} 連帶刪除片段
+  寫入校正或確認狀態時，保留音檔的保留天數重新起算（#350）
 
 校正的結果從讀取端點與 ``version=original`` 的下載驗（#25 的測試決策）；校正紀錄的筆數與操作編號
 還沒有讀的端點（#355），直接查資料表。
 """
 import json
+import os
+import time
 import uuid
+from pathlib import Path
+from typing import Tuple
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
 import app.api.transcripts  # noqa: F401  app_log 只接得到 fixture 啟動前已經建立的 logger
+from app.core.config import get_settings
 from app.database.models import CorrectionRecord, TranscriptionLog, TranscriptSegment
+from app.services import audio_store
 
 
 def _create_log(db: Session, **kwargs) -> TranscriptionLog:
@@ -562,3 +569,99 @@ class TestRefusedWrites:
     def test_an_unknown_or_malformed_operation(self, client, log):
         assert client.post(_undo_url(log.task_uuid, uuid.uuid4())).status_code == 404
         assert client.post(_undo_url(log.task_uuid, "not-an-operation")).status_code == 400
+
+
+# ─── 保留天數從校正起算（#350） ───────────────────────────────────────────────
+
+class TestAudioRetention:
+    """寫入校正或確認狀態時，這個任務的保留音檔的保留天數從現在重新起算：啟動時的清除照舊只看檔案的
+    修改時間，所以寫入時把修改時間更新成現在。放著不動的任務照樣過期。"""
+
+    @pytest.fixture
+    def store(self, uploads) -> Path:
+        """保留區（測試的暫存資料夾裡）。"""
+        store = audio_store.store_path()
+        store.mkdir(parents=True, exist_ok=True)
+        return store
+
+    def _with_old_audio(self, db: Session, store: Path) -> Tuple[TranscriptionLog, Path]:
+        """一個能校正的任務，保留音檔的修改時間是保留天數再多一天以前。"""
+        log = _correctable(db)
+        path = store / f"{log.task_uuid}.m4a"
+        path.write_bytes(b"audio")
+        aged = time.time() - (get_settings().audio_retention_days + 1) * 86400
+        os.utime(path, (aged, aged))
+        log.audio_filename = path.name
+        db.commit()
+        return log, path
+
+    def test_a_corrected_task_keeps_its_audio_and_an_untouched_one_expires(self, client, db_session, store):
+        corrected, corrected_audio = self._with_old_audio(db_session, store)
+        untouched, untouched_audio = self._with_old_audio(db_session, store)
+
+        assert client.patch(_url(corrected.task_uuid), json={"text": "改過的文字"}).status_code == 200
+        audio_store.purge_expired()
+
+        assert corrected_audio.exists()
+        assert not untouched_audio.exists()
+        assert client.get(f"/api/v1/transcripts/{corrected.task_uuid}/audio").status_code == 200
+        assert client.get(f"/api/v1/transcripts/{untouched.task_uuid}/audio").status_code == 404
+
+    def test_only_marking_a_review_state_also_restarts_the_count(self, client, db_session, store):
+        log, audio = self._with_old_audio(db_session, store)
+
+        assert client.patch(_url(log.task_uuid), json={"review_state": "flagged"}).status_code == 200
+        audio_store.purge_expired()
+
+        assert audio.exists()
+
+    def test_an_undo_also_restarts_the_count(self, client, db_session, store):
+        log, audio = self._with_old_audio(db_session, store)
+        operation = client.patch(_url(log.task_uuid), json={"text": "改過的文字"}).json()["operation_id"]
+        aged = time.time() - (get_settings().audio_retention_days + 1) * 86400
+        os.utime(audio, (aged, aged))
+
+        assert client.post(_undo_url(log.task_uuid, operation)).status_code == 200
+        audio_store.purge_expired()
+
+        assert audio.exists()
+
+    def test_a_refused_write_does_not_restart_the_count(self, client, db_session, store):
+        log, audio = self._with_old_audio(db_session, store)
+
+        assert client.patch(_url(log.task_uuid), json={"speaker": "主持人"}).status_code == 400
+        audio_store.purge_expired()
+
+        assert not audio.exists()
+
+    def test_a_task_whose_audio_is_gone_can_still_be_corrected(self, client, db_session, store):
+        log, audio = self._with_old_audio(db_session, store)
+        audio.unlink()
+
+        response = client.patch(_url(log.task_uuid), json={"text": "改過的文字"})
+
+        assert response.status_code == 200, response.text
+        assert _segment(client, log.task_uuid)["text"] == "改過的文字"
+        # 不在的保留音檔不會因為更新修改時間而多出一個空檔
+        assert list(store.iterdir()) == []
+
+    def test_a_failed_update_is_logged_and_the_correction_is_still_saved(
+            self, client, db_session, store, monkeypatch, app_log):
+        log, audio = self._with_old_audio(db_session, store)
+        aged_mtime = audio.stat().st_mtime
+
+        def utime(*_args, **_kwargs):
+            raise PermissionError("拒絕存取")
+
+        monkeypatch.setattr(os, "utime", utime)
+
+        response = client.patch(_url(log.task_uuid), json={"text": "改過的文字"})
+
+        assert response.status_code == 200, response.text
+        assert _segment(client, log.task_uuid)["text"] == "改過的文字"
+        assert audio.stat().st_mtime == aged_mtime
+        failures = [entry for entry in app_log if "保留天數" in entry]
+        assert len(failures) == 1
+        # 日誌只寫保留音檔的檔名（task_uuid），不寫轉錄的文字
+        assert audio.name in failures[0]
+        assert not any("改過的文字" in entry for entry in app_log)
