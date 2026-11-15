@@ -261,6 +261,28 @@ class TestCorrectText:
 
         assert _segment(client, log.task_uuid)["text"] == "今天先看進度 再討論。"
 
+    def test_other_line_separators_also_become_one_space(self, client, db_session):
+        log = _correctable(db_session)
+
+        client.patch(_url(log.task_uuid), json={"text": "第一句\u2028第二句\x85第三句\x0b\x0c第四句"})
+
+        assert _segment(client, log.task_uuid)["text"] == "第一句 第二句 第三句 第四句"
+
+    def test_sending_back_the_original_returns_to_it_even_if_it_was_not_normalized(self, client, db_session):
+        # 回到原始轉錄是把原始轉錄用 PATCH 送回來：原始轉錄有換行、或說話者編號不是現在的寫法時，
+        # 照原始轉錄存，才不會一直算成校正過
+        log = _correctable(db_session, text=" 第一行\n第二行", speaker="S01")
+        client.patch(_url(log.task_uuid), json={"text": "改過的", "speaker": "S1"})
+
+        response = client.patch(_url(log.task_uuid), json={"text": " 第一行\n第二行", "speaker": "S01"})
+
+        assert response.status_code == 200, response.text
+        segment = response.json()["segment"]
+        assert (segment["text"], segment["speaker"], segment["corrected"]) == (" 第一行\n第二行", "S01", False)
+        # 送的是收成一行的樣子也一樣：內容和原始轉錄相同
+        client.patch(_url(log.task_uuid), json={"text": "改過的"})
+        assert client.patch(_url(log.task_uuid), json={"text": "第一行 第二行"}).json()["segment"]["corrected"] is False
+
     def test_text_is_stored_as_typed_without_traditional_output_conversion(self, client, db_session):
         log = _correctable(db_session)  # 來源語言 zh-TW：轉錄時會轉成繁體輸出
 
@@ -462,6 +484,7 @@ class TestRefusedWrites:
         detail = self._refused(client.patch(_url(log.task_uuid), json={"text": "A"}), 409,
                                db_session, log.task_uuid)
         assert "還沒完成" in detail
+        assert client.post(_undo_url(log.task_uuid, uuid.uuid4())).status_code == 409
 
     def test_task_without_segments(self, client, db_session):
         log = _create_log(db_session)

@@ -17,13 +17,13 @@
 
 import re
 from pathlib import Path
-from typing import Any, Collection, Dict, List, Optional, Tuple, cast
+from typing import Collection, Dict, List, Optional, Tuple, cast
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
-from app.database.models import TranscriptionLog
+from app.database.models import TranscriptionLog, TranscriptSegment
 from app.database.session import get_db
 from app.repositories.correction_repository import (
     Correction,
@@ -37,7 +37,6 @@ from app.schemas.schemas import (
     SegmentCorrectionResponse,
     TranscriptResponse,
     TranscriptSegmentResponse,
-    TranscriptWord,
     UndoOperationResponse,
 )
 from app.services import audio_store, correctability
@@ -57,7 +56,8 @@ TEXT_MAX_LENGTH = 5000
 _SPEAKER_ID = re.compile(r"S(?:0|[1-9][0-9]{0,2})")
 """說話者編號：S 加數字（S0 到 S999），和轉錄時產生的寫法相同，不補零。"""
 
-_LINE_BREAKS = re.compile(r"\s*[\r\n]+\s*")
+_LINE_BREAKS = re.compile(r"\s*[\n\r\x0b\x0c\x1c-\x1e\x85\u2028\u2029]+\s*")
+"""換行，連同它前後的空白：``str.splitlines`` 當成換行的字元都算。"""
 
 _UNCORRECTABLE = {
     Uncorrectable.NOT_COMPLETED: "這個任務還沒完成，完成之後才能校正",
@@ -90,33 +90,11 @@ def _correctable_log(db: Session, task_uuid: str) -> TranscriptionLog:
     return log
 
 
-def _segment_response(segment: Dict[str, Any]) -> TranscriptSegmentResponse:
-    """校正後版本的一個片段（``CorrectionRepository.corrected_version`` 回的形狀）→ 回應的片段。"""
-    words = segment["words"]
-    return TranscriptSegmentResponse(
-        seg_key=segment["seg_key"],
-        seq=segment["seq"],
-        start=segment["start"],
-        end=segment["end"],
-        speaker=segment["speaker"],
-        text=segment["text"],
-        original_speaker=segment["original_speaker"],
-        original_text=segment["original_text"],
-        corrected=segment["corrected"],
-        deleted=segment["deleted"],
-        has_correction_records=segment["has_correction_records"],
-        text_alt=segment["text_alt"],
-        source=segment["source"],
-        confidence=segment["confidence"],
-        review_state=segment["review_state"],
-        words=[TranscriptWord(**w) for w in words] if words else None,
-    )
-
-
 def _segments(db: Session, log: TranscriptionLog,
               seg_keys: Optional[Collection[str]] = None) -> List[TranscriptSegmentResponse]:
-    """任務的校正後版本（給 ``seg_keys`` 時只有這些片段），依 seq 排序。"""
-    return [_segment_response(segment)
+    """任務的校正後版本（給 ``seg_keys`` 時只有這些片段），依 seq 排序。片段的欄位名稱和
+    ``CorrectionRepository.corrected_version`` 回的相同；沒有逐字時間時是 None。"""
+    return [TranscriptSegmentResponse.model_validate({**segment, "words": segment["words"] or None})
             for segment in CorrectionRepository.corrected_version(db, log.task_uuid, seg_keys)]
 
 
@@ -145,24 +123,42 @@ def _normalized_text(text: str) -> str:
     return _LINE_BREAKS.sub(" ", text.strip())
 
 
-def _segment_changes(seg_key: str, body: SegmentCorrectionRequest,
+def _segment(db: Session, log: TranscriptionLog, seg_key: str) -> TranscriptSegment:
+    """這個任務的一個片段（原始轉錄）；沒有就回 404。"""
+    rows = segment_repo.list_for_task(db, log.task_uuid, [seg_key])
+    if not rows:
+        raise HTTPException(status_code=404, detail="找不到此片段")
+    return rows[0]
+
+
+def _segment_changes(segment: TranscriptSegment, body: SegmentCorrectionRequest,
                      ) -> Tuple[List[Correction], Dict[str, Optional[ReviewState]]]:
-    """PATCH 的 body → 要記的校正（文字、說話者）與要寫的確認狀態；不合規則時回 400。"""
+    """PATCH 的 body → 要記的校正（文字、說話者）與要寫的確認狀態；不合規則時回 400。
+
+    回到原始轉錄是把原始轉錄用 PATCH 送回來，所以和原始轉錄相同的內容照原始轉錄存，不套用下面的規則：
+    文字收成一行之後和原始轉錄相同就存原始轉錄（原始轉錄可能有換行），說話者編號和原始轉錄相同就照收
+    （較早的任務可能有別的寫法）。這樣回到原始轉錄之後才不會一直算成校正過。
+    """
     sent = body.model_fields_set
     if not sent:
         raise HTTPException(status_code=400, detail="至少要帶 text、speaker、review_state 其中一個")
+    seg_key = cast(str, segment.seg_key)
     corrections: List[Correction] = []
     if "text" in sent:
         if body.text is None:
             raise HTTPException(status_code=400, detail="文字不能是 null；要刪掉片段請送空字串")
         text = _normalized_text(body.text)
-        if len(text) > TEXT_MAX_LENGTH:
+        original_text = cast(Optional[str], segment.text) or ""
+        if text == _normalized_text(original_text):
+            text = original_text
+        elif len(text) > TEXT_MAX_LENGTH:
             raise HTTPException(status_code=400, detail=f"文字太長：一個片段最多 {TEXT_MAX_LENGTH} 字")
         corrections.append(Correction(seg_key, CorrectionField.TEXT, text))
     if "speaker" in sent:
-        if body.speaker is not None and not _SPEAKER_ID.fullmatch(body.speaker):
-            raise HTTPException(status_code=400, detail="說話者的格式不正確：要是 S 加數字，例如 S0、S1")
-        corrections.append(Correction(seg_key, CorrectionField.SPEAKER, body.speaker))
+        speaker = body.speaker
+        if speaker is not None and speaker != segment.speaker and not _SPEAKER_ID.fullmatch(speaker):
+            raise HTTPException(status_code=400, detail="說話者編號的格式不正確：要是 S 加數字，例如 S0、S1")
+        corrections.append(Correction(seg_key, CorrectionField.SPEAKER, speaker))
     review_states: Dict[str, Optional[ReviewState]] = {}
     if "review_state" in sent:
         if body.review_state is not None and body.review_state not in {s.value for s in ReviewState}:
@@ -181,17 +177,17 @@ def correct_segment(task_uuid: str, seg_key: str, body: SegmentCorrectionRequest
     內容用這個端點送出。
     """
     log = _correctable_log(db, task_uuid)
-    corrections, review_states = _segment_changes(seg_key, body)
+    corrections, review_states = _segment_changes(_segment(db, log, seg_key), body)
     try:
         operation_id = CorrectionRepository.record_operation(
             db, log.task_uuid, corrections, review_states=review_states)
     except ValueError as e:
-        # 片段鍵不在這個任務裡（或任務剛好被刪掉）：什麼都沒寫
+        # 任務或片段在檢查之後剛好被刪掉（任務被刪、或重派時整批換掉了片段）：什麼都沒寫
         raise HTTPException(status_code=404, detail="找不到此片段") from e
-    return SegmentCorrectionResponse(
-        operation_id=str(operation_id) if operation_id else None,
-        segment=_segments(db, log, [seg_key])[0],
-    )
+    segments = _segments(db, log, [seg_key])
+    if not segments:  # 寫完之後任務剛好被刪掉
+        raise HTTPException(status_code=404, detail="找不到此片段")
+    return SegmentCorrectionResponse(operation_id=operation_id, segment=segments[0])
 
 
 @router.post("/{task_uuid}/operations/{operation_id}/undo", response_model=UndoOperationResponse)
@@ -214,8 +210,8 @@ def undo_operation(task_uuid: str, operation_id: str, db: Session = Depends(get_
     return UndoOperationResponse(
         restored=result.restored,
         skipped=result.skipped,
-        operation_id=str(result.operation_id) if result.operation_id else None,
-        segments=_segments(db, log, result.segments) if result.segments else [],
+        operation_id=result.operation_id,
+        segments=_segments(db, log, result.seg_keys) if result.seg_keys else [],
     )
 
 

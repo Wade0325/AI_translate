@@ -15,7 +15,8 @@
 「沒有」的寫法：文字與說話者名稱的「沒有」一律是空字串（原始轉錄的文字是 NULL 時也當成空字串），
 說話者的「沒有」一律是 NULL，見 :func:`_normalized`。
 
-確認狀態（``review_state``）留在片段上，不是校正，不進校正紀錄；寫的時候和校正紀錄一樣先鎖住任務
+確認狀態（``review_state``）留在片段上，不是校正，不進校正紀錄；它是片段上唯一會在寫入後改的欄位，
+原始轉錄的欄位（文字、說話者、時間等）照舊不改。寫的時候和校正紀錄一樣先鎖住任務
 （:meth:`CorrectionRepository.record_operation` 的 ``review_states``）。
 """
 
@@ -79,8 +80,8 @@ class UndoResult:
     """略過幾筆：那次操作之後對象又被改過。"""
     operation_id: Optional[uuid.UUID]
     """這次復原自己的操作編號；一筆都沒有還原時是 None。"""
-    segments: Tuple[str, ...] = ()
-    """那次操作改到的片段（``seg_key``，依第一次改到的順序），還原的與略過的都算；說話者名稱的對象不在內。"""
+    seg_keys: Tuple[str, ...] = ()
+    """那次操作改到的片段的鍵（依第一次改到的順序），還原的與略過的都算；說話者名稱的對象不在內。"""
 
 
 _Key = Tuple[CorrectionField, str]
@@ -281,9 +282,9 @@ class CorrectionRepository:
                     continue
                 content.change(key, _old(record), undo_id)
         restored = len(content.recorded)
-        segments = dict.fromkeys(target for field, target in map(_key, records) if field in SEGMENT_FIELDS)
+        seg_keys = dict.fromkeys(target for field, target in map(_key, records) if field in SEGMENT_FIELDS)
         return UndoResult(restored=restored, skipped=len(records) - restored,
-                          operation_id=undo_id if restored else None, segments=tuple(segments))
+                          operation_id=undo_id if restored else None, seg_keys=tuple(seg_keys))
 
     @staticmethod
     def corrected_version(db: Session, task_uuid,

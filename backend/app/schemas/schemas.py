@@ -1,5 +1,6 @@
 from pydantic import BaseModel, Field
 from typing import List, Optional
+from uuid import UUID
 from pydantic import ConfigDict
 
 
@@ -264,7 +265,7 @@ class SegmentCorrectionRequest(BaseModel):
 class SegmentCorrectionResponse(BaseModel):
     """改一個片段的結果：這個片段的新內容，與這次記下的校正紀錄共用的操作編號（復原時用）。
     沒有記任何一筆（只改了確認狀態，或內容和現在的相同）時沒有操作編號。"""
-    operation_id: Optional[str] = None
+    operation_id: Optional[UUID] = None
     segment: TranscriptSegmentResponse
 
 
@@ -274,7 +275,7 @@ class UndoOperationResponse(BaseModel):
     """還原了幾筆校正紀錄。"""
     skipped: int
     """略過幾筆：那次操作之後又被改過。"""
-    operation_id: Optional[str] = None
+    operation_id: Optional[UUID] = None
     """這次復原自己的操作編號（復原也可以再復原）；一筆都沒有還原時是 None。"""
     segments: List[TranscriptSegmentResponse] = []
     """那次操作改到的片段的新內容，還原的與略過的都在內。"""
