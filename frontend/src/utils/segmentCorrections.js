@@ -126,6 +126,15 @@ export function restoreRequest(segment) {
 }
 
 /**
+ * 文字校正過：和原始轉錄的文字不同（刪掉的片段也是）。
+ *
+ * @param {Segment} segment
+ */
+export function textCorrected(segment) {
+  return (segment.text ?? '') !== (segment.original_text ?? '');
+}
+
+/**
  * 說話者校正過：和原始轉錄的說話者不同（沒有說話者當成同一個值）。
  *
  * @param {Segment} segment
@@ -143,7 +152,7 @@ export function speakerCorrected(segment) {
 export function revertRequest(segment) {
   /** @type {SegmentRequest} */
   const request = {};
-  if ((segment.text ?? '') !== (segment.original_text ?? '')) request.text = segment.original_text ?? '';
+  if (textCorrected(segment)) request.text = segment.original_text ?? '';
   if (speakerCorrected(segment)) request.speaker = segment.original_speaker ?? null;
   return Object.keys(request).length ? request : null;
 }

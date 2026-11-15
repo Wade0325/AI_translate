@@ -1,5 +1,5 @@
 /**
- * 校正頁的瀏覽器測試共用的假資料：片段、轉錄文件、保留音檔，以及記得每次校正的假後端（#347、#348）。
+ * 校正頁的瀏覽器測試共用的假資料：片段、轉錄文件、保留音檔，以及記得每次校正的假後端（#347、#348、#354）。
  *
  * 形狀照 backend/app/schemas/schemas.py 的 TranscriptResponse 與 TranscriptSegmentResponse；欄位一改名，這裡要跟著改。
  */
@@ -39,10 +39,22 @@ export const segment = (seq, start, end, speaker, text, { words = true } = {}) =
     words: words ? wordsOf(text, start, end) : null,
 })
 
+/**
+ * 新的說話者編號：這些說話者編號裡最大的號碼加一，沒有時是 S0（後端另外看校正紀錄與說話者名稱，見
+ * backend/app/repositories/correction_repository.py 的 next_speaker）。
+ *
+ * @param {(string | null | undefined)[]} speakers
+ */
+export function nextSpeakerOf(speakers) {
+    const numbers = speakers.map((s) => /^S(\d+)$/.exec(s ?? '')).filter(Boolean).map((m) => Number(m[1]))
+    return `S${numbers.length ? Math.max(...numbers) + 1 : 0}`
+}
+
 /** GET /transcripts/<task_uuid> 的形狀。 */
 export const transcript = (taskUuid, segments, fields = {}) => ({
     task_uuid: taskUuid, status: 'COMPLETED', original_filename: 'meeting.wav', audio_duration_seconds: 20.0,
-    audio_available: true, correctable: true, uncorrectable_reason: null,
+    audio_available: true, correctable: true, uncorrectable_reason: null, single_speaker: false,
+    next_speaker: nextSpeakerOf(segments.flatMap((s) => [s.speaker, s.original_speaker])),
     segment_count: segments.length, segments, ...fields,
 })
 
@@ -112,10 +124,11 @@ function replaceText(text, find, replacement) {
 }
 
 /**
- * 記得每次校正的假後端（#348、#355、#356）：照 ADR 0011 的規則，每次校正記一筆校正紀錄（和現在的內容相同的不記），
- * 校正後版本由原始轉錄加上最新的紀錄算出來，GET、PATCH、全部取代、復原與片段的歷程讀的都是同一份。回傳的 routes
- * 交給 mockBackend；records 是記下的紀錄，給測試檢查；bulk 記一次改很多個片段的操作（把這位說話者全部換成另一位
- * 的端點還沒有合併），回傳操作編號。
+ * 記得每次校正的假後端（#348、#354、#355、#356）：照 ADR 0011 的規則，每次校正記一筆校正紀錄（和現在的內容相同的
+ * 不記），校正後版本由原始轉錄加上最新的紀錄算出來，GET、PATCH、把這位說話者全部換成另一位、全部取代、復原與片段的
+ * 歷程讀的都是同一份。「整份當成同一位說話者」的切換是任務的設定，記在 settings，不留紀錄。回傳的 routes 交給
+ * mockBackend；records 是記下的紀錄，settings 是任務的設定，給測試檢查；bulk 直接記一次改很多個片段的操作，回傳
+ * 操作編號。
  *
  * 確認狀態（#349）直接記在片段上（reviewStates），不留校正紀錄：PATCH 的 review_state，以及一次改很多個
  * 片段的確認狀態（PATCH /transcripts/task-1/review-states，現在是 only_if 的才改）。
@@ -126,6 +139,7 @@ export function correctionsBackend(segments, fields = {}) {
     const originals = new Map(segments.map((s) => [s.seg_key, s]))
     /** @type {Map<string, string | null>} */
     const reviewStates = new Map(segments.map((s) => [s.seg_key, s.review_state ?? null]))
+    const settings = { single_speaker: Boolean(fields.single_speaker) }
     /** @type {{ id: number, seg_key: string, field: 'text' | 'speaker', before: string | null, after: string | null,
      *   operation_id: string, created_at: string }[]} */
     const records = []
@@ -168,9 +182,14 @@ export function correctionsBackend(segments, fields = {}) {
         return { operation_record_count: same.length, operation_segment_count: new Set(same.map((r) => r.seg_key)).size }
     }
 
+    const nextSpeaker = () => nextSpeakerOf([
+        ...segments.map((s) => s.speaker), ...records.filter((r) => r.field === 'speaker').map((r) => r.after),
+    ])
+
     return {
         records,
         reviewStates,
+        settings,
         /** @param {[string, 'text' | 'speaker', string | null][]} changes [片段鍵, 改了什麼, 改後] */
         bulk(changes) {
             const operationId = `op-${operations += 1}`
@@ -178,7 +197,21 @@ export function correctionsBackend(segments, fields = {}) {
             return operationId
         },
         routes: {
-            'GET /transcripts/task-1': () => transcript('task-1', segments.map((s) => view(s.seg_key)), fields),
+            'GET /transcripts/task-1': () => transcript('task-1', segments.map((s) => view(s.seg_key)), {
+                ...fields, ...settings, next_speaker: nextSpeaker(),
+            }),
+            'PATCH /transcripts/task-1': ({ body }) => {
+                settings.single_speaker = body.single_speaker
+                return { ...settings }
+            },
+            'POST /transcripts/task-1/speakers/reassign': ({ body }) => {
+                const operationId = `op-${operations += 1}`
+                const changed = segments.map((s) => s.seg_key).filter((segKey) => (
+                    (current(segKey, 'speaker') ?? null) === (body.from_speaker ?? null)
+                    && record(segKey, 'speaker', body.to_speaker, operationId)
+                ))
+                return { operation_id: changed.length ? operationId : null, changed: changed.length, segments: changed.map(view) }
+            },
             'PATCH /transcripts/task-1/segments/:seg_key': ({ params, body }) => {
                 const operationId = `op-${operations += 1}`
                 let recorded = false

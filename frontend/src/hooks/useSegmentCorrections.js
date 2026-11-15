@@ -11,11 +11,15 @@ import {
   savesReducer,
   undoMessage,
 } from '../utils/segmentCorrections';
+import { nextSpeakerAfter, reassignMessage } from '../utils/speakers';
 
 /** 「已存」顯示幾毫秒之後收起來。 */
 const SAVED_SHOWN_MS = 3000;
 /** 「已存檔，復原」顯示幾毫秒。 */
 const UNDO_SHOWN_MS = 6000;
+
+/** 存完一次校正之後，「復原」旁邊寫的字。 */
+const SAVED_LABEL = '已存檔';
 
 /**
  * 剛存的那一次操作：「已存檔，復原」那一格寫的字（label）與復原時送的操作編號（id）。
@@ -24,20 +28,23 @@ const UNDO_SHOWN_MS = 6000;
  */
 
 /**
- * 校正頁改文字、刪掉與還原片段（#348），以及全部取代（#356）：片段的校正後版本、每個片段的存檔狀態、正在改哪一個
- * 片段，以及剛存的那一次操作（「已存檔，復原」用）。校正的歷程（#355）：讀一個片段的歷程、回到某一版、整批復原。
+ * 校正頁改文字、刪掉與還原片段（#348）、改說話者（#354），以及全部取代（#356）：片段的校正後版本、每個片段的
+ * 存檔狀態、正在改哪一個片段、新的說話者編號，以及剛存的那一次操作（「已存檔，復原」用）。校正的歷程（#355）：
+ * 讀一個片段的歷程、回到某一版、整批復原。
  *
  * 每一次校正就是一個請求，存檔的結果（後端回的片段新內容）直接換進列表。actions 裡的函式身分不變，片段列表的
  * 每一列可以照常用 memo，只有改到的那幾列重畫。
  *
  * @param {string} taskUuid
  * @param {import('../utils/segmentCorrections').Segment[]} initialSegments GET /transcripts/{task_uuid} 的片段
+ * @param {string} [initialNextSpeaker] GET /transcripts/{task_uuid} 的 next_speaker（新的說話者編號）
  */
-export function useSegmentCorrections(taskUuid, initialSegments) {
+export function useSegmentCorrections(taskUuid, initialSegments, initialNextSpeaker = 'S0') {
   const [segments, setSegments] = useState(initialSegments);
   const [saves, dispatch] = useReducer(savesReducer, {});
   const [editing, setEditing] = useState(/** @type {import('../utils/segmentCorrections').Editing | null} */ (null));
   const [lastOperation, setLastOperation] = useState(/** @type {LastOperation | null} */ (null));
+  const [nextSpeaker, setNextSpeaker] = useState(() => nextSpeakerAfter(initialNextSpeaker, initialSegments));
 
   // 事件處理讀最新的內容：actions 的身分才能不變（每改一次就換一份函式，列表的每一列都得重畫）
   const latest = useRef({ segments, saves, editing, lastOperation });
@@ -76,8 +83,8 @@ export function useSegmentCorrections(taskUuid, initialSegments) {
     const segmentOf = (segKey) => latest.current.segments.find((s) => s.seg_key === segKey);
 
     /**
-     * 後端回的片段新內容換進列表。確認狀態留著畫面上的：它只由 useReviewStates 換（#349），標了還在送的時候
-     * 存好一次校正，回應裡的確認狀態可能是標之前的。
+     * 後端回的片段新內容換進列表；指定了新的說話者時，新的說話者編號接著往上加。確認狀態留著畫面上的：它只由
+     * useReviewStates 換（#349），標了還在送的時候存好一次校正，回應裡的確認狀態可能是標之前的。
      */
     const applySegments = (updated) => {
       if (!updated.length) return;
@@ -86,6 +93,7 @@ export function useSegmentCorrections(taskUuid, initialSegments) {
         const next = byKey.get(s.seg_key);
         return next ? { ...next, review_state: s.review_state } : s;
       }));
+      setNextSpeaker((next) => nextSpeakerAfter(next, updated));
     };
 
     const clearSettle = (segKey) => {
@@ -106,7 +114,7 @@ export function useSegmentCorrections(taskUuid, initialSegments) {
         applySegments([segment]);
         dispatch({ type: 'succeed', segKey });
         settleTimers.current.set(segKey, setTimeout(() => dispatch({ type: 'settle', segKey }), SAVED_SHOWN_MS));
-        if (operationId) setLastOperation({ id: operationId, label: '已存檔' });
+        if (operationId) setLastOperation({ id: operationId, label: SAVED_LABEL });
       } catch (error) {
         dispatch({ type: 'fail', segKey, message: saveFailureMessage(error) });
       } finally {
@@ -195,6 +203,38 @@ export function useSegmentCorrections(taskUuid, initialSegments) {
         send(segKey, request);
       },
 
+      /**
+       * 改一個片段的說話者（#354）：換成現有的另一位，或新的說話者（新的說話者編號）。和改文字一樣是一次校正，
+       * 有自己的存檔狀態，存完出現「已存檔，復原」。存檔中與使用者刪掉的片段不能改。
+       */
+      setSpeaker(segKey, speaker) {
+        const segment = segmentOf(segKey);
+        if (!segment || saving(segKey) || isUserDeleted(segment)) return;
+        if ((segment.speaker ?? null) === speaker) return;
+        send(segKey, { speaker });
+      },
+
+      /**
+       * 把這位說話者全部換成另一位（#354）：fromSpeaker 是 null 時換的是沒有說話者的片段。一次操作，做完出現
+       * 「已把 N 個片段換成 Sx，復原」，按下去整批收回。
+       */
+      async reassignSpeaker(fromSpeaker, toSpeaker) {
+        // 和全部取代一樣，先等還沒存完的校正：免得晚到的回應蓋掉換過的說話者
+        await Promise.allSettled([...inflight.current]);
+        setLastOperation(null);
+        try {
+          const result = await api.transcripts.reassignSpeaker(taskUuid, fromSpeaker, toSpeaker);
+          applySegments(result.segments);
+          if (result.operation_id) {
+            setLastOperation({ id: result.operation_id, label: reassignMessage(result.changed, toSpeaker) });
+          } else {
+            message.info('沒有要換的片段');
+          }
+        } catch (error) {
+          message.error(`沒有換：${saveFailureMessage(error)}`);
+        }
+      },
+
       /** 讀一個片段的校正紀錄（#355 的歷程）：每一筆（舊的在前）與原始轉錄。 */
       correctionRecords(segKey) {
         return api.transcripts.correctionRecords(taskUuid, segKey);
@@ -206,7 +246,7 @@ export function useSegmentCorrections(taskUuid, initialSegments) {
        */
       async undoBulk(operationId) {
         const result = await undoOperation(operationId, bulkUndoMessage);
-        if (result?.operation_id) setLastOperation({ id: result.operation_id, label: '已存檔' });
+        if (result?.operation_id) setLastOperation({ id: result.operation_id, label: SAVED_LABEL });
       },
 
       /** 重試存檔失敗的那一次。 */
@@ -218,6 +258,11 @@ export function useSegmentCorrections(taskUuid, initialSegments) {
       /** 放棄存檔失敗的內容，回到存好的內容。 */
       discard(segKey) {
         dispatch({ type: 'discard', segKey });
+      },
+
+      /** 收起「已存檔，復原」，不復原（例如切換整份當成同一位說話者之後）。 */
+      dismissUndo() {
+        setLastOperation(null);
       },
 
       /**
@@ -258,7 +303,7 @@ export function useSegmentCorrections(taskUuid, initialSegments) {
   }, [taskUuid]);
 
   /**
-   * 這些片段的確認狀態換成 state（後端已經存好的結果，#349 的 useReviewStates 用）。確認狀態不是校正，不動存檔狀態
+   * 這些片段的確認狀態換成 state（#349 的 useReviewStates 用：標一個片段時先換再送，整批標等後端做完才換）。確認狀態不是校正，不動存檔狀態
    * 與「已存檔，復原」；只換確認狀態，不換整個片段，同時在存的文字才不會被蓋掉。
    */
   const setReviewStates = useCallback((segKeys, state) => {
@@ -269,5 +314,5 @@ export function useSegmentCorrections(taskUuid, initialSegments) {
     )));
   }, []);
 
-  return { segments, saves, editing, lastOperation, actions, setReviewStates };
+  return { segments, saves, editing, lastOperation, nextSpeaker, actions, setReviewStates };
 }

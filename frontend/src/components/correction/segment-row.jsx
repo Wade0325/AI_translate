@@ -5,17 +5,11 @@ import { formatClock } from "@/utils/formatters"
 import { wordPieces } from "@/utils/playhead"
 import { FLAGGED, VERIFIED } from "@/utils/reviewStates"
 import { isUserDeleted, keepEditorFocus, shownText } from "@/utils/segmentCorrections"
+import { shownSpeaker, showsAsCorrected } from "@/utils/speakers"
 import { splitByMatches } from "@/utils/segmentSearch"
 import { SegmentEditor } from "./segment-editor"
 import { SegmentHistory } from "./segment-history"
-
-/** 說話者編號（S0、S1…）的顏色：照編號輪流用，同一位說話者在整份裡顏色不變。 */
-const SPEAKER_COLORS = ["#2dd4a8", "#d4a72d", "#47b8d4", "#e07a9f", "#8b5cf6", "#e0884f", "#7fc97f", "#c9c95c"]
-
-function speakerColor(speaker) {
-    const n = Number(/\d+/.exec(speaker)?.[0] ?? 0)
-    return SPEAKER_COLORS[n % SPEAKER_COLORS.length]
-}
+import { SpeakerMenu } from "./speaker-menu"
 
 const ROW_STYLE = {
     display: "flex",
@@ -110,7 +104,7 @@ function marked(text, ranges, className, offset = 0) {
 }
 
 /**
- * 片段列表的一列：開始時間、說話者與文字（#347），以及改文字、刪掉與還原（#348）。
+ * 片段列表的一列：開始時間、說話者與文字（#347），改文字、刪掉與還原（#348），以及改說話者（#354）。
  *
  * - 播放到這段時反白；有逐字時間時標出正在唸的字。點時間從片段的開頭播。
  * - 點文字就開始改，游標放在點的地方；點的是一個字時，同時從那個字開始播（#347），邊聽邊改。
@@ -118,6 +112,8 @@ function marked(text, ranges, className, offset = 0) {
  * - 校正過的片段有「校正過」，展開是這個片段的歷程（#355）：每一筆校正紀錄與原始轉錄，可以回到任何一版。
  *   改回和原始轉錄相同、或刪掉的片段照樣有校正紀錄，按「歷程」展開。
  * - 使用者刪掉的片段留在原位，淡化並加上刪除線，可以還原。
+ * - 點說話者是選單：改這個片段的說話者，或把這位說話者的片段全部換成另一位。整份當成同一位說話者時不顯示說話者：
+ *   只改過說話者的片段不標「校正過」（標「歷程」），歷程裡也不列說話者的校正。
  * - 確認狀態（#349）：已確認與待查各一個按鈕，按一下標上，再按一次清掉；和校正互不影響。用滑鼠按時不拿走焦點：
  *   焦點留在按鈕上時，接著按空白鍵會再按一次這個按鈕，不是播放。
  * - 目前這個片段（快捷鍵作用的片段，#349）加一圈框。點這一列的任何地方，這一列就是目前這個片段。
@@ -136,13 +132,16 @@ function marked(text, ranges, className, offset = 0) {
  *   onSeek: (seconds: number) => void,
  *   editing: import("@/utils/segmentCorrections").Editing | null,
  *   save: import("@/utils/segmentCorrections").SaveState | undefined,
+ *   singleSpeaker: boolean,
+ *   speakerInfo: import("./speaker-menu").SpeakerInfo,
  *   actions: import("./correction-view").RowActions,
  *   matchRanges?: import("@/utils/segmentSearch").TextRange[],
  *   currentMatch?: boolean,
  * }} props
  */
 function SegmentRowView({
-    segment, active, current, activeWord, canPlay, onSeek, editing, save, actions, matchRanges, currentMatch,
+    segment, active, current, activeWord, canPlay, onSeek, editing, save, singleSpeaker, speakerInfo, actions,
+    matchRanges, currentMatch,
 }) {
     const [expanded, setExpanded] = useState(false)
     const key = segment.seg_key
@@ -158,6 +157,7 @@ function SegmentRowView({
     const matchClass = currentMatch ? "correction-match correction-match-current" : "correction-match"
     const clock = formatClock(segment.start)
     const saving = save?.status === "saving"
+    const corrected = showsAsCorrected(segment, singleSpeaker)
     // 這一列正在改時，按這一列的按鈕不讓文字框失去焦點
     const onButtonMouseDown = editing ? keepEditorFocus : undefined
 
@@ -232,18 +232,15 @@ function SegmentRowView({
             ) : (
                 <span className="correction-clock" style={{ ...TIME_STYLE, color: "#8888a8" }}>{clock}</span>
             )}
-            <span
-                style={{
-                    flexShrink: 0,
-                    minWidth: 28,
-                    color: segment.speaker ? speakerColor(segment.speaker) : "#686888",
-                    fontSize: 12,
-                    fontWeight: 600,
-                    lineHeight: "26px",
-                }}
-            >
-                {segment.speaker || ""}
-            </span>
+            {!singleSpeaker && (
+                <SpeakerMenu
+                    segKey={key}
+                    speaker={shownSpeaker(segment, save)}
+                    info={speakerInfo}
+                    disabled={saving || deleted}
+                    actions={actions}
+                />
+            )}
             <div style={{ flex: 1, minWidth: 0 }}>
                 <div
                     className="correction-text"
@@ -269,7 +266,7 @@ function SegmentRowView({
                     </div>
                 )}
                 {expanded && segment.has_correction_records && (
-                    <SegmentHistory segment={segment} saving={saving} actions={actions} onButtonMouseDown={onButtonMouseDown} />
+                    <SegmentHistory segment={segment} saving={saving} singleSpeaker={singleSpeaker} actions={actions} onButtonMouseDown={onButtonMouseDown} />
                 )}
             </div>
             <div style={{ display: "flex", alignItems: "flex-start", gap: 6, flexShrink: 0 }}>
@@ -290,9 +287,9 @@ function SegmentRowView({
                         title={expanded ? "收起歷程" : "看這個片段的每一次校正，可以回到任何一版"}
                         onMouseDown={onButtonMouseDown}
                         onClick={() => setExpanded((open) => !open)}
-                        style={segment.corrected && !deleted ? CHIP_STYLE : HISTORY_CHIP_STYLE}
+                        style={corrected && !deleted ? CHIP_STYLE : HISTORY_CHIP_STYLE}
                     >
-                        {segment.corrected && !deleted ? "校正過" : "歷程"}
+                        {corrected && !deleted ? "校正過" : "歷程"}
                         {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
                     </button>
                 )}

@@ -1,7 +1,7 @@
 from pydantic import BaseModel, Field
 from typing import List, Optional
 from uuid import UUID
-from pydantic import ConfigDict
+from pydantic import ConfigDict, StrictBool
 
 
 class ProviderConfigRequest(BaseModel):
@@ -311,6 +311,42 @@ class ReviewStatesResponse(BaseModel):
     """實際改到的片段，依 seq 排序。"""
 
 
+class SpeakerReassignRequest(BaseModel):
+    """POST /transcripts/{task_uuid}/speakers/reassign：把這位說話者全部換成另一位（#354）。
+
+    from_speaker 一定要帶：null 是「沒有說話者的片段」，少帶時不能當成 null，否則會把那些片段全部換掉。
+    to_speaker 的格式在 ``app.api.transcripts`` 檢查，錯誤時回一句中文的 detail。"""
+    model_config = ConfigDict(extra="forbid")
+
+    from_speaker: Optional[str]
+    """換掉哪一位：校正後版本的說話者編號；null 是沒有說話者的片段。"""
+    to_speaker: Optional[str]
+    """換成哪一位：S 加數字，可以是這個任務還沒出現過的編號（新的說話者）。"""
+
+
+class SpeakerReassignResponse(BaseModel):
+    """把這位說話者全部換成另一位的結果：改到的片段每個各記一筆校正紀錄，共用一個操作編號（整批復原時用）。
+    一個片段都沒有改到時沒有操作編號。"""
+    operation_id: Optional[UUID] = None
+    changed: int
+    """改到幾個片段。"""
+    segments: List[TranscriptSegmentResponse] = []
+    """改到的片段的新內容，依片段的順序。"""
+
+
+class TranscriptSettingsRequest(BaseModel):
+    """PATCH /transcripts/{task_uuid}：改任務的設定（#354）。不算校正，不留校正紀錄，也不重新轉錄。"""
+    model_config = ConfigDict(extra="forbid")
+
+    single_speaker: StrictBool
+    """true 是整份當成同一位說話者（下載不帶說話者標記，校正頁不顯示說話者），false 是照模型分出的說話者顯示。"""
+
+
+class TranscriptSettingsResponse(BaseModel):
+    """改完之後任務的設定。"""
+    single_speaker: bool
+
+
 class ReplaceAllRequest(BaseModel):
     """POST /transcripts/{task_uuid}/replace-all（#356）：把校正後版本裡每一處 find 換成 replacement。
     比對的規則見 ``app.core.text_replacement``；replacement 可以是空字串。"""
@@ -374,6 +410,10 @@ class TranscriptResponse(BaseModel):
     # 畫面照原因寫出一句說明（#347）。schemas 不依賴 services，所以型別寫 str
     correctable: bool = False
     uncorrectable_reason: Optional[str] = None
+    single_speaker: bool = False
+    """整份當成同一位說話者（#354）：下載不帶說話者標記，校正頁不顯示說話者與改說話者的操作。"""
+    next_speaker: str = "S0"
+    """新的說話者編號：這個任務還沒用過的下一個號碼（#354）。"""
     segment_count: int = 0
     segments: List[TranscriptSegmentResponse] = []
 

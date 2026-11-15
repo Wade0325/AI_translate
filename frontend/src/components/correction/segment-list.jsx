@@ -48,6 +48,8 @@ function fullyVisible(container, index) {
  *   onSeek: (seconds: number) => void,
  *   editing: import("@/utils/segmentCorrections").Editing | null,
  *   saves: import("@/utils/segmentCorrections").Saves,
+ *   singleSpeaker: boolean,
+ *   speakerInfo: import("./speaker-menu").SpeakerInfo,
  *   actions: import("./correction-view").RowActions,
  *   matches: Map<string, import("@/utils/segmentSearch").TextRange[]>,
  *   currentMatch: string | null,
@@ -57,8 +59,8 @@ function fullyVisible(container, index) {
  */
 export function SegmentList({
     segments, visible, currentIndex, reveal, emptyText,
-    activeSet, activeWords, followIndex, following, canPlay, onUserScroll, onSeek, editing, saves, actions,
-    matches, currentMatch, revealMatch, ref,
+    activeSet, activeWords, followIndex, following, canPlay, onUserScroll, onSeek, editing, saves,
+    singleSpeaker, speakerInfo, actions, matches, currentMatch, revealMatch, ref,
 }) {
     const containerRef = useRef(/** @type {HTMLDivElement | null} */ (null))
     const setContainer = useCallback((element) => {
@@ -169,6 +171,8 @@ export function SegmentList({
                                 onSeek={onSeek}
                                 editing={item.index === editingIndex ? editing : null}
                                 save={saves[segment.seg_key]}
+                                singleSpeaker={singleSpeaker}
+                                speakerInfo={speakerInfo}
                                 actions={actions}
                                 matchRanges={matches.get(segment.seg_key)}
                                 currentMatch={segment.seg_key === currentMatch}

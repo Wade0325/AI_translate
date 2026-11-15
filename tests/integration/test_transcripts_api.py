@@ -6,6 +6,8 @@
   PATCH  /api/v1/transcripts/{task_uuid}/segments/{seg_key}（改文字、說話者、確認狀態，#341）
   POST   /api/v1/transcripts/{task_uuid}/replace-all（全部取代，#356）
   POST   /api/v1/transcripts/{task_uuid}/operations/{operation_id}/undo（復原一次操作，#341）
+  POST   /api/v1/transcripts/{task_uuid}/speakers/reassign（把這位說話者全部換成另一位，#354）
+  PATCH  /api/v1/transcripts/{task_uuid}（切換整份當成同一位說話者，#354）
   DELETE /api/v1/history/{task_uuid} 連帶刪除片段
   寫入校正或確認狀態時，保留音檔的保留天數重新起算（#350）
 
@@ -692,6 +694,247 @@ class TestReplaceAll:
         client.post(_replace_url(log.task_uuid), json={"find": "王曉明", "replacement": "王小明"})
 
         assert not [entry for entry in app_log if "曉明" in entry or "小明" in entry]
+
+
+# ─── 說話者（#354） ──────────────────────────────────────────────────────────
+
+def _reassign_url(task_uuid) -> str:
+    return f"/api/v1/transcripts/{task_uuid}/speakers/reassign"
+
+
+def _settings_url(task_uuid) -> str:
+    return f"/api/v1/transcripts/{task_uuid}"
+
+
+def _speakers_task(db: Session, speakers) -> TranscriptionLog:
+    """一個能校正的任務：片段 0000、0001…，說話者依序是 speakers（None 是沒有說話者），文字是「第 N 段」。"""
+    log = _create_log(db)
+    for i, speaker in enumerate(speakers):
+        _create_segment(db, log.task_uuid, seg_key=f"{i:04d}", seq=i, start_sec=i * 5.0,
+                        end_sec=i * 5.0 + 3.0, speaker=speaker, text=f"第 {i} 段")
+    return log
+
+
+def _speakers(client: TestClient, task_uuid) -> list:
+    """每個片段的 (校正後的說話者, 原始轉錄的說話者)，依片段的順序。"""
+    segments = client.get(f"/api/v1/transcripts/{task_uuid}").json()["segments"]
+    return [(s["speaker"], s["original_speaker"]) for s in segments]
+
+
+def _next_speaker(client: TestClient, task_uuid) -> str:
+    return client.get(f"/api/v1/transcripts/{task_uuid}").json()["next_speaker"]
+
+
+class TestReassignSpeaker:
+    """把這位說話者全部換成另一位（#354 第 2 點）：每個片段各記一筆，共用一個操作編號，可以整批復原。"""
+
+    def test_all_segments_of_a_speaker_move_in_one_operation_and_one_undo_brings_them_back(
+            self, client, db_session):
+        # 模型把主持人分成 S0 和 S3：把 S3 全部換成 S0
+        log = _speakers_task(db_session, ["S0", "S3", "S1", "S3"])
+        original_download = _download(client, log.task_uuid, "original")
+
+        response = client.post(_reassign_url(log.task_uuid), json={"from_speaker": "S3", "to_speaker": "S0"})
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        operation = body["operation_id"]
+        assert body["changed"] == 2
+        assert [(s["seg_key"], s["speaker"], s["original_speaker"]) for s in body["segments"]] == [
+            ("0001", "S0", "S3"), ("0003", "S0", "S3")]
+        assert _speakers(client, log.task_uuid) == [("S0", "S0"), ("S0", "S3"), ("S1", "S1"), ("S0", "S3")]
+        assert _records(db_session, log.task_uuid) == [("speaker", "S3", "S0", operation)] * 2
+        # 原始轉錄不變
+        assert _download(client, log.task_uuid, "original") == original_download
+        # 片段的歷程（#355）把它當成整批操作：一共改了 2 個片段
+        history = client.get(f"/api/v1/transcripts/{log.task_uuid}/segments/0001/correction-records").json()
+        assert [(r["operation_id"], r["operation_segment_count"]) for r in history["records"]] == [(operation, 2)]
+
+        undo = client.post(_undo_url(log.task_uuid, operation)).json()
+
+        assert (undo["restored"], undo["skipped"]) == (2, 0)
+        assert _speakers(client, log.task_uuid) == [("S0", "S0"), ("S3", "S3"), ("S1", "S1"), ("S3", "S3")]
+        assert _download(client, log.task_uuid, "corrected") == original_download
+
+    def test_it_goes_by_the_corrected_speaker(self, client, db_session):
+        log = _speakers_task(db_session, ["S0", "S1", "S1"])
+        client.patch(_url(log.task_uuid, "0001"), json={"speaker": "S2"})
+
+        body = client.post(_reassign_url(log.task_uuid), json={"from_speaker": "S1", "to_speaker": "S0"}).json()
+
+        assert body["changed"] == 1
+        assert _speakers(client, log.task_uuid) == [("S0", "S0"), ("S2", "S1"), ("S0", "S1")]
+
+    def test_segments_without_a_speaker_can_all_be_given_to_one(self, client, db_session):
+        # Gemini 當初沒有分說話者的任務：沒有說話者的片段一次全部指定給某一位
+        log = _speakers_task(db_session, [None, "S0", None])
+
+        body = client.post(_reassign_url(log.task_uuid), json={"from_speaker": None, "to_speaker": "S1"}).json()
+
+        assert body["changed"] == 2
+        assert _speakers(client, log.task_uuid) == [("S1", None), ("S0", "S0"), ("S1", None)]
+        assert [r[1:3] for r in _records(db_session, log.task_uuid)] == [(None, "S1")] * 2
+
+    def test_deleted_segments_move_too_and_come_back_with_the_new_speaker(self, client, db_session):
+        log = _speakers_task(db_session, ["S3", "S3"])
+        client.patch(_url(log.task_uuid, "0001"), json={"text": ""})
+
+        body = client.post(_reassign_url(log.task_uuid), json={"from_speaker": "S3", "to_speaker": "S0"}).json()
+
+        assert body["changed"] == 2
+        restored = client.patch(_url(log.task_uuid, "0001"), json={"text": "第 1 段"}).json()["segment"]
+        assert (restored["speaker"], restored["deleted"]) == ("S0", False)
+
+    def test_nothing_to_move_records_nothing(self, client, db_session):
+        log = _speakers_task(db_session, ["S0", "S1"])
+
+        for request in ({"from_speaker": "S5", "to_speaker": "S0"}, {"from_speaker": "S1", "to_speaker": "S1"}):
+            body = client.post(_reassign_url(log.task_uuid), json=request).json()
+            assert (body["changed"], body["operation_id"], body["segments"]) == (0, None, [])
+        assert _records(db_session, log.task_uuid) == []
+
+
+class TestNewSpeaker:
+    """新的說話者（#354 第 1 點）：編號取這個任務還沒用過的下一個號碼，讀取端點回 ``next_speaker``。"""
+
+    def test_the_next_number_after_every_speaker_in_the_task(self, client, db_session):
+        log = _speakers_task(db_session, ["S0", "S2", None])
+
+        assert _next_speaker(client, log.task_uuid) == "S3"
+
+    def test_a_task_without_speakers_starts_at_s0(self, client, db_session):
+        log = _speakers_task(db_session, [None, None])
+
+        assert _next_speaker(client, log.task_uuid) == "S0"
+
+    def test_splitting_two_guests_the_model_merged_into_one_speaker(self, client, db_session):
+        log = _speakers_task(db_session, ["S0", "S1", "S1"])
+        new = _next_speaker(client, log.task_uuid)
+
+        response = client.patch(_url(log.task_uuid, "0002"), json={"speaker": new})
+
+        assert response.status_code == 200, response.text
+        assert new == "S2"
+        assert _speakers(client, log.task_uuid) == [("S0", "S0"), ("S1", "S1"), ("S2", "S1")]
+        assert _next_speaker(client, log.task_uuid) == "S3"
+
+    def test_a_number_that_was_ever_used_is_not_given_again(self, client, db_session):
+        # S2 全部換成 S1 之後沒有片段了，但原始轉錄與校正紀錄裡的 S2 是另一個人
+        log = _speakers_task(db_session, ["S0", "S1", "S2"])
+        client.post(_reassign_url(log.task_uuid), json={"from_speaker": "S2", "to_speaker": "S1"})
+        assert _next_speaker(client, log.task_uuid) == "S3"
+
+        # 指定過又復原的新的說話者也算用過
+        operation = client.patch(_url(log.task_uuid, "0000"), json={"speaker": "S3"}).json()["operation_id"]
+        client.post(_undo_url(log.task_uuid, operation))
+        assert _next_speaker(client, log.task_uuid) == "S4"
+
+    def test_a_number_that_has_a_speaker_name_is_not_given_again(self, client, db_session):
+        # 說話者名稱以說話者編號為對象（#359）：新的說話者不能接手別人的名稱。名稱還沒有寫入的端點，直接用 repository 寫
+        from app.repositories.correction_repository import Correction, CorrectionField, CorrectionRepository
+
+        log = _speakers_task(db_session, ["S0"])
+        CorrectionRepository.record_operation(
+            db_session, log.task_uuid, [Correction("S4", CorrectionField.SPEAKER_NAME, "王小明")])
+
+        assert _next_speaker(client, log.task_uuid) == "S5"
+
+
+class TestSingleSpeaker:
+    """「整份當成同一位說話者」與「照模型分出的說話者顯示」的切換（#354 第 3 點）：改的是任務的設定，不算校正，
+    不留校正紀錄，也不重新轉錄。說話者人數（#352）合併之前，寫的是任務紀錄的 Multi-Speaker 開關。"""
+
+    def _single(self, client, task_uuid) -> bool:
+        return client.get(f"/api/v1/transcripts/{task_uuid}").json()["single_speaker"]
+
+    def test_switching_changes_the_speaker_labels_in_downloads_and_leaves_segments_and_records(
+            self, client, db_session):
+        log = _speakers_task(db_session, ["S0", "S1"])
+        client.patch(_url(log.task_uuid, "0000"), json={"text": "改過的第 0 段"})
+        segments = client.get(f"/api/v1/transcripts/{log.task_uuid}").json()["segments"]
+        records = _records(db_session, log.task_uuid)
+        assert self._single(client, log.task_uuid) is False
+        assert _download(client, log.task_uuid, "corrected") == "[S0] 改過的第 0 段\n[S1] 第 1 段"
+
+        response = client.patch(_settings_url(log.task_uuid), json={"single_speaker": True})
+
+        assert response.status_code == 200, response.text
+        assert response.json() == {"single_speaker": True}
+        assert self._single(client, log.task_uuid) is True
+        assert _download(client, log.task_uuid, "corrected") == "改過的第 0 段\n第 1 段"
+        assert _download(client, log.task_uuid, "original") == "第 0 段\n第 1 段"
+        assert client.get(f"/api/v1/transcripts/{log.task_uuid}").json()["segments"] == segments
+        assert _records(db_session, log.task_uuid) == records
+
+        client.patch(_settings_url(log.task_uuid), json={"single_speaker": False})
+
+        assert self._single(client, log.task_uuid) is False
+        assert _download(client, log.task_uuid, "corrected") == "[S0] 改過的第 0 段\n[S1] 第 1 段"
+        assert client.get(f"/api/v1/transcripts/{log.task_uuid}").json()["segments"] == segments
+        assert _records(db_session, log.task_uuid) == records
+
+    def test_an_old_task_with_multi_speaker_off_can_switch_to_the_speakers_the_model_found(
+            self, client, db_session):
+        # 人數做出來之前、Multi-Speaker 開關關著的任務：本機照樣存了模型分出的說話者編號
+        log = _speakers_task(db_session, ["S0", "S1"])
+        log.multi_speaker = False
+        db_session.commit()
+        assert self._single(client, log.task_uuid) is True
+        assert _download(client, log.task_uuid, "corrected") == "第 0 段\n第 1 段"
+
+        client.patch(_settings_url(log.task_uuid), json={"single_speaker": False})
+
+        assert self._single(client, log.task_uuid) is False
+        assert _download(client, log.task_uuid, "corrected") == "[S0] 第 0 段\n[S1] 第 1 段"
+
+
+class TestRefusedSpeakerWrites:
+    """說話者的寫入照校正的規則擋：任務要能校正，編號的格式要對；擋下時什麼都不寫。"""
+
+    def test_task_not_completed(self, client, db_session):
+        log = _speakers_task(db_session, ["S0", "S1"])
+        log.status = "PROCESSING"
+        db_session.commit()
+
+        reassign = client.post(_reassign_url(log.task_uuid), json={"from_speaker": "S1", "to_speaker": "S0"})
+        switch = client.patch(_settings_url(log.task_uuid), json={"single_speaker": True})
+
+        assert (reassign.status_code, switch.status_code) == (409, 409)
+        assert "還沒完成" in reassign.json()["detail"]
+        assert _records(db_session, log.task_uuid) == []
+        db_session.expire_all()
+        assert log.multi_speaker is None
+
+    def test_unknown_task(self, client):
+        assert client.post(_reassign_url(uuid.uuid4()), json={"from_speaker": "S1", "to_speaker": "S0"}
+                           ).status_code == 404
+        assert client.patch(_settings_url(uuid.uuid4()), json={"single_speaker": True}).status_code == 404
+
+    @pytest.mark.parametrize("speaker", ["s1", "S01", "Speaker 1", "", None])
+    def test_malformed_target_speaker(self, client, db_session, speaker):
+        log = _speakers_task(db_session, ["S0", "S1"])
+
+        response = client.post(_reassign_url(log.task_uuid), json={"from_speaker": "S1", "to_speaker": speaker})
+
+        assert response.status_code == 400, response.text
+        assert "說話者" in response.json()["detail"]
+        assert _records(db_session, log.task_uuid) == []
+
+    @pytest.mark.parametrize("body", [{"to_speaker": "S0"}, {"from_speaker": "S1", "to_speaker": "S0", "x": 1}])
+    def test_the_source_speaker_must_be_given_and_nothing_else(self, client, db_session, body):
+        # 少了 from_speaker 不能當成「沒有說話者的片段」：那會把它們全部換掉
+        log = _speakers_task(db_session, ["S0", None])
+
+        assert client.post(_reassign_url(log.task_uuid), json=body).status_code == 422
+        assert _records(db_session, log.task_uuid) == []
+
+    @pytest.mark.parametrize("body", [{}, {"single_speaker": "yes"}, {"single_speaker": 1}, {"single_speaker": None}])
+    def test_the_switch_takes_only_true_or_false(self, client, db_session, body):
+        log = _speakers_task(db_session, ["S0", "S1"])
+
+        assert client.patch(_settings_url(log.task_uuid), json=body).status_code == 422
+        db_session.expire_all()
+        assert log.multi_speaker is None
 
 
 class TestRefusedWrites:

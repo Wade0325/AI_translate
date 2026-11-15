@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Link } from "react-router-dom"
-import { Button, Progress } from "antd"
+import { Button, Progress, Segmented } from "antd"
 import { ArrowLeft, Download, LocateFixed, Search } from "lucide-react"
 import { api } from "@/services/api"
 import { useAudioPlayer } from "@/hooks/useAudioPlayer"
@@ -8,6 +8,7 @@ import { useCorrectionShortcuts } from "@/hooks/useCorrectionShortcuts"
 import { useReviewStates } from "@/hooks/useReviewStates"
 import { useSegmentCorrections } from "@/hooks/useSegmentCorrections"
 import { useSegmentSearch } from "@/hooks/useSegmentSearch"
+import { useSingleSpeaker } from "@/hooks/useSingleSpeaker"
 import { lastStarted, segmentSpans, segmentsAt, wordAt } from "@/utils/playhead"
 import {
     FLAGGED, VERIFIED, cursorAfterSeek, filterCounts, keysWithoutReviewState, matchesFilter, nearestVisible,
@@ -15,6 +16,7 @@ import {
 } from "@/utils/reviewStates"
 import { REWIND_SECONDS, keepEditorFocus } from "@/utils/segmentCorrections"
 import { isFindShortcut } from "@/utils/segmentSearch"
+import { speakerCounts } from "@/utils/speakers"
 import { TranscriptDownloadMenu } from "@/components/transcript-download-menu"
 import { FindBar } from "./find-bar"
 import { PlayerBar } from "./player-bar"
@@ -26,8 +28,14 @@ export const AUDIO_GONE = "保留音檔已經不在，無法播放；文字照�
 /** 打開頁面之後才讀不到（例如在設定頁立即刪除了），或瀏覽器播不了這個檔。 */
 export const AUDIO_FAILED = "保留音檔無法播放；文字照樣可以校正"
 
+/** 說話者的切換（#354）：兩種狀態寫在按鈕上。 */
+const SPEAKER_MODES = [
+    { value: "single", label: "整份當成同一位" },
+    { value: "model", label: "照模型分出的說話者顯示" },
+]
+
 /**
- * 片段列表每一列用的動作：改文字、刪掉與還原（useSegmentCorrections）、打字時的 Tab 與 Shift+Tab，以及
+ * 片段列表每一列用的動作：改文字、刪掉與還原、改說話者（useSegmentCorrections）、打字時的 Tab 與 Shift+Tab，以及
  * 標確認狀態與換成目前這個片段（#349）。
  *
  * @typedef {ReturnType<typeof useSegmentCorrections>["actions"] & {
@@ -91,6 +99,9 @@ const TOAST_STYLE = {
  * 它的開頭；點一列、拖播放進度也會換。播放往下走時不跟著換，聽完一段才按 V 也標得到剛聽完的那一段
  * （見 reviewStates.js）。
  *
+ * 說話者（#354）：上方的切換決定整份當成同一位說話者（不顯示說話者，也沒有改說話者的操作），或照模型分出的說話者
+ * 顯示；切換是任務的設定，不算校正。顯示說話者時，點片段的說話者可以改這個片段，或把這位說話者全部換成另一位。
+ *
  * 尋找與全部取代（#356）：在這一頁按 Ctrl+F 開的是頁面自己的尋找列（FindBar），不是瀏覽器內建的尋找。跳到一個
  * 符合的片段時停止跟著播放捲動；那個片段被篩選掉了時篩選換回全部，才看得到它。尋找不換目前這個片段。
  *
@@ -99,15 +110,18 @@ const TOAST_STYLE = {
  *   original_filename?: string | null,
  *   audio_duration_seconds?: number | null,
  *   audio_available: boolean,
+ *   single_speaker?: boolean,
+ *   next_speaker?: string,
  *   segments: any[],
  * } }} props
  */
 export function CorrectionView({ transcript }) {
     const { audioRef, audioProps, playing, time, duration, rate, failed, toggle, seek, skip, setRate } = useAudioPlayer()
-    const { segments, saves, editing, lastOperation, actions, setReviewStates } = useSegmentCorrections(
-        transcript.task_uuid, transcript.segments,
+    const { segments, saves, editing, lastOperation, nextSpeaker, actions, setReviewStates } = useSegmentCorrections(
+        transcript.task_uuid, transcript.segments, transcript.next_speaker,
     )
     const review = useReviewStates(transcript.task_uuid, setReviewStates)
+    const { singleSpeaker, switching, switchTo } = useSingleSpeaker(transcript.task_uuid, Boolean(transcript.single_speaker))
     const total = duration ?? transcript.audio_duration_seconds ?? 0
     const canPlay = transcript.audio_available && !failed
 
@@ -144,6 +158,18 @@ export function CorrectionView({ transcript }) {
         seek(seconds, { andPlay: true })
     }, [seek])
     const onUserScroll = useCallback(() => setFollowing(false), [])
+
+    // 每位說話者的片段數：內容沒變時保持同一個物件，片段列表的每一列才不會在每次存檔時都重畫
+    const speakerCountsJson = useMemo(() => JSON.stringify(speakerCounts(segments)), [segments])
+    /** @type {import("./speaker-menu").SpeakerInfo} */
+    const speakerInfo = useMemo(() => {
+        const counts = /** @type {[string | null, number][]} */ (JSON.parse(speakerCountsJson))
+        return {
+            speakers: counts.map(([speaker]) => speaker).filter((speaker) => speaker !== null),
+            counts: new Map(counts),
+            nextSpeaker,
+        }
+    }, [speakerCountsJson, nextSpeaker])
 
     /** @type {RowActions} */
     const rowActions = useMemo(() => ({
@@ -290,8 +316,24 @@ export function CorrectionView({ transcript }) {
                         railColor="#2a2a48"
                     />
                 </span>
+                <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+                    <span id="speaker-mode-label" style={{ color: "#8888a8", fontSize: 12, whiteSpace: "nowrap" }}>說話者</span>
+                    <Segmented
+                        size="small"
+                        aria-labelledby="speaker-mode-label"
+                        options={SPEAKER_MODES}
+                        value={singleSpeaker ? "single" : "model"}
+                        disabled={switching}
+                        onChange={(value) => {
+                            // 切換之後收起「復原」：剛才換說話者的提示在整份當成同一位時不該留著
+                            actions.dismissUndo()
+                            switchTo(value === "single")
+                            releaseFocus()
+                        }}
+                    />
+                </div>
                 {/* 預設給校正後版本，另有原始轉錄（檔名多一段 .original） */}
-                <div style={{ marginLeft: "auto", flexShrink: 0, display: "flex", gap: 8 }}>
+                <div style={{ flexShrink: 0, display: "flex", gap: 8 }}>
                     <Button
                         size="small"
                         icon={<Search size={14} />}
@@ -355,6 +397,8 @@ export function CorrectionView({ transcript }) {
                     onSeek={onSeek}
                     editing={editing}
                     saves={saves}
+                    singleSpeaker={singleSpeaker}
+                    speakerInfo={speakerInfo}
                     actions={rowActions}
                     matches={search.ranges}
                     currentMatch={search.currentKey}

@@ -7,17 +7,19 @@
 音檔用 FileResponse 直接服務；Starlette 會處理 Range 請求，播放器才能拖曳。
 
 校正（#341，ADR 0011）：讀到的片段是校正後版本，另外帶著原始轉錄；改一個片段的文字、說話者與確認狀態，
-一次改很多個片段的確認狀態（#349）、全部取代（#356），以及復原一次操作，都從這裡寫。一個片段的歷程（它的每一筆
-校正紀錄，#355）也從這裡讀；回到某一版用改一個片段的端點，整批復原用復原一次操作的端點，不另開端點。
-校正後版本與校正紀錄的規則在 ``app.repositories.correction_repository``，這裡只檢查請求，以及把請求換成
-要記的校正（全部取代怎麼比對在 ``app.core.text_replacement``）。寫入端點和 History 的清單、讀取端點用同一個
-「能不能校正」的判斷（``app.services.correctability``）。轉錄的文字不寫進日誌（#25 故事 84）。
+一次改很多個片段的確認狀態（#349）、把這位說話者全部換成另一位（#354）、全部取代（#356），以及復原一次操作，
+都從這裡寫。一個片段的歷程（它的每一筆校正紀錄，#355）也從這裡讀；回到某一版與整批復原不另開端點，用改一個
+片段與復原的端點。「整份當成同一位說話者」的切換（#354）也在這裡改，它是任務的設定，不是校正。校正後版本與
+校正紀錄的規則在 ``app.repositories.correction_repository``，這裡只檢查請求，以及把請求換成要記的校正
+（全部取代怎麼比對在 ``app.core.text_replacement``）。寫入端點和 History 的清單、讀取端點用同一個「能不能校正」
+的判斷（``app.services.correctability``）。轉錄的文字不寫進日誌（#25 故事 84）。
 
 寫入端點沒有使用者驗證：免安裝模式只收 app 自己的頁面送的寫入請求，做在 ``app.core.api_access``，
 這裡不各自處理。
 """
 
 import re
+import uuid
 from pathlib import Path
 from typing import Collection, Dict, List, Optional, Tuple, cast
 
@@ -36,6 +38,7 @@ from app.repositories.correction_repository import (
     SegmentContent,
 )
 from app.repositories.transcript_segment_repository import TranscriptSegmentRepository
+from app.repositories.transcription_log_repository import TranscriptionLogRepository
 from app.schemas.schemas import (
     CorrectionRecordResponse,
     ReplaceAllRequest,
@@ -45,11 +48,15 @@ from app.schemas.schemas import (
     SegmentCorrectionRecordsResponse,
     SegmentCorrectionRequest,
     SegmentCorrectionResponse,
+    SpeakerReassignRequest,
+    SpeakerReassignResponse,
     TranscriptResponse,
     TranscriptSegmentResponse,
+    TranscriptSettingsRequest,
+    TranscriptSettingsResponse,
     UndoOperationResponse,
 )
-from app.services import audio_store, correctability
+from app.services import audio_store, correctability, output_format
 from app.services.correctability import Uncorrectable
 from app.utils.audio import get_mime_type
 from app.utils.identifiers import coerce_uuid
@@ -123,9 +130,31 @@ def get_transcript(task_uuid: str, db: Session = Depends(get_db)):
         audio_available=audio_store.resolve(log.audio_filename) is not None,
         correctable=blocker is None,
         uncorrectable_reason=blocker,
+        single_speaker=_single_speaker(log),
+        next_speaker=CorrectionRepository.next_speaker(db, log.task_uuid),
         segment_count=len(segments),
         segments=segments,
     )
+
+
+def _single_speaker(log: TranscriptionLog) -> bool:
+    """任務整份當成同一位說話者：下載不帶說話者標記的任務（和下載用同一條規則）。
+
+    說話者人數（#352）合併之前，這個設定是任務紀錄的 Multi-Speaker 開關：關著（False）是整份當成同一位，
+    開著與開關做出來之前的 None 是照模型分出的說話者顯示。照當時的規則，開著的任務一律帶說話者標記，所以切到
+    照模型分出的說話者顯示之後，校正後版本只剩一位說話者時也帶。
+
+    人數合併之後改看人數，設定也改寫人數（:func:`_set_single_speaker`），只改這兩處：整份當成同一位寫 1 人，
+    照模型分出的說話者顯示寫照模型判斷，下載照「下載的那個版本裡有兩位以上才帶」（#351 第 3 點）。
+    """
+    return not output_format.shows_speaker_labels(cast(Optional[bool], log.multi_speaker))
+
+
+def _set_single_speaker(db: Session, log: TranscriptionLog, single_speaker: bool) -> Optional[TranscriptionLog]:
+    """把任務切換成整份當成同一位說話者，或照模型分出的說話者顯示（:func:`_single_speaker` 的反向），並 commit。
+    回傳改好的任務紀錄；任務紀錄剛好被刪掉時是 None。"""
+    return TranscriptionLogRepository().update_log(
+        db, cast(uuid.UUID, log.task_uuid), {"multi_speaker": not single_speaker})
 
 
 def _normalized_text(text: str) -> str:
@@ -330,6 +359,42 @@ def undo_operation(task_uuid: str, operation_id: str, db: Session = Depends(get_
         operation_id=result.operation_id,
         segments=_segments(db, log, result.seg_keys) if result.seg_keys else [],
     )
+
+
+@router.post("/{task_uuid}/speakers/reassign", response_model=SpeakerReassignResponse)
+def reassign_speaker(task_uuid: str, body: SpeakerReassignRequest, db: Session = Depends(get_db)):
+    """把這位說話者全部換成另一位（#354）：校正後的說話者是 ``from_speaker`` 的每個片段（null 是沒有說話者的
+    片段，刪掉的片段也算），說話者都改成 ``to_speaker``。
+
+    每個改到的片段各記一筆校正紀錄，共用一個操作編號，在同一個交易裡寫完；做完可以用復原的端點整批收回。
+    ``to_speaker`` 可以是這個任務還沒出現過的編號（新的說話者）。
+    """
+    log = _correctable_log(db, task_uuid)
+    if body.to_speaker is None or not _SPEAKER_ID.fullmatch(body.to_speaker):
+        raise HTTPException(status_code=400, detail="說話者編號的格式不正確：要是 S 加數字，例如 S0、S1")
+    try:
+        result = CorrectionRepository.reassign_speaker(db, log.task_uuid, body.from_speaker, body.to_speaker)
+    except ValueError as e:
+        # 任務剛好被刪掉：什麼都沒寫
+        raise HTTPException(status_code=404, detail="找不到此任務紀錄") from e
+    return SpeakerReassignResponse(
+        operation_id=result.operation_id,
+        changed=len(result.seg_keys),
+        segments=_segments(db, log, result.seg_keys) if result.seg_keys else [],
+    )
+
+
+@router.patch("/{task_uuid}", response_model=TranscriptSettingsResponse)
+def update_transcript_settings(task_uuid: str, body: TranscriptSettingsRequest, db: Session = Depends(get_db)):
+    """改任務的設定：在「整份當成同一位說話者」與「照模型分出的說話者顯示」之間切換（#354）。
+
+    改的是任務的設定，不算校正，不留校正紀錄，也不重新轉錄；片段照樣存著模型分出的說話者編號。切換之後，
+    下載帶不帶說話者標記照輸出格式模組的規則（:func:`app.services.output_format.shows_speaker_labels`）。
+    """
+    updated = _set_single_speaker(db, _correctable_log(db, task_uuid), body.single_speaker)
+    if updated is None:  # 任務剛好被刪掉
+        raise HTTPException(status_code=404, detail="找不到此任務紀錄")
+    return TranscriptSettingsResponse(single_speaker=_single_speaker(updated))
 
 
 @router.get("/{task_uuid}/audio")

@@ -27,6 +27,7 @@
 
 from __future__ import annotations
 
+import re
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
@@ -55,6 +56,9 @@ class CorrectionField(StrEnum):
 SEGMENT_FIELDS = (CorrectionField.TEXT, CorrectionField.SPEAKER)
 """對象是片段的校正。"""
 
+_SPEAKER_NUMBER = re.compile(r"S(\d+)")
+"""說話者編號（S0、S1…）裡的號碼：找新的說話者編號時用（:meth:`CorrectionRepository.next_speaker`）。"""
+
 
 class ReviewState(StrEnum):
     """確認狀態：使用者在片段上標的檢查結果。沒有標是 None。不是校正，不留校正紀錄。"""
@@ -80,12 +84,13 @@ class Correction:
 
 @dataclass(frozen=True)
 class SegmentContent:
-    """寫校正紀錄時，一個片段現在的內容（鎖住任務之後讀的）：校正後版本的文字，以及原始轉錄的文字。
-    文字的「沒有」是空字串，和校正後版本相同。之後一次改很多個片段的說話者（#354）要用時再加說話者。
+    """寫校正紀錄時，一個片段現在的內容（鎖住任務之後讀的）：校正後版本的文字與說話者，以及原始轉錄的文字。
+    文字的「沒有」是空字串，說話者的「沒有」是 None，和校正後版本相同。
     """
 
     seg_key: str
     text: str
+    speaker: Optional[str]
     original_text: str
 
     @property
@@ -297,6 +302,7 @@ class _CurrentContent:
             yield SegmentContent(
                 seg_key=seg_key,
                 text=self.value((CorrectionField.TEXT, seg_key)) or "",
+                speaker=self.value((CorrectionField.SPEAKER, seg_key)),
                 original_text=cast(Optional[str], self._segments[seg_key].text) or "",
             )
 
@@ -436,6 +442,21 @@ class CorrectionRepository:
         return OperationResult(operation_id=operation_id if content.recorded else None, seg_keys=seg_keys)
 
     @staticmethod
+    def reassign_speaker(db: Session, task_uuid, from_speaker: Optional[str], to_speaker: str) -> OperationResult:
+        """把這位說話者全部換成另一位（#354）：校正後的說話者是 ``from_speaker`` 的每個片段（None 是沒有說話者
+        的片段；刪掉的片段也算，還原之後才是換過的說話者），說話者各記一筆改成 ``to_speaker`` 的校正紀錄，共用一個
+        操作編號，在同一個交易裡寫完，可以用 :meth:`undo_operation` 整批復原。
+
+        走 :meth:`record_operation_over_segments`：要換哪些片段在鎖住任務之後才判斷，同時送來的另一次校正不會被
+        漏掉或蓋掉。一個片段都沒有改到時沒有操作編號；任務紀錄不在時丟 ``ValueError``，什麼都不記。
+        """
+        source = _normalized(CorrectionField.SPEAKER, from_speaker)
+        return CorrectionRepository.record_operation_over_segments(
+            db, task_uuid,
+            lambda segment: ([Correction(target=segment.seg_key, field=CorrectionField.SPEAKER, new_value=to_speaker)]
+                             if segment.speaker == source else []))
+
+    @staticmethod
     def undo_operation(db: Session, task_uuid, operation_id) -> Optional[UndoResult]:
         """復原一次操作：那次操作的每一筆，對象現在的內容還是那一筆的改後，就再記一筆改回改前；
         之後又被改過的略過。復原也是一次操作，有自己的操作編號，所以復原可以再復原。
@@ -559,6 +580,28 @@ class CorrectionRepository:
                            CorrectionRecord.field == CorrectionField.SPEAKER_NAME.value)
         names = {target: _new(r) for (_, target), r in _latest(records).items()}
         return {target: name for target, name in names.items() if name}
+
+    @staticmethod
+    def next_speaker(db: Session, task_uuid) -> str:
+        """新的說話者編號（#354）：這個任務還沒用過的下一個號碼，例如用過 S0 到 S2 時是 S3；一個說話者編號都沒有
+        的任務是 S0。
+
+        「用過」包括原始轉錄的說話者、校正紀錄改過的說話者，以及取了說話者名稱的說話者編號：全部換成別人、或
+        指定之後又復原的編號，在原始轉錄與校正紀錄裡仍是另一個人，說話者名稱也是以編號為對象（#359），再拿來給
+        新的說話者會接手別人的名稱。所以取用過的最大號碼加一，不補中間空出來的號碼。查兩次資料庫。
+        """
+        uuid_val = _task_uuid(task_uuid)
+        used: Set[Optional[str]] = {
+            row[0] for row in db.query(TranscriptSegment.speaker)
+            .filter(TranscriptSegment.task_uuid == uuid_val).distinct()}
+        for field, target, new_value in (
+                db.query(CorrectionRecord.field, CorrectionRecord.target, CorrectionRecord.new_value)
+                .filter(CorrectionRecord.task_uuid == uuid_val,
+                        CorrectionRecord.field.in_([CorrectionField.SPEAKER.value,
+                                                    CorrectionField.SPEAKER_NAME.value]))):
+            used.add(target if field == CorrectionField.SPEAKER_NAME.value else new_value)
+        numbers = [int(m.group(1)) for m in (_SPEAKER_NUMBER.fullmatch(s or "") for s in used) if m]
+        return f"S{max(numbers) + 1 if numbers else 0}"
 
     @staticmethod
     def tasks_with_records(db: Session, task_uuids: Iterable[Any]) -> Set[str]:
