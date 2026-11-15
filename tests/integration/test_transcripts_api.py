@@ -290,6 +290,23 @@ class TestCorrectText:
 
         assert _segment(client, log.task_uuid)["text"] == "软件开发"
 
+    def test_word_timings_follow_the_corrected_text(self, client, db_session):
+        # 本機的片段帶逐字時間：改過文字之後，讀到的與 PATCH 回的逐字時間都對得上校正後的文字，校正頁
+        # 才標得出正在唸的字（#357 的重算）；沒改到的字沿用原本的時間
+        chars = "這個就是實作層"
+        words = [{"text": c, "start": 1.0 + i * 0.3, "end": 1.3 + i * 0.3} for i, c in enumerate(chars)]
+        log = _correctable(db_session, start_sec=1.0, end_sec=3.1,
+                           words_json=json.dumps(words, ensure_ascii=False))
+
+        response = client.patch(_url(log.task_uuid), json={"text": "這個就是十座城喔"})
+
+        patched = response.json()["segment"]["words"]
+        assert patched == _segment(client, log.task_uuid)["words"]
+        assert [w["text"] for w in patched] == list("這個就是十座城喔")
+        assert patched[:4] == words[:4]
+        # 刪掉的片段沒有逐字時間
+        assert client.patch(_url(log.task_uuid), json={"text": ""}).json()["segment"]["words"] is None
+
     def test_empty_text_deletes_the_segment(self, client, db_session):
         log = _correctable(db_session)
         _create_segment(db_session, log.task_uuid, seg_key="0001", seq=1, start_sec=5.0,
