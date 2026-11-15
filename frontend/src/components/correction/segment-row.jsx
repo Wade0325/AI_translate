@@ -3,7 +3,7 @@ import { Button } from "antd"
 import { ChevronDown, ChevronRight, Trash2 } from "lucide-react"
 import { formatClock } from "@/utils/formatters"
 import { wordPieces } from "@/utils/playhead"
-import { isUserDeleted, shownText } from "@/utils/segmentEditing"
+import { isUserDeleted, keepEditorFocus, shownText, speakerCorrected } from "@/utils/segmentCorrections"
 import { SegmentEditor } from "./segment-editor"
 
 /** 說話者編號（S0、S1…）的顏色：照編號輪流用，同一位說話者在整份裡顏色不變。 */
@@ -60,7 +60,7 @@ const CHIP_STYLE = {
  * null（游標放在最後）；拖曳選取了這段文字以外的地方（例如要複製好幾段）時是 false，不開始改。
  *
  * @param {HTMLElement} container
- * @returns {{ start: number, end: number } | null | false}
+ * @returns {import("@/utils/segmentCorrections").TextSelection | null | false}
  */
 function selectionIn(container) {
     const selection = window.getSelection()
@@ -77,9 +77,6 @@ function selectionIn(container) {
     return { start: offset(range.startContainer, range.startOffset), end: offset(range.endContainer, range.endOffset) }
 }
 
-/** 在同一列改文字時，按這一列的按鈕不讓文字框失去焦點：按鈕自己決定要不要存（例如刪除就不存打到一半的字）。 */
-const keepFocus = (event) => event.preventDefault()
-
 /**
  * 片段列表的一列：開始時間、說話者與文字（#347），以及改文字、刪掉與還原（#348）。
  *
@@ -92,14 +89,14 @@ const keepFocus = (event) => event.preventDefault()
  * 播放時頁面每一格畫面都重畫，這裡用 memo：只有反白、正在唸的字、存檔狀態或內容變了的那幾列才重畫。
  *
  * @param {{
- *   segment: import("@/utils/segmentEditing").Segment & { start: number,
+ *   segment: import("@/utils/segmentCorrections").Segment & { start: number,
  *              words?: { text?: string | null, start: number, end?: number | null }[] | null },
  *   active: boolean,
  *   activeWord: number,
  *   canPlay: boolean,
  *   onSeek: (seconds: number) => void,
- *   editing: { selection: { start: number, end: number } | null } | null,
- *   save: import("@/utils/segmentEditing").SaveState | undefined,
+ *   editing: import("@/utils/segmentCorrections").Editing | null,
+ *   save: import("@/utils/segmentCorrections").SaveState | undefined,
  *   actions: import("./correction-view").RowActions,
  * }} props
  */
@@ -115,7 +112,8 @@ function SegmentRowView({ segment, active, activeWord, canPlay, onSeek, editing,
     )
     const clock = formatClock(segment.start)
     const saving = save?.status === "saving"
-    const buttonFocus = editing ? keepFocus : undefined
+    // 這一列正在改時，按這一列的按鈕不讓文字框失去焦點
+    const onButtonMouseDown = editing ? keepEditorFocus : undefined
 
     const onTextClick = (event) => {
         if (editing || deleted || saving) return
@@ -210,15 +208,15 @@ function SegmentRowView({ segment, active, activeWord, canPlay, onSeek, editing,
                 {save?.status === "failed" && (
                     <div role="alert" style={{ display: "flex", flexWrap: "wrap", alignItems: "center", columnGap: 4, color: "#ff7875", fontSize: 12, lineHeight: "24px" }}>
                         <span>沒有存到：{save.message}</span>
-                        <Button size="small" type="link" onMouseDown={buttonFocus} onClick={() => actions.retry(key)}>重試</Button>
-                        <Button size="small" type="link" onMouseDown={buttonFocus} onClick={() => actions.discard(key)} style={{ color: "#8888a8" }}>放棄</Button>
+                        <Button size="small" type="link" onMouseDown={onButtonMouseDown} onClick={() => actions.retry(key)}>重試</Button>
+                        <Button size="small" type="link" onMouseDown={onButtonMouseDown} onClick={() => actions.discard(key)} style={{ color: "#8888a8" }}>放棄</Button>
                     </div>
                 )}
                 {expanded && segment.corrected && !deleted && (
                     <div style={{ marginTop: 6, padding: "6px 10px", borderRadius: 4, background: "#1a1a34", border: "1px solid #2a2a48" }}>
                         <div style={{ color: "#8888a8", fontSize: 12, lineHeight: "20px" }}>原始轉錄</div>
                         <div style={{ color: "#b8b8d0", fontSize: 13, lineHeight: "22px", overflowWrap: "anywhere" }}>
-                            {(segment.original_speaker ?? null) !== (segment.speaker ?? null) && (
+                            {speakerCorrected(segment) && (
                                 <span style={{ marginRight: 8, fontWeight: 600 }}>{segment.original_speaker || "（沒有說話者）"}</span>
                             )}
                             {segment.original_text || "（沒有文字）"}
@@ -227,7 +225,7 @@ function SegmentRowView({ segment, active, activeWord, canPlay, onSeek, editing,
                             size="small"
                             style={{ marginTop: 6 }}
                             disabled={saving}
-                            onMouseDown={buttonFocus}
+                            onMouseDown={onButtonMouseDown}
                             onClick={() => {
                                 setExpanded(false)
                                 actions.revert(key)
@@ -255,7 +253,7 @@ function SegmentRowView({ segment, active, activeWord, canPlay, onSeek, editing,
                                 type="button"
                                 aria-expanded={expanded}
                                 title={expanded ? "收起原始轉錄" : "看原始轉錄"}
-                                onMouseDown={buttonFocus}
+                                onMouseDown={onButtonMouseDown}
                                 onClick={() => setExpanded((open) => !open)}
                                 style={CHIP_STYLE}
                             >
@@ -270,7 +268,7 @@ function SegmentRowView({ segment, active, activeWord, canPlay, onSeek, editing,
                             title="刪掉這個片段"
                             icon={<Trash2 size={14} />}
                             disabled={saving || !text}
-                            onMouseDown={buttonFocus}
+                            onMouseDown={onButtonMouseDown}
                             onClick={() => actions.remove(key)}
                             style={{ marginTop: 1, color: "#8888a8" }}
                         />

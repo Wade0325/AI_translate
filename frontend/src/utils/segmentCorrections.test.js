@@ -2,19 +2,21 @@ import { describe, it, expect } from 'vitest';
 import { ApiError } from '../services/api';
 import {
   REWIND_SECONDS,
+  correctTextRequest,
   deleteRequest,
-  editRequest,
   editingKeyAction,
   isTypingTarget,
   isUserDeleted,
+  keepEditorFocus,
   normalizedText,
   restoreRequest,
   revertRequest,
   saveFailureMessage,
   savesReducer,
   shownText,
+  speakerCorrected,
   undoMessage,
-} from './segmentEditing';
+} from './segmentCorrections';
 
 /** 鍵盤事件裡用得到的欄位；沒寫的是沒按、不在選字。 */
 const key = (k, fields = {}) => ({
@@ -31,7 +33,8 @@ describe('editingKeyAction：打字時按的鍵（#348）', () => {
     expect(editingKeyAction(key('Enter', { shiftKey: true }))).toBe('save');
   });
 
-  it('Tab 播放或暫停，Shift+Tab 倒退 3 秒；兩個都由頁面處理，焦點不移走', () => {
+  // 有動作的鍵由文字框 preventDefault，焦點才不會被 Tab 移走；焦點真的留著由瀏覽器測試檢查（e2e/correcting-segments.spec.js）
+  it('Tab 播放或暫停，Shift+Tab 倒退 3 秒（不當成移動焦點的鍵）', () => {
     expect(editingKeyAction(key('Tab'))).toBe('toggle-playback');
     expect(editingKeyAction(key('Tab', { shiftKey: true }))).toBe('rewind');
     expect(REWIND_SECONDS).toBe(3);
@@ -61,6 +64,14 @@ describe('editingKeyAction：打字時按的鍵（#348）', () => {
     expect(editingKeyAction(key('Tab', { ctrlKey: true }))).toBeNull();
     expect(editingKeyAction(key('Tab', { altKey: true }))).toBeNull();
     expect(editingKeyAction(key('Tab', { metaKey: true }))).toBeNull();
+  });
+});
+
+describe('keepEditorFocus：正在改文字時按按鈕，文字框不失去焦點', () => {
+  it('擋下按鈕按下去時的預設動作（把焦點移到按鈕）', () => {
+    let prevented = false;
+    keepEditorFocus({ preventDefault: () => { prevented = true; } });
+    expect(prevented).toBe(true);
   });
 });
 
@@ -95,23 +106,23 @@ const segment = (fields = {}) => ({
   corrected: false, deleted: false, deleted_text: null, has_correction_records: false, ...fields,
 });
 
-describe('editRequest：改完要送出的 PATCH body', () => {
+describe('correctTextRequest：改完要送出的 PATCH body', () => {
   it('文字有變時送出打的字，不替使用者轉換', () => {
-    expect(editRequest(segment(), '今天先看进度')).toEqual({ text: '今天先看进度' });
+    expect(correctTextRequest(segment(), '今天先看进度')).toEqual({ text: '今天先看进度' });
   });
 
   it('前後的空白去掉、換行收成空白再送，存檔中寫的就是會存進去的樣子', () => {
-    expect(editRequest(segment(), ' 今天先看\n進度吧 ')).toEqual({ text: '今天先看 進度吧' });
+    expect(correctTextRequest(segment(), ' 今天先看\n進度吧 ')).toEqual({ text: '今天先看 進度吧' });
   });
 
   it('和現在的內容相同時不送（只差在前後的空白或換行也算相同）', () => {
-    expect(editRequest(segment(), '今天先看進度')).toBeNull();
-    expect(editRequest(segment(), ' 今天先看進度\n')).toBeNull();
+    expect(correctTextRequest(segment(), '今天先看進度')).toBeNull();
+    expect(correctTextRequest(segment(), ' 今天先看進度\n')).toBeNull();
   });
 
   it('清空就是刪掉這個片段', () => {
-    expect(editRequest(segment(), '')).toEqual({ text: '' });
-    expect(editRequest(segment(), '  \n ')).toEqual({ text: '' });
+    expect(correctTextRequest(segment(), '')).toEqual({ text: '' });
+    expect(correctTextRequest(segment(), '  \n ')).toEqual({ text: '' });
   });
 });
 
@@ -136,6 +147,13 @@ describe('刪掉、還原與回到原始轉錄', () => {
     expect(revertRequest(corrected)).toEqual({ text: '今天先看進度', speaker: 'S0' });
     expect(revertRequest(segment({ text: '改過', corrected: true }))).toEqual({ text: '今天先看進度' });
     expect(revertRequest(segment({ speaker: 'S2', corrected: true }))).toEqual({ speaker: 'S0' });
+  });
+
+  it('說話者和原始轉錄不同才算校正過；沒有說話者（null 或沒有這個欄位）當成同一個值', () => {
+    expect(speakerCorrected(segment({ speaker: 'S1' }))).toBe(true);
+    expect(speakerCorrected(segment())).toBe(false);
+    expect(speakerCorrected(segment({ speaker: undefined, original_speaker: null }))).toBe(false);
+    expect(speakerCorrected(segment({ speaker: null, original_speaker: 'S0' }))).toBe(true);
   });
 
   it('原始轉錄沒有說話者時送 null（清除）', () => {

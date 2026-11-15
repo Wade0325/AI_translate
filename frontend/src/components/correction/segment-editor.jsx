@@ -1,5 +1,5 @@
 import { useLayoutEffect, useRef, useState } from "react"
-import { editingKeyAction } from "@/utils/segmentEditing"
+import { editingKeyAction } from "@/utils/segmentCorrections"
 
 /** 文字框照內容長高，不出現捲軸：和原本那一列的文字一樣高。 */
 function fitHeight(textarea) {
@@ -34,10 +34,10 @@ const EDITOR_STYLE = {
  *
  * @param {{
  *   initialText: string,
- *   selection: { start: number, end: number } | null,
+ *   selection: import("@/utils/segmentCorrections").TextSelection | null,
  *   onSave: (draft: string) => void,
  *   onCancel: () => void,
- *   onPlayback: (action: "toggle-playback" | "rewind") => void,
+ *   onPlayback: (action: import("@/utils/segmentCorrections").PlaybackAction) => void,
  * }} props
  */
 export function SegmentEditor({ initialText, selection, onSave, onCancel, onPlayback }) {

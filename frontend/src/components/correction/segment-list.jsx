@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef } from "react"
 import { defaultRangeExtractor, useVirtualizer } from "@tanstack/react-virtual"
-import { isTypingTarget } from "@/utils/segmentEditing"
+import { isTypingTarget } from "@/utils/segmentCorrections"
 import { SegmentRow } from "./segment-row"
 
 /** 使用者自己捲動列表的按鍵（列表取得焦點時瀏覽器拿來捲動的那些）。 */
@@ -32,8 +32,8 @@ function fullyVisible(container, index) {
  *   canPlay: boolean,
  *   onUserScroll: () => void,
  *   onSeek: (seconds: number) => void,
- *   editing: { segKey: string, selection: { start: number, end: number } | null } | null,
- *   saves: import("@/utils/segmentEditing").Saves,
+ *   editing: import("@/utils/segmentCorrections").Editing | null,
+ *   saves: import("@/utils/segmentCorrections").Saves,
  *   actions: import("./correction-view").RowActions,
  * }} props
  */

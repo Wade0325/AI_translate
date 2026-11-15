@@ -90,8 +90,9 @@ export const rowAt = (page, index) => page.locator(`[data-index="${index}"]`)
 /** 那一列反白時找得到一個元素，沒有反白時是 0 個。 */
 export const highlight = (page, text) => row(page, text).locator('[data-active]')
 
-/** 和後端存的時候同一個規則（backend/app/api/transcripts.py 的 _normalized_text）。 */
-const normalized = (text) => text.trim().replace(/\s*[\n\r]+\s*/g, ' ')
+/** 和後端存的時候同一個規則（backend/app/api/transcripts.py 的 _LINE_BREAKS 與 _normalized_text）。 */
+// eslint-disable-next-line no-control-regex -- 垂直定位、換頁與分隔字元是 str.splitlines 當成換行的字元，和後端同一組
+const normalized = (text) => text.trim().replace(/\s*[\n\r\x0b\x0c\x1c-\x1e\x85\u2028\u2029]+\s*/gu, ' ')
 
 /**
  * 記得每次校正的假後端（#348）：照 ADR 0011 的規則，每次校正記一筆校正紀錄（和現在的內容相同的不記），

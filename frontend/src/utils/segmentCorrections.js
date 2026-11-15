@@ -17,7 +17,11 @@ import { ApiError } from '../services/api';
  *   | { status: 'saved' }
  *   | { status: 'failed', request: SegmentRequest, message: string }} SaveState 一個片段的存檔狀態
  * @typedef {Record<string, SaveState>} Saves 每個片段的存檔狀態，鍵是 seg_key；沒有存檔狀態的片段不在裡面
- * @typedef {'save' | 'cancel' | 'toggle-playback' | 'rewind'} EditingAction
+ * @typedef {{ start: number, end: number }} TextSelection 游標（或選取的範圍）在片段文字裡的位置
+ * @typedef {{ segKey: string, selection: TextSelection | null }} Editing
+ *   正在改的片段；selection 是開始改時游標放的地方，null 時放在最後
+ * @typedef {'toggle-playback' | 'rewind'} PlaybackAction 打字時控制播放的鍵：Tab 播放或暫停，Shift+Tab 倒退
+ * @typedef {'save' | 'cancel' | PlaybackAction} EditingAction 打字時按的鍵要做的事
  */
 
 /** 打字時 Shift+Tab 倒退幾秒。 */
@@ -59,6 +63,16 @@ export function isTypingTarget(target) {
   return target.tagName === 'TEXTAREA' || target.tagName === 'INPUT' || target.isContentEditable === true;
 }
 
+/**
+ * 正在改文字時，按片段或頁面上的按鈕不讓文字框失去焦點（給按鈕的 onMouseDown）：按鈕自己決定要不要存，例如刪除
+ * 就不存打到一半的字；「復原」收回的是剛存的另一次，正在打的字照樣留著。
+ *
+ * @param {{ preventDefault: () => void }} event
+ */
+export function keepEditorFocus(event) {
+  event.preventDefault();
+}
+
 /** 換行，連同它前後的空白（和後端的 _LINE_BREAKS 相同）。 */
 // eslint-disable-next-line no-control-regex -- 垂直定位、換頁與分隔字元是 str.splitlines 當成換行的字元，和後端同一組
 const LINE_BREAKS = /\s*[\n\r\x0b\x0c\x1c-\x1e\x85\u2028\u2029]+\s*/gu;
@@ -81,7 +95,7 @@ export function normalizedText(text) {
  * @param {string} draft 文字框裡的內容
  * @returns {SegmentRequest | null}
  */
-export function editRequest(segment, draft) {
+export function correctTextRequest(segment, draft) {
   const text = normalizedText(draft);
   return text === normalizedText(segment.text ?? '') ? null : { text };
 }
@@ -112,6 +126,15 @@ export function restoreRequest(segment) {
 }
 
 /**
+ * 說話者校正過：和原始轉錄的說話者不同（沒有說話者當成同一個值）。
+ *
+ * @param {Segment} segment
+ */
+export function speakerCorrected(segment) {
+  return (segment.speaker ?? null) !== (segment.original_speaker ?? null);
+}
+
+/**
  * 回到原始轉錄：文字與說話者有變的都送回原始轉錄，後端各記一筆、共用一個操作編號。沒有校正過時是 null。
  *
  * @param {Segment} segment
@@ -121,7 +144,7 @@ export function revertRequest(segment) {
   /** @type {SegmentRequest} */
   const request = {};
   if ((segment.text ?? '') !== (segment.original_text ?? '')) request.text = segment.original_text ?? '';
-  if ((segment.speaker ?? null) !== (segment.original_speaker ?? null)) request.speaker = segment.original_speaker ?? null;
+  if (speakerCorrected(segment)) request.speaker = segment.original_speaker ?? null;
   return Object.keys(request).length ? request : null;
 }
 

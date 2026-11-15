@@ -6,7 +6,7 @@ import { api } from "@/services/api"
 import { useAudioPlayer } from "@/hooks/useAudioPlayer"
 import { useSegmentCorrections } from "@/hooks/useSegmentCorrections"
 import { lastStarted, segmentSpans, segmentsAt, wordAt } from "@/utils/playhead"
-import { REWIND_SECONDS } from "@/utils/segmentEditing"
+import { REWIND_SECONDS, keepEditorFocus } from "@/utils/segmentCorrections"
 import { TranscriptDownloadMenu } from "@/components/transcript-download-menu"
 import { PlayerBar } from "./player-bar"
 import { SegmentList } from "./segment-list"
@@ -20,11 +20,8 @@ export const AUDIO_FAILED = "保留音檔無法播放；文字照樣可以校正
  * 片段列表每一列用的動作：改文字、刪掉與還原（useSegmentCorrections），以及打字時的 Tab 與 Shift+Tab。
  *
  * @typedef {ReturnType<typeof useSegmentCorrections>["actions"]
- *   & { playback: (action: "toggle-playback" | "rewind") => void }} RowActions
+ *   & { playback: (action: import("@/utils/segmentCorrections").PlaybackAction) => void }} RowActions
  */
-
-/** 按「復原」時不讓正在改的文字框失去焦點：復原的是剛存的另一次，正在打的字照樣留著。 */
-const keepFocus = (event) => event.preventDefault()
 
 /** @type {import("react").CSSProperties} */
 const TOAST_STYLE = {
@@ -157,7 +154,7 @@ export function CorrectionView({ transcript }) {
                     {lastOperation && (
                         <div role="status" style={TOAST_STYLE}>
                             已存檔
-                            <Button type="link" size="small" onMouseDown={keepFocus} onClick={actions.undo}>
+                            <Button type="link" size="small" onMouseDown={keepEditorFocus} onClick={actions.undo}>
                                 復原
                             </Button>
                         </div>

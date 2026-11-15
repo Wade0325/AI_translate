@@ -3,19 +3,19 @@ import { message } from 'antd';
 import { api } from '../services/api';
 import {
   deleteRequest,
-  editRequest,
+  correctTextRequest,
   isUserDeleted,
   restoreRequest,
   revertRequest,
   saveFailureMessage,
   savesReducer,
   undoMessage,
-} from '../utils/segmentEditing';
+} from '../utils/segmentCorrections';
 
 /** 「已存」顯示幾毫秒之後收起來。 */
-export const SAVED_SHOWN_MS = 3000;
+const SAVED_SHOWN_MS = 3000;
 /** 「已存檔，復原」顯示幾毫秒。 */
-export const UNDO_SHOWN_MS = 6000;
+const UNDO_SHOWN_MS = 6000;
 
 /**
  * 校正頁改文字、刪掉與還原片段（#348）：片段的校正後版本、每個片段的存檔狀態、正在改哪一個片段，以及剛存的
@@ -25,12 +25,12 @@ export const UNDO_SHOWN_MS = 6000;
  * 每一列可以照常用 memo，只有改到的那幾列重畫。
  *
  * @param {string} taskUuid
- * @param {import('../utils/segmentEditing').Segment[]} initialSegments GET /transcripts/{task_uuid} 的片段
+ * @param {import('../utils/segmentCorrections').Segment[]} initialSegments GET /transcripts/{task_uuid} 的片段
  */
 export function useSegmentCorrections(taskUuid, initialSegments) {
   const [segments, setSegments] = useState(initialSegments);
   const [saves, dispatch] = useReducer(savesReducer, {});
-  const [editing, setEditing] = useState(/** @type {{ segKey: string, selection: { start: number, end: number } | null } | null} */ (null));
+  const [editing, setEditing] = useState(/** @type {import('../utils/segmentCorrections').Editing | null} */ (null));
   const [lastOperation, setLastOperation] = useState(/** @type {string | null} */ (null));
 
   // 事件處理讀最新的內容：actions 的身分才能不變（每改一次就換一份函式，列表的每一列都得重畫）
@@ -120,15 +120,13 @@ export function useSegmentCorrections(taskUuid, initialSegments) {
         setEditing(null);
         const segment = segmentOf(segKey);
         if (!segment) return;
-        const request = editRequest(segment, draft);
+        const request = correctTextRequest(segment, draft);
         if (request) send(segKey, request);
         else dispatch({ type: 'discard', segKey });
       },
 
       /** 按 Esc：放棄這次輸入，回到改之前的內容。 */
-      cancelEditing(segKey) {
-        dropEditing(segKey);
-      },
+      cancelEditing: dropEditing,
 
       /** 刪掉片段（片段上的刪除鈕）。 */
       remove(segKey) {
