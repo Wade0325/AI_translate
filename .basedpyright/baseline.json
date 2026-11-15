@@ -540,14 +540,6 @@
         ],
         "./backend/app/repositories/transcript_segment_repository.py": [
             {
-                "code": "reportReturnType",
-                "range": {
-                    "startColumn": 11,
-                    "endColumn": 67,
-                    "lineCount": 1
-                }
-            },
-            {
                 "code": "reportGeneralTypeIssues",
                 "range": {
                     "startColumn": 15,
