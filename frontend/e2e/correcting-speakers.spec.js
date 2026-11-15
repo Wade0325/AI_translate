@@ -14,8 +14,15 @@ const writes = (backend) => backend.requests.filter((r) => r.method !== 'GET')
 /** 第 index 列的說話者（點開是選單）。 */
 const speakerButton = (page, index) => rowAt(page, index).locator('.correction-speaker')
 /** 打開的說話者選單裡，標題是 group 的那一組裡名稱是 name 的選項。 */
-const menuItem = (page, group, name) => page.locator('.ant-dropdown:visible .ant-dropdown-menu-item-group', { hasText: group })
+const menuItem = (page, group, name) => openMenu(page).locator('.ant-dropdown-menu-item-group', { hasText: group })
     .getByRole('menuitem', { name, exact: true })
+/** 打開的說話者選單（關到一半的不算）。 */
+const openMenu = (page) => page.locator('.ant-dropdown:not(.ant-dropdown-hidden)')
+/** 在打開的說話者選單裡選一項，等選單關好：下一個選單打開時，畫面上才不會同時有兩個選單。 */
+const pick = async (page, group, name) => {
+    await menuItem(page, group, name).click()
+    await expect(openMenu(page)).toHaveCount(0)
+}
 /** 片段列表裡每一列的說話者，給 toHaveText([...]) 比對每一列寫的說話者。 */
 const speakers = (page) => page.locator('[data-index] .correction-speaker')
 /** 說話者的切換的一個狀態（選中時 toBeChecked）。 */
@@ -30,7 +37,7 @@ test('改一個片段的說話者：換成新的說話者就拆開了，之後�
 
     await speakerButton(page, 3).click()
     await expect(menuItem(page, '這個片段改成', 'S0')).toBeVisible()
-    await menuItem(page, '這個片段改成', '新的說話者（S2）').click()
+    await pick(page, '這個片段改成', '新的說話者（S2）')
 
     await expect(speakerButton(page, 3)).toHaveText('S2')
     await expect(rowAt(page, 3)).toContainText('已存')
@@ -45,7 +52,7 @@ test('改一個片段的說話者：換成新的說話者就拆開了，之後�
     // 下一個新的說話者是 S3；S2 成了現有的說話者
     await speakerButton(page, 1).click()
     await expect(menuItem(page, '這個片段改成', 'S2')).toBeVisible()
-    await menuItem(page, '這個片段改成', '新的說話者（S3）').click()
+    await pick(page, '這個片段改成', '新的說話者（S3）')
     await expect(speakerButton(page, 1)).toHaveText('S3')
     await expect(speakers(page)).toHaveText(['S0', 'S3', 'S0', 'S2'])
 
@@ -61,7 +68,7 @@ test('把這位說話者全部換成另一位，按「復原」整批收回', as
     const backend = await openCorrection(page, mockBackend, { routes: fake.routes })
 
     await speakerButton(page, 2).click()
-    await menuItem(page, 'S0 的 2 個片段全部換成', 'S1').click()
+    await pick(page, 'S0 的 2 個片段全部換成', 'S1')
 
     await expect(page.getByRole('status')).toContainText('已把 2 個片段換成 S1')
     await expect(speakers(page)).toHaveText(['S1', 'S1', 'S1', 'S1'])
@@ -85,7 +92,7 @@ test('一位說話者只有一個片段時，選單沒有「全部換成」', as
 
     await speakerButton(page, 4).click()
     await expect(menuItem(page, '這個片段改成', '新的說話者（S3）')).toBeVisible()
-    await expect(page.locator('.ant-dropdown:visible')).not.toContainText('全部換成')
+    await expect(openMenu(page)).not.toContainText('全部換成')
 })
 
 test('當初沒有分說話者的任務：沒有說話者的片段一次全部指定給新的說話者', async ({ page, mockBackend }) => {
@@ -95,7 +102,7 @@ test('當初沒有分說話者的任務：沒有說話者的片段一次全部�
 
     await expect(speakers(page)).toHaveText(['未指定', '未指定', '未指定', '未指定'])
     await speakerButton(page, 0).click()
-    await menuItem(page, '沒有說話者的 4 個片段全部換成', '新的說話者（S0）').click()
+    await pick(page, '未指定的 4 個片段全部換成', '新的說話者（S0）')
 
     await expect(page.getByRole('status')).toContainText('已把 4 個片段換成 S0')
     await expect(speakers(page)).toHaveText(['S0', 'S0', 'S0', 'S0'])
@@ -103,7 +110,7 @@ test('當初沒有分說話者的任務：沒有說話者的片段一次全部�
 
     // 再把其中一個片段指定給另一位：新的說話者是 S1
     await speakerButton(page, 1).click()
-    await menuItem(page, '這個片段改成', '新的說話者（S1）').click()
+    await pick(page, '這個片段改成', '新的說話者（S1）')
     await expect(speakers(page)).toHaveText(['S0', 'S1', 'S0', 'S0'])
 })
 
@@ -128,7 +135,7 @@ test('整份當成同一位說話者時不顯示說話者與相關操作；切�
 
     // 只改說話者的片段：顯示說話者時標「校正過」，切回整份當成同一位時不標
     await speakerButton(page, 2).click()
-    await menuItem(page, '這個片段改成', 'S1').click()
+    await pick(page, '這個片段改成', 'S1')
     await expect(rowAt(page, 2).getByRole('button', { name: '校正過' })).toBeVisible()
 
     await switchSpeakerMode(page, '整份當成同一位')

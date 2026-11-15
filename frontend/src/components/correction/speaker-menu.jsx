@@ -53,6 +53,7 @@ export function SpeakerMenu({ segKey, speaker, info, disabled, actions }) {
     /** @type {NonNullable<import("antd").MenuProps["items"]>} */
     const items = [{ type: "group", label: "這個片段改成", children: choiceItems("one") }]
     if (count > 1) {
+        // 編號和中文之間空一格，「未指定的」不空
         const source = speaker ? `${speaker} 的` : `${NO_SPEAKER_LABEL}的`
         items.push(
             { type: "divider" },
@@ -77,7 +78,7 @@ export function SpeakerMenu({ segKey, speaker, info, disabled, actions }) {
                     cursor: disabled ? "default" : "pointer",
                 }}
             >
-                {speaker || "未指定"}
+                {speaker || NO_SPEAKER_LABEL}
                 {!disabled && <ChevronDown size={11} />}
             </button>
         </Dropdown>

@@ -93,16 +93,16 @@ export function CorrectionView({ transcript }) {
     const onUserScroll = useCallback(() => setFollowing(false), [])
 
     // 每位說話者的片段數：內容沒變時保持同一個物件，片段列表的每一列才不會在每次存檔時都重畫
-    const speakerKey = useMemo(() => JSON.stringify(speakerCounts(segments)), [segments])
+    const speakerCountsJson = useMemo(() => JSON.stringify(speakerCounts(segments)), [segments])
     /** @type {import("./speaker-menu").SpeakerInfo} */
     const speakerInfo = useMemo(() => {
-        const counts = /** @type {[string | null, number][]} */ (JSON.parse(speakerKey))
+        const counts = /** @type {[string | null, number][]} */ (JSON.parse(speakerCountsJson))
         return {
             speakers: counts.map(([speaker]) => speaker).filter((speaker) => speaker !== null),
             counts: new Map(counts),
             nextSpeaker,
         }
-    }, [speakerKey, nextSpeaker])
+    }, [speakerCountsJson, nextSpeaker])
 
     /** @type {RowActions} */
     const rowActions = useMemo(() => ({

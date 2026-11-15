@@ -1,3 +1,5 @@
+import { textCorrected } from './segmentCorrections';
+
 /**
  * 校正頁的說話者（#354）不依賴畫面的部分：這個任務現有哪些說話者、選單上可以換成誰、新的說話者編號，以及畫面上
  * 要寫什麼。
@@ -10,8 +12,8 @@
  * @typedef {{ speaker: string, isNew: boolean }} SpeakerChoice 選單上的一個選項；isNew 是新的說話者
  */
 
-/** 沒有說話者的片段在選單與結果裡的寫法。 */
-export const NO_SPEAKER_LABEL = '沒有說話者';
+/** 沒有說話者的片段在片段列與選單裡的寫法。 */
+export const NO_SPEAKER_LABEL = '未指定';
 
 /**
  * 說話者編號的號碼（S12 → 12）；不是 S 加數字時是 null。
@@ -101,8 +103,7 @@ export function shownSpeaker(segment, save) {
  * @param {boolean} singleSpeaker
  */
 export function showsAsCorrected(segment, singleSpeaker) {
-  if (!singleSpeaker) return segment.corrected;
-  return (segment.text ?? '') !== (segment.original_text ?? '');
+  return singleSpeaker ? textCorrected(segment) : segment.corrected;
 }
 
 /**

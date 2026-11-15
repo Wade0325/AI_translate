@@ -17,12 +17,12 @@
 """
 
 import re
+import uuid
 from pathlib import Path
 from typing import Collection, Dict, List, Optional, Tuple, cast
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
-from sqlalchemy import update
 from sqlalchemy.orm import Session
 
 from app.database.models import TranscriptionLog, TranscriptSegment
@@ -34,6 +34,7 @@ from app.repositories.correction_repository import (
     ReviewState,
 )
 from app.repositories.transcript_segment_repository import TranscriptSegmentRepository
+from app.repositories.transcription_log_repository import TranscriptionLogRepository
 from app.schemas.schemas import (
     SegmentCorrectionRequest,
     SegmentCorrectionResponse,
@@ -130,19 +131,20 @@ def _single_speaker(log: TranscriptionLog) -> bool:
     """任務整份當成同一位說話者：下載不帶說話者標記的任務（和下載用同一條規則）。
 
     說話者人數（#352）合併之前，這個設定是任務紀錄的 Multi-Speaker 開關：關著（False）是整份當成同一位，
-    開著與開關做出來之前的 None 是照模型分出的說話者顯示。人數合併之後改看人數，設定也改寫人數
-    （:func:`_set_single_speaker`），只改這兩處。
+    開著與開關做出來之前的 None 是照模型分出的說話者顯示。照當時的規則，開著的任務一律帶說話者標記，所以切到
+    照模型分出的說話者顯示之後，校正後版本只剩一位說話者時也帶。
+
+    人數合併之後改看人數，設定也改寫人數（:func:`_set_single_speaker`），只改這兩處：整份當成同一位寫 1 人，
+    照模型分出的說話者顯示寫照模型判斷，下載照「下載的那個版本裡有兩位以上才帶」（#351 第 3 點）。
     """
     return not output_format.shows_speaker_labels(cast(Optional[bool], log.multi_speaker))
 
 
-def _set_single_speaker(db: Session, log: TranscriptionLog, single_speaker: bool) -> None:
-    """把任務切換成整份當成同一位說話者，或照模型分出的說話者顯示（:func:`_single_speaker` 的反向），並 commit。"""
-    db.execute(update(TranscriptionLog)
-               .where(TranscriptionLog.task_uuid == log.task_uuid)
-               .values(multi_speaker=not single_speaker))
-    db.commit()
-    db.refresh(log)
+def _set_single_speaker(db: Session, log: TranscriptionLog, single_speaker: bool) -> Optional[TranscriptionLog]:
+    """把任務切換成整份當成同一位說話者，或照模型分出的說話者顯示（:func:`_single_speaker` 的反向），並 commit。
+    回傳改好的任務紀錄；任務紀錄剛好被刪掉時是 None。"""
+    return TranscriptionLogRepository().update_log(
+        db, cast(uuid.UUID, log.task_uuid), {"multi_speaker": not single_speaker})
 
 
 def _normalized_text(text: str) -> str:
@@ -273,9 +275,10 @@ def update_transcript_settings(task_uuid: str, body: TranscriptSettingsRequest, 
     改的是任務的設定，不算校正，不留校正紀錄，也不重新轉錄；片段照樣存著模型分出的說話者編號。切換之後，
     下載帶不帶說話者標記照輸出格式模組的規則（:func:`app.services.output_format.shows_speaker_labels`）。
     """
-    log = _correctable_log(db, task_uuid)
-    _set_single_speaker(db, log, body.single_speaker)
-    return TranscriptSettingsResponse(single_speaker=_single_speaker(log))
+    updated = _set_single_speaker(db, _correctable_log(db, task_uuid), body.single_speaker)
+    if updated is None:  # 任務剛好被刪掉
+        raise HTTPException(status_code=404, detail="找不到此任務紀錄")
+    return TranscriptSettingsResponse(single_speaker=_single_speaker(updated))
 
 
 @router.get("/{task_uuid}/audio")

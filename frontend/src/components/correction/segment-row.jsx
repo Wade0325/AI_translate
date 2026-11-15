@@ -4,7 +4,7 @@ import { ChevronDown, ChevronRight, Trash2 } from "lucide-react"
 import { formatClock } from "@/utils/formatters"
 import { wordPieces } from "@/utils/playhead"
 import { isUserDeleted, keepEditorFocus, shownText, speakerCorrected } from "@/utils/segmentCorrections"
-import { shownSpeaker, showsAsCorrected } from "@/utils/speakers"
+import { NO_SPEAKER_LABEL, shownSpeaker, showsAsCorrected } from "@/utils/speakers"
 import { SegmentEditor } from "./segment-editor"
 import { SpeakerMenu } from "./speaker-menu"
 
@@ -213,7 +213,7 @@ function SegmentRowView({ segment, active, activeWord, canPlay, onSeek, editing,
                         <div style={{ color: "#8888a8", fontSize: 12, lineHeight: "20px" }}>原始轉錄</div>
                         <div style={{ color: "#b8b8d0", fontSize: 13, lineHeight: "22px", overflowWrap: "anywhere" }}>
                             {!singleSpeaker && speakerCorrected(segment) && (
-                                <span style={{ marginRight: 8, fontWeight: 600 }}>{segment.original_speaker || "（沒有說話者）"}</span>
+                                <span style={{ marginRight: 8, fontWeight: 600 }}>{segment.original_speaker || `（${NO_SPEAKER_LABEL}）`}</span>
                             )}
                             {segment.original_text || "（沒有文字）"}
                         </div>
