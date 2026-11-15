@@ -255,12 +255,13 @@ test('校正過的片段展開看得到原始轉錄，一鍵回到原始轉錄�
     const corrected = rowAt(page, 1)
     await expect(corrected).toContainText('前端的校正頁可以改了。')
     await corrected.getByRole('button', { name: '校正過' }).click()
-    await expect(corrected).toContainText('原始轉錄')
-    await expect(corrected).toContainText('S1')
-    await expect(corrected).toContainText('前端的校正頁可以播放了。')
+    // 展開的是這個片段的歷程（#355），最下面是原始轉錄
+    const original = corrected.getByRole('listitem').filter({ hasText: '原始轉錄' })
+    await expect(original).toContainText('S1')
+    await expect(original).toContainText('前端的校正頁可以播放了。')
 
-    await corrected.getByRole('button', { name: '回到原始轉錄' }).click()
-    await expect(corrected).toContainText('前端的校正頁可以播放了。')
+    await original.getByRole('button', { name: '回到這一版' }).click()
+    await expect(corrected.locator('.correction-text')).toHaveText('前端的校正頁可以播放了。')
     await expect(corrected.getByRole('button', { name: '校正過' })).toHaveCount(0)
     await expect(page.getByRole('status').filter({ hasText: '已存檔' })).toBeVisible()
     expect(patches(backend)).toEqual([['0.0001', { text: '前端的校正頁可以播放了。', speaker: 'S1' }]])

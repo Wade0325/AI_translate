@@ -159,7 +159,7 @@ export const api = {
     /**
      * 一次改很多個片段的確認狀態（#349）：現在的確認狀態是 onlyIf 的片段改成 reviewState（null 是沒有確認狀態），
      * 在同一個交易裡做完；segKeys 不給時看這個任務的全部片段。不是校正，不留校正紀錄。回
-     * { review_state, changed, seg_keys }：實際改到的片段（依片段的順序）
+     * { changed, seg_keys }：實際改到的片段（依片段的順序）
      *
      * @param {string} taskUuid
      * @param {{ reviewState: string | null, onlyIf: string | null, segKeys?: string[] }} change
@@ -167,6 +167,13 @@ export const api = {
     changeReviewStates(taskUuid, { reviewState, onlyIf, segKeys }) {
       const body = { review_state: reviewState, only_if: onlyIf, ...(segKeys ? { seg_keys: segKeys } : {}) };
       return request(`/transcripts/${taskUuid}/review-states`, { method: 'PATCH', body });
+    },
+    /**
+     * 一個片段的歷程（#355）：{ seg_key, original_text, original_speaker, records }，records 是文字與說話者的每一筆
+     * 校正紀錄，舊的在前，每一筆帶著操作編號與那次操作改到幾個片段（operation_segment_count）
+     */
+    correctionRecords(taskUuid, segKey) {
+      return request(`/transcripts/${taskUuid}/segments/${encodeURIComponent(segKey)}/correction-records`);
     },
   },
   batch: {
