@@ -137,8 +137,9 @@ class TestPurgeExpired:
         assert old.exists()
 
 
-class TestRenew:
-    """保留天數從現在重新起算（#350）：寫入校正或確認狀態時呼叫，失敗也不能讓寫入失敗。"""
+class TestRestartRetention:
+    """保留天數重新起算（#350）。重新起算之後清除不刪、檔案不在、失敗記日誌這幾種，從轉錄文件 API 測
+    （tests/integration/test_transcripts_api.py 的 TestAudioRetention）；這裡只測從 API 測不到的。"""
 
     @pytest.fixture
     def aged(self, store, tmp_path):
@@ -148,18 +149,6 @@ class TestRenew:
         os.utime(path, (aged, aged))
         return path
 
-    def test_the_file_is_kept_by_the_next_purge(self, aged):
-        assert audio_store.renew(aged.name) is True
-
-        assert audio_store.purge_expired() == 0
-        assert aged.exists()
-        assert aged.read_bytes() == b"x"
-
-    def test_a_missing_file_is_left_alone(self, store, tmp_path):
-        assert audio_store.renew(f"{TASK_UUID}.m4a") is False
-        assert audio_store.renew(None) is False
-        assert list(tmp_path.iterdir()) == []
-
     def test_a_suspicious_name_is_refused(self, store, tmp_path):
         outside = tmp_path / "elsewhere"
         outside.mkdir()
@@ -168,7 +157,7 @@ class TestRenew:
         aged = time.time() - 31 * 86400
         os.utime(target, (aged, aged))
 
-        assert audio_store.renew("elsewhere/keep.m4a") is False
+        assert audio_store.restart_retention("elsewhere/keep.m4a") is False
         assert target.stat().st_mtime == pytest.approx(aged)
 
     def test_a_file_removed_meanwhile_is_not_recreated(self, aged, monkeypatch):
@@ -177,20 +166,8 @@ class TestRenew:
         aged.unlink()
         monkeypatch.setattr(audio_store, "resolve", lambda _name: resolved)
 
-        assert audio_store.renew(aged.name) is False
+        assert audio_store.restart_retention(aged.name) is False
         assert not aged.exists()
-
-    def test_a_failure_is_logged_without_raising(self, aged, monkeypatch):
-        warnings = []
-        monkeypatch.setattr(audio_store.logger, "warning", warnings.append)
-
-        def utime(*_args, **_kwargs):
-            raise PermissionError("拒絕存取")
-
-        monkeypatch.setattr(os, "utime", utime)
-
-        assert audio_store.renew(aged.name) is False
-        assert len(warnings) == 1 and aged.name in warnings[0]
 
 
 class TestPurgeStaleUploads:

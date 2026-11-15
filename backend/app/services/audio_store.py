@@ -9,7 +9,7 @@
 
 搬移而非複製：同一份音檔不會同時存在兩個地方。
 保留期限由 ``audio_retention_days`` 控制，啟動時清掃一次，只看檔案的修改時間。修改時間原本是上傳的
-時間；寫入校正或確認狀態時改成現在（:func:`renew`，#350），校正到一半不會突然聽不到，放著不動的
+時間；寫入校正或確認狀態時改成現在（:func:`restart_retention`，#350），校正到一半不會突然聽不到，放著不動的
 任務照樣過期。使用者也能在設定頁看到留了多少，一次刪掉全部，有校正的任務的也刪（:func:`usage`、
 :func:`delete_all`，#231 Q1）。
 
@@ -89,7 +89,7 @@ def resolve(filename: Optional[str]) -> Optional[Path]:
     return path if path.exists() else None
 
 
-def renew(filename: Optional[str]) -> bool:
+def restart_retention(filename: Optional[str]) -> bool:
     """保留天數從現在重新起算：把保留音檔的修改時間改成現在，回傳有沒有改到。
 
     寫入校正或確認狀態時呼叫（``app.repositories.correction_repository``，#350）。過期清掃照舊只看
@@ -192,7 +192,7 @@ def delete_all() -> Deleted:
 def purge_expired() -> int:
     """刪除超過保留天數的音檔，回傳刪除數量。
 
-    只看檔案 mtime，不查也不動資料庫：校正過的任務靠 :func:`renew` 把 mtime 改成最後一次寫入的時間。
+    只看檔案 mtime，不查也不動資料庫：校正過的任務靠 :func:`restart_retention` 把 mtime 改成最後一次寫入的時間。
     ``audio_filename`` 指向已刪除的檔案時，端點會回 404，前端據此顯示「音檔已過期」。
     """
     settings = get_settings()

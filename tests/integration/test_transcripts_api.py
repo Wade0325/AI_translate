@@ -584,13 +584,18 @@ class TestAudioRetention:
         store.mkdir(parents=True, exist_ok=True)
         return store
 
+    @staticmethod
+    def _age(path: Path) -> None:
+        """修改時間改成保留天數再多一天以前：下次清除就會刪掉。"""
+        aged = time.time() - (get_settings().audio_retention_days + 1) * 86400
+        os.utime(path, (aged, aged))
+
     def _with_old_audio(self, db: Session, store: Path) -> Tuple[TranscriptionLog, Path]:
-        """一個能校正的任務，保留音檔的修改時間是保留天數再多一天以前。"""
+        """一個能校正的任務，保留音檔已經超過保留天數。"""
         log = _correctable(db)
         path = store / f"{log.task_uuid}.m4a"
         path.write_bytes(b"audio")
-        aged = time.time() - (get_settings().audio_retention_days + 1) * 86400
-        os.utime(path, (aged, aged))
+        self._age(path)
         log.audio_filename = path.name
         db.commit()
         return log, path
@@ -618,13 +623,22 @@ class TestAudioRetention:
     def test_an_undo_also_restarts_the_count(self, client, db_session, store):
         log, audio = self._with_old_audio(db_session, store)
         operation = client.patch(_url(log.task_uuid), json={"text": "改過的文字"}).json()["operation_id"]
-        aged = time.time() - (get_settings().audio_retention_days + 1) * 86400
-        os.utime(audio, (aged, aged))
+        self._age(audio)
 
         assert client.post(_undo_url(log.task_uuid, operation)).status_code == 200
         audio_store.purge_expired()
 
         assert audio.exists()
+
+    def test_a_write_that_changes_nothing_does_not_restart_the_count(self, client, db_session, store):
+        # 和現在的內容相同的校正不記校正紀錄，不算一次校正（GLOSSARY）：只是點進去又離開，不延長保留
+        log, audio = self._with_old_audio(db_session, store)
+
+        response = client.patch(_url(log.task_uuid), json={"text": "這個就是實作層"})
+        assert (response.status_code, response.json()["operation_id"]) == (200, None)
+        audio_store.purge_expired()
+
+        assert not audio.exists()
 
     def test_a_refused_write_does_not_restart_the_count(self, client, db_session, store):
         log, audio = self._with_old_audio(db_session, store)

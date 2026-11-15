@@ -20,8 +20,9 @@
 原始轉錄的欄位（文字、說話者、時間等）照舊不改。寫的時候和校正紀錄一樣先鎖住任務
 （:meth:`CorrectionRepository.record_operation` 的 ``review_states``）。
 
-校正紀錄與確認狀態一律經過 :class:`_CurrentContent` 寫（它鎖住任務）。每寫完一次，這個任務的保留音檔
-的保留天數就從現在重新起算（#350），做在它 commit 的地方，之後新的寫入也不必各自記得。
+校正紀錄與確認狀態一律經過 :class:`_CurrentContent` 寫（它鎖住任務）。每次寫了校正紀錄或確認狀態，
+這個任務的保留音檔的保留天數就從現在重新起算（#350），做在它 commit 的地方，之後新的寫入端點也不必
+各自記得。
 """
 
 from __future__ import annotations
@@ -176,15 +177,16 @@ def _lock_task(db: Session, task_uuid: uuid.UUID) -> None:
 class _CurrentContent:
     """寫校正紀錄用：鎖住任務後讀它現在的內容（原始轉錄套上最新的校正紀錄），照它記下新的紀錄。
 
-    現在的內容讀兩次資料庫（片段一次、校正紀錄一次；另外讀一次保留音檔的檔名），之後的比對都在記憶體裡；
-    記下的紀錄也算進現在的內容，同一次操作裡的下一筆就以它為改前。
+    讀三次資料庫（片段、校正紀錄與保留音檔的檔名各一次），之後的比對都在記憶體裡；記下的紀錄也算進
+    現在的內容，同一次操作裡的下一筆就以它為改前。
 
     當成 context manager 用：區塊順利結束時，記下的紀錄和鎖一起 commit（沒有記任何一筆時只放掉鎖）；
     區塊裡出錯時 rollback，一筆都不寫。
 
-    commit 之後，這個任務的保留音檔的保留天數從現在重新起算（:func:`app.services.audio_store.renew`，
-    #350）：校正到一半不會突然聽不到。和現在的內容相同、什麼都沒記的寫入也算，使用者一樣是在校正；
-    保留音檔不在或改不了時校正照樣存。
+    commit 之後，有記下校正紀錄或寫了確認狀態時，這個任務的保留音檔的保留天數從現在重新起算
+    （:func:`app.services.audio_store.restart_retention`，#350），校正到一半不會突然聽不到。和現在的
+    內容相同、什麼都沒寫的不算（照 GLOSSARY，沒有留下校正紀錄就不是一次校正）。保留音檔不在或改不了時
+    校正照樣存。
     """
 
     def __init__(self, db: Session, task_uuid: uuid.UUID):
@@ -197,6 +199,7 @@ class _CurrentContent:
                           for row in TranscriptSegmentRepository.list_for_task(db, task_uuid)}
         self._latest = _latest(_records(db, task_uuid))
         self.recorded: List[CorrectionRecord] = []
+        self._wrote_review_state = False
 
     def __enter__(self) -> _CurrentContent:
         return self
@@ -207,7 +210,8 @@ class _CurrentContent:
             return
         self._db.add_all(self.recorded)
         self._db.commit()
-        audio_store.renew(self._audio_filename)
+        if self.recorded or self._wrote_review_state:
+            audio_store.restart_retention(self._audio_filename)
 
     def value(self, key: _Key) -> Optional[str]:
         field, target = key
@@ -229,6 +233,7 @@ class _CurrentContent:
             .values(review_state=ReviewState(state).value if state else None)
             .execution_options(synchronize_session=False)
         )
+        self._wrote_review_state = True
 
     def change(self, key: _Key, new_value: Optional[str], operation_id: uuid.UUID) -> None:
         """有變時記下一筆（還沒寫進資料庫）；和現在的內容相同時不記。"""
