@@ -284,6 +284,33 @@ class UndoOperationResponse(BaseModel):
     """那次操作改到的片段的新內容，還原的與略過的都在內。"""
 
 
+class ReviewStatesRequest(BaseModel):
+    """PATCH /transcripts/{task_uuid}/review-states：一次改很多個片段的確認狀態（#349），在同一個交易裡做完。
+
+    現在的確認狀態是 ``only_if`` 的片段改成 ``review_state``，其他的不動；兩個都只能是 verified、flagged
+    或 null（null 是沒有確認狀態），而且 ``only_if`` 一定要帶。``seg_keys`` 不帶（或 null）時看這個任務的
+    全部片段，帶的時候只看這些片段。
+
+    - 其餘全部標成已確認：``{"review_state": "verified", "only_if": null}``。
+    - 它的復原：``{"review_state": null, "only_if": "verified", "seg_keys": [那一次標的片段]}``，
+      在這之間被改成待查（或清掉）的不動。
+
+    和改一個片段的確認狀態一樣，不是校正，不留校正紀錄，也不算一次操作。"""
+    model_config = ConfigDict(extra="forbid")
+
+    review_state: Optional[str]
+    only_if: Optional[str]
+    seg_keys: Optional[List[str]] = None
+
+
+class ReviewStatesResponse(BaseModel):
+    """一次改很多個片段的確認狀態的結果：實際改到的片段現在都是請求的 ``review_state``。"""
+    changed: int
+    """實際改到幾個片段。"""
+    seg_keys: List[str] = []
+    """實際改到的片段，依 seq 排序。"""
+
+
 class SpeakerReassignRequest(BaseModel):
     """POST /transcripts/{task_uuid}/speakers/reassign：把這位說話者全部換成另一位（#354）。
 
