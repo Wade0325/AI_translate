@@ -1,4 +1,5 @@
-"""透過 API 跑任務的整合測試共用的小工具：上傳、收狀態廣播、送心跳、查片段與下載、看暫存資料夾與任務頁的批次。"""
+"""透過 API 跑任務的整合測試共用的小工具：上傳、收狀態廣播、送心跳、查片段與下載、看暫存資料夾與任務頁的批次，
+以及讀任務紀錄本身。"""
 
 from __future__ import annotations
 
@@ -10,7 +11,8 @@ from tempfile import TemporaryDirectory
 from fastapi.testclient import TestClient
 
 from app.core.task_status import TaskStatus
-from app.database.models import BatchJob
+from app.database.models import BatchJob, TranscriptionLog
+from app.repositories.transcription_log_repository import TranscriptionLogRepository
 from tests.support.synthetic_audio import VOICED, synthetic_audio
 from tests.support.synthetic_video import synthetic_video
 from tests.support.waiting import TIMEOUT
@@ -108,3 +110,9 @@ def last_heard(db_session, batch_id: str, *, minutes_ago: float) -> None:
     db_session.query(BatchJob).filter_by(batch_id=batch_id).update(
         {BatchJob.updated_at: datetime.now() - timedelta(minutes=minutes_ago)})
     db_session.commit()
+
+
+def task_record(db_session, task_uuid: str) -> TranscriptionLog:
+    """任務紀錄本身：轉錄環境與送出的提示詞不在任何 API 回應裡（畫面不顯示，#343），只能從這裡看。"""
+    db_session.expire_all()
+    return TranscriptionLogRepository().get(db_session, task_uuid)

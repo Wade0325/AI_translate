@@ -1,11 +1,15 @@
-"""轉錄環境的描述（#37）：評測的 manifest 記下它，之後的版本也要拿它當轉錄環境的紀錄。"""
+"""轉錄環境的描述（#37）：評測的 manifest 記下它，任務開始轉錄時也記進任務紀錄（#343）。"""
 import sys
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
+from app.core.version import APP_VERSION
 from app.provider.local import weights
 from app.services import environment_manifest
+
+GEMINI_MODEL = "gemini-2.5-flash"
 
 
 def test_local_models_record_their_pinned_weight_revisions():
@@ -86,3 +90,91 @@ def test_a_package_installed_from_an_archive_records_where_it_came_from(tmp_path
 
     assert environment_manifest.package("fake-archive-package") == {"version": "0.1.0",
                                                                      "source": url}
+
+
+# ─── 任務記下的轉錄環境（#343）──────────────────────────────────────────────────
+
+def test_a_local_task_records_the_app_version_model_gpu_and_pinned_revisions(monkeypatch):
+    _one_gpu(monkeypatch, "576.02\n")
+
+    recorded = environment_manifest.for_task("local", weights.MOSS_ALIGN)
+
+    assert (recorded["app_version"], recorded["provider"], recorded["model"]) == (
+        APP_VERSION, "local", weights.MOSS_ALIGN)
+    # 其他照評測的 manifest 記：同一份描述，不另外寫一份
+    assert {key: value for key, value in recorded.items()
+            if key not in ("app_version", "provider", "model")} == environment_manifest.describe(
+        "local", weights.MOSS_ALIGN)
+    assert recorded["model_revisions"][weights.MOSS_MODEL_ID] == weights.REPO_REVISIONS[
+        weights.MOSS_MODEL_ID]
+    assert recorded["gpu"]["driver"] == "576.02"
+
+
+def test_a_gemini_task_records_the_model_name_without_asking_torch_about_the_gpu(monkeypatch):
+    # Gemini 的任務不初始化 CUDA：免安裝模式裡 torch 和 Gemini 的任務在同一個行程
+    torch = MagicMock()
+    monkeypatch.setitem(sys.modules, "torch", torch)
+
+    recorded = environment_manifest.for_task("google", GEMINI_MODEL)
+
+    assert (recorded["app_version"], recorded["provider"], recorded["model"]) == (
+        APP_VERSION, "google", GEMINI_MODEL)
+    assert recorded["gpu"] is None
+    assert recorded["model_revisions"] == {}  # 雲端模型的版本由供應商決定，沒有可以釘住的 revision
+    assert torch.cuda.mock_calls == []
+
+
+def test_a_torch_that_fails_to_load_is_recorded_as_no_gpu(monkeypatch):
+    # torch 載入 DLL 失敗時丟 OSError（weights.detect_gpu 也這樣接）：只是顯卡記成 None，其他照記，
+    # 任務的轉錄環境不會因此整份記不下
+    import builtins
+
+    real_import = builtins.__import__
+
+    def failing_import(name, *args, **kwargs):
+        if name == "torch":
+            raise OSError(22, "找不到指定的模組。 Error loading c10.dll")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.delitem(sys.modules, "torch", raising=False)
+    monkeypatch.setattr(builtins, "__import__", failing_import)
+
+    recorded = environment_manifest.for_task("local", weights.MOSS_ALIGN)
+
+    assert recorded["gpu"] is None
+    assert recorded["model_revisions"]
+
+
+def test_the_gpu_is_asked_once_per_process(monkeypatch):
+    # nvidia-smi 是子行程：同一個行程的任務沿用第一次問到的顯卡與驅動
+    _one_gpu(monkeypatch, "576.02\n")
+    commands = []
+    monkeypatch.setattr(weights, "command_output", lambda *command: commands.append(command) or "576.02")
+
+    first = environment_manifest.for_task("local", weights.MOSS_ALIGN)
+    second = environment_manifest.for_task("local", weights.MOSS_ALIGN)
+
+    assert first["gpu"] == second["gpu"]
+    assert first["gpu"]["driver"] == "576.02"
+    assert [command[0] for command in commands] == ["nvidia-smi"]
+
+
+def test_the_recorded_environment_reads_back_with_the_model_versions_added():
+    # 任務紀錄存 JSON（中文不跳脫）；批次的檔案結果在重啟之後才回來時，從任務紀錄讀回再補記模型版本
+    environment = {"app_version": APP_VERSION, "provider": "google", "model": GEMINI_MODEL,
+                   "settings": {"說明": "中文照寫"}}
+
+    recorded = environment_manifest.to_record(environment)
+    read_back = environment_manifest.from_record(recorded)
+
+    assert "中文照寫" in recorded
+    assert read_back == environment
+    assert environment_manifest.with_model_versions(read_back, ["gemini-2.5-flash-001"]) == {
+        **environment, "model_versions": ["gemini-2.5-flash-001"]}
+    assert environment_manifest.to_record(None) is None
+
+
+@pytest.mark.parametrize("recorded", [None, "", "不是 JSON", "[1, 2]"])
+def test_an_unreadable_recorded_environment_reads_back_as_none(recorded):
+    # 這一欄加上之前的任務沒有記；讀不懂的也當成沒有，任務照樣結束
+    assert environment_manifest.from_record(recorded) is None

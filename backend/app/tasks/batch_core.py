@@ -48,7 +48,7 @@ from sqlalchemy.orm import Session
 from app.celery.models import BatchFileItemParams, BatchTranscriptionTaskParams
 from app.core.batch_state import IN_PROGRESS, BatchState
 from app.core.config import get_settings
-from app.core.default_prompt import build_prompt
+from app.core.default_prompt import Prompt, build_prompt
 from app.core.error_codes import ErrorCode, TaskFailedError
 from app.core.task_status import TaskStatus
 from app.database.models import BatchFile, BatchJob
@@ -382,6 +382,8 @@ class _File:
 
     seq: int
     item: BatchFileItemParams
+    prompt: Prompt
+    """這個檔案送出的提示詞；它的任務紀錄記下的是同一份（#343）。"""
     lifecycle: TaskLifecycle
     view: Optional[SpeechView] = None
     handle: Any = None
@@ -514,7 +516,7 @@ class _Run:
         return uploaded
 
     def _submit(self, adapter: BatchProvider, uploaded: List[_File]) -> str:
-        requests = [(file.handle, self._prompt(file.item)) for file in uploaded]
+        requests = [(file.handle, file.prompt.text) for file in uploaded]
         try:
             name = _retrying(self._publish, "送出批次", adapter.submit_batch, requests,
                              f"transcription-{self._batch_id[:8]}")
@@ -536,17 +538,6 @@ class _Run:
                 }, commit=False)
             self._jobs.move(db, self._batch_id, BatchState.POLLING, commit=False)
             db.commit()
-
-    def _prompt(self, item: BatchFileItemParams) -> str:
-        """這個檔案的提示詞：個別檔案的設定優先，沒設定的用批次的。"""
-        params = self._params
-        return build_prompt(
-            source_lang=item.source_lang or params.source_lang,
-            target_lang=item.target_lang or params.target_lang,
-            multi_speaker=_multi_speaker(item, params),
-            template=params.prompt_template,
-            supplement=item.prompt or params.prompt,
-        )
 
     def _fail_batch(self, text: str) -> None:
         """批次沒有正常結束：批次記成失敗，再宣告批次結束。記不下來只記 log；這次執行沒有建立批次
@@ -798,12 +789,27 @@ def _retrying(publish: Publish, step: str, call: Callable[..., T], *args: Any) -
 
 
 def _files(params: BatchTranscriptionTaskParams) -> List[_File]:
-    """批次裡的每個檔案，各有自己的任務生命週期（新的任務紀錄 id）。"""
-    return [_File(seq, item, TaskLifecycle(str(uuid.uuid4()), _task(item, params)))
-            for seq, item in enumerate(params.files)]
+    """批次裡的每個檔案，各有自己的提示詞與任務生命週期（新的任務紀錄 id）。"""
+    files = []
+    for seq, item in enumerate(params.files):
+        prompt = _prompt(item, params)
+        files.append(_File(seq, item, prompt,
+                           TaskLifecycle(str(uuid.uuid4()), _task(item, params, prompt))))
+    return files
 
 
-def _task(item: BatchFileItemParams, params: BatchTranscriptionTaskParams) -> Task:
+def _prompt(item: BatchFileItemParams, params: BatchTranscriptionTaskParams) -> Prompt:
+    """這個檔案的提示詞：個別檔案的設定優先，沒設定的用批次的。批次不收使用者文稿。"""
+    return Prompt.plain(build_prompt(
+        source_lang=item.source_lang or params.source_lang,
+        target_lang=item.target_lang or params.target_lang,
+        multi_speaker=_multi_speaker(item, params),
+        template=params.prompt_template,
+        supplement=item.prompt or params.prompt,
+    ))
+
+
+def _task(item: BatchFileItemParams, params: BatchTranscriptionTaskParams, prompt: Prompt) -> Task:
     """批次裡的一個檔案是一個任務：個別檔案的設定優先，沒設定的用批次的。"""
     return Task(
         file_path=item.file_path,
@@ -817,6 +823,7 @@ def _task(item: BatchFileItemParams, params: BatchTranscriptionTaskParams) -> Ta
         target_lang=item.target_lang or params.target_lang,
         session_id=params.session_id or params.batch_id,
         batch_id=params.batch_id,
+        prompt=prompt,
     )
 
 

@@ -2,19 +2,23 @@
 
 記下主要套件的版本、這次看得到的顯卡與 NVIDIA 驅動、本機模型權重釘住的 revision，以及去靜音與
 分段轉錄的設定。評測指令（``python -m tools.eval transcribe``，#37）把它寫進 manifest，``summary``
-拿基準與 PR 兩邊的 manifest 逐項比對（#276）；之後要記錄轉錄環境的地方也用這裡，不另外寫一份。
+拿基準與 PR 兩邊的 manifest 逐項比對（#276）；任務開始轉錄時也把它記進任務紀錄（:func:`for_task`，
+#343），兩邊是同一份描述，不另外寫一份。
 
 只讀已安裝套件的中繼資料與設定，不建立供應商轉接器、不載入模型；有 torch 時才問顯卡與驅動（nvidia-smi）。
 """
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 from importlib import metadata
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Sequence
 
+from app.core import version
 from app.core.config import get_settings
+from app.provider.base import LOCAL_QUEUE
 from app.provider.registry import model_capabilities
 
 PACKAGES = ("torch", "transformers", "moss-transcribe-diarize")
@@ -27,11 +31,66 @@ def describe(provider: str, model: str) -> Dict[str, Any]:
     Raises:
         UnsupportedModelError: 供應商不存在，或模型不屬於它。
     """
+    return _describe(provider, model, gpu())
+
+
+def for_task(provider: str, model: str) -> Dict[str, Any]:
+    """任務開始轉錄時記進任務紀錄的轉錄環境（#343）：:func:`describe` 的內容，加上 app 版本、供應商與
+    模型名稱。雲端的模型沒有可以釘住的 revision，``model_revisions`` 是空的，靠模型名稱分辨。
+
+    顯卡與驅動只有本機的任務（在 GPU 佇列上轉錄的模型）記，其他是 None：Gemini 的任務不 import torch、
+    不初始化 CUDA。同一個行程只問一次顯卡，之後的任務沿用（nvidia-smi 是子行程，見 :func:`forget_gpu`）。
+
+    Raises:
+        UnsupportedModelError: 供應商不存在，或模型不屬於它。
+    """
+    local = model_capabilities(provider, model).queue == LOCAL_QUEUE
+    return {
+        "app_version": version.APP_VERSION,
+        "provider": provider,
+        "model": model,
+        **_describe(provider, model, _gpu_of_this_process() if local else None),
+    }
+
+
+def with_model_versions(environment: Dict[str, Any], versions: Sequence[str]) -> Dict[str, Any]:
+    """轉錄環境補上回應寫明的模型版本（Gemini 回應的 ``model_version``）：任務完成時才知道（#343）。"""
+    return {**environment, "model_versions": list(versions)}
+
+
+def to_record(environment: Optional[Dict[str, Any]]) -> Optional[str]:
+    """轉錄環境寫進任務紀錄的 JSON；沒有時是 None。"""
+    return None if environment is None else json.dumps(environment, ensure_ascii=False)
+
+
+def from_record(recorded: Optional[str]) -> Optional[Dict[str, Any]]:
+    """任務紀錄裡的轉錄環境（:func:`to_record` 寫的）；沒有記、或讀不懂時是 None。"""
+    if not recorded:
+        return None
+    try:
+        environment = json.loads(recorded)
+    except ValueError:
+        return None
+    return environment if isinstance(environment, dict) else None
+
+
+@functools.cache
+def _gpu_of_this_process() -> Optional[Dict[str, Any]]:
+    # 問到 None（例如當時 CUDA 還沒準備好）也沿用到行程結束：換了顯卡或驅動要重開程式才看得到
+    return gpu()
+
+
+def forget_gpu() -> None:
+    """忘掉這個行程問過的顯卡，下一個本機的任務重新問。只給測試用：每個測試換一個假的 torch。"""
+    _gpu_of_this_process.cache_clear()
+
+
+def _describe(provider: str, model: str, gpu_info: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     capabilities = model_capabilities(provider, model)
     settings = get_settings()
     return {
         "packages": {name: package(name) for name in PACKAGES},
-        "gpu": gpu(),
+        "gpu": gpu_info,
         "model_revisions": model_revisions(model),
         "settings": {
             "remove_silence": capabilities.remove_silence,
@@ -64,13 +123,13 @@ def package(name: str) -> Dict[str, Optional[str]]:
 
 def gpu() -> Optional[Dict[str, Any]]:
     """這次看得到的第一張顯卡（本機轉錄只用它）：名稱、顯存（GB）、NVIDIA 驅動的版本與
-    ``CUDA_VISIBLE_DEVICES``；沒有 torch 或沒有 CUDA 時是 None。
+    ``CUDA_VISIBLE_DEVICES``；沒有 torch、torch 載入失敗或沒有 CUDA 時是 None。
 
     驅動是 nvidia-smi 回報的版本（例如 ``576.02``），問不到時是 None。換了驅動，同一段音檔可能轉出
     不同的結果（docs/adr/0009），所以和顯卡一起記。"""
     try:
         import torch
-    except ImportError:
+    except Exception:  # 沒裝是 ImportError；DLL 載入失敗是 OSError，套件壞掉時什麼例外都有可能
         return None
     try:
         # is True：測試環境裡 torch 可能是 mock，回傳的不是 bool

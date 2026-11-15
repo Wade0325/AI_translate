@@ -8,10 +8,13 @@ from pathlib import Path
 import pytest
 
 from app.core.default_prompt import (
+    USER_TEXT_OMITTED,
+    Prompt,
     build_prompt,
     build_user_text_prompt,
     DEFAULT_PROMPT_TEMPLATE,
     LANG_MAP,
+    user_text_prompt,
 )
 
 FRONTEND_LANGUAGES = (
@@ -409,3 +412,29 @@ class TestUserTextPrompt:
 
         assert "請將以下" not in prompt
         assert "ASMR" not in prompt
+
+
+# ─── 記進任務紀錄的提示詞（#343）────────────────────────────────────────────────
+
+class TestRecordedPrompt:
+    """Gemini 的任務記下送出的提示詞；使用者文稿和音檔一起送到 Google，不存進資料庫（README）。"""
+
+    def test_without_user_text_the_recorded_prompt_is_the_one_sent(self):
+        prompt = Prompt.plain(build_prompt(source_lang="ja", supplement="人名照寫：佐藤"))
+
+        assert prompt.recorded == prompt.text == build_prompt(source_lang="ja", supplement="人名照寫：佐藤")
+        assert not prompt.user_text_attached
+
+    def test_with_user_text_only_the_text_is_left_out_of_the_recorded_prompt(self):
+        # 送出的和記下的由同一個函式組出，只差在文稿換成一句說明：指示與補充說明逐字相同
+        text = "\n  おはようございます。\n今日は晴れです。  \n"
+        options = {"source_lang": "ja", "multi_speaker": True, "supplement": "說話者是兩位主持人"}
+
+        prompt = user_text_prompt(text, **options)
+
+        assert prompt.text == build_user_text_prompt(text, **options)
+        assert prompt.recorded == build_user_text_prompt(USER_TEXT_OMITTED, **options)
+        assert prompt.recorded == prompt.text.replace(text.strip(), USER_TEXT_OMITTED)
+        assert "おはようございます" not in prompt.recorded and "晴れ" not in prompt.recorded
+        assert "說話者是兩位主持人" in prompt.recorded
+        assert prompt.user_text_attached
