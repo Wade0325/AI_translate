@@ -14,7 +14,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Set
 
 from sqlalchemy.orm import Session
 
@@ -92,6 +92,20 @@ class TranscriptSegmentRepository:
             .order_by(TranscriptSegment.seq)
             .all()
         )
+
+    @staticmethod
+    def tasks_with_segments(db: Session, task_uuids: Iterable[Any]) -> Set[str]:
+        """這些任務裡有片段的那些（任務紀錄 id 的字串）。一次查完，History 的一頁不會一個任務查一次。"""
+        uuids = [u for u in (coerce_uuid(t) for t in task_uuids) if u is not None]
+        if not uuids:
+            return set()
+        rows = (
+            db.query(TranscriptSegment.task_uuid)
+            .filter(TranscriptSegment.task_uuid.in_(uuids))
+            .distinct()
+            .all()
+        )
+        return {str(row[0]) for row in rows}
 
     @staticmethod
     def segments_for_task(db: Session, task_uuid) -> List[Dict[str, Any]]:

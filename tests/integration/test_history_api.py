@@ -446,3 +446,67 @@ class TestHistoryUsage:
     def test_usage_invalid_days_returns_422(self, client: TestClient):
         assert client.get("/api/v1/history/usage?days=0").status_code == 422
         assert client.get("/api/v1/history/usage?days=999").status_code == 422
+
+
+# ─── 能不能校正（#347）─────────────────────────────────────────────────────────
+# 能校正的任務：已完成、有片段，而且不是轉錄並翻譯的任務（#345 第 1 節）。History 照這個值決定要不要
+# 顯示「校正」按鈕
+
+def _with_segments(db: Session, log: TranscriptionLog) -> TranscriptionLog:
+    TranscriptSegmentRepository.replace_untouched(db, log.task_uuid, SEGMENTS)
+    db.commit()
+    return log
+
+
+def _listed(client: TestClient, log: TranscriptionLog) -> dict:
+    """History 清單裡這個任務的那一筆；用檔名搜尋，不受其他測試留下的紀錄影響。"""
+    items = client.get("/api/v1/history", params={"keyword": log.original_filename}).json()["items"]
+    (item,) = [i for i in items if i["task_uuid"] == str(log.task_uuid)]
+    return item
+
+
+class TestCorrectable:
+    def test_completed_task_with_segments_is_correctable(
+            self, client: TestClient, db_session: Session):
+        log = _with_segments(db_session, _create_log(db_session, original_filename="ok-347.wav"))
+        assert _listed(client, log)["correctable"] is True
+
+    @pytest.mark.parametrize("status", ["PROCESSING", "FAILED", "CANCELLED"])
+    def test_task_that_did_not_complete_is_not_correctable(
+            self, client: TestClient, db_session: Session, status):
+        log = _with_segments(db_session, _create_log(
+            db_session, status=status, original_filename=f"{status.lower()}-347.wav"))
+        assert _listed(client, log)["correctable"] is False
+
+    def test_completed_task_without_segments_is_not_correctable(
+            self, client: TestClient, db_session: Session):
+        # 片段上線前的任務只有凍結的原始轉錄副本，能下載、不能逐段校正
+        log = _create_log(db_session, original_filename="no-segments-347.wav",
+                          lrc_content="[00:01.00]只有凍結的副本")
+        assert _listed(client, log)["correctable"] is False
+
+    def test_task_with_translation_is_not_correctable(self, client: TestClient, db_session: Session):
+        log = _with_segments(db_session, _create_log(
+            db_session, original_filename="translated-347.wav",
+            source_language="ja-JP", target_language="zh-TW"))
+        assert _listed(client, log)["correctable"] is False
+
+    def test_target_language_same_as_source_is_not_with_translation(
+            self, client: TestClient, db_session: Session):
+        # 和提示詞同一條規則（app.core.default_prompt.build_prompt）：目標語言和來源相同時沒有翻譯，不是轉錄並翻譯
+        log = _with_segments(db_session, _create_log(
+            db_session, original_filename="same-language-347.wav",
+            source_language="ja-JP", target_language="ja-JP"))
+        assert _listed(client, log)["correctable"] is True
+
+    def test_each_task_in_a_page_gets_its_own_value(self, client: TestClient, db_session: Session):
+        ok = _with_segments(db_session, _create_log(db_session, original_filename="page-347-a.wav"))
+        bare = _create_log(db_session, original_filename="page-347-b.wav")
+
+        items = client.get("/api/v1/history", params={"keyword": "page-347"}).json()["items"]
+        values = {i["task_uuid"]: i["correctable"] for i in items}
+        assert values == {str(ok.task_uuid): True, str(bare.task_uuid): False}
+
+    def test_detail_reports_it_too(self, client: TestClient, db_session: Session):
+        log = _with_segments(db_session, _create_log(db_session, original_filename="detail-347.wav"))
+        assert client.get(f"/api/v1/history/{log.task_uuid}").json()["correctable"] is True
