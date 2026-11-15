@@ -39,7 +39,19 @@ export const isSpeakerCount = (value) =>
 export const formatSpeakerCount = (value) => `Speakers: ${value === AUTO_SPEAKERS ? 'Auto' : value}`;
 
 /**
- * 選了 2 到 8 人、結果裡的說話者數目卻不同時，結果頁的檔案卡多一行的提醒（#351 第 4 點）；任務照樣完成。
+ * 校正後版本裡有幾位說話者（校正頁的提醒用，#351 第 4 點）：和後端算結果頁的人數同一個算法
+ * （backend/app/services/output_format.py 的 speakers_in_output）。只看有文字的片段，刪掉的不算；不同的說話者
+ * 編號有幾個，片段都沒有說話者時算一位（沒有標記的行都算同一位說話者）；沒有任何片段時是 0。
+ * @param {{ text?: string | null, speaker?: string | null, deleted?: boolean }[]} segments
+ */
+export function speakersInVersion(segments) {
+  const shown = segments.filter((segment) => !segment.deleted && (segment.text ?? '').trim());
+  if (!shown.length) return 0;
+  return Math.max(new Set(shown.map((segment) => segment.speaker).filter(Boolean)).size, 1);
+}
+
+/**
+ * 選了 2 到 8 人、結果裡的說話者數目卻不同時的一行提醒（#351 第 4 點，結果頁的檔案卡與校正頁上方）；任務照樣完成。
  * 照模型判斷、選 1 人、人數做出來之前的舊任務（沒有記錄所選的人數）、不知道結果有幾位與結果沒有任何一行
  * （speaker_count 是 0，結果頁也不顯示人數）時是 null。
  * @param {unknown} selected 完成時的結果帶的 selected_speaker_count

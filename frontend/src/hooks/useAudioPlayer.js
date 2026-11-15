@@ -65,6 +65,16 @@ export function useAudioPlayer() {
     if (andPlay) play();
   }, [play]);
 
+  /** 從現在的位置前進 seconds 秒（負的是倒退），不超出音檔的頭尾；播放中的照樣播放。 */
+  const skip = useCallback((seconds) => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    const end = Number.isFinite(audio.duration) ? audio.duration : Infinity;
+    const t = Math.min(Math.max(audio.currentTime + seconds, 0), end);
+    audio.currentTime = t;
+    setTime(t);
+  }, []);
+
   const setRate = useCallback((value) => {
     const audio = audioRef.current;
     if (audio) {
@@ -75,5 +85,5 @@ export function useAudioPlayer() {
     setRateState(value);
   }, []);
 
-  return { audioRef, audioProps, playing, time, duration, rate, failed, toggle, seek, setRate };
+  return { audioRef, audioProps, playing, time, duration, rate, failed, toggle, seek, skip, setRate };
 }

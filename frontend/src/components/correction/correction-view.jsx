@@ -1,33 +1,100 @@
-import { useCallback, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Link } from "react-router-dom"
-import { Button } from "antd"
-import { ArrowLeft, LocateFixed } from "lucide-react"
+import { Button, Segmented } from "antd"
+import { ArrowLeft, Download, LocateFixed, Search } from "lucide-react"
 import { api } from "@/services/api"
 import { useAudioPlayer } from "@/hooks/useAudioPlayer"
+import { useSegmentCorrections } from "@/hooks/useSegmentCorrections"
+import { useSegmentSearch } from "@/hooks/useSegmentSearch"
+import { useSingleSpeaker } from "@/hooks/useSingleSpeaker"
 import { lastStarted, segmentSpans, segmentsAt, wordAt } from "@/utils/playhead"
+import { REWIND_SECONDS, keepEditorFocus } from "@/utils/segmentCorrections"
+import { isFindShortcut } from "@/utils/segmentSearch"
+import { speakerCounts } from "@/utils/speakers"
+import { speakersInVersion } from "@/utils/speakerCount"
+import { SpeakerCountNotice } from "@/components/SpeakerCountNotice"
+import { TranscriptDownloadMenu } from "@/components/transcript-download-menu"
+import { FindBar } from "./find-bar"
 import { PlayerBar } from "./player-bar"
 import { SegmentList } from "./segment-list"
 
 /** 保留音檔超過保留天數、被「立即刪除」刪掉，或關掉保留音檔時完成的任務（後端的 audio_available 是 false）。 */
-export const AUDIO_GONE = "保留音檔已經不在，無法播放；文字照樣看得到"
+export const AUDIO_GONE = "保留音檔已經不在，無法播放；文字照樣可以校正"
 /** 打開頁面之後才讀不到（例如在設定頁立即刪除了），或瀏覽器播不了這個檔。 */
-export const AUDIO_FAILED = "保留音檔無法播放；文字照樣看得到"
+export const AUDIO_FAILED = "保留音檔無法播放；文字照樣可以校正"
+
+/** 說話者的切換（#354）：兩種狀態寫在按鈕上。 */
+const SPEAKER_MODES = [
+    { value: "single", label: "整份當成同一位" },
+    { value: "model", label: "照模型分出的說話者顯示" },
+]
 
 /**
- * 校正頁的內容（#347，這一刀唯讀）：上方固定的播放列，下方是片段列表。播放時反白正在唸的片段並
- * 跟著捲動；使用者自己捲走時停止跟著，給一個「回到正在播放的片段」的按鈕。
+ * 片段列表每一列用的動作：改文字、刪掉與還原、改說話者（useSegmentCorrections），以及打字時的 Tab 與 Shift+Tab。
+ *
+ * @typedef {ReturnType<typeof useSegmentCorrections>["actions"]
+ *   & { playback: (action: import("@/utils/segmentCorrections").PlaybackAction) => void }} RowActions
+ */
+
+/**
+ * 按 Ctrl+F 時選起來的字（一行、不太長時）拿來當要找的字，和瀏覽器的尋找一樣：片段的文字，或正在改的文字框裡
+ * 選起來的字。焦點在尋找列的輸入框裡時不算。
+ */
+function selectedSearchText() {
+    const active = document.activeElement
+    let text = ""
+    if (active instanceof HTMLTextAreaElement) text = active.value.slice(active.selectionStart, active.selectionEnd)
+    else if (!(active instanceof HTMLInputElement)) text = window.getSelection()?.toString() ?? ""
+    return text && !/[\r\n]/.test(text) && text.length <= 100 ? text : ""
+}
+
+/** @type {import("react").CSSProperties} */
+const TOAST_STYLE = {
+    display: "flex",
+    alignItems: "center",
+    gap: 4,
+    padding: "4px 6px 4px 14px",
+    borderRadius: 6,
+    background: "#2a2a48",
+    border: "1px solid #3a3a5c",
+    color: "#e8e8e8",
+    fontSize: 13,
+    boxShadow: "0 4px 12px rgba(0, 0, 0, 0.4)",
+}
+
+/**
+ * 校正頁的內容：上方固定的播放列，下方是片段列表（#347）。播放時反白正在唸的片段並跟著捲動；使用者自己捲走時
+ * 停止跟著，給一個「回到正在播放的片段」的按鈕。
+ *
+ * 改文字、刪掉與還原片段（#348）：點文字就改，每一次校正馬上存，沒有整頁的存檔鈕；存完出現幾秒的「已存檔，
+ * 復原」。正在改的時候不跟著播放捲動，免得改到一半那一列被捲走；改完再接著跟。
+ *
+ * 說話者（#354）：上方的切換決定整份當成同一位說話者（不顯示說話者，也沒有改說話者的操作），或照模型分出的說話者
+ * 顯示；切換是任務的設定，不算校正。顯示說話者時，點片段的說話者可以改這個片段，或把這位說話者全部換成另一位。
+ * 任務選了 2 到 8 人、校正後版本的說話者人數卻不同時，上方多一行提醒（#351 第 4 點）。
+ *
+ * 尋找與全部取代（#356）：在這一頁按 Ctrl+F 開的是頁面自己的尋找列（FindBar），不是瀏覽器內建的尋找。跳到一個
+ * 符合的片段時停止跟著播放捲動。
  *
  * @param {{ transcript: {
  *   task_uuid: string,
  *   original_filename?: string | null,
  *   audio_duration_seconds?: number | null,
  *   audio_available: boolean,
+ *   single_speaker?: boolean,
+ *   speaker_count?: 'auto' | number | null,
+ *   next_speaker?: string,
  *   segments: any[],
  * } }} props
  */
 export function CorrectionView({ transcript }) {
-    const { audioRef, audioProps, playing, time, duration, rate, failed, toggle, seek, setRate } = useAudioPlayer()
-    const { segments } = transcript
+    const { audioRef, audioProps, playing, time, duration, rate, failed, toggle, seek, skip, setRate } = useAudioPlayer()
+    const { segments, saves, editing, lastOperation, nextSpeaker, actions } = useSegmentCorrections(
+        transcript.task_uuid, transcript.segments, transcript.next_speaker,
+    )
+    const { singleSpeaker, speakerCount, switching, switchTo } = useSingleSpeaker(
+        transcript.task_uuid, Boolean(transcript.single_speaker), transcript.speaker_count ?? null,
+    )
     const total = duration ?? transcript.audio_duration_seconds ?? 0
     const canPlay = transcript.audio_available && !failed
 
@@ -48,6 +115,43 @@ export function CorrectionView({ transcript }) {
         seek(seconds, { andPlay: true })
     }, [seek])
     const onUserScroll = useCallback(() => setFollowing(false), [])
+
+    // 每位說話者的片段數：內容沒變時保持同一個物件，片段列表的每一列才不會在每次存檔時都重畫
+    const speakerCountsJson = useMemo(() => JSON.stringify(speakerCounts(segments)), [segments])
+    /** @type {import("./speaker-menu").SpeakerInfo} */
+    const speakerInfo = useMemo(() => {
+        const counts = /** @type {[string | null, number][]} */ (JSON.parse(speakerCountsJson))
+        return {
+            speakers: counts.map(([speaker]) => speaker).filter((speaker) => speaker !== null),
+            counts: new Map(counts),
+            nextSpeaker,
+        }
+    }, [speakerCountsJson, nextSpeaker])
+
+    const search = useSegmentSearch(segments, { onReveal: onUserScroll })
+    const { openFind, close: closeFind } = search.actions
+    const listRef = useRef(/** @type {HTMLDivElement | null} */ (null))
+    const onCloseFind = useCallback(() => {
+        closeFind()
+        listRef.current?.focus({ preventScroll: true })
+    }, [closeFind])
+
+    // 在校正頁按 Ctrl+F 開頁面自己的尋找：片段列表只畫看得到的那幾列，瀏覽器內建的尋找找不到其他片段
+    useEffect(() => {
+        const onKeyDown = (event) => {
+            if (!isFindShortcut(event)) return
+            event.preventDefault()
+            openFind(selectedSearchText())
+        }
+        window.addEventListener("keydown", onKeyDown)
+        return () => window.removeEventListener("keydown", onKeyDown)
+    }, [openFind])
+
+    /** @type {RowActions} */
+    const rowActions = useMemo(() => ({
+        ...actions,
+        playback: (action) => (action === "rewind" ? skip(-REWIND_SECONDS) : toggle()),
+    }), [actions, skip, toggle])
 
     let notice = null
     if (!transcript.audio_available) notice = AUDIO_GONE
@@ -71,7 +175,47 @@ export function CorrectionView({ transcript }) {
                     {transcript.original_filename || "—"}
                 </span>
                 <span style={{ color: "#8888a8", fontSize: 12, whiteSpace: "nowrap" }}>{segments.length} 個片段</span>
+                <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+                    <span id="speaker-mode-label" style={{ color: "#8888a8", fontSize: 12, whiteSpace: "nowrap" }}>說話者</span>
+                    <Segmented
+                        size="small"
+                        aria-labelledby="speaker-mode-label"
+                        options={SPEAKER_MODES}
+                        value={singleSpeaker ? "single" : "model"}
+                        disabled={switching}
+                        onChange={(value) => {
+                            // 切換之後收起「復原」：剛才換說話者的提示在整份當成同一位時不該留著
+                            actions.dismissUndo()
+                            switchTo(value === "single")
+                        }}
+                    />
+                </div>
+                {/* 預設給校正後版本，另有原始轉錄（檔名多一段 .original） */}
+                <div style={{ flexShrink: 0, display: "flex", gap: 8 }}>
+                    <Button
+                        size="small"
+                        icon={<Search size={14} />}
+                        title="尋找與取代（Ctrl+F）"
+                        autoInsertSpace={false}
+                        onClick={() => openFind()}
+                    >
+                        尋找
+                    </Button>
+                    <TranscriptDownloadMenu
+                        taskUuid={transcript.task_uuid}
+                        fileName={transcript.original_filename}
+                        withOriginal
+                        trigger={["click"]}
+                    >
+                        <Button size="small" icon={<Download size={14} />}>下載</Button>
+                    </TranscriptDownloadMenu>
+                </div>
             </div>
+            {/* 選的人數和校正後版本不同（#351 第 4 點）；整份當成同一位時不提醒，切換存好之前也一樣 */}
+            {!singleSpeaker && (
+                <SpeakerCountNotice selected={speakerCount} actual={speakersInVersion(segments)} paddingLeft={16} />
+            )}
+            {search.open && <FindBar search={search} onReplaceAll={actions.replaceAll} onClose={onCloseFind} />}
             <PlayerBar
                 playing={playing}
                 time={time}
@@ -84,25 +228,44 @@ export function CorrectionView({ transcript }) {
             />
             <div style={{ position: "relative", flex: 1, minHeight: 0 }}>
                 <SegmentList
+                    ref={listRef}
                     segments={segments}
                     activeSet={activeSet}
                     activeWords={activeWords}
                     followIndex={followIndex}
-                    following={following}
+                    following={following && !editing}
                     canPlay={canPlay}
                     onUserScroll={onUserScroll}
                     onSeek={onSeek}
+                    editing={editing}
+                    saves={saves}
+                    singleSpeaker={singleSpeaker}
+                    speakerInfo={speakerInfo}
+                    actions={rowActions}
+                    matches={search.ranges}
+                    currentMatch={search.currentKey}
+                    reveal={search.reveal}
                 />
-                {!following && followIndex >= 0 && (
-                    <Button
-                        type="primary"
-                        icon={<LocateFixed size={14} />}
-                        onClick={() => setFollowing(true)}
-                        style={{ position: "absolute", left: "50%", bottom: 16, transform: "translateX(-50%)", boxShadow: "0 4px 12px rgba(0, 0, 0, 0.4)" }}
-                    >
-                        回到正在播放的片段
-                    </Button>
-                )}
+                <div style={{ position: "absolute", left: "50%", bottom: 16, transform: "translateX(-50%)", display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
+                    {!following && followIndex >= 0 && (
+                        <Button
+                            type="primary"
+                            icon={<LocateFixed size={14} />}
+                            onClick={() => setFollowing(true)}
+                            style={{ boxShadow: "0 4px 12px rgba(0, 0, 0, 0.4)" }}
+                        >
+                            回到正在播放的片段
+                        </Button>
+                    )}
+                    {lastOperation && (
+                        <div role="status" style={TOAST_STYLE}>
+                            {lastOperation.label}
+                            <Button type="link" size="small" onMouseDown={keepEditorFocus} onClick={actions.undo}>
+                                復原
+                            </Button>
+                        </div>
+                    )}
+                </div>
             </div>
         </div>
     )

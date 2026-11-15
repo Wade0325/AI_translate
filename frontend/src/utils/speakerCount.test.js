@@ -5,6 +5,7 @@ import {
   isSpeakerCount,
   speakerCountMismatch,
   speakerCountOptions,
+  speakersInVersion,
 } from './speakerCount.js';
 
 describe('說話者人數的選單（#351 第 1 點）', () => {
@@ -43,5 +44,20 @@ describe('結果的說話者人數和所選的不同時的提醒（#351 第 4 �
     expect(speakerCountMismatch(2, undefined)).toBeNull();
     expect(speakerCountMismatch(2, null)).toBeNull();
     expect(speakerCountMismatch(2, 0)).toBeNull();
+  });
+});
+
+describe('校正後版本裡有幾位說話者（校正頁的提醒，#351 第 4 點）', () => {
+  const seg = (speaker, text = '文字', deleted = false) => ({ speaker, text, deleted });
+
+  it('不同的說話者編號有幾個；刪掉的片段與沒有文字的片段不算', () => {
+    expect(speakersInVersion([seg('S0'), seg('S1'), seg('S0')])).toBe(2);
+    expect(speakersInVersion([seg('S0'), seg('S1', '', true), seg('S2', '  ')])).toBe(1);
+  });
+
+  it('片段都沒有說話者時算一位，沒有任何片段時是 0', () => {
+    expect(speakersInVersion([seg(null), seg(undefined)])).toBe(1);
+    expect(speakersInVersion([seg('S0', '', true)])).toBe(0);
+    expect(speakersInVersion([])).toBe(0);
   });
 });

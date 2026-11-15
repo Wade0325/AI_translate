@@ -137,6 +137,39 @@ class TestPurgeExpired:
         assert old.exists()
 
 
+class TestRestartRetention:
+    """保留天數重新起算（#350）。重新起算之後清除不刪、檔案不在、失敗記日誌這幾種，從轉錄文件 API 測
+    （tests/integration/test_transcripts_api.py 的 TestAudioRetention）；這裡只測從 API 測不到的。"""
+
+    @pytest.fixture
+    def aged(self, store, tmp_path):
+        path = tmp_path / f"{TASK_UUID}.m4a"
+        path.write_bytes(b"x")
+        aged = time.time() - 31 * 86400
+        os.utime(path, (aged, aged))
+        return path
+
+    def test_a_suspicious_name_is_refused(self, store, tmp_path):
+        outside = tmp_path / "elsewhere"
+        outside.mkdir()
+        target = outside / "keep.m4a"
+        target.write_bytes(b"x")
+        aged = time.time() - 31 * 86400
+        os.utime(target, (aged, aged))
+
+        assert audio_store.restart_retention("elsewhere/keep.m4a") is False
+        assert target.stat().st_mtime == pytest.approx(aged)
+
+    def test_a_file_removed_meanwhile_is_not_recreated(self, aged, monkeypatch):
+        # 找到檔案之後、更新修改時間之前被刪掉（例如設定頁剛好按了立即刪除）：不留下一個空檔
+        resolved = audio_store.resolve(aged.name)
+        aged.unlink()
+        monkeypatch.setattr(audio_store, "resolve", lambda _name: resolved)
+
+        assert audio_store.restart_retention(aged.name) is False
+        assert not aged.exists()
+
+
 class TestPurgeStaleUploads:
     """啟動清掃：沒機會收尾的任務（例如應用程式被直接關掉時還在排隊）留在暫存區的上傳檔。"""
 

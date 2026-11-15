@@ -4,9 +4,10 @@ import { deletedMessage, retentionNote } from './localData.js';
 const RETAINED = { enabled: true, retention_days: 30, folder: 'D:\\Mimiji\\data\\audio_store', file_count: 2, total_bytes: 10 };
 
 describe('retentionNote：設定頁說明保留音檔留多久（#231 Q1）', () => {
-  it('照設定的天數說明，超過的在下次開啟時刪除', () => {
+  it('照設定的天數說明怎麼算：從上傳時算起，校正過的從最後一次校正起算（#350）；超過的在下次開啟時刪除', () => {
     expect(retentionNote(RETAINED)).toBe(
-      '轉錄結束後（不論成功、失敗或取消），音檔會留在下面的資料夾，日後校正時可以重聽。上傳超過 30 天的，在下次開啟 app 時刪除。');
+      '轉錄結束後（不論成功、失敗或取消），音檔會留在下面的資料夾，日後校正時可以重聽。'
+      + '留 30 天，從上傳時算起；校正過或標過確認狀態的任務，從最後一次校正或標確認狀態起算。超過的在下次開啟 app 時刪除。');
   });
 
   it('天數是 0 時不會自動刪除', () => {

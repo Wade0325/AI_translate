@@ -132,7 +132,7 @@ export const api = {
       return request(`/history/active?hours=${hours}`);
     },
   },
-  /** 校正頁讀的轉錄結果（#347） */
+  /** 校正頁讀的轉錄結果（#347）與寫入的校正（#348） */
   transcripts: {
     /**
      * 片段（含逐字時間）、保留音檔在不在，以及能不能校正（不能時帶原因 uncorrectable_reason）；
@@ -144,6 +144,46 @@ export const api = {
     /** 保留音檔的網址，給 <audio> 播放；支援 Range，播放器可以拖曳 */
     audioUrl(taskUuid) {
       return `${BASE_URL}/transcripts/${taskUuid}/audio`;
+    },
+    /**
+     * 改一個片段（#341）：body 帶 text、speaker、review_state 其中一個或多個，沒帶的不改；text 是空字串就是刪掉
+     * 這個片段。回 { operation_id, segment }：片段的新內容，與這次記下的校正紀錄的操作編號（沒有記任何一筆時是 null）
+     */
+    correctSegment(taskUuid, segKey, body) {
+      return request(`/transcripts/${taskUuid}/segments/${encodeURIComponent(segKey)}`, { method: 'PATCH', body });
+    },
+    /**
+     * 全部取代（#356）：把校正後版本裡每一處 find 換成 replacement（英文不分大小寫，不支援正規表示式），刪掉的片段
+     * 不改。回 { operation_id, changed_segments, occurrences, segments }：實際改到的片段數與處數，以及那些片段的新內容；
+     * 一個片段都沒有改到時 operation_id 是 null
+     */
+    replaceAll(taskUuid, find, replacement) {
+      return request(`/transcripts/${taskUuid}/replace-all`, { method: 'POST', body: { find, replacement } });
+    },
+    /** 復原一次操作（#341）：回 { restored, skipped, operation_id, segments }，segments 是那次操作改到的片段的新內容 */
+    undo(taskUuid, operationId) {
+      return request(`/transcripts/${taskUuid}/operations/${operationId}/undo`, { method: 'POST' });
+    },
+    /**
+     * 把這位說話者全部換成另一位（#354）：fromSpeaker 是 null 時換的是沒有說話者的片段。回
+     * { operation_id, changed, segments }：整批復原用的操作編號（一個片段都沒改到時是 null）、改到幾個片段，與它們的新內容
+     */
+    reassignSpeaker(taskUuid, fromSpeaker, toSpeaker) {
+      return request(`/transcripts/${taskUuid}/speakers/reassign`, {
+        method: 'POST',
+        body: { from_speaker: fromSpeaker, to_speaker: toSpeaker },
+      });
+    },
+    /** 改任務的設定（#354）：{ single_speaker } 切換整份當成同一位說話者。不算校正。回改完之後的設定 */
+    updateSettings(taskUuid, settings) {
+      return request(`/transcripts/${taskUuid}`, { method: 'PATCH', body: settings });
+    },
+    /**
+     * 一個片段的歷程（#355）：{ seg_key, original_text, original_speaker, records }，records 是文字與說話者的每一筆
+     * 校正紀錄，舊的在前，每一筆帶著操作編號與那次操作改到幾個片段（operation_segment_count）
+     */
+    correctionRecords(taskUuid, segKey) {
+      return request(`/transcripts/${taskUuid}/segments/${encodeURIComponent(segKey)}/correction-records`);
     },
   },
   batch: {

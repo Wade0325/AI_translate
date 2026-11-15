@@ -92,6 +92,36 @@ test('有校正的任務：下載選單分成校正後版本與原始轉錄，�
         .toEqual([{ version: 'corrected' }, { version: 'original' }])
 })
 
+test('有校正的任務在清單上標出來；刪除它時，確認的文字多一句校正會一起刪掉（#348）', async ({ page, mockBackend }) => {
+    const corrected = { ...RECORDS[0], has_corrections: true }
+    const backend = await mockBackend({
+        routes: {
+            ...HISTORY_ROUTES,
+            'GET /history': { items: [corrected, RECORDS[1]], total: 2, page: 1, page_size: 10, total_pages: 1 },
+            'DELETE /history/task-1': { success: true, message: '已刪除此紀錄' },
+        },
+    })
+    await page.goto('/history')
+
+    await expect(recordRow(page, 'meeting.wav').getByText('有校正')).toBeVisible()
+    await expect(recordRow(page, 'interview.mp3').getByText('有校正')).toHaveCount(0)
+
+    // 沒有校正的任務：確認的文字和以前一樣
+    await recordRow(page, 'interview.mp3').getByRole('button', { name: 'delete' }).click()
+    const confirm = page.locator('.ant-popconfirm').filter({ visible: true })
+    await expect(confirm).toContainText('確定刪除此紀錄？')
+    await expect(confirm).not.toContainText('校正')
+    await confirm.getByRole('button', { name: /^取\s?消$/ }).click()
+    await expect(confirm).toHaveCount(0)
+
+    await recordRow(page, 'meeting.wav').getByRole('button', { name: 'delete' }).click()
+    await expect(confirm).toContainText('確定刪除此紀錄？')
+    await expect(confirm).toContainText('這個任務的校正會一起刪掉')
+    await confirm.getByRole('button', { name: /^確\s?定$/ }).click()
+    await expect(page.getByText('紀錄已刪除')).toBeVisible()
+    expect(backend.requests.filter((r) => r.method === 'DELETE').map((r) => r.path)).toEqual(['/history/task-1'])
+})
+
 test('沒有校正的任務：下載選單和以前一樣只有四種輸出格式，沒有原始轉錄那一組（#346）', async ({ page, mockBackend }) => {
     await mockBackend({ routes: HISTORY_ROUTES })
     await page.goto('/history')

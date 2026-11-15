@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { useState, useEffect, useCallback } from "react"
-import { Card, Table, Button, Input, Select, Tag, Typography, Row, Col, Popconfirm, message, Space, Tooltip, Dropdown } from "antd"
+import { Card, Table, Button, Input, Select, Tag, Typography, Row, Col, Popconfirm, message, Space, Tooltip } from "antd"
 import {
     SearchOutlined,
     DeleteOutlined,
@@ -12,14 +12,13 @@ import {
 import { Link } from "react-router-dom"
 import { FileAudio, Coins, Clock, TrendingUp } from "lucide-react"
 import { api } from "../services/api"
-import { downloadBlob } from "../utils/download"
-import { ORIGINAL, downloadMenuItems, downloadTarget, transcriptFileName } from "../utils/transcriptVersions"
 import { StatCard } from "../components/StatCard"
 import { STATUS_META, TASK_STATUS } from "../constants/taskStatus"
 import { FailureSummary } from "../components/FailureNotice"
 import { TailLossSummary } from "../components/TailLossNotice"
 import { failureOf } from "../utils/failure"
 import { correctionPath } from "../utils/correction"
+import { TranscriptDownloadMenu } from "../components/transcript-download-menu"
 
 const { Text } = Typography
 
@@ -97,21 +96,6 @@ export default function HistoryPage() {
         fetchHistory(1, pagination.pageSize)
     }
 
-    /** key 是下載選單的項目（utils/transcriptVersions.js）：帶著版本與輸出格式（#346） */
-    const handleDownload = async (record, key) => {
-        const { version, format } = downloadTarget(key)
-        try {
-            const content = await api.history.downloadTranscript(record.task_uuid, format, { version })
-            const fileName = record.original_filename || "transcript"
-            downloadBlob(content, transcriptFileName(fileName, format, version))
-            const label = format.toUpperCase()
-            message.success(version === ORIGINAL ? `已下載原始轉錄的 ${label} 檔` : `已下載 ${label} 檔`)
-        } catch (error) {
-            console.error("下載轉錄結果失敗:", error)
-            message.error(error?.message || "下載失敗")
-        }
-    }
-
     const columns = [
         {
             title: "檔案名稱",
@@ -123,6 +107,10 @@ export default function HistoryPage() {
                     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                         <FileTextOutlined style={{ color: "#2dd4a8" }} />
                         <Text ellipsis style={{ color: "#e8e8e8", maxWidth: 250 }}>{v || "—"}</Text>
+                        {/* 有校正紀錄的任務（改回原樣的也算）：找得到哪些已經校過（#348） */}
+                        {record.has_corrections && (
+                            <Tag color="gold" style={{ marginInlineEnd: 0, fontSize: 11, lineHeight: "18px" }}>有校正</Tag>
+                        )}
                     </div>
                     {/* 失敗的原因寫在檔名下面，滑過去看下一步、錯誤碼與細節 */}
                     {record.status === TASK_STATUS.FAILED && (record.error_code || record.error_message) && (
@@ -239,11 +227,10 @@ export default function HistoryPage() {
                     )}
                     {/* 有校正的任務多一組「原始轉錄」；沒有校正的任務和以前一樣只有四種輸出格式（#346） */}
                     {record.status === TASK_STATUS.COMPLETED && (
-                        <Dropdown
-                            menu={{
-                                items: downloadMenuItems(record.has_corrections),
-                                onClick: ({ key }) => handleDownload(record, key),
-                            }}
+                        <TranscriptDownloadMenu
+                            taskUuid={record.task_uuid}
+                            fileName={record.original_filename}
+                            withOriginal={record.has_corrections}
                         >
                             <Tooltip title="下載轉錄結果">
                                 <Button
@@ -253,10 +240,12 @@ export default function HistoryPage() {
                                     style={{ color: "#2dd4a8" }}
                                 />
                             </Tooltip>
-                        </Dropdown>
+                        </TranscriptDownloadMenu>
                     )}
+                    {/* 校正紀錄跟著任務一起刪（#25 故事 81），有校正的任務先說清楚（#348） */}
                     <Popconfirm
                         title="確定刪除此紀錄？"
+                        description={record.has_corrections ? "這個任務的校正會一起刪掉" : undefined}
                         onConfirm={() => handleDelete(record.task_uuid)}
                         okText="確定"
                         cancelText="取消"
