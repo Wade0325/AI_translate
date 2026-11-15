@@ -165,6 +165,20 @@ export const api = {
       return request(`/transcripts/${taskUuid}/operations/${operationId}/undo`, { method: 'POST' });
     },
     /**
+     * 把這位說話者全部換成另一位（#354）：fromSpeaker 是 null 時換的是沒有說話者的片段。回
+     * { operation_id, changed, segments }：整批復原用的操作編號（一個片段都沒改到時是 null）、改到幾個片段，與它們的新內容
+     */
+    reassignSpeaker(taskUuid, fromSpeaker, toSpeaker) {
+      return request(`/transcripts/${taskUuid}/speakers/reassign`, {
+        method: 'POST',
+        body: { from_speaker: fromSpeaker, to_speaker: toSpeaker },
+      });
+    },
+    /** 改任務的設定（#354）：{ single_speaker } 切換整份當成同一位說話者。不算校正。回改完之後的設定 */
+    updateSettings(taskUuid, settings) {
+      return request(`/transcripts/${taskUuid}`, { method: 'PATCH', body: settings });
+    },
+    /**
      * 一個片段的歷程（#355）：{ seg_key, original_text, original_speaker, records }，records 是文字與說話者的每一筆
      * 校正紀錄，舊的在前，每一筆帶著操作編號與那次操作改到幾個片段（operation_segment_count）
      */

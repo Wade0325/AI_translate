@@ -116,6 +116,32 @@ describe('historyEntries：片段的歷程（#355）', () => {
       { kind: 'original', key: 'original', text: '今天先看進度', speaker: 'S0', current: true, request: null },
     ]);
   });
+
+  describe('整份當成同一位說話者（#354）', () => {
+    it('不列說話者的校正，原始轉錄不帶說話者', () => {
+      const records = [record('speaker', 'S0', 'S1'), record('text', '今天先看進度', '今天看進度')];
+      const now = segment({ text: '今天看進度', speaker: 'S1', corrected: true });
+      const entries = historyEntries(history(records), now, { singleSpeaker: true });
+
+      expect(entries.map((e) => (e.kind === 'original' ? 'original' : e.field))).toEqual(['text', 'original']);
+      expect(entries.at(-1)).toMatchObject({ kind: 'original', speaker: null, current: false });
+    });
+
+    it('回到原始轉錄只送文字：說話者看不到，不跟著改回去', () => {
+      const records = [record('speaker', 'S0', 'S1'), record('text', '今天先看進度', '今天看進度')];
+      const now = segment({ text: '今天看進度', speaker: 'S1', corrected: true });
+
+      expect(historyEntries(history(records), now, { singleSpeaker: true }).at(-1).request).toEqual({ text: '今天先看進度' });
+    });
+
+    it('只改過說話者：只有原始轉錄，和現在相同，沒有要送的', () => {
+      const now = segment({ speaker: 'S1', corrected: true });
+
+      expect(historyEntries(history([record('speaker', 'S0', 'S1')]), now, { singleSpeaker: true })).toEqual([
+        { kind: 'original', key: 'original', text: '今天先看進度', speaker: null, current: true, request: null },
+      ]);
+    });
+  });
 });
 
 describe('valueLabel：歷程裡的改前與改後', () => {
@@ -125,9 +151,9 @@ describe('valueLabel：歷程裡的改前與改後', () => {
     expect(valueLabel('text', null)).toBe('（刪掉這個片段）');
   });
 
-  it('說話者照寫；沒有說話者另外寫', () => {
+  it('說話者照寫；沒有說話者寫「未指定」，和片段列的說話者相同（#354）', () => {
     expect(valueLabel('speaker', 'S1')).toBe('S1');
-    expect(valueLabel('speaker', null)).toBe('（沒有說話者）');
+    expect(valueLabel('speaker', null)).toBe('（未指定）');
   });
 });
 

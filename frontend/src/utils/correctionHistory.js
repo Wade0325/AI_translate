@@ -1,4 +1,5 @@
 import { revertRequest } from './segmentCorrections';
+import { NO_SPEAKER_LABEL } from './speakers';
 
 /**
  * 校正的歷程（#355）不依賴畫面的部分：一個片段的歷程怎麼排、每一版「回到這一版」要送什麼，以及寫給使用者看的字。
@@ -40,15 +41,18 @@ function valueOf(field, value) {
  *   其他和現在的內容相同的版本（例如回到原始轉錄之後的原始轉錄）沒有要送的（request 是 null）。
  * - 改到超過一個片段的操作（全部取代、把這位說話者全部換成另一位，以及它們的整批復原）是整批操作（bulk），
  *   可以整批復原。一個片段的文字與說話者一起改是兩筆、一個片段，不算。
+ * - 整份當成同一位說話者時（#354）不顯示說話者：不列說話者的校正，原始轉錄不帶說話者，回到原始轉錄也只送文字。
  *
  * @param {SegmentCorrectionRecords} history
  * @param {import('./segmentCorrections').Segment} segment 這個片段現在的內容（校正後版本）
+ * @param {{ singleSpeaker?: boolean }} [options]
  * @returns {HistoryEntry[]}
  */
-export function historyEntries(history, segment) {
+export function historyEntries(history, segment, { singleSpeaker = false } = {}) {
+  const records = shownRecords(history, singleSpeaker);
   const newest = new Set();
   /** @type {HistoryEntry[]} */
-  const entries = [...history.records].reverse().map((record) => {
+  const entries = [...records].reverse().map((record) => {
     const current = !newest.has(record.field);
     newest.add(record.field);
     const after = valueOf(record.field, record.new_value);
@@ -67,25 +71,41 @@ export function historyEntries(history, segment) {
       request: same ? null : { [record.field]: after },
     };
   });
+  const revert = revertRequest({ ...segment, original_text: history.original_text, original_speaker: history.original_speaker });
   entries.push({
     kind: 'original',
     key: 'original',
     text: valueOf('text', history.original_text),
-    speaker: valueOf('speaker', history.original_speaker),
-    current: history.records.length === 0,
-    request: revertRequest({ ...segment, original_text: history.original_text, original_speaker: history.original_speaker }),
+    speaker: singleSpeaker ? null : valueOf('speaker', history.original_speaker),
+    current: records.length === 0,
+    request: singleSpeaker ? textOnly(revert) : revert,
   });
   return entries;
 }
 
 /**
- * 歷程裡的改前或改後：文字照寫，空的文字是刪掉這個片段；說話者照寫，沒有說話者另外寫。
+ * 歷程裡列出的校正紀錄：整份當成同一位說話者時只列文字的（#354）。
+ *
+ * @param {SegmentCorrectionRecords} history
+ * @param {boolean} singleSpeaker
+ */
+export function shownRecords(history, singleSpeaker) {
+  return singleSpeaker ? history.records.filter((record) => record.field === 'text') : history.records;
+}
+
+/** 只留下請求裡的文字；沒有文字時是 null。 */
+function textOnly(request) {
+  return request && 'text' in request ? { text: request.text } : null;
+}
+
+/**
+ * 歷程裡的改前或改後：文字照寫，空的文字是刪掉這個片段；說話者照寫，沒有說話者寫「未指定」（和片段列相同）。
  *
  * @param {'text' | 'speaker'} field
  * @param {string | null} value
  */
 export function valueLabel(field, value) {
-  if (field === 'speaker') return value || '（沒有說話者）';
+  if (field === 'speaker') return value || `（${NO_SPEAKER_LABEL}）`;
   return value || '（刪掉這個片段）';
 }
 
