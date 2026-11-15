@@ -8,7 +8,7 @@ import random
 
 import pytest
 
-from app.services.word_timings import aligner_words, for_corrected_text, words_match
+from app.core.word_timings import aligner_words, for_corrected_text, words_match
 
 START, END = 10.0, 20.0
 
@@ -172,6 +172,35 @@ class TestCannotRetime:
     @pytest.mark.parametrize("corrected", ["", "……", "！？"])
     def test_corrected_text_without_any_word(self, corrected):
         assert for_corrected_text("今天", one_by_one("今天"), corrected, start=START, end=END) is None
+
+
+class TestOriginalTimesOutOfOrder:
+    """原本的時間不在片段的起訖之內、或互相重疊時（本機不該產生這種時間），算出來的開始時間照樣不倒退。"""
+
+    @staticmethod
+    def starts(result):
+        return [word["start"] for word in result]
+
+    def test_first_word_before_the_segment_start(self):
+        original = words(("今", 9.9, 10.2), ("天", 10.2, 10.5))
+
+        result = for_corrected_text("今天", original, "嗯今天", start=START, end=END)
+
+        assert times(result) == [("嗯", 9.9, 9.9), ("今", 9.9, 10.2), ("天", 10.2, 10.5)]
+
+    def test_overlapping_words(self):
+        original = words(("今", 10.5, 11.0), ("天", 10.8, 11.2))
+
+        result = for_corrected_text("今天", original, "今明天", start=START, end=END)
+
+        assert self.starts(result) == sorted(self.starts(result))
+
+    def test_segment_end_before_the_last_word_end(self):
+        original = words(("今", 10.5, 10.8), ("天", 10.8, 11.1))
+
+        result = for_corrected_text("今天", original, "今天好", start=START, end=11.0)
+
+        assert times(result)[-1] == ("好", 11.1, 11.1)
 
 
 class TestUnchangedWords:

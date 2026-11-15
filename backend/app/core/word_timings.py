@@ -78,13 +78,15 @@ def for_corrected_text(
     * 改到的一段（換掉或插進來的詞），在它前後兩個沒改到的詞之間照字數平均分配：從前一個沒改到的
       詞的結束，到後一個沒改到的詞的開始，每個字分到一樣長的時間，一個詞的時間是它的字數那麼多份。
       改到的是片段的開頭或結尾時，以片段的開始或結束為界；片段沒有結束時間時，以原本最後一個詞的
-      結束為界。前後兩個詞之間沒有空隙時（對齊器的詞常常一個接一個），插進來的詞是零長度。
+      結束為界。前後兩個詞之間沒有空隙時（對齊器的詞常常一個接一個），插進來的詞是零長度；插進
+      一整句時，那一句的字幕和下一句同時開始，顯示多久照 ADR 0008 的下限。要準確的時間得重新做
+      強制對齊，不在這裡做。
     * 整段都改掉時（一個詞都沒對上），整個片段的時間照字數平均分配。
     * 刪掉的詞連同它的時間一起拿掉。
 
-    原本的時間都在片段的起訖之內、而且不倒退時，算出來的也是。只改標點時詞都沒變，時間和原本相同；
-    標點把連在一起的假名或英數字斷成兩個詞時（「はゆっくり」→「は、ゆっくり」），那兩個詞照字數
-    分原本那個詞的時間。
+    原本的時間都在片段的起訖之內、而且不倒退時，算出來的也是；原本的時間有重疊或早於片段的開始時，
+    算出來的開始時間照樣不倒退。只改標點時詞都沒變，時間和原本相同；標點把連在一起的假名或英數字
+    斷成兩個詞時（「はゆっくり」→「は、ゆっくり」），那兩個詞照字數分原本那個詞的時間。
 
     算不出來時回傳 None，片段就整段一行：原本就沒有逐字時間（Gemini），或逐字時間對不上原始轉錄的
     文字（:func:`words_match`），或校正後的文字斷不出任何詞（刪掉的片段、只剩標點）。
@@ -108,21 +110,24 @@ def for_corrected_text(
             changed.append(text)
             continue
         if changed:
-            retimed += _spread(changed, _end_of(retimed, start), words[kept[index]]["start"])
+            next_start = words[kept[index]]["start"]
+            # 不晚於後一個詞的開始：原本的時間有重疊或早於片段開始時，開始時間也不倒退
+            retimed += _spread(changed, min(_gap_start(retimed, start), next_start), next_start)
             changed = []
         retimed.append(dict(words[kept[index]]))
     if changed:
-        retimed += _spread(changed, _end_of(retimed, start), segment_end)
+        retimed += _spread(changed, _gap_start(retimed, start), segment_end)
     return retimed
 
 
-def _end_of(retimed: Sequence[Mapping[str, Any]], segment_start: float) -> float:
+def _gap_start(retimed: Sequence[Mapping[str, Any]], segment_start: float) -> float:
     """改到的一段從哪裡開始：前一個詞的結束；前面沒有詞時是片段的開始。"""
     return retimed[-1]["end"] if retimed else segment_start
 
 
 def _spread(texts: Sequence[str], start: float, end: float) -> List[Dict[str, Any]]:
-    """把 ``start`` 到 ``end`` 照字數平均分給這幾個詞；``end`` 早於 ``start`` 時都是零長度。"""
+    """把 ``start`` 到 ``end`` 照字數平均分給這幾個詞；``end`` 早於 ``start`` 時（片段的結束早於
+    原本最後一個詞的結束）都是零長度。"""
     end = max(end, start)
     step = (end - start) / sum(len(text) for text in texts)
     spread: List[Dict[str, Any]] = []

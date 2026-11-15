@@ -123,7 +123,7 @@ export function wordAt(words, t, segmentEnd) {
   return t < end ? i : -1;
 }
 
-/** 對齊器算成字的字元：字母（含假名與漢字）、數字與 '（backend/app/services/word_timings.py 的 aligner_words）。 */
+/** 對齊器算成字的字元：字母（含假名與漢字）、數字與 '（backend/app/core/word_timings.py 的 aligner_words）。 */
 const WORD_CHAR = /^[\p{L}\p{N}']$/u;
 /** 空白：對齊器在這裡斷開兩個字，所以一個字不能跨過它。 */
 const SPACE = /^\s$/u;

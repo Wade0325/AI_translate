@@ -31,7 +31,7 @@
 版本有兩個（#346，見 :class:`Version`）：原始轉錄從片段產生；校正後版本從校正紀錄的 repository 算出的
 校正後版本產生（ADR 0011，下載、校正頁與匯出都讀同一處），刪掉的片段略過。沒有校正的任務兩個版本相同。
 沒有片段的任務不能校正，兩個版本都是從存下來的 LRC 轉換的內容。凍結的原始轉錄副本不回寫。改過文字的
-片段，逐字時間由那裡照校正後的文字重算（#357，見 :func:`app.services.word_timings.for_corrected_text`），
+片段，逐字時間由那裡照校正後的文字重算（#357，見 :func:`app.core.word_timings.for_corrected_text`），
 交給這裡同一套斷行與拆字幕的規則，不另外寫一套。
 
 四種格式由同一串行產生，說話者標記跟著任務的 Multi-Speaker 開關（#13 Q1，見
@@ -63,12 +63,12 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple, cast
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app.core.word_timings import aligner_words, words_match
 from app.database.models import TranscriptionLog
 from app.repositories.correction_repository import CorrectionRepository
 from app.repositories.history_repository import HistoryRepository
 from app.repositories.transcript_segment_repository import TranscriptSegmentRepository
 from app.services.transcription.models import TranscriptionTaskResult
-from app.services.word_timings import aligner_words, words_match
 from app.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -231,7 +231,7 @@ def _lines(segments: Sequence[Mapping[str, Any]], *, labels: bool) -> List[_Line
     不重疊，也不上色（ADR-0008）。先產生標記再拿掉的話，不同說話者的字幕會重疊，畫面上卻看不出
     是誰。
 
-    逐字時間對不上文字的片段整段一行（見 :func:`app.services.word_timings.words_match`），一個任務
+    逐字時間對不上文字的片段整段一行（見 :func:`app.core.word_timings.words_match`），一個任務
     只記一條警告。
     """
     lines: List[_Line] = []

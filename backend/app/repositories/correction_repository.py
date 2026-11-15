@@ -29,9 +29,9 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple, ca
 from sqlalchemy import update
 from sqlalchemy.orm import Session
 
+from app.core import word_timings
 from app.database.models import CorrectionRecord, TranscriptionLog, TranscriptSegment
 from app.repositories.transcript_segment_repository import TranscriptSegmentRepository
-from app.services import word_timings
 from app.utils.identifiers import coerce_uuid
 
 
@@ -262,7 +262,7 @@ class CorrectionRepository:
         可以直接交給輸出格式模組（文字是空的片段不產生行）。
 
         逐字時間（``words``）對的是校正後的文字：文字沒改過的片段照原樣；改過的片段由
-        :func:`app.services.word_timings.for_corrected_text` 重算（#357），沒改到的字沿用原本的時間，
+        :func:`app.core.word_timings.for_corrected_text` 重算（#357），沒改到的字沿用原本的時間，
         下載照樣斷句、拆字幕，校正頁照樣標出正在唸的字；算不出來（原本就沒有逐字時間、刪掉的片段）
         時是 None。只在這裡算，不寫回片段。
 
@@ -285,8 +285,9 @@ class CorrectionRepository:
             original_speaker = _normalized(CorrectionField.SPEAKER, segment["speaker"])
             text = _current(latest, text_key, original_text)
             speaker = _current(latest, speaker_key, original_speaker)
+            text_changed = text != original_text
             words = segment["words"]
-            if text != original_text:
+            if text_changed:
                 words = word_timings.for_corrected_text(
                     original_text or "", words, text or "", start=segment["start"], end=segment["end"])
             version.append({
@@ -296,7 +297,7 @@ class CorrectionRepository:
                 "words": words,
                 "original_text": original_text,
                 "original_speaker": original_speaker,
-                "corrected": text != original_text or speaker != original_speaker,
+                "corrected": text_changed or speaker != original_speaker,
                 "deleted": _is_deleted(text),
                 "has_correction_records": text_key in latest or speaker_key in latest,
             })

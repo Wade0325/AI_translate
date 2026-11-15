@@ -48,7 +48,7 @@ from typing import Any, Dict, FrozenSet, List, Mapping, Optional, Sequence, Tupl
 
 import opencc
 
-from app.services.word_timings import aligner_words
+from app.core.word_timings import aligner_words
 from app.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
