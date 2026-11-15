@@ -95,9 +95,26 @@ export const highlight = (page, text) => row(page, text).locator('[data-active]'
 const normalized = (text) => text.trim().replace(/\s*[\n\r\x0b\x0c\x1c-\x1e\x85\u2028\u2029]+\s*/gu, ' ')
 
 /**
+ * 全部取代的比對（backend/app/core/text_replacement.py 的規則）：一般文字比對、只有半形英文字母不分大小寫、
+ * 從左到右不重疊。回 [換好的文字, 換了幾處]。
+ */
+function replaceText(text, find, replacement) {
+    const fold = (value) => value.replace(/[A-Z]/g, (c) => c.toLowerCase())
+    const parts = fold(text).split(fold(find))
+    if (parts.length === 1) return [text, 0]
+    let pos = 0
+    const pieces = parts.map((part) => {
+        const piece = text.slice(pos, pos + part.length)
+        pos += part.length + find.length
+        return piece
+    })
+    return [pieces.join(replacement), parts.length - 1]
+}
+
+/**
  * 記得每次校正的假後端（#348）：照 ADR 0011 的規則，每次校正記一筆校正紀錄（和現在的內容相同的不記），
- * 校正後版本由原始轉錄加上最新的紀錄算出來，GET、PATCH 與復原讀的都是同一份。回傳的 routes 交給 mockBackend；
- * records 是記下的紀錄，給測試檢查。
+ * 校正後版本由原始轉錄加上最新的紀錄算出來，GET、PATCH、全部取代（#356）與復原讀的都是同一份。回傳的 routes 交給
+ * mockBackend；records 是記下的紀錄，給測試檢查。
  *
  * @param {ReturnType<typeof segment>[]} segments 原始轉錄
  */
@@ -144,6 +161,24 @@ export function correctionsBackend(segments, fields = {}) {
                 if ('text' in body) recorded = record(params.seg_key, 'text', normalized(body.text), operationId) || recorded
                 if ('speaker' in body) recorded = record(params.seg_key, 'speaker', body.speaker, operationId) || recorded
                 return { operation_id: recorded ? operationId : null, segment: view(params.seg_key) }
+            },
+            'POST /transcripts/task-1/replace-all': ({ body }) => {
+                const operationId = `op-${operations += 1}`
+                const changed = []
+                let occurrences = 0
+                for (const { seg_key: segKey } of segments) {
+                    const text = current(segKey, 'text') ?? ''
+                    if (!text.trim()) continue
+                    const [replaced, count] = replaceText(text, body.find, body.replacement)
+                    if (count && record(segKey, 'text', normalized(replaced), operationId)) {
+                        changed.push(segKey)
+                        occurrences += count
+                    }
+                }
+                return {
+                    operation_id: changed.length ? operationId : null, changed_segments: changed.length, occurrences,
+                    segments: changed.map(view),
+                }
             },
             'POST /transcripts/task-1/operations/:operation_id/undo': ({ params }) => {
                 const undoId = `op-${operations += 1}`
