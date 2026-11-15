@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react"
 import { Button, Tag } from "antd"
-import { formatRecordTime, historyEntries, valueLabel } from "@/utils/correctionHistory"
+import { formatRecordTime, historyEntries, shownRecords, valueLabel } from "@/utils/correctionHistory"
 import { saveFailureMessage } from "@/utils/segmentCorrections"
 
 /** @type {import("react").CSSProperties} */
@@ -57,15 +57,17 @@ function RecordChange({ entry }) {
  * - 屬於整批操作（全部取代、把這位說話者全部換成另一位）的那一筆標出來，寫明那次一共改了幾個片段，可以整批復原；
  *   之後又改過的片段略過，結果寫在頁面上方。
  * - 片段的內容一變（存了一次校正、復原、整批復原）就重新讀一次，新的一筆馬上出現在最上面。
+ * - 整份當成同一位說話者時（#354）不列說話者的校正，寫出有幾筆沒列。
  *
  * @param {{
  *   segment: import("@/utils/segmentCorrections").Segment,
  *   saving: boolean,
+ *   singleSpeaker?: boolean,
  *   actions: import("./correction-view").RowActions,
  *   onButtonMouseDown?: (event: { preventDefault: () => void }) => void,
  * }} props
  */
-export function SegmentHistory({ segment, saving, actions, onButtonMouseDown }) {
+export function SegmentHistory({ segment, saving, singleSpeaker = false, actions, onButtonMouseDown }) {
     const [loaded, setLoaded] = useState(/** @type {{
         history: import("@/utils/correctionHistory").SegmentCorrectionRecords | null, error: unknown,
     }} */ ({ history: null, error: null }))
@@ -84,8 +86,8 @@ export function SegmentHistory({ segment, saving, actions, onButtonMouseDown }) 
     }, [actions, segment, attempt])
 
     const entries = useMemo(
-        () => (loaded.history ? historyEntries(loaded.history, segment) : null),
-        [loaded.history, segment],
+        () => (loaded.history ? historyEntries(loaded.history, segment, { singleSpeaker }) : null),
+        [loaded.history, segment, singleSpeaker],
     )
     const busy = saving || undoing
 
@@ -98,11 +100,15 @@ export function SegmentHistory({ segment, saving, actions, onButtonMouseDown }) 
         }
     }
 
-    const recordCount = loaded.history?.records.length ?? 0
+    const recordCount = loaded.history ? shownRecords(loaded.history, singleSpeaker).length : 0
+    const hiddenCount = (loaded.history?.records.length ?? 0) - recordCount
+    const hidden = `${hiddenCount} 筆說話者的校正，整份當成同一位說話者時不列`
+    let summary = ""
+    if (loaded.history) summary = recordCount ? `：${recordCount} 筆校正，最上面是最新的` : `：只有 ${hidden}`
     return (
         <section aria-label="這個片段的歷程" style={PANEL_STYLE}>
             <div style={{ color: "#8888a8", fontSize: 12, lineHeight: "20px", paddingBottom: 4 }}>
-                歷程{loaded.history && `：${recordCount} 筆校正，最上面是最新的`}
+                歷程{summary}{recordCount > 0 && hiddenCount > 0 && `；另有 ${hidden}`}
             </div>
             {loaded.error && (
                 <div role="alert" style={{ display: "flex", alignItems: "center", columnGap: 4, color: "#ff7875", fontSize: 12, lineHeight: "24px" }}>
@@ -135,8 +141,8 @@ export function SegmentHistory({ segment, saving, actions, onButtonMouseDown }) 
                                 </div>
                                 {entry.kind === "original" ? (
                                     <div style={VALUE_STYLE}>
-                                        {/* 沒有說話者的任務不寫；現在有說話者、原始轉錄沒有時才寫出來 */}
-                                        {(entry.speaker || segment.speaker) && (
+                                        {/* 沒有說話者的任務不寫；現在有說話者、原始轉錄沒有時才寫出來。整份當成同一位時不寫 */}
+                                        {!singleSpeaker && (entry.speaker || segment.speaker) && (
                                             <span style={{ marginRight: 8, fontWeight: 600 }}>{valueLabel("speaker", entry.speaker)}</span>
                                         )}
                                         {entry.text || "（沒有文字）"}

@@ -6,7 +6,7 @@
   整批復原：POST /api/v1/transcripts/{task_uuid}/operations/{operation_id}/undo（#341）
 
 全部從 HTTP API 驗（#25 的測試決策）。一次改很多個片段的操作用全部取代（#356）的端點做：同一個操作編號，
-每個改到的片段各記一筆。
+每個改到的片段各記一筆。把這位說話者全部換成另一位（#354）在歷程裡的樣子在 test_transcripts_api.py 驗。
 """
 import uuid
 from typing import List, Optional
