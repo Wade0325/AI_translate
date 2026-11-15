@@ -15,7 +15,8 @@
 「沒有」的寫法：文字與說話者名稱的「沒有」一律是空字串（原始轉錄的文字是 NULL 時也當成空字串），
 說話者的「沒有」一律是 NULL，見 :func:`_normalized`。
 
-確認狀態（``review_state``）留在片段上，不是校正，不進校正紀錄。
+確認狀態（``review_state``）留在片段上，不是校正，不進校正紀錄；寫的時候和校正紀錄一樣先鎖住任務
+（:meth:`CorrectionRepository.record_operation` 的 ``review_states``）。
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple, cast
+from typing import Any, Collection, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple, cast
 
 from sqlalchemy import update
 from sqlalchemy.orm import Session
@@ -44,6 +45,15 @@ class CorrectionField(StrEnum):
 
 SEGMENT_FIELDS = (CorrectionField.TEXT, CorrectionField.SPEAKER)
 """對象是片段的校正。"""
+
+
+class ReviewState(StrEnum):
+    """確認狀態：使用者在片段上標的檢查結果。沒有標是 None。不是校正，不留校正紀錄。"""
+
+    VERIFIED = "verified"
+    """已確認。"""
+    FLAGGED = "flagged"
+    """待查。"""
 
 
 @dataclass(frozen=True)
@@ -69,6 +79,8 @@ class UndoResult:
     """略過幾筆：那次操作之後對象又被改過。"""
     operation_id: Optional[uuid.UUID]
     """這次復原自己的操作編號；一筆都沒有還原時是 None。"""
+    segments: Tuple[str, ...] = ()
+    """那次操作改到的片段（``seg_key``，依第一次改到的順序），還原的與略過的都算；說話者名稱的對象不在內。"""
 
 
 _Key = Tuple[CorrectionField, str]
@@ -193,6 +205,17 @@ class _CurrentContent:
             original = cast(Optional[str], segment.speaker)
         return _current(self._latest, key, original)
 
+    def set_review_state(self, seg_key: str, state: Optional[ReviewState]) -> None:
+        """把片段的確認狀態改成 ``state``（None 是清除），和記下的紀錄一起 commit。不是校正，不留紀錄。"""
+        if seg_key not in self._segments:
+            raise ValueError(f"這個任務沒有片段 {seg_key}")
+        self._db.execute(
+            update(TranscriptSegment)
+            .where(TranscriptSegment.task_uuid == self._task_uuid, TranscriptSegment.seg_key == seg_key)
+            .values(review_state=ReviewState(state).value if state else None)
+            .execution_options(synchronize_session=False)
+        )
+
     def change(self, key: _Key, new_value: Optional[str], operation_id: uuid.UUID) -> None:
         """有變時記下一筆（還沒寫進資料庫）；和現在的內容相同時不記。"""
         field, target = key
@@ -210,18 +233,26 @@ class _CurrentContent:
 
 class CorrectionRepository:
     @staticmethod
-    def record_operation(db: Session, task_uuid, corrections: Sequence[Correction]) -> Optional[uuid.UUID]:
+    def record_operation(db: Session, task_uuid, corrections: Sequence[Correction], *,
+                         review_states: Optional[Mapping[str, Optional[ReviewState]]] = None,
+                         ) -> Optional[uuid.UUID]:
         """記一次操作：每一筆有變的校正各記一筆校正紀錄，共用一個新的操作編號，在同一個交易裡
         寫完並 commit，回傳操作編號。每一筆都和現在的內容相同時什麼都不記，回傳 None。
 
+        ``review_states``（{片段鍵: 確認狀態}，None 是清除）在同一個交易裡寫在片段上：確認狀態不是校正，
+        不留校正紀錄，也不算進這次操作，只標確認狀態時回傳 None。和校正紀錄一樣先鎖住任務再寫，
+        任務再完成一次時判斷使用者動過沒有（:mod:`app.tasks.lifecycle`）才不會漏掉剛標的確認狀態。
+
         同一次操作裡同一個對象改了兩次時，第二筆的改前是第一筆的改後。任務紀錄不在、或片段的
-        ``seg_key`` 不在這個任務裡時丟 ``ValueError``，什麼都不記。
+        ``seg_key`` 不在這個任務裡時丟 ``ValueError``，什麼都不記、確認狀態也不寫。
         """
         operation_id = uuid.uuid4()
         with _CurrentContent(db, _task_uuid(task_uuid)) as content:
             for correction in corrections:
                 content.change((CorrectionField(correction.field), correction.target),
                                correction.new_value, operation_id)
+            for seg_key, state in (review_states or {}).items():
+                content.set_review_state(seg_key, state)
         return operation_id if content.recorded else None
 
     @staticmethod
@@ -250,14 +281,17 @@ class CorrectionRepository:
                     continue
                 content.change(key, _old(record), undo_id)
         restored = len(content.recorded)
+        segments = dict.fromkeys(target for field, target in map(_key, records) if field in SEGMENT_FIELDS)
         return UndoResult(restored=restored, skipped=len(records) - restored,
-                          operation_id=undo_id if restored else None)
+                          operation_id=undo_id if restored else None, segments=tuple(segments))
 
     @staticmethod
-    def corrected_version(db: Session, task_uuid) -> List[Dict[str, Any]]:
+    def corrected_version(db: Session, task_uuid,
+                          seg_keys: Optional[Collection[str]] = None) -> List[Dict[str, Any]]:
         """一個任務的校正後版本：依 seq 排序的片段，形狀和
         :meth:`TranscriptSegmentRepository.segments_for_task` 相同，文字與說話者換成校正後的，
-        可以直接交給輸出格式模組（文字是空的片段不產生行）。
+        可以直接交給輸出格式模組（文字是空的片段不產生行）。給 ``seg_keys`` 時只算這些片段（改了
+        一個片段之後回它的新內容用）。
 
         每個片段另外帶著：
 
@@ -269,9 +303,10 @@ class CorrectionRepository:
         不論片段有多少個，都只查兩次：片段一次、校正紀錄一次。
         """
         uuid_val = _task_uuid(task_uuid)
-        latest = _latest(_records(db, uuid_val))
+        only = () if seg_keys is None else (CorrectionRecord.target.in_(list(seg_keys)),)
+        latest = _latest(_records(db, uuid_val, *only))
         version = []
-        for segment in TranscriptSegmentRepository.segments_for_task(db, uuid_val):
+        for segment in TranscriptSegmentRepository.segments_for_task(db, uuid_val, seg_keys):
             text_key = (CorrectionField.TEXT, segment["seg_key"])
             speaker_key = (CorrectionField.SPEAKER, segment["seg_key"])
             original_text = _normalized(CorrectionField.TEXT, segment["text"])

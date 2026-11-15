@@ -9,7 +9,7 @@ import time
 import uuid
 
 import pytest
-from sqlalchemy import event
+from sqlalchemy import event, update
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.database.models import CorrectionRecord, TranscriptionLog, TranscriptSegment
@@ -17,6 +17,7 @@ from app.repositories.correction_repository import (
     Correction,
     CorrectionField,
     CorrectionRepository,
+    ReviewState,
 )
 from app.repositories.transcript_segment_repository import TranscriptSegmentRepository
 from app.services import output_format
@@ -411,3 +412,39 @@ class TestOneOperationAtATime:
         assert waited == [True]
         records = CorrectionRepository.records_for_segment(db_session, task, "0-0")
         assert [(r.old_value, r.new_value) for r in records] == [("今日は晴れです。", "A"), ("A", "B")]
+
+
+class TestReviewStatesWithTheTaskLocked:
+    """確認狀態不是校正，但和校正紀錄一樣先鎖住任務、在同一個交易裡寫（#341；API 從
+    test_transcripts_api.py 測，這裡測 API 那一層測不到的交易與鎖）。"""
+
+    def test_a_refused_operation_writes_no_review_state_either(self, db_session, task):
+        with pytest.raises(ValueError, match="沒有片段 9-9"):
+            CorrectionRepository.record_operation(
+                db_session, task, [Correction("0-0", TEXT, "A")],
+                review_states={"0-0": ReviewState.VERIFIED, "9-9": ReviewState.FLAGGED})
+
+        assert _segment_row(db_session, task, "0-0").review_state is None
+        assert CorrectionRepository.touched_by_user(db_session, task) is False
+
+    def test_a_review_state_waits_while_the_task_is_locked(self, db_session, task, test_engine):
+        # 任務再完成一次時先鎖住任務紀錄、再判斷使用者動過沒有（app.tasks.lifecycle 的 _complete）：
+        # 標確認狀態要等那個交易 commit 才寫，判斷時才不會漏掉
+        holder = sessionmaker(bind=test_engine)()
+        writer_session = sessionmaker(bind=test_engine)()
+        holder.execute(update(TranscriptionLog).where(TranscriptionLog.task_uuid == task)
+                       .values(status=TranscriptionLog.status))
+        writer = threading.Thread(target=lambda: CorrectionRepository.record_operation(
+            writer_session, task, [], review_states={"0-0": ReviewState.VERIFIED}))
+        try:
+            writer.start()
+            time.sleep(0.3)
+            waited = writer.is_alive()
+            holder.commit()
+            writer.join(timeout=20)
+        finally:
+            holder.close()
+            writer_session.close()
+
+        assert waited is True
+        assert _segment_row(db_session, task, "0-0").review_state == "verified"
