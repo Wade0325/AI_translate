@@ -7,7 +7,7 @@
 音檔用 FileResponse 直接服務；Starlette 會處理 Range 請求，播放器才能拖曳。
 
 校正（#341，ADR 0011）：讀到的片段是校正後版本，另外帶著原始轉錄；改一個片段的文字、說話者與確認狀態，
-以及復原一次操作，都從這裡寫。校正後版本與校正紀錄的規則在 ``app.repositories.correction_repository``，
+一次改很多個片段的確認狀態（#349），以及復原一次操作，都從這裡寫。校正後版本與校正紀錄的規則在 ``app.repositories.correction_repository``，
 這裡只檢查請求。寫入端點和 History 的清單、讀取端點用同一個「能不能校正」的判斷
 （``app.services.correctability``）。轉錄的文字不寫進日誌（#25 故事 84）。
 
@@ -33,6 +33,8 @@ from app.repositories.correction_repository import (
 )
 from app.repositories.transcript_segment_repository import TranscriptSegmentRepository
 from app.schemas.schemas import (
+    ReviewStatesRequest,
+    ReviewStatesResponse,
     SegmentCorrectionRequest,
     SegmentCorrectionResponse,
     TranscriptResponse,
@@ -161,10 +163,17 @@ def _segment_changes(segment: TranscriptSegment, body: SegmentCorrectionRequest,
         corrections.append(Correction(seg_key, CorrectionField.SPEAKER, speaker))
     review_states: Dict[str, Optional[ReviewState]] = {}
     if "review_state" in sent:
-        if body.review_state is not None and body.review_state not in {s.value for s in ReviewState}:
-            raise HTTPException(status_code=400, detail="確認狀態只能是 verified、flagged 或 null")
-        review_states[seg_key] = ReviewState(body.review_state) if body.review_state else None
+        review_states[seg_key] = _review_state(body.review_state)
     return corrections, review_states
+
+
+def _review_state(value: Optional[str]) -> Optional[ReviewState]:
+    """請求裡的確認狀態：verified、flagged，或 null（沒有確認狀態）；其他的回 400。"""
+    if value is None:
+        return None
+    if value not in {s.value for s in ReviewState}:
+        raise HTTPException(status_code=400, detail="確認狀態只能是 verified、flagged 或 null")
+    return ReviewState(value)
 
 
 @router.patch("/{task_uuid}/segments/{seg_key}", response_model=SegmentCorrectionResponse)
@@ -188,6 +197,27 @@ def correct_segment(task_uuid: str, seg_key: str, body: SegmentCorrectionRequest
     if not segments:  # 寫完之後任務剛好被刪掉
         raise HTTPException(status_code=404, detail="找不到此片段")
     return SegmentCorrectionResponse(operation_id=operation_id, segment=segments[0])
+
+
+@router.patch("/{task_uuid}/review-states", response_model=ReviewStatesResponse)
+def change_review_states(task_uuid: str, body: ReviewStatesRequest, db: Session = Depends(get_db)):
+    """一次改很多個片段的確認狀態（#349）：現在是 ``only_if`` 的片段改成 ``review_state``，在同一個交易裡做完。
+
+    「其餘全部標成已確認」與它的復原都用這個端點（請求的寫法見 ``ReviewStatesRequest``）。確認狀態不是校正，
+    不留校正紀錄，也不算一次操作，所以復原不走操作編號：前端把那一次改到的片段送回來，只清掉現在還是已確認的。
+    """
+    log = _correctable_log(db, task_uuid)
+    review_state = _review_state(body.review_state)
+    only_if = _review_state(body.only_if)
+    if review_state == only_if:
+        raise HTTPException(status_code=400, detail="review_state 和 only_if 相同，不會改到任何片段")
+    try:
+        changed = CorrectionRepository.change_review_states(
+            db, log.task_uuid, review_state, only_if=only_if, seg_keys=body.seg_keys)
+    except ValueError as e:
+        # 片段鍵不在這個任務裡，或任務在檢查之後剛好被刪掉：什麼都沒寫
+        raise HTTPException(status_code=404, detail="找不到此片段") from e
+    return ReviewStatesResponse(review_state=review_state, changed=len(changed), seg_keys=changed)
 
 
 @router.post("/{task_uuid}/operations/{operation_id}/undo", response_model=UndoOperationResponse)

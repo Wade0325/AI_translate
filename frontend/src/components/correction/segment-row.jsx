@@ -1,8 +1,9 @@
 import { memo, useMemo, useState } from "react"
 import { Button } from "antd"
-import { ChevronDown, ChevronRight, Trash2 } from "lucide-react"
+import { Check, ChevronDown, ChevronRight, Flag, Trash2 } from "lucide-react"
 import { formatClock } from "@/utils/formatters"
 import { wordPieces } from "@/utils/playhead"
+import { FLAGGED, VERIFIED } from "@/utils/reviewStates"
 import { isUserDeleted, keepEditorFocus, shownText, speakerCorrected } from "@/utils/segmentCorrections"
 import { SegmentEditor } from "./segment-editor"
 
@@ -56,6 +57,17 @@ const CHIP_STYLE = {
 }
 
 /**
+ * 確認狀態的按鈕（#349）：已確認與待查各一個，標上的那個上色。
+ *
+ * @type {{ state: import("@/utils/reviewStates").ReviewState, label: string, shortcut: string, color: string,
+ *   Icon: typeof Check }[]}
+ */
+const REVIEW_BUTTONS = [
+    { state: VERIFIED, label: "已確認", shortcut: "V", color: "#2dd4a8", Icon: Check },
+    { state: FLAGGED, label: "待查", shortcut: "F", color: "#e0884f", Icon: Flag },
+]
+
+/**
  * 使用者點了（或拖曳選取了）文字之後，選取的範圍在 container 文字裡的位置，開始改時游標放在那裡。沒有選取時是
  * null（游標放在最後）；拖曳選取了這段文字以外的地方（例如要複製好幾段）時是 false，不開始改。
  *
@@ -85,13 +97,17 @@ function selectionIn(container) {
  * - 存檔中、已存與失敗寫在這一列；失敗時寫原因，留著打的字，可以重試或放棄。
  * - 校正過的片段有「校正過」，展開看得到原始轉錄，可以一鍵回到原始轉錄。
  * - 使用者刪掉的片段留在原位，淡化並加上刪除線，可以還原。
+ * - 確認狀態（#349）：已確認與待查各一個按鈕，按一下標上，再按一次清掉；和校正互不影響。
+ * - 目前這個片段（快捷鍵作用的片段，#349）加一圈框。點這一列的任何地方，這一列就是目前這個片段。
  *
  * 播放時頁面每一格畫面都重畫，這裡用 memo：只有反白、正在唸的字、存檔狀態或內容變了的那幾列才重畫。
  *
  * @param {{
  *   segment: import("@/utils/segmentCorrections").Segment & { start: number,
- *              words?: { text?: string | null, start: number, end?: number | null }[] | null },
+ *              words?: { text?: string | null, start: number, end?: number | null }[] | null,
+ *              review_state?: string | null },
  *   active: boolean,
+ *   current: boolean,
  *   activeWord: number,
  *   canPlay: boolean,
  *   onSeek: (seconds: number) => void,
@@ -100,7 +116,7 @@ function selectionIn(container) {
  *   actions: import("./correction-view").RowActions,
  * }} props
  */
-function SegmentRowView({ segment, active, activeWord, canPlay, onSeek, editing, save, actions }) {
+function SegmentRowView({ segment, active, current, activeWord, canPlay, onSeek, editing, save, actions }) {
     const [expanded, setExpanded] = useState(false)
     const key = segment.seg_key
     const deleted = isUserDeleted(segment)
@@ -156,11 +172,15 @@ function SegmentRowView({ segment, active, activeWord, canPlay, onSeek, editing,
     return (
         <div
             data-active={active || undefined}
+            data-current={current || undefined}
             data-deleted={deleted || undefined}
+            data-review-state={segment.review_state || undefined}
+            onClick={() => actions.select(key)}
             style={{
                 ...ROW_STYLE,
                 background: active ? "rgba(45, 212, 168, 0.12)" : "transparent",
                 borderLeft: `3px solid ${active ? "#2dd4a8" : "transparent"}`,
+                boxShadow: current ? "inset 0 0 0 1px #7b7bdb" : undefined,
             }}
         >
             {canPlay ? (
@@ -274,6 +294,23 @@ function SegmentRowView({ segment, active, activeWord, canPlay, onSeek, editing,
                         />
                     </>
                 )}
+                {REVIEW_BUTTONS.map(({ state, label, shortcut, color, Icon }) => {
+                    const pressed = segment.review_state === state
+                    return (
+                        <Button
+                            key={state}
+                            type="text"
+                            size="small"
+                            aria-label={label}
+                            aria-pressed={pressed}
+                            title={`${pressed ? "取消" : "標成"}${label}（${shortcut}）`}
+                            icon={<Icon size={14} />}
+                            onMouseDown={onButtonMouseDown}
+                            onClick={() => actions.toggleReviewState(segment, state)}
+                            style={{ marginTop: 1, color: pressed ? color : "#55557a", background: pressed ? `${color}26` : undefined }}
+                        />
+                    )
+                })}
             </div>
         </div>
     )

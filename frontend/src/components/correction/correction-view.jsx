@@ -1,14 +1,21 @@
 import { useCallback, useMemo, useState } from "react"
 import { Link } from "react-router-dom"
-import { Button } from "antd"
+import { Button, Progress } from "antd"
 import { ArrowLeft, Download, LocateFixed } from "lucide-react"
 import { api } from "@/services/api"
 import { useAudioPlayer } from "@/hooks/useAudioPlayer"
+import { useCorrectionShortcuts } from "@/hooks/useCorrectionShortcuts"
+import { useReviewStates } from "@/hooks/useReviewStates"
 import { useSegmentCorrections } from "@/hooks/useSegmentCorrections"
 import { lastStarted, segmentSpans, segmentsAt, wordAt } from "@/utils/playhead"
+import {
+    FLAGGED, VERIFIED, filterCounts, followPlayback, matchesFilter, nearestVisible, reviewProgress, reviewToggle,
+    stepVisible, unreviewedKeys, visibleIndexes,
+} from "@/utils/reviewStates"
 import { REWIND_SECONDS, keepEditorFocus } from "@/utils/segmentCorrections"
 import { TranscriptDownloadMenu } from "@/components/transcript-download-menu"
 import { PlayerBar } from "./player-bar"
+import { ReviewToolbar } from "./review-toolbar"
 import { SegmentList } from "./segment-list"
 
 /** 保留音檔超過保留天數、被「立即刪除」刪掉，或關掉保留音檔時完成的任務（後端的 audio_available 是 false）。 */
@@ -17,11 +24,31 @@ export const AUDIO_GONE = "保留音檔已經不在，無法播放；文字照�
 export const AUDIO_FAILED = "保留音檔無法播放；文字照樣可以校正"
 
 /**
- * 片段列表每一列用的動作：改文字、刪掉與還原（useSegmentCorrections），以及打字時的 Tab 與 Shift+Tab。
+ * 片段列表每一列用的動作：改文字、刪掉與還原（useSegmentCorrections）、打字時的 Tab 與 Shift+Tab，以及
+ * 標確認狀態與換成目前這個片段（#349）。
  *
- * @typedef {ReturnType<typeof useSegmentCorrections>["actions"]
- *   & { playback: (action: import("@/utils/segmentCorrections").PlaybackAction) => void }} RowActions
+ * @typedef {ReturnType<typeof useSegmentCorrections>["actions"] & {
+ *   playback: (action: import("@/utils/segmentCorrections").PlaybackAction) => void,
+ *   select: (segKey: string) => void,
+ *   toggleReviewState: (segment: import("@/utils/reviewStates").ReviewedSegment,
+ *                       state: import("@/utils/reviewStates").ReviewState) => void,
+ * }} RowActions
  */
+
+/** 篩選之後列表是空的時寫的一句。 */
+const EMPTY_TEXT = {
+    all: "沒有片段",
+    flagged: "沒有待查的片段",
+    unseen: "沒有還沒看過的片段",
+}
+
+/** 篩選：選的是哪一種，以及選的時候符合的片段鍵（之後不符合了也留在列表裡，見 visibleIndexes）。 */
+const ALL_SEGMENTS = { kind: /** @type {import("@/utils/reviewStates").ReviewFilter} */ ("all"), kept: new Set() }
+
+/** 把焦點從剛按的篩選或播放速度上拿開：焦點留在那裡時方向鍵與空白鍵是給它們的，快捷鍵就不能馬上接著用。 */
+function releaseFocus() {
+    if (document.activeElement instanceof HTMLElement) document.activeElement.blur()
+}
 
 /** @type {import("react").CSSProperties} */
 const TOAST_STYLE = {
@@ -44,6 +71,10 @@ const TOAST_STYLE = {
  * 改文字、刪掉與還原片段（#348）：點文字就改，每一次校正馬上存，沒有整頁的存檔鈕；存完出現幾秒的「已存檔，
  * 復原」。正在改的時候不跟著播放捲動，免得改到一半那一列被捲走；改完再接著跟。
  *
+ * 確認狀態、快捷鍵、進度與篩選（#349）：上方寫「已確認或校正過的片段數／全部的片段數」；列表可以只看待查的或
+ * 還沒看過的；整個流程可以只用鍵盤做完。快捷鍵作用在「目前這個片段」：↑、↓ 換片段時播放位置跟著跳到它的開頭，
+ * 播放時它跟著正在播放的片段走（篩選掉的片段不算），點一列就換成那一列。
+ *
  * @param {{ transcript: {
  *   task_uuid: string,
  *   original_filename?: string | null,
@@ -54,7 +85,10 @@ const TOAST_STYLE = {
  */
 export function CorrectionView({ transcript }) {
     const { audioRef, audioProps, playing, time, duration, rate, failed, toggle, seek, skip, setRate } = useAudioPlayer()
-    const { segments, saves, editing, lastOperation, actions } = useSegmentCorrections(transcript.task_uuid, transcript.segments)
+    const { segments, saves, editing, lastOperation, actions, setReviewStates } = useSegmentCorrections(
+        transcript.task_uuid, transcript.segments,
+    )
+    const review = useReviewStates(transcript.task_uuid, setReviewStates)
     const total = duration ?? transcript.audio_duration_seconds ?? 0
     const canPlay = transcript.audio_available && !failed
 
@@ -69,6 +103,31 @@ export function CorrectionView({ transcript }) {
     const followIndex = canPlay ? lastStarted(spans, time) : -1
     const [following, setFollowing] = useState(true)
 
+    // 篩選（#349）與進度
+    const [filter, setFilter] = useState(ALL_SEGMENTS)
+    const visible = useMemo(() => visibleIndexes(segments, filter.kind, filter.kept), [segments, filter])
+    const visibleSet = useMemo(() => new Set(visible), [visible])
+    const counts = useMemo(() => filterCounts(segments), [segments])
+    const progress = useMemo(() => reviewProgress(segments), [segments])
+    const unreviewed = useMemo(() => unreviewedKeys(segments).length, [segments])
+    const [confirmOpen, setConfirmOpen] = useState(false)
+
+    // 目前這個片段（快捷鍵作用的片段）：記片段鍵，存檔之後列表換了新的片段物件也不會跑掉
+    const [currentKey, setCurrentKey] = useState(/** @type {string | null} */ (segments[0]?.seg_key ?? null))
+    const indexOf = useMemo(() => new Map(segments.map((s, i) => [s.seg_key, i])), [segments])
+    const current = indexOf.get(currentKey) ?? -1
+    // 用快捷鍵換到的片段：列表捲到看得到（每次換都是新的物件）
+    const [reveal, setReveal] = useState(/** @type {{ index: number } | null} */ (null))
+
+    // 播放位置換了時，目前這個片段跟著正在播放的片段走。只在播放位置換了的時候算（不用 effect，渲染時直接換）：
+    // 點了一列的文字（不跳播）時，目前的片段是點的那一列，不被播放位置搶回去
+    const [followedTime, setFollowedTime] = useState(time)
+    if (time !== followedTime) {
+        setFollowedTime(time)
+        const next = canPlay ? followPlayback(spans, time, current, (i) => visibleSet.has(i)) : current
+        if (next !== current) setCurrentKey(segments[next].seg_key)
+    }
+
     const onSeek = useCallback((seconds) => {
         // 點了列表裡的時間或字：從那裡播，並重新跟著播放
         setFollowing(true)
@@ -80,7 +139,77 @@ export function CorrectionView({ transcript }) {
     const rowActions = useMemo(() => ({
         ...actions,
         playback: (action) => (action === "rewind" ? skip(-REWIND_SECONDS) : toggle()),
-    }), [actions, skip, toggle])
+        select: setCurrentKey,
+        toggleReviewState: (segment, state) => review.actions.mark(
+            segment.seg_key, reviewToggle(segment, state).reviewState, segment.review_state ?? null,
+        ),
+    }), [actions, skip, toggle, review.actions])
+
+    /** 換到第 index 個片段（在 segments 裡的位置）：列表捲到它，能播放時播放位置跳到它的開頭並重新跟著播放。 */
+    const goTo = (index) => {
+        if (index < 0 || index === current) return
+        setCurrentKey(segments[index].seg_key)
+        setReveal({ index })
+        if (canPlay) {
+            setFollowing(true)
+            seek(segments[index].start)
+        }
+    }
+
+    useCorrectionShortcuts((action) => {
+        // 目前這個片段被篩選掉了（例如換到沒有片段的篩選）時，沒有片段可以標或改
+        const segment = visibleSet.has(current) ? segments[current] : null
+        switch (action) {
+            case "toggle-playback":
+                if (canPlay) toggle()
+                break
+            case "rewind":
+            case "forward":
+                if (canPlay) skip(action === "rewind" ? -REWIND_SECONDS : REWIND_SECONDS)
+                break
+            case "previous":
+            case "next":
+                goTo(stepVisible(visible, current, action === "next" ? 1 : -1))
+                break
+            case "replay":
+                if (canPlay && segment) {
+                    setFollowing(true)
+                    seek(segment.start, { andPlay: true })
+                }
+                break
+            case "edit":
+                if (segment) {
+                    setReveal({ index: current })
+                    actions.startEditing(segment.seg_key)
+                }
+                break
+            case "verify":
+            case "flag": {
+                if (!segment) break
+                const { reviewState, advance } = reviewToggle(segment, action === "verify" ? VERIFIED : FLAGGED)
+                review.actions.mark(segment.seg_key, reviewState, segment.review_state ?? null)
+                if (advance) goTo(stepVisible(visible, current, 1))
+                break
+            }
+            default:
+                break
+        }
+    }, !confirmOpen)
+
+    const changeFilter = (kind) => {
+        const kept = new Set(segments.filter((s) => matchesFilter(s, kind)).map((s) => s.seg_key))
+        setFilter({ kind, kept })
+        // 目前這個片段被篩選掉了：換到它後面最近的片段
+        const nextVisible = visibleIndexes(segments, kind, kept)
+        if (current >= 0 && !nextVisible.includes(current)) {
+            const nearest = nearestVisible(nextVisible, current)
+            if (nearest >= 0) {
+                setCurrentKey(segments[nearest].seg_key)
+                setReveal({ index: nearest })
+            }
+        }
+        releaseFocus()
+    }
 
     let notice = null
     if (!transcript.audio_available) notice = AUDIO_GONE
@@ -103,7 +232,21 @@ export function CorrectionView({ transcript }) {
                 <span style={{ color: "#e8e8e8", fontSize: 15, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                     {transcript.original_filename || "—"}
                 </span>
-                <span style={{ color: "#8888a8", fontSize: 12, whiteSpace: "nowrap" }}>{segments.length} 個片段</span>
+                <span
+                    className="correction-progress"
+                    title="已確認或校正過的片段數／全部的片段數"
+                    style={{ display: "inline-flex", alignItems: "center", gap: 8, color: "#8888a8", fontSize: 12, whiteSpace: "nowrap" }}
+                >
+                    已確認或校正過
+                    <span style={{ color: "#e8e8e8" }}>{progress.done} / {progress.total}</span>
+                    <Progress
+                        percent={progress.total ? (progress.done / progress.total) * 100 : 0}
+                        showInfo={false}
+                        size={[72, 6]}
+                        strokeColor="#2dd4a8"
+                        railColor="#2a2a48"
+                    />
+                </span>
                 {/* 預設給校正後版本，另有原始轉錄（檔名多一段 .original） */}
                 <div style={{ marginLeft: "auto", flexShrink: 0 }}>
                     <TranscriptDownloadMenu
@@ -124,11 +267,28 @@ export function CorrectionView({ transcript }) {
                 notice={notice}
                 onToggle={toggle}
                 onSeek={seek}
-                onRate={setRate}
+                onRate={(value) => {
+                    setRate(value)
+                    releaseFocus()
+                }}
+            />
+            <ReviewToolbar
+                filter={filter.kind}
+                counts={counts}
+                onFilter={changeFilter}
+                unreviewed={unreviewed}
+                bulkPending={review.bulkPending}
+                confirmOpen={confirmOpen}
+                onConfirmOpen={setConfirmOpen}
+                onMarkRestVerified={review.actions.markRestVerified}
             />
             <div style={{ position: "relative", flex: 1, minHeight: 0 }}>
                 <SegmentList
                     segments={segments}
+                    visible={visible}
+                    currentIndex={current}
+                    reveal={reveal}
+                    emptyText={EMPTY_TEXT[filter.kind]}
                     activeSet={activeSet}
                     activeWords={activeWords}
                     followIndex={followIndex}
@@ -150,6 +310,14 @@ export function CorrectionView({ transcript }) {
                         >
                             回到正在播放的片段
                         </Button>
+                    )}
+                    {review.lastBulk && (
+                        <div role="status" style={TOAST_STYLE}>
+                            已把 {review.lastBulk.count} 個片段標成已確認
+                            <Button type="link" size="small" onMouseDown={keepEditorFocus} onClick={review.actions.undoMarkRestVerified}>
+                                復原
+                            </Button>
+                        </div>
                     )}
                     {lastOperation && (
                         <div role="status" style={TOAST_STYLE}>

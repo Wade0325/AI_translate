@@ -174,6 +174,10 @@ def _lock_task(db: Session, task_uuid: uuid.UUID) -> None:
         raise ValueError("找不到任務紀錄")
 
 
+_IN_CHUNK = 500
+"""一個 ``IN (...)`` 最多帶幾個值：SQLite 一個語句能帶的參數有上限，較舊的版本是 999 個。"""
+
+
 class _CurrentContent:
     """寫校正紀錄用：鎖住任務後讀它現在的內容（原始轉錄套上最新的校正紀錄），照它記下新的紀錄。
 
@@ -223,17 +227,41 @@ class _CurrentContent:
             original = cast(Optional[str], segment.speaker)
         return _current(self._latest, key, original)
 
-    def set_review_state(self, seg_key: str, state: Optional[ReviewState]) -> None:
-        """把片段的確認狀態改成 ``state``（None 是清除），和記下的紀錄一起 commit。不是校正，不留紀錄。"""
+    def review_state(self, seg_key: str) -> Optional[ReviewState]:
+        """片段現在的確認狀態；沒有標是 None（資料庫裡的 NULL 與空字串都算沒有標）。"""
         if seg_key not in self._segments:
             raise ValueError(f"這個任務沒有片段 {seg_key}")
-        self._db.execute(
-            update(TranscriptSegment)
-            .where(TranscriptSegment.task_uuid == self._task_uuid, TranscriptSegment.seg_key == seg_key)
-            .values(review_state=ReviewState(state).value if state else None)
-            .execution_options(synchronize_session=False)
-        )
-        self._wrote_review_state = True
+        value = cast(Optional[str], self._segments[seg_key].review_state)
+        return ReviewState(value) if value else None
+
+    def seg_keys(self) -> List[str]:
+        """這個任務的全部片段鍵，依 seq 排序。"""
+        return list(self._segments)
+
+    def set_review_state(self, seg_key: str, state: Optional[ReviewState]) -> None:
+        """把片段的確認狀態改成 ``state``（None 是清除），和記下的紀錄一起 commit。不是校正，不留紀錄。"""
+        self.set_review_states([seg_key], state)
+
+    def set_review_states(self, seg_keys: Sequence[str], state: Optional[ReviewState]) -> None:
+        """把這些片段的確認狀態都改成 ``state``，和記下的紀錄一起 commit。一個都沒有時什麼都不寫。
+
+        上千個片段也只下幾個語句：每個語句最多帶 :data:`_IN_CHUNK` 個片段鍵，SQLite 一個語句能帶的參數
+        有上限（較舊的版本是 999 個）。
+        """
+        unknown = [seg_key for seg_key in seg_keys if seg_key not in self._segments]
+        if unknown:
+            raise ValueError(f"這個任務沒有片段 {unknown[0]}")
+        value = ReviewState(state).value if state else None
+        for at in range(0, len(seg_keys), _IN_CHUNK):
+            self._db.execute(
+                update(TranscriptSegment)
+                .where(TranscriptSegment.task_uuid == self._task_uuid,
+                       TranscriptSegment.seg_key.in_(list(seg_keys[at:at + _IN_CHUNK])))
+                .values(review_state=value)
+                .execution_options(synchronize_session=False)
+            )
+        if seg_keys:
+            self._wrote_review_state = True
 
     def change(self, key: _Key, new_value: Optional[str], operation_id: uuid.UUID) -> None:
         """有變時記下一筆（還沒寫進資料庫）；和現在的內容相同時不記。"""
@@ -273,6 +301,29 @@ class CorrectionRepository:
             for seg_key, state in (review_states or {}).items():
                 content.set_review_state(seg_key, state)
         return operation_id if content.recorded else None
+
+    @staticmethod
+    def change_review_states(db: Session, task_uuid, review_state: Optional[ReviewState], *,
+                             only_if: Optional[ReviewState],
+                             seg_keys: Optional[Collection[str]] = None) -> List[str]:
+        """一次改很多個片段的確認狀態（#349）：現在的確認狀態是 ``only_if`` 的片段改成 ``review_state``，
+        其他的不動，在同一個交易裡寫完並 commit。回傳實際改到的片段鍵，依 seq 排序。
+
+        ``seg_keys`` 是 None 時看這個任務的全部片段。和 ``record_operation`` 的 ``review_states`` 一樣
+        先鎖住任務再讀現在的確認狀態，所以「現在是什麼」不會在讀完、寫之前被別的請求改掉。
+
+        「其餘全部標成已確認」是 ``(VERIFIED, only_if=None)``；它的復原是 ``(None, only_if=VERIFIED,
+        seg_keys=那一次標的片段)``，在這之間被改成待查的不動。確認狀態不是校正，不留校正紀錄，也不算
+        一次操作。任務紀錄不在、或 ``seg_keys`` 裡有不在這個任務裡的片段時丟 ``ValueError``，一個都不改。
+        """
+        with _CurrentContent(db, _task_uuid(task_uuid)) as content:
+            wanted = set(content.seg_keys() if seg_keys is None else seg_keys)
+            for seg_key in wanted:
+                content.review_state(seg_key)  # 不在這個任務裡的片段在寫之前就擋下
+            changed = [seg_key for seg_key in content.seg_keys()
+                       if seg_key in wanted and content.review_state(seg_key) == only_if]
+            content.set_review_states(changed, review_state)
+        return changed
 
     @staticmethod
     def undo_operation(db: Session, task_uuid, operation_id) -> Optional[UndoResult]:

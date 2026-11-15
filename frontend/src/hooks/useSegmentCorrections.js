@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { message } from 'antd';
 import { api } from '../services/api';
 import {
@@ -67,11 +67,17 @@ export function useSegmentCorrections(taskUuid, initialSegments) {
   const actions = useMemo(() => {
     const segmentOf = (segKey) => latest.current.segments.find((s) => s.seg_key === segKey);
 
-    /** 後端回的片段新內容換進列表。 */
+    /**
+     * 後端回的片段新內容換進列表。確認狀態留著畫面上的：它只由 useReviewStates 換（#349），標了還在送的時候
+     * 存好一次校正，回應裡的確認狀態可能是標之前的。
+     */
     const applySegments = (updated) => {
       if (!updated.length) return;
       const byKey = new Map(updated.map((s) => [s.seg_key, s]));
-      setSegments((current) => current.map((s) => byKey.get(s.seg_key) ?? s));
+      setSegments((current) => current.map((s) => {
+        const next = byKey.get(s.seg_key);
+        return next ? { ...next, review_state: s.review_state } : s;
+      }));
     };
 
     const clearSettle = (segKey) => {
@@ -182,5 +188,17 @@ export function useSegmentCorrections(taskUuid, initialSegments) {
     };
   }, [taskUuid]);
 
-  return { segments, saves, editing, lastOperation, actions };
+  /**
+   * 這些片段的確認狀態換成 state（後端已經存好的結果，#349 的 useReviewStates 用）。確認狀態不是校正，不動存檔狀態
+   * 與「已存檔，復原」；只換確認狀態，不換整個片段，同時在存的文字才不會被蓋掉。
+   */
+  const setReviewStates = useCallback((segKeys, state) => {
+    const keys = new Set(segKeys);
+    if (!keys.size) return;
+    setSegments((current) => current.map((s) => (
+      keys.has(s.seg_key) && (s.review_state ?? null) !== state ? { ...s, review_state: state } : s
+    )));
+  }, []);
+
+  return { segments, saves, editing, lastOperation, actions, setReviewStates };
 }
