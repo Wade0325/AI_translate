@@ -646,7 +646,7 @@ class TestReviewStatesInBulk:
         response = client.patch(_review_states_url(log.task_uuid), json=VERIFY_REST)
 
         assert response.status_code == 200, response.text
-        assert response.json() == {"review_state": "verified", "changed": 2, "seg_keys": ["0000", "0003"]}
+        assert response.json() == {"changed": 2, "seg_keys": ["0000", "0003"]}
         assert _review_states(client, log.task_uuid) == {
             "0000": "verified", "0001": "flagged", "0002": "verified", "0003": "verified"}
         # 不是校正：校正紀錄只有剛才改文字的那一筆
@@ -670,7 +670,7 @@ class TestReviewStatesInBulk:
         response = client.patch(_review_states_url(log.task_uuid), json=_undo_verify_rest(marked))
 
         assert response.status_code == 200, response.text
-        assert response.json() == {"review_state": None, "changed": 2, "seg_keys": ["0000", "0003"]}
+        assert response.json() == {"changed": 2, "seg_keys": ["0000", "0003"]}
         assert _review_states(client, log.task_uuid) == before
         assert _records(db_session, log.task_uuid) == []
 
@@ -693,14 +693,14 @@ class TestReviewStatesInBulk:
         response = client.patch(_review_states_url(log.task_uuid), json=VERIFY_REST)
 
         assert response.status_code == 200, response.text
-        assert response.json() == {"review_state": "verified", "changed": 0, "seg_keys": []}
+        assert response.json() == {"changed": 0, "seg_keys": []}
 
     def test_an_empty_list_of_segments_changes_nothing(self, client, db_session):
         log = _with_segments(db_session, count=2)
 
         response = client.patch(_review_states_url(log.task_uuid), json={**VERIFY_REST, "seg_keys": []})
 
-        assert response.json() == {"review_state": "verified", "changed": 0, "seg_keys": []}
+        assert response.json() == {"changed": 0, "seg_keys": []}
         assert set(_review_states(client, log.task_uuid).values()) == {None}
 
     def test_a_long_task_is_marked_in_one_request(self, client, db_session):

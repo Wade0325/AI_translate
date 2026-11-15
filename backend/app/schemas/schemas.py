@@ -304,8 +304,7 @@ class ReviewStatesRequest(BaseModel):
 
 
 class ReviewStatesResponse(BaseModel):
-    """一次改很多個片段的確認狀態的結果：實際改到的片段（依 seq 排序）現在都是 ``review_state``。"""
-    review_state: Optional[str] = None
+    """一次改很多個片段的確認狀態的結果：實際改到的片段現在都是請求的 ``review_state``。"""
     changed: int
     """實際改到幾個片段。"""
     seg_keys: List[str] = []

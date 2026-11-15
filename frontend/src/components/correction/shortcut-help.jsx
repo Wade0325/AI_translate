@@ -1,6 +1,7 @@
 import { Button, Popover } from "antd"
 import { Keyboard } from "lucide-react"
 import { SHORTCUT_GROUPS } from "@/utils/correctionShortcuts"
+import { keepEditorFocus } from "@/utils/segmentCorrections"
 
 /** @type {import("react").CSSProperties} */
 const KEY_STYLE = {
@@ -28,7 +29,7 @@ function ShortcutList() {
                         <tbody>
                             {group.items.map((item) => (
                                 <tr key={item.label}>
-                                    <td style={{ padding: "3px 12px 3px 0", whiteSpace: "nowrap", verticalAlign: "top" }}>
+                                    <td style={{ width: 96, padding: "3px 12px 3px 0", whiteSpace: "nowrap", verticalAlign: "top" }}>
                                         {item.keys.map((k, i) => (
                                             <span key={k}>
                                                 {i > 0 && <span style={{ color: "#686888", margin: "0 3px" }}>、</span>}
@@ -54,7 +55,8 @@ function ShortcutList() {
 export function ShortcutHelp() {
     return (
         <Popover content={<ShortcutList />} trigger="click" placement="bottomRight" title="快捷鍵">
-            <Button size="small" icon={<Keyboard size={14} />}>快捷鍵</Button>
+            {/* 用滑鼠按時不拿走焦點：焦點留在按鈕上時，空白鍵會再按一次這個按鈕，不是播放 */}
+            <Button size="small" icon={<Keyboard size={14} />} onMouseDown={keepEditorFocus}>快捷鍵</Button>
         </Popover>
     )
 }

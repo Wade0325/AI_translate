@@ -6,7 +6,9 @@ import { lastStarted } from './playhead';
  * 確認狀態（review_state）由使用者自己標，分已確認與待查，和校正互不影響：校正過的片段不會自動變成已確認，
  * 還原校正也不會動到確認狀態。它不是校正，不留校正紀錄。
  *
- * 「目前這個片段」是快捷鍵（↑、↓、Enter、V、F、R）作用的片段，用片段在清單裡的位置表示，沒有時是 -1。
+ * 「目前這個片段」是快捷鍵（↑、↓、Enter、V、F、R）作用的片段，用片段在清單裡的位置表示，沒有時是 -1。它是
+ * 「下一個要處理的片段」，不是播放位置：只在換片段（↑、↓，以及 V、F 標完）、點一列、拖播放進度時換，播放往下
+ * 走時不跟著換。一路聽下去時，聽完一段才按 V，播放已經進到下一段，V 照樣標剛聽完的那一段（#25 故事 64）。
  *
  * @typedef {'verified' | 'flagged'} ReviewState
  * @typedef {{ seg_key: string, review_state?: string | null, corrected: boolean, deleted?: boolean }} ReviewedSegment
@@ -33,11 +35,12 @@ export function reviewToggle(segment, pressed) {
 }
 
 /**
- * 片段算進進度：已確認，或校正過（文字或說話者和原始轉錄不同，包括使用者刪掉的片段）。
+ * 片段算進進度：已確認，或校正過（文字或說話者和原始轉錄不同，包括使用者刪掉的片段）。確認狀態和校正是兩回事，
+ * 只是進度兩種都算。
  *
  * @param {ReviewedSegment} segment
  */
-function isReviewed(segment) {
+function countsTowardProgress(segment) {
   return segment.review_state === VERIFIED || segment.corrected;
 }
 
@@ -47,7 +50,7 @@ function isReviewed(segment) {
  * @param {ReviewedSegment[]} segments
  */
 export function reviewProgress(segments) {
-  return { done: segments.filter(isReviewed).length, total: segments.length };
+  return { done: segments.filter(countsTowardProgress).length, total: segments.length };
 }
 
 /**
@@ -106,7 +109,7 @@ export function visibleIndexes(segments, filter, kept) {
  *
  * @param {ReviewedSegment[]} segments
  */
-export function unreviewedKeys(segments) {
+export function keysWithoutReviewState(segments) {
   return segments.filter((s) => !s.review_state).map((s) => s.seg_key);
 }
 
@@ -152,18 +155,18 @@ export function nearestVisible(visible, current) {
 }
 
 /**
- * 播放位置換了之後，目前這個片段是哪一個：播放位置還在目前的片段裡時不換（同時開始的片段，按 ↓ 換到的那一個
- * 才不會被換掉）；跑出去了就換到正在播放的片段（最後一個在播放位置之前開口的，見 playhead.js 的 lastStarted），
- * 它在列表看不到（被篩選掉了）時留在原本的片段。
+ * 拖播放進度到 time 之後，目前這個片段是哪一個：time 還在目前的片段裡時不換（同時開始的片段，選到的那一個才不會
+ * 被換掉）；跑出去了就換到那裡正在播放的片段（最後一個在 time 之前開口的，見 playhead.js 的 lastStarted），它在
+ * 列表看不到（被篩選掉了）時留在原本的片段。
  *
- * 只在播放位置換了的時候呼叫：點了一個片段的文字（不跳播）時，目前的片段是點的那一個，不被播放位置搶回去。
+ * 只在使用者拖播放進度時呼叫：播放往下走、←、→ 倒退前進都不換目前的片段（見檔頭）。
  *
  * @param {import('./playhead').Span[]} spans segmentSpans 的結果
  * @param {number} time 播放位置（秒）
  * @param {number} current
  * @param {(index: number) => boolean} isVisible
  */
-export function followPlayback(spans, time, current, isVisible) {
+export function cursorAfterSeek(spans, time, current, isVisible) {
   const span = spans[current];
   if (span && span.start <= time && time < span.end) return current;
   const playing = lastStarted(spans, time);

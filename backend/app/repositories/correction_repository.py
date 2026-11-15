@@ -174,7 +174,7 @@ def _lock_task(db: Session, task_uuid: uuid.UUID) -> None:
         raise ValueError("找不到任務紀錄")
 
 
-_IN_CHUNK = 500
+_MAX_IN_VALUES = 500
 """一個 ``IN (...)`` 最多帶幾個值：SQLite 一個語句能帶的參數有上限，較舊的版本是 999 個。"""
 
 
@@ -244,19 +244,16 @@ class _CurrentContent:
 
     def set_review_states(self, seg_keys: Sequence[str], state: Optional[ReviewState]) -> None:
         """把這些片段的確認狀態都改成 ``state``，和記下的紀錄一起 commit。一個都沒有時什麼都不寫。
-
-        上千個片段也只下幾個語句：每個語句最多帶 :data:`_IN_CHUNK` 個片段鍵，SQLite 一個語句能帶的參數
-        有上限（較舊的版本是 999 個）。
-        """
+        上千個片段也只下幾個語句，每個語句最多帶 :data:`_MAX_IN_VALUES` 個片段鍵。"""
         unknown = [seg_key for seg_key in seg_keys if seg_key not in self._segments]
         if unknown:
             raise ValueError(f"這個任務沒有片段 {unknown[0]}")
         value = ReviewState(state).value if state else None
-        for at in range(0, len(seg_keys), _IN_CHUNK):
+        for at in range(0, len(seg_keys), _MAX_IN_VALUES):
             self._db.execute(
                 update(TranscriptSegment)
                 .where(TranscriptSegment.task_uuid == self._task_uuid,
-                       TranscriptSegment.seg_key.in_(list(seg_keys[at:at + _IN_CHUNK])))
+                       TranscriptSegment.seg_key.in_(list(seg_keys[at:at + _MAX_IN_VALUES])))
                 .values(review_state=value)
                 .execution_options(synchronize_session=False)
             )
@@ -317,10 +314,12 @@ class CorrectionRepository:
         一次操作。任務紀錄不在、或 ``seg_keys`` 裡有不在這個任務裡的片段時丟 ``ValueError``，一個都不改。
         """
         with _CurrentContent(db, _task_uuid(task_uuid)) as content:
-            wanted = set(content.seg_keys() if seg_keys is None else seg_keys)
-            for seg_key in wanted:
-                content.review_state(seg_key)  # 不在這個任務裡的片段在寫之前就擋下
-            changed = [seg_key for seg_key in content.seg_keys()
+            in_task = content.seg_keys()
+            wanted = set(in_task if seg_keys is None else seg_keys)
+            unknown = wanted.difference(in_task)
+            if unknown:
+                raise ValueError(f"這個任務沒有片段 {min(unknown)}")
+            changed = [seg_key for seg_key in in_task
                        if seg_key in wanted and content.review_state(seg_key) == only_if]
             content.set_review_states(changed, review_state)
         return changed

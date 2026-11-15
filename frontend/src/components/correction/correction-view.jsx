@@ -9,8 +9,8 @@ import { useReviewStates } from "@/hooks/useReviewStates"
 import { useSegmentCorrections } from "@/hooks/useSegmentCorrections"
 import { lastStarted, segmentSpans, segmentsAt, wordAt } from "@/utils/playhead"
 import {
-    FLAGGED, VERIFIED, filterCounts, followPlayback, matchesFilter, nearestVisible, reviewProgress, reviewToggle,
-    stepVisible, unreviewedKeys, visibleIndexes,
+    FLAGGED, VERIFIED, cursorAfterSeek, filterCounts, keysWithoutReviewState, matchesFilter, nearestVisible,
+    reviewProgress, stepVisible, visibleIndexes,
 } from "@/utils/reviewStates"
 import { REWIND_SECONDS, keepEditorFocus } from "@/utils/segmentCorrections"
 import { TranscriptDownloadMenu } from "@/components/transcript-download-menu"
@@ -42,8 +42,8 @@ const EMPTY_TEXT = {
     unseen: "沒有還沒看過的片段",
 }
 
-/** 篩選：選的是哪一種，以及選的時候符合的片段鍵（之後不符合了也留在列表裡，見 visibleIndexes）。 */
-const ALL_SEGMENTS = { kind: /** @type {import("@/utils/reviewStates").ReviewFilter} */ ("all"), kept: new Set() }
+/** 篩選的狀態：選的是哪一種，以及選的時候符合的片段鍵（之後不符合了也留在列表裡，見 visibleIndexes）。一開始不篩選。 */
+const NO_FILTER = { kind: /** @type {import("@/utils/reviewStates").ReviewFilter} */ ("all"), kept: new Set() }
 
 /** 把焦點從剛按的篩選或播放速度上拿開：焦點留在那裡時方向鍵與空白鍵是給它們的，快捷鍵就不能馬上接著用。 */
 function releaseFocus() {
@@ -72,8 +72,9 @@ const TOAST_STYLE = {
  * 復原」。正在改的時候不跟著播放捲動，免得改到一半那一列被捲走；改完再接著跟。
  *
  * 確認狀態、快捷鍵、進度與篩選（#349）：上方寫「已確認或校正過的片段數／全部的片段數」；列表可以只看待查的或
- * 還沒看過的；整個流程可以只用鍵盤做完。快捷鍵作用在「目前這個片段」：↑、↓ 換片段時播放位置跟著跳到它的開頭，
- * 播放時它跟著正在播放的片段走（篩選掉的片段不算），點一列就換成那一列。
+ * 還沒看過的；整個流程可以只用鍵盤做完。快捷鍵作用在「目前這個片段」（加一圈框）：↑、↓ 換片段時播放位置跟著跳到
+ * 它的開頭；點一列、拖播放進度也會換。播放往下走時不跟著換，聽完一段才按 V 也標得到剛聽完的那一段
+ * （見 reviewStates.js）。
  *
  * @param {{ transcript: {
  *   task_uuid: string,
@@ -104,12 +105,12 @@ export function CorrectionView({ transcript }) {
     const [following, setFollowing] = useState(true)
 
     // 篩選（#349）與進度
-    const [filter, setFilter] = useState(ALL_SEGMENTS)
+    const [filter, setFilter] = useState(NO_FILTER)
     const visible = useMemo(() => visibleIndexes(segments, filter.kind, filter.kept), [segments, filter])
     const visibleSet = useMemo(() => new Set(visible), [visible])
     const counts = useMemo(() => filterCounts(segments), [segments])
     const progress = useMemo(() => reviewProgress(segments), [segments])
-    const unreviewed = useMemo(() => unreviewedKeys(segments).length, [segments])
+    const withoutReviewState = useMemo(() => keysWithoutReviewState(segments).length, [segments])
     const [confirmOpen, setConfirmOpen] = useState(false)
 
     // 目前這個片段（快捷鍵作用的片段）：記片段鍵，存檔之後列表換了新的片段物件也不會跑掉
@@ -118,15 +119,6 @@ export function CorrectionView({ transcript }) {
     const current = indexOf.get(currentKey) ?? -1
     // 用快捷鍵換到的片段：列表捲到看得到（每次換都是新的物件）
     const [reveal, setReveal] = useState(/** @type {{ index: number } | null} */ (null))
-
-    // 播放位置換了時，目前這個片段跟著正在播放的片段走。只在播放位置換了的時候算（不用 effect，渲染時直接換）：
-    // 點了一列的文字（不跳播）時，目前的片段是點的那一列，不被播放位置搶回去
-    const [followedTime, setFollowedTime] = useState(time)
-    if (time !== followedTime) {
-        setFollowedTime(time)
-        const next = canPlay ? followPlayback(spans, time, current, (i) => visibleSet.has(i)) : current
-        if (next !== current) setCurrentKey(segments[next].seg_key)
-    }
 
     const onSeek = useCallback((seconds) => {
         // 點了列表裡的時間或字：從那裡播，並重新跟著播放
@@ -140,10 +132,15 @@ export function CorrectionView({ transcript }) {
         ...actions,
         playback: (action) => (action === "rewind" ? skip(-REWIND_SECONDS) : toggle()),
         select: setCurrentKey,
-        toggleReviewState: (segment, state) => review.actions.mark(
-            segment.seg_key, reviewToggle(segment, state).reviewState, segment.review_state ?? null,
-        ),
+        toggleReviewState: review.actions.toggle,
     }), [actions, skip, toggle, review.actions])
+
+    /** 拖播放進度：目前這個片段換成拖到的那裡正在播放的片段。 */
+    const onSliderSeek = (seconds) => {
+        seek(seconds)
+        const next = cursorAfterSeek(spans, seconds, current, (i) => visibleSet.has(i))
+        if (next !== current) setCurrentKey(segments[next].seg_key)
+    }
 
     /** 換到第 index 個片段（在 segments 裡的位置）：列表捲到它，能播放時播放位置跳到它的開頭並重新跟著播放。 */
     const goTo = (index) => {
@@ -186,8 +183,7 @@ export function CorrectionView({ transcript }) {
             case "verify":
             case "flag": {
                 if (!segment) break
-                const { reviewState, advance } = reviewToggle(segment, action === "verify" ? VERIFIED : FLAGGED)
-                review.actions.mark(segment.seg_key, reviewState, segment.review_state ?? null)
+                const advance = review.actions.toggle(segment, action === "verify" ? VERIFIED : FLAGGED)
                 if (advance) goTo(stepVisible(visible, current, 1))
                 break
             }
@@ -266,7 +262,7 @@ export function CorrectionView({ transcript }) {
                 rate={rate}
                 notice={notice}
                 onToggle={toggle}
-                onSeek={seek}
+                onSeek={onSliderSeek}
                 onRate={(value) => {
                     setRate(value)
                     releaseFocus()
@@ -276,11 +272,14 @@ export function CorrectionView({ transcript }) {
                 filter={filter.kind}
                 counts={counts}
                 onFilter={changeFilter}
-                unreviewed={unreviewed}
+                withoutReviewState={withoutReviewState}
                 bulkPending={review.bulkPending}
                 confirmOpen={confirmOpen}
                 onConfirmOpen={setConfirmOpen}
-                onMarkRestVerified={review.actions.markRestVerified}
+                onMarkRestVerified={() => {
+                    review.actions.markRestVerified()
+                    releaseFocus()
+                }}
             />
             <div style={{ position: "relative", flex: 1, minHeight: 0 }}>
                 <SegmentList
@@ -313,7 +312,7 @@ export function CorrectionView({ transcript }) {
                     )}
                     {review.lastBulk && (
                         <div role="status" style={TOAST_STYLE}>
-                            已把 {review.lastBulk.count} 個片段標成已確認
+                            已把 {review.lastBulk.length} 個片段標成已確認
                             <Button type="link" size="small" onMouseDown={keepEditorFocus} onClick={review.actions.undoMarkRestVerified}>
                                 復原
                             </Button>

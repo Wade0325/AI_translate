@@ -4,14 +4,14 @@ import {
   VERIFIED,
   bulkUndoMessage,
   filterCounts,
-  followPlayback,
+  cursorAfterSeek,
   isUnseen,
   matchesFilter,
   nearestVisible,
   reviewProgress,
   reviewToggle,
   stepVisible,
-  unreviewedKeys,
+  keysWithoutReviewState,
   visibleIndexes,
 } from './reviewStates';
 
@@ -113,7 +113,7 @@ describe('篩選：只看待查的、只看還沒看過的', () => {
   });
 });
 
-describe('unreviewedKeys：其餘全部標成已確認會標的片段', () => {
+describe('keysWithoutReviewState：其餘全部標成已確認會標的片段', () => {
   it('還沒有確認狀態的全部（校正過的、刪掉的也在），待查與已確認的不在', () => {
     const segments = [
       seg('verified', { review_state: VERIFIED }),
@@ -122,7 +122,7 @@ describe('unreviewedKeys：其餘全部標成已確認會標的片段', () => {
       seg('deleted', { corrected: true, deleted: true }),
       seg('untouched'),
     ];
-    expect(unreviewedKeys(segments)).toEqual(['corrected', 'deleted', 'untouched']);
+    expect(keysWithoutReviewState(segments)).toEqual(['corrected', 'deleted', 'untouched']);
   });
 });
 
@@ -181,27 +181,27 @@ describe('followPlayback：目前的片段跟著播放', () => {
   const spans = [{ start: 0, end: 2 }, { start: 2, end: 4 }, { start: 2, end: 3 }, { start: 5, end: 7 }];
   const everyone = () => true;
 
-  it('播放位置還在目前的片段裡時不換', () => {
-    expect(followPlayback(spans, 1.5, 0, everyone)).toBe(0);
+  it('拖到的位置還在目前的片段裡時不換', () => {
+    expect(cursorAfterSeek(spans, 1.5, 0, everyone)).toBe(0);
   });
 
-  it('播到下一個片段時換過去', () => {
-    expect(followPlayback(spans, 6, 1, everyone)).toBe(3);
+  it('拖到別的片段時換過去', () => {
+    expect(cursorAfterSeek(spans, 6, 1, everyone)).toBe(3);
   });
 
-  it('同時開始的片段：按 ↓ 換到其中一個並跳到它的開頭時，留在按到的那一個', () => {
-    expect(followPlayback(spans, 2, 1, everyone)).toBe(1);
+  it('同時開始的片段：拖到它們的開頭時，留在原本選到的那一個', () => {
+    expect(cursorAfterSeek(spans, 2, 1, everyone)).toBe(1);
   });
 
-  it('片段之間的空檔停在上一段', () => {
-    expect(followPlayback(spans, 4.5, 3, everyone)).toBe(2);
+  it('拖到片段之間的空檔時換到前面那一段', () => {
+    expect(cursorAfterSeek(spans, 4.5, 3, everyone)).toBe(2);
   });
 
-  it('播到列表看不到的片段（被篩選掉了）時，留在原本的片段', () => {
-    expect(followPlayback(spans, 6, 1, (i) => i !== 3)).toBe(1);
+  it('拖到列表看不到的片段（被篩選掉了）時，留在原本的片段', () => {
+    expect(cursorAfterSeek(spans, 6, 1, (i) => i !== 3)).toBe(1);
   });
 
-  it('播放位置在第一個片段開始之前時不換', () => {
-    expect(followPlayback([{ start: 1, end: 2 }], 0, 0, everyone)).toBe(0);
+  it('拖到第一個片段開始之前時不換', () => {
+    expect(cursorAfterSeek([{ start: 1, end: 2 }], 0, 0, everyone)).toBe(0);
   });
 });

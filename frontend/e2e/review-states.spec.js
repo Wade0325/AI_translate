@@ -100,6 +100,62 @@ test('只用鍵盤校完一個任務：播放、換片段、改文字、標已�
     await expect(reviewButton(page, 0, '已確認')).toHaveAttribute('aria-pressed', 'true')
 })
 
+test('一路聽下去：播放進到下一段之後才按 V，標的是剛聽完的那一段；拖播放進度才換目前的片段', async ({ page, mockBackend }) => {
+    const fake = correctionsBackend(MEETING)
+    await openCorrection(page, mockBackend, { routes: fake.routes })
+    await expectCurrent(page, 0)
+
+    // 播放位置進到第 2 段（4.0 秒起），目前這個片段還是第 1 段
+    await page.keyboard.press('ArrowRight')
+    await page.keyboard.press('ArrowRight')
+    expect((await audioState(page)).time).toBeCloseTo(6.0)
+    await expect(rowAt(page, 1).locator('[data-active]').first()).toBeVisible()
+    await expectCurrent(page, 0)
+
+    await page.keyboard.press('v')
+    await expect(reviewButton(page, 0, '已確認')).toHaveAttribute('aria-pressed', 'true')
+    await expect(reviewButton(page, 1, '已確認')).toHaveAttribute('aria-pressed', 'false')
+    await expectCurrent(page, 1)
+
+    // 拖播放進度到第 4 段（10 秒起）：目前這個片段換過去
+    const slider = page.locator('.ant-slider')
+    const box = await slider.boundingBox()
+    await slider.click({ position: { x: box.width * 0.55, y: box.height / 2 } })
+    await expectCurrent(page, 3)
+})
+
+test('其餘全部標成已確認還在送時標的片段排在它後面送，不被它的結果蓋掉', async ({ page, mockBackend }) => {
+    const fake = correctionsBackend(MEETING)
+    let release = () => {}
+    const gate = new Promise((resolve) => { release = resolve })
+    const bulk = fake.routes['PATCH /transcripts/task-1/review-states']
+    const backend = await openCorrection(page, mockBackend, {
+        routes: { ...fake.routes, 'PATCH /transcripts/task-1/review-states': async (request) => { await gate; return bulk(request) } },
+    })
+    await expectCurrent(page, 0)
+
+    await page.getByRole('button', { name: '其餘全部標成已確認' }).click()
+    await page.getByRole('button', { name: '標成已確認', exact: true }).click()
+    await expect(page.getByRole('button', { name: '其餘全部標成已確認' })).toHaveClass(/ant-btn-loading/)
+
+    // 還在送時把第 2 列標成待查：畫面先換，請求等它送完才送
+    await page.keyboard.press('ArrowDown')
+    await page.keyboard.press('f')
+    await expect(reviewButton(page, 1, '待查')).toHaveAttribute('aria-pressed', 'true')
+    expect(fake.reviewStates.get('0.0001')).toBe(null)
+
+    release()
+    for (const index of [0, 2, 3]) {
+        await expect(reviewButton(page, index, '已確認')).toHaveAttribute('aria-pressed', 'true')
+    }
+    await expect(reviewButton(page, 1, '待查')).toHaveAttribute('aria-pressed', 'true')
+    await expect.poll(() => fake.reviewStates.get('0.0001')).toBe('flagged')
+    expect(patches(backend)).toEqual([
+        ['review-states', { review_state: 'verified', only_if: null }],
+        ['0.0001', { review_state: 'flagged' }],
+    ])
+})
+
 test('焦點在按鈕上時，空白鍵與 Enter 照常按那個按鈕，其他快捷鍵照常', async ({ page, mockBackend }) => {
     const fake = correctionsBackend(MEETING)
     await openCorrection(page, mockBackend, { routes: fake.routes })
@@ -209,6 +265,11 @@ test('其餘全部標成已確認：先問一次寫明幾個，做完可以馬�
     await expect(progress(page)).toContainText('3 / 4')
     await expect(page.getByRole('status').filter({ hasText: '已把 3 個片段標成已確認' })).toBeVisible()
     await expect(page.getByRole('button', { name: '其餘全部標成已確認' })).toBeDisabled()
+    // 用滑鼠按過的按鈕不留焦點：空白鍵是播放，不是再按一次
+    await page.keyboard.press(' ')
+    await expect.poll(async () => (await audioState(page)).paused).toBe(false)
+    await page.keyboard.press(' ')
+    await expect.poll(async () => (await audioState(page)).paused).toBe(true)
 
     // 在這之間把第 2 列改成待查，再復原：它不動，其他兩個清掉
     await page.keyboard.press('ArrowDown')

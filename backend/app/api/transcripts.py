@@ -217,7 +217,7 @@ def change_review_states(task_uuid: str, body: ReviewStatesRequest, db: Session 
     except ValueError as e:
         # 片段鍵不在這個任務裡，或任務在檢查之後剛好被刪掉：什麼都沒寫
         raise HTTPException(status_code=404, detail="找不到此片段") from e
-    return ReviewStatesResponse(review_state=review_state, changed=len(changed), seg_keys=changed)
+    return ReviewStatesResponse(changed=len(changed), seg_keys=changed)
 
 
 @router.post("/{task_uuid}/operations/{operation_id}/undo", response_model=UndoOperationResponse)

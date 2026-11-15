@@ -97,7 +97,8 @@ function selectionIn(container) {
  * - 存檔中、已存與失敗寫在這一列；失敗時寫原因，留著打的字，可以重試或放棄。
  * - 校正過的片段有「校正過」，展開看得到原始轉錄，可以一鍵回到原始轉錄。
  * - 使用者刪掉的片段留在原位，淡化並加上刪除線，可以還原。
- * - 確認狀態（#349）：已確認與待查各一個按鈕，按一下標上，再按一次清掉；和校正互不影響。
+ * - 確認狀態（#349）：已確認與待查各一個按鈕，按一下標上，再按一次清掉；和校正互不影響。用滑鼠按時不拿走焦點：
+ *   焦點留在按鈕上時，接著按空白鍵會再按一次這個按鈕，不是播放。
  * - 目前這個片段（快捷鍵作用的片段，#349）加一圈框。點這一列的任何地方，這一列就是目前這個片段。
  *
  * 播放時頁面每一格畫面都重畫，這裡用 memo：只有反白、正在唸的字、存檔狀態或內容變了的那幾列才重畫。
@@ -305,7 +306,7 @@ function SegmentRowView({ segment, active, current, activeWord, canPlay, onSeek,
                             aria-pressed={pressed}
                             title={`${pressed ? "取消" : "標成"}${label}（${shortcut}）`}
                             icon={<Icon size={14} />}
-                            onMouseDown={onButtonMouseDown}
+                            onMouseDown={keepEditorFocus}
                             onClick={() => actions.toggleReviewState(segment, state)}
                             style={{ marginTop: 1, color: pressed ? color : "#55557a", background: pressed ? `${color}26` : undefined }}
                         />

@@ -157,7 +157,7 @@ export function correctionsBackend(segments, fields = {}) {
                 const changed = segments.map((s) => s.seg_key)
                     .filter((key) => wanted.includes(key) && reviewStates.get(key) === body.only_if)
                 changed.forEach((key) => reviewStates.set(key, body.review_state))
-                return { review_state: body.review_state, changed: changed.length, seg_keys: changed }
+                return { changed: changed.length, seg_keys: changed }
             },
             'POST /transcripts/task-1/operations/:operation_id/undo': ({ params }) => {
                 const undoId = `op-${operations += 1}`
