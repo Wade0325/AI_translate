@@ -139,6 +139,18 @@ class TranscriptionLog(Base):
     # 可能掉尾的起點（原音檔的秒數，#257）：完成的任務從這裡起可能有內容沒有轉錄到，畫面照它提醒使用者
     # （app.services.tail_loss）。沒有掉尾、沒有完成，以及這一欄加上之前的任務是 NULL
     tail_loss_from_seconds = Column(Float, nullable=True)
+    # 下面三欄在任務開始轉錄時記下（#343，app.tasks.lifecycle），畫面不顯示；沒開始就結束的任務（在佇列
+    # 裡被取消、關閉時還在排隊），以及這三欄加上之前的任務是 NULL。
+    # 轉錄環境（GLOSSARY）的 JSON：app 版本、供應商與模型、主要套件的版本、本機的顯卡與驅動、模型權重
+    # 釘住的 revision、去靜音與分段轉錄的設定（app.services.environment_manifest.for_task）；回應寫明
+    # 模型版本時（Gemini），完成時補記 model_versions
+    transcription_environment = Column(Text, nullable=True)
+    # 送出的提示詞：範本代入之後接上補充說明的那一份，只有吃提示詞的模型（Gemini）記，本機的是 NULL。
+    # 開始時組好就記，之後才失敗、沒有真的送出的任務（例如讀不出音檔長度）也有。
+    # 附了使用者文稿時，文稿換成一句說明（app.core.default_prompt.Prompt）：文稿不存進資料庫
+    sent_prompt = Column(Text, nullable=True)
+    # 附了使用者文稿；只記有附，內容不存
+    user_supplied_text_attached = Column(Boolean, nullable=True)
 
 
 class TranscriptSegment(Base):

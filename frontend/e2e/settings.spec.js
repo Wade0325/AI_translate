@@ -300,7 +300,7 @@ test('資料與隱私：免安裝版說明 data 資料夾裡哪些是個人資�
     const card = providerCard(page, '資料與隱私')
     await expect(card.getByText(/不會自動刪除/)).toBeVisible()
     await expect(card.getByText('D:\\Mimiji\\data', { exact: true })).toBeVisible()
-    await expect(card.getByText(/任務紀錄、轉錄結果與 API 金鑰/)).toBeVisible()
+    await expect(card.getByText(/任務紀錄、轉錄結果、Gemini 任務送出的提示詞（不含使用者文稿）與 API 金鑰/)).toBeVisible()
     await expect(card.getByText(/日誌檔，回報問題時附上；不含原檔名、提示詞與轉錄內容/)).toBeVisible()
     await expect(card.getByText(/先關掉 app，再刪掉 models 以外的項目/)).toBeVisible()
 })

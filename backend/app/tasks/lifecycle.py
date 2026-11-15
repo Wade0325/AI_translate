@@ -24,6 +24,11 @@
   說話者標記，和之後下載的相同；片段與凍結的原始轉錄副本不論開關都有說話者編號（#13 Q1、ADR-0007）。
 - 可能掉尾時記下起點：轉錄結果帶著可能掉尾的起點（:mod:`app.services.tail_loss`）時，完成時記進
   任務紀錄、隨完成的廣播送給畫面，畫面照它告訴使用者從哪裡起可能沒有轉錄到；任務照樣完成（#257）。
+- 開始轉錄時記下轉錄環境與送出的提示詞（#343）：轉錄環境（:func:`app.services.environment_manifest.for_task`）
+  每個任務都記，回應寫明模型版本時（Gemini）完成時補記；送出的提示詞只有吃提示詞的模型記，附了使用者
+  文稿時只記有附（:class:`app.core.default_prompt.Prompt`）。沒開始就結束的任務不記；記不下轉錄環境時
+  只記 log，任務照樣轉錄。畫面不顯示這些。它們說明的是原始轉錄，跟著轉錄結果走：同一個任務再執行一次
+  而原本的轉錄結果留著時，轉錄環境與提示詞也留著原本的。
 - 中文一律輸出繁體：完成時先把片段轉成繁體輸出（:mod:`app.services.traditional_output`），
   輸出格式、凍結的原始轉錄副本與片段都從轉換後的片段產生（ADR-0002）。
 - 計價照模型能力的計價方式；實際以 Flex 或批次完成的照設定打折。供應商已經回應的用量，
@@ -60,18 +65,19 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.core.default_prompt import Prompt
 from app.core.error_codes import ErrorCode, Failure, TaskFailedError, describe
 from app.core.task_status import TaskStatus
 from app.database.session import SessionLocal, without_db_details
 from app.exceptions import TranscriptionCancelledError
-from app.provider.base import ProgressAndCancel
+from app.provider.base import ModelCapabilities, ProgressAndCancel
 from app.provider.registry import UnsupportedModelError, model_capabilities
 from app.repositories.correction_repository import CorrectionRepository
 from app.repositories.transcript_segment_repository import TranscriptSegmentRepository
 from app.repositories.transcription_log_repository import TranscriptionLogRepository
 from app.runtime import run_mode
 from app.runtime.run_mode import publish_status
-from app.services import audio_store, output_format, traditional_output
+from app.services import audio_store, environment_manifest, output_format, traditional_output
 from app.services.calculator.models import CalculationItem
 from app.services.calculator.service import CalculatorService
 from app.services.transcription.models import TranscriptionResponse, TranscriptionTaskResult
@@ -107,6 +113,9 @@ class Task:
     session_id: Optional[str] = None
     batch_id: Optional[str] = None
     """所屬的批次；單檔任務是 None。批次的檔案記在批次底下，狀態廣播也帶著它。"""
+    prompt: Optional[Prompt] = None
+    """送出的提示詞，開始時記進任務紀錄（模型不吃提示詞時不記）。不會開始轉錄的任務（:meth:`TaskLifecycle.abandon`）
+    與接回的任務（:meth:`TaskLifecycle.resume`，開始時已經記了）是 None。"""
 
 
 @dataclass(frozen=True)
@@ -149,14 +158,18 @@ class TaskLifecycle:
     批次的檔案在結果回來時另外接回一個（:meth:`resume`）。"""
 
     def __init__(self, task_uuid: str, task: Task, *, duration: float = 0.0,
-                 started_at: Optional[float] = None):
-        """``duration`` 與 ``started_at`` 給接回的任務用：開始時量到的長度，以及開始的時間（處理時間
-        從這裡算起）。新的任務在開始時才量長度，從建立這個物件時算起。"""
+                 started_at: Optional[float] = None, environment: Optional[Dict[str, Any]] = None):
+        """``duration``、``started_at`` 與 ``environment`` 給接回的任務用：開始時量到的長度、開始的時間
+        （處理時間從這裡算起），以及開始時記下的轉錄環境。新的任務在開始時才量長度、記轉錄環境，處理時間
+        從建立這個物件時算起。"""
         self._task_uuid = task_uuid
         self._task = task
         self._input = _resolve_input(task.file_path, task_uuid)
         self._started_at = time.time() if started_at is None else started_at
         self._duration = duration
+        self._environment = environment
+        # 開始時記下的轉錄環境與提示詞（:meth:`_start`）；接回的任務沒有
+        self._started: Optional[dict] = None
         self._records = TranscriptionLogRepository()
         self._progress = ProgressAndCancel(self._report, self._cancel_requested)
 
@@ -193,7 +206,9 @@ class TaskLifecycle:
             batch_id=record.batch_id,
         )
         started_at = record.request_timestamp.timestamp() if record.request_timestamp else None
-        return cls(str(task_uuid), task, duration=duration, started_at=started_at)
+        return cls(str(task_uuid), task, duration=duration, started_at=started_at,
+                   environment=environment_manifest.from_record(
+                       cast(Optional[str], record.transcription_environment)))
 
     @property
     def task_uuid(self) -> str:
@@ -340,9 +355,17 @@ class TaskLifecycle:
         return self._fail(db, without_db_details(error), usage)
 
     def _start(self, db: Session) -> None:
-        """開始：建立任務紀錄，廣播處理中。"""
+        """開始：建立任務紀錄（連同轉錄環境與送出的提示詞），廣播處理中。
+
+        同一個任務再執行一次（Docker 模式的重派）、而任務已經有校正紀錄或確認狀態時，轉錄環境與提示詞
+        留著原本的：這次的轉錄結果不會寫（:meth:`_complete`），它們說明的是留下來的那份原始轉錄。
+        """
         task = self._task
-        self._records.insert_log(db, {"status": TaskStatus.PROCESSING, **self._record_fields()})
+        self._environment = self._describe_environment()
+        self._started = self._started_fields()
+        kept = CorrectionRepository.touched_by_user(db, self._task_uuid)
+        self._records.insert_log(db, {"status": TaskStatus.PROCESSING, **self._record_fields(),
+                                      **({} if kept else self._started)})
         if task.session_id:
             logger.info(
                 f"TranscriptionLog created session_id={task.session_id} file_uid={task.file_uid}")
@@ -557,6 +580,40 @@ class TaskLifecycle:
             "file_uid": task.file_uid,
         }
 
+    def _started_fields(self) -> dict:
+        """開始轉錄時才記的欄位（#343）：轉錄環境、送出的提示詞與有沒有附使用者文稿。"""
+        prompt = self._task.prompt
+        capabilities = self._capabilities()
+        # 只有吃提示詞的模型記：本機的模型照樣收到提示詞，但不看它。模型已經從清單拿掉、
+        # 不知道它吃不吃時也不記
+        reads_prompt = capabilities is not None and capabilities.accepts_prompt
+        return {
+            "transcription_environment": environment_manifest.to_record(self._environment),
+            "sent_prompt": prompt.recorded if prompt and reads_prompt else None,
+            # 派送時驗證過：只有吃使用者文稿的模型會附上
+            "user_supplied_text_attached": bool(prompt and prompt.user_text_attached),
+        }
+
+    def _describe_environment(self) -> Optional[Dict[str, Any]]:
+        """這個任務的轉錄環境；記不下時（例如模型已經從清單拿掉）只記 log，任務照樣轉錄。"""
+        task = self._task
+        try:
+            return environment_manifest.for_task(task.provider, task.model)
+        except Exception as e:
+            logger.warning(f"任務 {self._task_uuid} 記不下轉錄環境: {e}")
+            return None
+
+    def _transcript_source_fields(self, result: TranscriptionTaskResult) -> dict:
+        """存這次的轉錄結果時，轉錄環境與提示詞也換成這次的（#343）：開始時記下的那些，轉錄環境再補上
+        回應寫明的模型版本（Gemini）。接回的批次檔案開始時已經記過提示詞，這裡只補模型版本；沒有轉錄環境
+        （這一欄加上之前開始的任務）時不補。"""
+        fields = dict(self._started or {})
+        if self._environment is not None and result.model_versions:
+            self._environment = environment_manifest.with_model_versions(
+                self._environment, result.model_versions)
+            fields["transcription_environment"] = environment_manifest.to_record(self._environment)
+        return fields
+
     def _cancelled_fields(self) -> dict:
         return {
             "status": TaskStatus.CANCELLED,
@@ -612,11 +669,16 @@ class TaskLifecycle:
         return metrics.total_tokens, cost
 
     def _pricing(self) -> str:
+        capabilities = self._capabilities()
+        # 派送時驗證過；之後才從模型清單拿掉的模型照 token 計價
+        return capabilities.pricing if capabilities is not None else "per_token"
+
+    def _capabilities(self) -> Optional[ModelCapabilities]:
+        """這個模型現在的模型能力；派送之後才從模型清單拿掉的模型是 None。"""
         try:
-            return model_capabilities(self._task.provider, self._task.model).pricing
+            return model_capabilities(self._task.provider, self._task.model)
         except UnsupportedModelError:
-            # 派送時驗證過；之後才從模型清單拿掉的模型照 token 計價
-            return "per_token"
+            return None
 
     def _save_transcript(self, db: Session, result: TranscriptionTaskResult) -> None:
         """存這次的轉錄結果：片段、凍結的原始轉錄副本與掉尾的起點都換成這次的，這次沒有的片段也拿掉。
@@ -629,6 +691,7 @@ class TaskLifecycle:
             "lrc_content": output_format.frozen_copy(result) or None,
             # 沒有掉尾時寫 None：同一個任務再完成一次時，不留著上一次的起點
             "tail_loss_from_seconds": result.tail_loss_from,
+            **self._transcript_source_fields(result),
         }, commit=False)
         count = TranscriptSegmentRepository.replace_for_task(db, self._task_uuid, result.segments)
         logger.info(f"已寫入 {count} 個轉錄片段 (task={self._task_uuid})")

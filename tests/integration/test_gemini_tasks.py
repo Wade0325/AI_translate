@@ -7,19 +7,23 @@ sqlite、行程內執行模式、WebSocket 狀態廣播、ffmpeg 與去靜音。
 批次透過 API 跑完的測試在 test_batch.py（假供應商，#115）；Gemini 轉接器的批次在
 tests/unit/test_gemini_adapter.py。
 """
+import json
+import sys
 import threading
+from unittest.mock import MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
 
-from app.core.default_prompt import SPEAKER_INSTRUCTION, build_user_text_prompt
+from app.core.default_prompt import SPEAKER_INSTRUCTION, USER_TEXT_OMITTED, build_user_text_prompt
 from app.core.error_codes import ErrorCode
 from app.core.task_status import TaskStatus
+from app.core.version import APP_VERSION
 from app.provider import registry
 from app.provider.google.provider import GeminiProvider
 from tests.support.fake_genai import FakeGenaiClient, Reply, invalid_argument, unavailable
 from tests.support.synthetic_audio import VOICED
-from tests.support.task_api import receive_until, stored_segments, upload
+from tests.support.task_api import receive_until, stored_segments, task_record, upload
 from tests.support.waiting import TIMEOUT, wait_until
 
 MODEL = "gemini-2.5-flash"
@@ -262,6 +266,53 @@ def test_single_file_prompt_with_braces_reaches_gemini_as_written(
     assert genai.prompts == [JSON_TEMPLATE_SENT + "\n\n人名照寫：{佐藤}、{source_lang}"]
 
 
+# ─── 轉錄環境與送出的提示詞（#343） ──────────────────────────────────────────
+
+def test_the_task_records_its_environment_and_the_prompt_gemini_received(
+        api, in_process_run_mode, genai, saved_prompt_template, db_session):
+    # 記下的是真的送出去的那一份：範本代入之後，空一行接上補充說明。Gemini 沒有可以釘住的 revision，
+    # 轉錄環境記模型名稱，回應寫明的模型版本在完成時補記
+    saved_prompt_template("Google", JSON_TEMPLATE)
+    genai.replies = [Reply(text="[00:01.00]おはよう。", model_version="gemini-2.5-flash-002")]
+
+    end = transcribe(api, in_process_run_mode, "gemini-environment.wav",
+                     prompt="人名照寫：{佐藤}", source_lang="ja-JP")[-1]
+
+    assert end["status_code"] == TaskStatus.COMPLETED
+    record = task_record(db_session, end["task_uuid"])
+    assert record.sent_prompt == genai.prompts[0] == JSON_TEMPLATE_SENT + "\n\n人名照寫：{佐藤}"
+    assert record.user_supplied_text_attached is False
+    environment = json.loads(record.transcription_environment)
+    assert (environment["app_version"], environment["provider"], environment["model"]) == (
+        APP_VERSION, "google", MODEL)
+    assert environment["model_revisions"] == {}
+    assert environment["gpu"] is None
+    assert environment["model_versions"] == ["gemini-2.5-flash-002"]
+
+
+def test_a_gemini_task_does_not_ask_torch_about_the_gpu(
+        api, in_process_run_mode, genai, db_session, monkeypatch):
+    # 免安裝模式裡 Gemini 的任務和 torch 在同一個行程：記轉錄環境不能因此初始化 CUDA、執行 nvidia-smi
+    torch = MagicMock()
+    monkeypatch.setitem(sys.modules, "torch", torch)
+
+    end = transcribe(api, in_process_run_mode, "gemini-no-gpu-query.wav")[-1]
+
+    assert end["status_code"] == TaskStatus.COMPLETED
+    assert json.loads(task_record(db_session, end["task_uuid"]).transcription_environment)["gpu"] is None
+    assert torch.cuda.mock_calls == []
+
+
+def test_the_log_file_still_has_no_prompt(api, in_process_run_mode, genai, log_file):
+    # 日誌檔照舊不寫提示詞（#231 Q5），記進任務紀錄之後也一樣
+    end = transcribe(api, in_process_run_mode, "gemini-prompt-not-logged.wav",
+                     prompt="王小明的會議，人名照寫")[-1]
+
+    assert end["status_code"] == TaskStatus.COMPLETED
+    assert "王小明的會議" in genai.prompts[0]
+    assert "王小明的會議" not in log_file()
+
+
 # ─── 使用者文稿（#66） ──────────────────────────────────────────────────────
 
 USER_TEXT = "おはよう。\nこんにちは。"
@@ -281,6 +332,27 @@ def test_user_text_reaches_gemini_and_only_timestamps_are_asked_for(
     assert genai.prompts == [build_user_text_prompt(USER_TEXT, source_lang="ja")]
     assert "こんにちは。" in end["result"]["transcripts"]["srt"]
     assert genai.stored == {}
+
+
+def test_user_text_is_sent_but_only_its_attachment_is_recorded(
+        api, in_process_run_mode, genai, db_session, log_file):
+    # 文稿和音檔一起送到 Google，不存進資料庫（README）：記下的提示詞是送出的那一份把文稿換成一句說明，
+    # 指示與補充說明照記；另外記下有附使用者文稿。日誌檔一樣沒有文稿
+    genai.replies = [Reply(text="[00:00.50]おはよう。\n[00:03.00]こんにちは。")]
+
+    end = transcribe(api, in_process_run_mode, "gemini-user-text-recorded.wav",
+                     user_supplied_text=USER_TEXT, prompt="說話者是兩位主持人")[-1]
+
+    assert end["status_code"] == TaskStatus.COMPLETED
+    record = task_record(db_session, end["task_uuid"])
+    assert genai.prompts == [build_user_text_prompt(
+        USER_TEXT, source_lang="ja", supplement="說話者是兩位主持人")]
+    assert record.sent_prompt == genai.prompts[0].replace(USER_TEXT, USER_TEXT_OMITTED)
+    for sentence in USER_TEXT.splitlines():
+        assert sentence not in record.sent_prompt
+        assert sentence not in log_file()
+    assert "說話者是兩位主持人" in record.sent_prompt
+    assert record.user_supplied_text_attached is True
 
 
 def test_user_text_with_audio_longer_than_a_single_pass_is_not_uploaded(
@@ -316,6 +388,23 @@ def stored(api: TestClient, task_uuid: str) -> list[tuple]:
     segments = api.get(f"/api/v1/transcripts/{task_uuid}").json()["segments"]
     return [(next(i for i, (lo, hi) in enumerate(VOICED) if lo - 0.5 <= s["start"] <= hi + 0.5),
              s["speaker"], s["text"]) for s in segments]
+
+
+def test_chunked_transcription_records_the_one_prompt_the_task_built(
+        api, in_process_run_mode, genai, three_chunks, db_session):
+    # 每一段送出的是任務這一層組出來的同一份提示詞：只記一次。各段回應寫明的模型版本不重複地記下
+    genai.replies = [Reply(text="[00:00.50]おはよう。", model_version="gemini-2.5-flash-002"),
+                     Reply(text="[00:00.50]こんにちは。", model_version="gemini-2.5-flash-002"),
+                     Reply(text="[00:01.00]またね。", model_version="gemini-2.5-flash-003")]
+
+    end = transcribe(api, in_process_run_mode, "gemini-chunks-prompt.wav", prompt="人名照寫")[-1]
+
+    assert end["status_code"] == TaskStatus.COMPLETED
+    record = task_record(db_session, end["task_uuid"])
+    assert len(genai.prompts) == 3 and len(set(genai.prompts)) == 1
+    assert record.sent_prompt == genai.prompts[0]
+    assert json.loads(record.transcription_environment)["model_versions"] == [
+        "gemini-2.5-flash-002", "gemini-2.5-flash-003"]
 
 
 def test_chunk_without_any_line_is_skipped_and_the_others_are_kept(
