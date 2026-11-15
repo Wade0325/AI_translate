@@ -20,9 +20,10 @@ import json
 import os
 import sqlite3
 import sys
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, Iterator, List, Mapping, Optional, Sequence
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from sqlalchemy.engine import Engine
@@ -43,11 +44,11 @@ FIELDS = (
      "去靜音與分段轉錄的設定）；這一項做出來之前的任務是 null。"),
     ("original_text", "原始轉錄的文字；沒有文字是空字串。"),
     ("original_speaker", "原始轉錄的說話者編號（S0、S1…）；沒有說話者是 null。"),
-    ("corrected_text", "校正後版本的文字；刪掉的片段是空字串。"),
+    ("corrected_text", "校正後版本的文字；刪掉的片段（不在校正後版本裡）是空字串。"),
     ("corrected_speaker", "校正後版本的說話者編號（S0、S1…）；沒有說話者是 null。"),
-    ("corrected", "校正過沒有，文字或說話者和原始轉錄不同時是 true；改了又改回原樣的是 false。"),
-    ("deleted", "刪掉了沒有，校正後版本的文字是空的（不在下載的校正後版本裡）時是 true，"
-                "原始轉錄就沒有文字的片段也是。"),
+    ("corrected", "校正過沒有，校正後版本的文字或說話者和原始轉錄不同時是 true；改了又改回原樣的是 false。"),
+    ("deleted", "刪掉了沒有，校正後版本的文字是空的（不在下載的校正後版本裡）時是 true。原始轉錄就沒有文字、"
+                "沒有人刪的片段也是 true，用 original_text 是不是空的分辨。"),
     ("review_state", "確認狀態，verified（已確認）、flagged（待查），沒有標是 null。"),
 )
 """每一行的欄位與意思，依輸出的順序。"""
@@ -64,6 +65,9 @@ LEFT_OUT = (
 
 REMINDER = "檔案裡有轉錄的文字，交給別人之前先自己看過。"
 
+SQLITE_SIDE_FILES = ("-wal", "-shm", "-journal")
+"""SQLite 放在資料庫檔旁邊的檔案：WAL 與它的索引（app 用 WAL），以及其他日誌模式的 rollback journal。"""
+
 
 class UsageError(Exception):
     """參數指到不存在或不能用的檔案，或讀不了資料庫；訊息直接給人看。"""
@@ -78,10 +82,10 @@ class _Task:
     """一個要匯出的任務，只帶匯出要的欄位：原檔名、提示詞、保留音檔的檔名一開始就不讀。"""
 
     task_uuid: str
-    language: Optional[str]
-    provider: Optional[str]
-    model: Optional[str]
-    environment: Optional[Dict[str, Any]]
+    language: str | None
+    provider: str | None
+    model: str | None
+    environment: dict[str, Any] | None
 
 
 def _import_backend() -> None:
@@ -91,7 +95,7 @@ def _import_backend() -> None:
         sys.path.insert(0, backend)
 
 
-def _environment(recorded: Optional[str]) -> Optional[Dict[str, Any]]:
+def _parse_environment(recorded: str | None) -> dict[str, Any] | None:
     """任務紀錄裡的轉錄環境（JSON 物件）；沒有記、或讀不懂時是 None。
 
     和 ``app.services.environment_manifest.from_record`` 讀法相同；不 import 它，因為它會連帶 import
@@ -105,8 +109,9 @@ def _environment(recorded: Optional[str]) -> Optional[Dict[str, Any]]:
     return environment if isinstance(environment, dict) else None
 
 
-def _line(task: _Task, segment: Mapping[str, Any]) -> Dict[str, Any]:
-    """一個片段的一行。欄位一個一個挑，不整份照抄：校正後版本之後多了欄位（例如說話者名稱）也不會跟著出去。"""
+def _export_row(task: _Task, segment: Mapping[str, Any]) -> dict[str, Any]:
+    """一個片段在輸出裡的一行。欄位一個一個挑，不整份照抄：校正後版本之後多了欄位（例如說話者名稱）也不會
+    跟著出去。"""
     return {
         "task_uuid": task.task_uuid,
         "seg_key": segment["seg_key"],
@@ -126,21 +131,33 @@ def _line(task: _Task, segment: Mapping[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _side_files(db: Path) -> list[Path]:
+    return [db.with_name(db.name + suffix) for suffix in SQLITE_SIDE_FILES]
+
+
 def _read_only_engine(db: Path) -> Engine:
     """以唯讀的方式開 SQLite 資料庫檔（``mode=ro``）：SQLite 不寫資料庫檔，任何寫入都會失敗。
 
-    不用 app 的引擎工廠：它會設 WAL 這類會寫進檔案的 PRAGMA，也會建資料夾。app 正在執行時照樣讀得到它剛
-    寫完的內容（WAL）。"""
+    唯讀地開 WAL 模式的資料庫時，SQLite 會在旁邊建 -wal 與 -shm，關掉之後還留著。所以資料庫旁邊沒有任何
+    :data:`SQLITE_SIDE_FILES` 時（app 沒在執行，上次也正常關掉），內容全在資料庫檔裡，另外加 ``immutable=1``：
+    SQLite 不鎖檔、不建任何檔案，使用者的資料夾裡不會多出東西。有任何一個在時（app 正在執行，或被直接關掉而
+    留下還沒併回的 WAL）只用 ``mode=ro``，讀得到 WAL 裡最新的內容，用的是已經在的檔案。
+
+    不用 app 的引擎工廠：它會設 WAL 這類會寫進檔案的 PRAGMA，也會建資料夾。"""
     from sqlalchemy import create_engine
     from sqlalchemy.pool import NullPool
 
-    uri = db.resolve().as_uri() + "?mode=ro"
+    immutable = not any(path.exists() for path in _side_files(db))
+    uri = db.resolve().as_uri() + "?mode=ro" + ("&immutable=1" if immutable else "")
     return create_engine("sqlite://", creator=lambda: sqlite3.connect(uri, uri=True),
                          poolclass=NullPool, hide_parameters=True)
 
 
-def _tasks(db: Session) -> List[_Task]:
-    """有校正紀錄或確認狀態的任務，依送出的先後排序。"""
+def _tasks(db: Session) -> list[_Task]:
+    """有校正紀錄或確認狀態的任務，依送出的先後排序。
+
+    一個任務一個任務問 ``touched_by_user``（每個任務兩次查詢），「使用者動過」的判斷才只有一處；給開發者
+    偶爾執行的指令，上千個任務也只要幾秒。"""
     from sqlalchemy import inspect
 
     from app.database.models import TranscriptionLog
@@ -156,26 +173,25 @@ def _tasks(db: Session) -> List[_Task]:
     )
     return [
         _Task(task_uuid=str(row.task_uuid), language=row.source_language, provider=row.provider,
-              model=row.model_used, environment=_environment(row.transcription_environment))
+              model=row.model_used, environment=_parse_environment(row.transcription_environment))
         for row in rows
         if CorrectionRepository.touched_by_user(db, row.task_uuid)
     ]
 
 
-def _lines(db: Session, tasks: Sequence[_Task]) -> Iterator[Dict[str, Any]]:
+def _export_rows(db: Session, tasks: Sequence[_Task]) -> Iterator[dict[str, Any]]:
     from app.repositories.correction_repository import CorrectionRepository
 
     for task in tasks:
         for segment in CorrectionRepository.corrected_version(db, task.task_uuid):
-            yield _line(task, segment)
+            yield _export_row(task, segment)
 
 
 def _overwrites_database(out: Path, db_path: Path) -> bool:
-    """寫 ``out`` 會蓋掉資料庫檔，或 SQLite 放在它旁邊的 -wal 與 -shm 檔（還不在的也算：讀資料庫時 SQLite
-    可能建出來；符號連結、硬連結也算）。"""
-    database_files = (db_path, *(db_path.with_name(db_path.name + suffix) for suffix in ("-wal", "-shm")))
+    """寫 ``out`` 會蓋掉資料庫檔，或 SQLite 放在它旁邊的檔案（還不在的也算：app 下次執行時會建出來並照它讀；
+    符號連結、硬連結也算）。"""
     return any(out.resolve() == path.resolve() or (out.exists() and path.exists() and os.path.samefile(out, path))
-               for path in database_files)
+               for path in (db_path, *_side_files(db_path)))
 
 
 def export(db_path: Path, out: Path) -> tuple[int, int]:
@@ -188,7 +204,7 @@ def export(db_path: Path, out: Path) -> tuple[int, int]:
     if not db_path.is_file():
         raise UsageError(f"找不到資料庫檔：{db_path}")
     if _overwrites_database(out, db_path):
-        raise UsageError(f"--out 不能是資料庫檔本身，或它旁邊的 -wal、-shm 檔：{out}")
+        raise UsageError(f"--out 不能是資料庫檔本身，或它旁邊的 -wal、-shm、-journal 檔：{out}")
     if not out.parent.is_dir():
         raise UsageError(f"輸出的資料夾不存在：{out.parent}")
 
@@ -199,18 +215,17 @@ def export(db_path: Path, out: Path) -> tuple[int, int]:
     engine = _read_only_engine(db_path)
     try:
         with Session(engine) as db:
-            tasks = _tasks(db)
-            lines = list(_lines(db, tasks))
+            rows = list(_export_rows(db, _tasks(db)))
     except DatabaseError as error:
         raise UsageError(f"讀不了資料庫 {db_path}：{getattr(error, 'orig', error)}") from error
     finally:
         engine.dispose()
 
-    if not lines:
+    if not rows:
         raise NothingToExport(f"沒有校正過的任務：{db_path} 裡沒有任何任務有校正紀錄或確認狀態，沒有寫出 {out}。")
-    out.write_text("".join(json.dumps(line, ensure_ascii=False) + "\n" for line in lines),
+    out.write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows),
                    encoding="utf-8", newline="\n")
-    return len({line["task_uuid"] for line in lines}), len(lines)
+    return len({row["task_uuid"] for row in rows}), len(rows)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -221,7 +236,7 @@ def _parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         description=(
             "把有校正紀錄或確認狀態的任務匯出成原始轉錄與校正後版本的對照（JSONL）。\n"
-            "以唯讀的方式開資料庫，不啟動 app，也不上傳任何東西。"
+            "以唯讀的方式開資料庫，不啟動 app，也不上傳任何東西。app 開著時也能執行。"
         ),
         epilog=(
             "輸出：UTF-8 的 JSONL，每個片段一行，沒改過的片段也列，讓之後用的人自己篩。\n"
@@ -229,8 +244,6 @@ def _parser() -> argparse.ArgumentParser:
             f"{fields}\n\n"
             f"不含：\n{left_out}\n\n"
             "沒有可以匯出的任務時不寫出檔案，結束代碼是 1；參數或資料庫有問題時是 2。\n"
-            "資料庫是 WAL 模式時，SQLite 可能在它旁邊留下 -wal 與 -shm 兩個檔，下次開 app 時會收掉；"
-            "資料庫檔本身不會變。\n"
             f"{REMINDER}"
         ),
     )

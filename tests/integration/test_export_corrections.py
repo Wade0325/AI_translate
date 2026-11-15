@@ -10,9 +10,10 @@ import sqlite3
 import subprocess
 import sys
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterator
 
 import pytest
 from sqlalchemy.orm import Session, sessionmaker
@@ -104,21 +105,30 @@ def reviewed_only_task(db: Session) -> None:
     CorrectionRepository.record_operation(db, REVIEWED_ONLY, [], review_states={"0-1": ReviewState.FLAGGED})
 
 
-def saved_api_key(db: Session) -> None:
+def saved_gemini_settings(db: Session) -> None:
     """Settings 存的 Gemini 金鑰與提示詞範本。"""
     db.add(ModelConfiguration(provider="google", api_keys=json.dumps([API_KEY]), model="gemini-2.5-flash",
                               prompt=PROMPT_TEMPLATE))
     db.commit()
 
 
-def _write_database(path: Path, *builders: Callable[[Session], None]) -> Path:
-    """用 app 的引擎工廠（WAL）建資料庫並寫入，寫完關掉所有連線：WAL 併回資料庫檔，和關掉 app 之後一樣。"""
+@contextmanager
+def _app_database(path: Path) -> Iterator[Session]:
+    """用 app 的引擎工廠（WAL，和免安裝模式相同）建資料庫，給一個 session；離開時關掉所有連線，WAL 併回
+    資料庫檔，和正常關掉 app 之後一樣。"""
     engine = _create_engine(f"sqlite:///{path.as_posix()}")
     Base.metadata.create_all(bind=engine)
-    with sessionmaker(bind=engine)() as db:
+    try:
+        with sessionmaker(bind=engine)() as db:
+            yield db
+    finally:
+        engine.dispose()
+
+
+def _write_database(path: Path, *builders: Callable[[Session], None]) -> Path:
+    with _app_database(path) as db:
         for build in builders:
             build(db)
-    engine.dispose()
     return path
 
 
@@ -137,16 +147,20 @@ def out_folder(out):
     out.parent.mkdir()
 
 
-def _export(db: Path, out: Path) -> int:
-    return export_corrections.main(["--db", str(db), "--out", str(out)])
+def _export(db_path: Path, out: Path) -> int:
+    return export_corrections.main(["--db", str(db_path), "--out", str(out)])
 
 
-def _lines(out: Path) -> list[dict]:
+def _read_export(out: Path) -> list[dict]:
     return [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
 
 
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _listing(folder: Path) -> list[str]:
+    return sorted(path.name for path in folder.iterdir())
 
 
 def _line(task_uuid, seg_key, start, end, original_text, original_speaker, corrected_text, corrected_speaker, *,
@@ -162,11 +176,11 @@ def _line(task_uuid, seg_key, start, end, original_text, original_speaker, corre
 
 
 def test_exports_only_the_corrected_task_one_line_per_segment(db_file, out, capsys):
-    db = db_file(corrected_task, untouched_task)
+    db_path = db_file(corrected_task, untouched_task)
 
-    assert _export(db, out) == 0
+    assert _export(db_path, out) == 0
 
-    assert _lines(out) == [
+    assert _read_export(out) == [
         _line(CORRECTED, "0-0", 0.0, 2.5, "大家好，今天先看進度。", "S0", "大家好，今天先看專案進度。", "S0",
               corrected=True, deleted=False, review_state="verified"),
         _line(CORRECTED, "0-1", 2.5, 4.0, "好的，我先報告。", "S1", "好的，我先報告。", "S0",
@@ -174,7 +188,7 @@ def test_exports_only_the_corrected_task_one_line_per_segment(db_file, out, caps
         _line(CORRECTED, "0-2", 4.0, 4.6, "嗯嗯", "S1", "", "S1",
               corrected=True, deleted=True, review_state=None),
     ]
-    assert list(_lines(out)[0]) == EXPECTED_FIELDS
+    assert list(_read_export(out)[0]) == EXPECTED_FIELDS
     assert "1 個任務、3 個片段" in capsys.readouterr().out
 
 
@@ -185,31 +199,31 @@ def test_unchanged_segments_of_an_exported_task_are_listed_too(db_file, out):
 
     assert _export(db_file(one_change), out) == 0
 
-    lines = _lines(out)
+    lines = _read_export(out)
     assert [line["seg_key"] for line in lines] == ["0-0", "0-1", "0-2"]
     assert [line["corrected"] for line in lines] == [False, True, False]
     assert lines[0]["corrected_text"] == lines[0]["original_text"] == "大家好，今天先看進度。"
 
 
 def test_output_leaves_out_filename_speaker_names_prompts_api_keys_and_retained_audio(db_file, out):
-    db = db_file(corrected_task, reviewed_only_task, saved_api_key)
+    db_path = db_file(corrected_task, reviewed_only_task, saved_gemini_settings)
 
-    assert _export(db, out) == 0
+    assert _export(db_path, out) == 0
 
     exported = out.read_text(encoding="utf-8")
     for private in (ORIGINAL_FILENAME, SPEAKER_NAME, SENT_PROMPT, "極光計畫", PROMPT_TEMPLATE, API_KEY,
                     f"{CORRECTED}.m4a", f"{REVIEWED_ONLY}.m4a", "audio_store"):
         assert private not in exported, private
-    assert all(set(line) == set(EXPECTED_FIELDS) for line in _lines(out))
+    assert all(set(line) == set(EXPECTED_FIELDS) for line in _read_export(out))
 
 
 def test_task_with_only_a_review_state_is_exported(db_file, out):
-    db = db_file(untouched_task, reviewed_only_task)
+    db_path = db_file(untouched_task, reviewed_only_task)
 
-    assert _export(db, out) == 0
+    assert _export(db_path, out) == 0
 
     environment = None
-    assert _lines(out) == [
+    assert _read_export(out) == [
         _line(REVIEWED_ONLY, "0-0", 0.0, 2.5, "大家好，今天先看進度。", "S0", "大家好，今天先看進度。", "S0",
               corrected=False, deleted=False, review_state=None, language="ja", provider="local",
               model="moss-align", environment=environment),
@@ -222,17 +236,17 @@ def test_task_with_only_a_review_state_is_exported(db_file, out):
 def test_deleted_segment_is_listed_and_marked_deleted(db_file, out):
     assert _export(db_file(corrected_task), out) == 0
 
-    deleted = [line for line in _lines(out) if line["seg_key"] == "0-2"]
+    deleted = [line for line in _read_export(out) if line["seg_key"] == "0-2"]
     assert deleted == [_line(CORRECTED, "0-2", 4.0, 4.6, "嗯嗯", "S1", "", "S1",
                              corrected=True, deleted=True, review_state=None)]
 
 
 def test_tasks_are_in_the_order_they_were_submitted(db_file, out):
-    db = db_file(reviewed_only_task, corrected_task)
+    db_path = db_file(reviewed_only_task, corrected_task)
 
-    assert _export(db, out) == 0
+    assert _export(db_path, out) == 0
 
-    tasks = [line["task_uuid"] for line in _lines(out)]
+    tasks = [line["task_uuid"] for line in _read_export(out)]
     assert tasks == [str(CORRECTED)] * 3 + [str(REVIEWED_ONLY)] * 2
 
 
@@ -245,52 +259,54 @@ def test_nothing_to_export_says_so_and_writes_no_file(db_file, out, capsys):
 
 def test_database_from_before_corrections_existed_has_nothing_to_export(tmp_path, out, capsys):
     """v0.1.0 的資料庫（凍結 schema）還沒有校正紀錄的資料表。"""
-    db = tmp_path / "app.db"
-    with sqlite3.connect(db) as connection:
+    db_path = tmp_path / "app.db"
+    with sqlite3.connect(db_path) as connection:
         connection.executescript(FROZEN_V010.read_text(encoding="utf-8"))
         connection.execute(
             "INSERT INTO transcription_logs (task_uuid, status, original_filename) VALUES (?, 'COMPLETED', ?)",
             (UNTOUCHED.hex, ORIGINAL_FILENAME))
     connection.close()
-    before = _sha256(db)
+    before = _sha256(db_path)
 
-    assert _export(db, out) != 0
+    assert _export(db_path, out) != 0
 
     assert "沒有校正過的任務" in capsys.readouterr().err
     assert not out.exists()
-    assert _sha256(db) == before
+    assert _sha256(db_path) == before
 
 
-def test_database_file_is_the_same_before_and_after(db_file, out):
-    db = db_file(corrected_task, untouched_task, reviewed_only_task, saved_api_key)
-    before = _sha256(db)
+def test_database_file_is_the_same_before_and_after_and_nothing_is_added_next_to_it(db_file, out):
+    """app 正常關掉之後的資料庫（WAL 已經併回、旁邊沒有 -wal 與 -shm）：SQLite 唯讀地開 WAL 模式的資料庫時
+    會建這兩個檔、關掉後還留著，匯出不能在使用者的資料夾裡留下它們。"""
+    db_path = db_file(corrected_task, untouched_task, reviewed_only_task, saved_gemini_settings)
+    before, files_before = _sha256(db_path), _listing(db_path.parent)
+    assert files_before == ["app.db"]
 
-    assert _export(db, out) == 0
+    assert _export(db_path, out) == 0
 
-    assert _sha256(db) == before
+    assert _sha256(db_path) == before
+    assert _listing(db_path.parent) == files_before
 
 
 def test_reads_what_is_still_in_the_wal_without_merging_it_into_the_database_file(tmp_path, out):
     """app 被直接關掉（例如關掉啟動器的黑色視窗）時，最後的寫入還在 -wal 檔、沒有併回資料庫檔。匯出照樣讀得到，
     而且不替它併回去：資料庫檔不變。"""
     live = tmp_path / "live" / "app.db"
-    engine = _create_engine(f"sqlite:///{live.as_posix()}")
-    Base.metadata.create_all(bind=engine)
-    with sessionmaker(bind=engine)() as db:
-        corrected_task(db)
-        crashed = tmp_path / "crashed"
-        crashed.mkdir()
+    crashed = tmp_path / "crashed"
+    crashed.mkdir()
+    with _app_database(live) as session:
+        corrected_task(session)
         for suffix in ("", "-wal", "-shm"):  # app 還開著時的檔案，就是它被直接關掉時留下的樣子
             (crashed / f"app.db{suffix}").write_bytes(live.with_name(f"app.db{suffix}").read_bytes())
-    engine.dispose()
-    db = crashed / "app.db"
+    db_path = crashed / "app.db"
     assert (crashed / "app.db-wal").stat().st_size > 0
-    before = _sha256(db)
+    before, files_before = _sha256(db_path), _listing(crashed)
 
-    assert _export(db, out) == 0
+    assert _export(db_path, out) == 0
 
-    assert [line["corrected_text"] for line in _lines(out)] == ["大家好，今天先看專案進度。", "好的，我先報告。", ""]
-    assert _sha256(db) == before
+    assert [row["corrected_text"] for row in _read_export(out)] == ["大家好，今天先看專案進度。", "好的，我先報告。", ""]
+    assert _sha256(db_path) == before
+    assert _listing(crashed) == files_before
 
 
 def test_reminds_to_read_the_file_before_handing_it_over(db_file, out, capsys):
@@ -347,23 +363,23 @@ def test_output_folder_must_exist(db_file, tmp_path, capsys):
 
 
 def test_refuses_to_write_over_the_database(db_file, capsys):
-    db = db_file(corrected_task)
-    before = _sha256(db)
+    db_path = db_file(corrected_task)
+    before = _sha256(db_path)
 
-    assert _export(db, db) == 2
+    assert _export(db_path, db_path) == 2
 
     assert "不能是資料庫檔本身" in capsys.readouterr().err
-    assert _sha256(db) == before
+    assert _sha256(db_path) == before
 
 
 def test_refuses_to_write_where_sqlite_keeps_the_wal(db_file, capsys):
     """關掉 app 之後 -wal 檔不在，但唯讀地開資料庫時 SQLite 可能建出來；寫進去的 JSONL 會被下次開 app 的
     SQLite 當成 WAL 來讀。"""
-    db = db_file(corrected_task)
-    wal = db.with_name("app.db-wal")
+    db_path = db_file(corrected_task)
+    wal = db_path.with_name("app.db-wal")
     assert not wal.exists()
 
-    assert _export(db, wal) == 2
+    assert _export(db_path, wal) == 2
 
     assert "-wal" in capsys.readouterr().err
     assert not wal.exists()
@@ -371,15 +387,15 @@ def test_refuses_to_write_where_sqlite_keeps_the_wal(db_file, capsys):
 
 def test_runs_as_a_module_without_starting_the_app(db_file, out, tmp_path):
     """從 repo 根目錄照說明執行：資料夾設定指到的免安裝模式資料夾不會被建立（沒有初始化資料庫、日誌或設定）。"""
-    db = db_file(corrected_task)
+    db_path = db_file(corrected_task)
     app_data = tmp_path / "app-data-should-stay-absent"
     env = {**os.environ, "APP_MODE": "standalone", "AIT_DATA_DIR": str(app_data), "PYTHONIOENCODING": "utf-8"}
     env.pop("PYTHONPATH", None)
 
-    done = subprocess.run([sys.executable, "-m", "tools.export_corrections", "--db", str(db), "--out", str(out)],
+    done = subprocess.run([sys.executable, "-m", "tools.export_corrections", "--db", str(db_path), "--out", str(out)],
                           cwd=ROOT, env=env, capture_output=True, encoding="utf-8", check=False)
 
     assert done.returncode == 0, done.stderr
-    assert len(_lines(out)) == 3
+    assert len(_read_export(out)) == 3
     assert "交給別人之前先自己看過" in done.stdout
     assert not app_data.exists()
