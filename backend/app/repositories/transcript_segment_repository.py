@@ -119,7 +119,8 @@ class TranscriptSegmentRepository:
         ]
 
     @staticmethod
-    def delete_for_task(db: Session, task_uuid) -> int:
+    def delete_for_task(db: Session, task_uuid, *, commit: bool = True) -> int:
+        """刪掉一個任務的所有片段，回傳刪了幾筆。``commit=False`` 時只寫進目前的交易。"""
         uuid_val = coerce_uuid(task_uuid)
         if uuid_val is None:
             return 0
@@ -128,7 +129,7 @@ class TranscriptSegmentRepository:
             .filter(TranscriptSegment.task_uuid == uuid_val)
             .delete(synchronize_session=False)
         )
-        if deleted:
+        if deleted and commit:
             db.commit()
         return deleted
 

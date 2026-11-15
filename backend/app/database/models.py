@@ -19,6 +19,7 @@ from sqlalchemy import (
     Text,
     UUID,
     UniqueConstraint,
+    event,
 )
 from sqlalchemy.orm import declarative_base
 
@@ -191,3 +192,42 @@ class TranscriptSegment(Base):
     review_state = Column(String, nullable=True)  # None / flagged / verified
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class CorrectionRecord(Base):
+    """校正紀錄（ADR 0011）：一次校正留下的一筆，寫入後不改、不刪，只有刪掉整個任務時一起刪。
+
+    片段（``TranscriptSegment``）存的是原始轉錄；校正後版本不另外存，由原始轉錄套上每個對象、
+    每種內容最新的一筆校正紀錄算出來（``app.repositories.correction_repository``）。先後看
+    ``id``，不看時間。
+
+    ``target`` 是片段的 ``seg_key``；說話者名稱的紀錄是說話者編號（例如 ``S0``）。
+    ``field`` 是改了什麼：``text``、``speaker`` 或 ``speaker_name``
+    （``app.repositories.correction_repository.CorrectionField``）。刪掉片段是文字改成空字串。
+    使用者的一個動作寫下的紀錄共用一個 ``operation_id``，復原一次操作就照它找。
+    """
+
+    __tablename__ = 'correction_records'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    # 刪掉任務紀錄時明確刪除（app.api.history 的 delete_history）：SQLite 預設不強制外鍵
+    task_uuid = Column(
+        UUID(as_uuid=True),
+        ForeignKey("transcription_logs.task_uuid", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    target = Column(String, nullable=False)       # seg_key，或說話者編號
+    field = Column(String, nullable=False)        # text / speaker / speaker_name
+    old_value = Column(Text, nullable=True)       # 改前
+    new_value = Column(Text, nullable=True)       # 改後
+    operation_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.now)
+
+
+@event.listens_for(CorrectionRecord, "before_update")
+@event.listens_for(CorrectionRecord, "before_delete")
+def _correction_records_are_append_only(_mapper, _connection, _target):
+    """校正紀錄寫入後不改、不刪（ADR 0011）：經過 ORM 改或刪一筆時直接失敗。刪掉整個任務時用
+    ``CorrectionRepository.delete_for_task``，它一次刪掉整個任務的紀錄，不經過這裡。"""
+    raise RuntimeError("校正紀錄寫入後不改、不刪（ADR 0011）")
