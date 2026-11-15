@@ -442,6 +442,10 @@ git config core.hooksPath .githooks
 
 `backend\.venv\Scripts\python.exe -m tools.eval transcribe ...` 用正式的轉錄路徑轉錄一個音檔，輸出轉錄結果與記下環境和耗時的 manifest；`backend\.venv\Scripts\python.exe -m tools.eval eval ...` 拿轉錄結果和評測集的標準答案比對，算錯字率與說話者歸屬。標準答案留在 repo 外的研究區。用法見 [`tools/eval/README.md`](tools/eval/README.md)。
 
+### 匯出校正對照（開發者工具）
+
+`backend\.venv\Scripts\python.exe -m tools.export_corrections --db <解壓資料夾>\data\app.db --out corrections.jsonl` 把有校正紀錄或確認狀態的任務匯出成原始轉錄與校正後版本的對照（JSONL，每個片段一行），留作日後自我優化的材料。它以唯讀的方式開資料庫、不啟動 app，也不上傳任何東西；檔案不含原檔名、說話者名稱、提示詞、API 金鑰與保留音檔，但有轉錄的文字，交給別人之前先自己看過。每個欄位的意思見 `--help`。
+
 ### 建置 Windows 免安裝發布包
 
 ```powershell
