@@ -44,10 +44,10 @@ test('改一個片段的說話者：換成新的說話者就拆開了，之後�
     await expect(page.getByRole('status')).toContainText('已存檔')
     expect(writes(backend)).toEqual([['PATCH', '/segments/0.0003', { speaker: 'S2' }]])
 
-    // 校正過的片段展開看得到原始轉錄的說話者
+    // 校正過的片段展開是歷程（#355）：說話者的校正與原始轉錄的說話者
     await rowAt(page, 3).getByRole('button', { name: '校正過' }).click()
+    await expect(rowAt(page, 3)).toContainText('S1 → S2')
     await expect(rowAt(page, 3)).toContainText('原始轉錄')
-    await expect(rowAt(page, 3)).toContainText('S1')
 
     // 下一個新的說話者是 S3；S2 成了現有的說話者
     await speakerButton(page, 1).click()
@@ -77,6 +77,9 @@ test('把這位說話者全部換成另一位，按「復原」整批收回', as
     expect(fake.records.map((r) => [r.seg_key, r.before, r.after, r.operation_id])).toEqual([
         ['0.0000', 'S0', 'S1', 'op-1'], ['0.0002', 'S0', 'S1', 'op-1'],
     ])
+    // 片段的歷程（#355）把它標成整批操作
+    await rowAt(page, 0).getByRole('button', { name: '校正過' }).click()
+    await expect(rowAt(page, 0)).toContainText('整批操作：一共改了 2 個片段')
 
     await page.getByRole('status').getByRole('button', { name: '復原' }).click()
 
@@ -143,6 +146,10 @@ test('整份當成同一位說話者時不顯示說話者與相關操作；切�
     await expect(page.locator('.correction-speaker')).toHaveCount(0)
     await expect(rowAt(page, 2).getByRole('button', { name: '校正過' })).toHaveCount(0)
     expect(writes(backend).at(-1)).toEqual(['PATCH', '', { single_speaker: true }])
+    // 歷程還在，但不列說話者的校正，也不寫原始轉錄的說話者
+    await rowAt(page, 2).getByRole('button', { name: '歷程' }).click()
+    await expect(rowAt(page, 2)).toContainText('另有 1 筆說話者的校正')
+    await expect(rowAt(page, 2)).not.toContainText(/S[01]/)
 
     // 設定存在任務上：重新整理之後還是整份當成同一位
     await page.reload()

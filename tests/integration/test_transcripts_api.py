@@ -560,6 +560,9 @@ class TestReassignSpeaker:
         assert _records(db_session, log.task_uuid) == [("speaker", "S3", "S0", operation)] * 2
         # 原始轉錄不變
         assert _download(client, log.task_uuid, "original") == original_download
+        # 片段的歷程（#355）把它當成整批操作：一共改了 2 個片段
+        history = client.get(f"/api/v1/transcripts/{log.task_uuid}/segments/0001/correction-records").json()
+        assert [(r["operation_id"], r["operation_segment_count"]) for r in history["records"]] == [(operation, 2)]
 
         undo = client.post(_undo_url(log.task_uuid, operation)).json()
 
