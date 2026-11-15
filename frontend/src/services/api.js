@@ -109,9 +109,13 @@ export const api = {
     delete(taskUuid) {
       return request(`/history/${taskUuid}`, { method: 'DELETE' });
     },
-    /** 以一種輸出格式下載轉錄結果（fmt: lrc | srt | vtt | txt），回傳純文字內容 */
-    async downloadTranscript(taskUuid, fmt) {
-      const res = await fetch(`${BASE_URL}/history/${taskUuid}/download/${fmt}`);
+    /**
+     * 以一種輸出格式下載轉錄結果（fmt: lrc | srt | vtt | txt），回傳純文字內容。version 是 corrected
+     * （校正後版本）或 original（原始轉錄）；沒給時後端給校正後版本（#346）
+     */
+    async downloadTranscript(taskUuid, fmt, { version } = {}) {
+      const query = version ? `?${new URLSearchParams({ version })}` : '';
+      const res = await fetch(`${BASE_URL}/history/${taskUuid}/download/${fmt}${query}`);
       if (!res.ok) {
         let payload = null;
         try {

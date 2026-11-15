@@ -161,9 +161,9 @@ class TranscriptSegment(Base):
     （#115 之前的沒有）。說話者分離給出的每一段各一列，可逐段更新、可標記、可回溯；Gemini 的
     片段是它 LRC 的一行，Gemini 寫明結束的才有結束時間。
 
-    ``seg_key`` 是確定性的（切段序號 + 片段序號），所以任務被重派或重新轉錄時對得上同一段，
-    不會產生重複資料；使用者動過的片段不刪、不覆寫（見 ``TranscriptSegmentRepository``
-    的 ``replace_untouched``）。``text_alt`` 存另一個模型對同一段的轉錄
+    片段存的是原始轉錄，校正不改它：校正另存成校正紀錄（``CorrectionRecord``，ADR 0011），以
+    ``seg_key``（確定性的切段序號 + 片段序號）為對象；``source`` 只記原始轉錄的來源。同一個任務
+    再完成一次時換不換片段，見 ``app.tasks.lifecycle``。``text_alt`` 存另一個模型對同一段的轉錄
     （local provider 的 VibeVoice 文字），兩者不一致處即是需要人工複查的候選。
     """
 
@@ -186,7 +186,7 @@ class TranscriptSegment(Base):
     speaker = Column(String, nullable=True)       # "S0" / "S1"
     text = Column(Text, nullable=True)            # 主要轉錄結果
     text_alt = Column(Text, nullable=True)        # 另一模型的轉錄（分歧偵測用）
-    source = Column(String, nullable=True)        # qwen / vibevoice / aligned / edited
+    source = Column(String, nullable=True)        # 原始轉錄的來源：qwen / vibevoice / aligned
     words_json = Column(Text, nullable=True)      # [{"text","start","end"}]，絕對時間
     confidence = Column(Float, nullable=True)
     review_state = Column(String, nullable=True)  # None / flagged / verified

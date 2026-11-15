@@ -21,6 +21,7 @@ from app.core.default_prompt import build_prompt
 from app.core.error_codes import ErrorCode
 from app.core.task_status import TaskStatus
 from app.core.version import APP_VERSION
+from app.repositories.correction_repository import Correction, CorrectionField, CorrectionRepository
 from app.exceptions import TransientError
 from app.runtime import run_mode
 from app.tasks import batch_core
@@ -263,6 +264,25 @@ def test_a_file_that_stopped_early_is_recorded_like_a_single_file_task(
     # 之後再取回結果，從任務紀錄讀出，和完成時廣播的相同
     again = api.post("/api/v1/batch/batch-tail-loss/recover", json={}).json()
     assert [f["result"] for f in again["files"]] == [stopped["result"], whole["result"]]
+
+
+def test_results_recovered_after_a_correction_are_the_corrected_version(
+        api, in_process_run_mode, batch_fake, db_session):
+    # Tasks 頁取回的結果和下載一樣給校正後版本（#346）：完成之後在校正頁改過，再取回時拿到的是改好的
+    # 內容，不會是校正前的。寫入校正的端點（#341）還沒做好，校正直接用 #340 的 repository 記
+    batch_fake.script = [list(LINES)]
+    names = ["corrected-later.wav"]
+    (end,) = ends(run_batch(api, in_process_run_mode, "batch-corrected", names), names)
+    first, second, _ = stored_segments(api, end["task_uuid"])
+    CorrectionRepository.record_operation(db_session, end["task_uuid"], [
+        Correction(first["seg_key"], CorrectionField.TEXT, "おはようございます。"),
+        Correction(second["seg_key"], CorrectionField.TEXT, ""),
+    ])
+
+    (again,) = api.post("/api/v1/batch/batch-corrected/recover", json={}).json()["files"]
+    transcripts = again["result"]["transcripts"]
+    assert transcripts["txt"] == "おはようございます。\nまたね。"
+    assert transcripts == {fmt: download(api, end["task_uuid"], fmt) for fmt in ("lrc", "srt", "vtt", "txt")}
 
 
 def test_silence_after_the_last_segment_is_not_tail_loss_even_when_it_is_not_cut(

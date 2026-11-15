@@ -12,8 +12,8 @@ import {
 import { Link } from "react-router-dom"
 import { FileAudio, Coins, Clock, TrendingUp } from "lucide-react"
 import { api } from "../services/api"
-import { downloadFormats } from "../constants/downloadFormats"
-import { downloadBlob, renameExtension } from "../utils/download"
+import { downloadBlob } from "../utils/download"
+import { ORIGINAL, downloadMenuItems, downloadTarget, transcriptFileName } from "../utils/transcriptVersions"
 import { StatCard } from "../components/StatCard"
 import { STATUS_META, TASK_STATUS } from "../constants/taskStatus"
 import { FailureSummary } from "../components/FailureNotice"
@@ -97,12 +97,15 @@ export default function HistoryPage() {
         fetchHistory(1, pagination.pageSize)
     }
 
-    const handleDownload = async (record, format) => {
+    /** key 是下載選單的項目（utils/transcriptVersions.js）：帶著版本與輸出格式（#346） */
+    const handleDownload = async (record, key) => {
+        const { version, format } = downloadTarget(key)
         try {
-            const content = await api.history.downloadTranscript(record.task_uuid, format)
+            const content = await api.history.downloadTranscript(record.task_uuid, format, { version })
             const fileName = record.original_filename || "transcript"
-            downloadBlob(content, renameExtension(fileName, format))
-            message.success(`已下載 ${format.toUpperCase()} 檔`)
+            downloadBlob(content, transcriptFileName(fileName, format, version))
+            const label = format.toUpperCase()
+            message.success(version === ORIGINAL ? `已下載原始轉錄的 ${label} 檔` : `已下載 ${label} 檔`)
         } catch (error) {
             console.error("下載轉錄結果失敗:", error)
             message.error(error?.message || "下載失敗")
@@ -234,13 +237,11 @@ export default function HistoryPage() {
                             </Link>
                         </Tooltip>
                     )}
+                    {/* 有校正的任務多一組「原始轉錄」；沒有校正的任務和以前一樣只有四種輸出格式（#346） */}
                     {record.status === TASK_STATUS.COMPLETED && (
                         <Dropdown
                             menu={{
-                                items: downloadFormats.map((f) => ({
-                                    key: f.key,
-                                    label: f.label,
-                                })),
+                                items: downloadMenuItems(record.has_corrections),
                                 onClick: ({ key }) => handleDownload(record, key),
                             }}
                         >
