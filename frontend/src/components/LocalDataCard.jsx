@@ -13,7 +13,7 @@ const pathStyle = { color: "#e8e8e8", fontSize: 12, fontFamily: "monospace", wor
 
 /** 免安裝版 data 資料夾裡的項目：哪些是個人資料，哪些只是模型權重。 */
 const DATA_ITEMS = [
-    ["app.db", "任務紀錄、轉錄結果與 API 金鑰"],
+    ["app.db", "任務紀錄、轉錄結果、Gemini 任務送出的提示詞（不含使用者文稿）與 API 金鑰"],
     ["audio_store", "保留音檔"],
     ["temp_uploads", "上傳後還沒轉錄完的音檔"],
     ["vad_artifacts", "去靜音與切點預覽留下的音檔（開發者工具）"],

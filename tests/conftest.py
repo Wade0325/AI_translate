@@ -289,6 +289,17 @@ def fake():
 
 
 @pytest.fixture(autouse=True)
+def gpu_asked_afresh():
+    """每個測試重新問顯卡：任務記轉錄環境時，同一個行程只問一次顯卡（#343），前一個測試換上的假 torch
+    問到的顯卡不留給下一個測試。"""
+    from app.services import environment_manifest
+
+    environment_manifest.forget_gpu()
+    yield
+    environment_manifest.forget_gpu()
+
+
+@pytest.fixture(autouse=True)
 def no_real_embedder():
     """測試不載入真的 CAM++：它會匯入（假的）torch，本機沒有權重時還會從 Hugging Face 下載（#335）。要對齊的
     測試用下面的 ``embedder``；漏掉它時，說話者嵌入建立不了，分段轉錄照「嵌入用不了」的退路走。"""

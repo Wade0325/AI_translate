@@ -564,6 +564,7 @@ class _ChunkedTranscription:
             output_tokens=usage.output_tokens,
             total_tokens=usage.total_tokens,
             service_tier_used=usage.service_tier_used,
+            model_versions=usage.model_versions,
             segments=list(segments),
             tail_loss_from=tail_loss_from,
         )
@@ -639,8 +640,8 @@ def _why_no_segments(segments: Sequence[Mapping[str, Any]],
 def _add_usage(
     usage: Optional[TranscriptionTaskResult], part: TranscriptionTaskResult
 ) -> TranscriptionTaskResult:
-    """到目前為止的用量加上這一次的，回傳只帶 token 數與處理模式的轉錄結果（不是可以採用的結果，
-    所以 success 是 False）；處理模式每一次都一樣才照記，不然算標準。"""
+    """到目前為止的用量加上這一次的，回傳只帶 token 數、處理模式與模型版本的轉錄結果（不是可以採用的
+    結果，所以 success 是 False）；處理模式每一次都一樣才照記，不然算標準；模型版本依出現的順序、不重複。"""
     if usage is None:
         usage = TranscriptionTaskResult(success=False, service_tier_used=part.service_tier_used)
     return TranscriptionTaskResult(
@@ -650,4 +651,5 @@ def _add_usage(
         total_tokens=usage.total_tokens + part.total_tokens,
         service_tier_used=(usage.service_tier_used
                            if usage.service_tier_used == part.service_tier_used else "standard"),
+        model_versions=list(dict.fromkeys([*usage.model_versions, *part.model_versions])),
     )

@@ -4,6 +4,7 @@
 
 - 上傳的檔案處理完（ACTIVE）才能拿來轉錄，還在處理中就回 400；
 - 回應的 header ``x-gemini-service-tier`` 是實際用到的處理模式；
+- 回應寫明產生它的模型版本（``model_version``），沒有另外指定時是請求的模型名稱；
 - 批次每查一次就往下一個狀態走；成功結束時，每個請求一份回應，順序和送出時相同。
   沒有另外指定的請求，回應的文字是 ``[00:00.00]<這個請求的提示詞>``；
   送出時請求引用的檔案不在遠端，那個請求回錯誤。
@@ -68,6 +69,8 @@ class Reply:
     """實際用到的處理模式；None 表示照請求的處理模式。"""
     finish_reason: Optional[types.FinishReason] = None
     """模型為什麼停止產生；例如 SAFETY、RECITATION 時文字常常是空的。None 表示沒有寫。"""
+    model_version: Optional[str] = None
+    """回應寫明的模型版本；None 表示和請求的模型名稱相同。"""
 
 
 @dataclass
@@ -84,7 +87,8 @@ BatchOutcome = Union[Reply, Blocked, types.JobError]
 """批次裡一個請求的結果：回應、被阻擋，或這個請求的錯誤。"""
 
 
-def _response(outcome: Union[Reply, Blocked], tier: Optional[str]) -> types.GenerateContentResponse:
+def _response(outcome: Union[Reply, Blocked], tier: Optional[str],
+              model: str) -> types.GenerateContentResponse:
     headers = {"x-gemini-service-tier": tier} if tier else {}
     if isinstance(outcome, Blocked):
         return types.GenerateContentResponse(
@@ -92,6 +96,7 @@ def _response(outcome: Union[Reply, Blocked], tier: Optional[str]) -> types.Gene
             usage_metadata=types.GenerateContentResponseUsageMetadata(
                 prompt_token_count=100, total_token_count=100),
             sdk_http_response=types.HttpResponse(headers=headers),
+            model_version=model,
         )
     return types.GenerateContentResponse(
         candidates=[types.Candidate(
@@ -103,6 +108,7 @@ def _response(outcome: Union[Reply, Blocked], tier: Optional[str]) -> types.Gene
             total_token_count=outcome.input_tokens + outcome.output_tokens,
         ),
         sdk_http_response=types.HttpResponse(headers=headers),
+        model_version=outcome.model_version or model,
     )
 
 
@@ -203,7 +209,7 @@ class _Models:
         if isinstance(outcome, Exception):
             raise outcome
         served = outcome.served if isinstance(outcome, Reply) and outcome.served else tier
-        return _response(outcome, served if self._client.tier_header else None)
+        return _response(outcome, served if self._client.tier_header else None, model)
 
 
 class _Batches:
@@ -214,7 +220,7 @@ class _Batches:
         self._client._check("batches.create")
         name = f"batches/{next(self._client._ids)}"
         # SDK 收 InlinedRequest 或同樣形狀的 dict；檔案在送出時就要在遠端
-        self._client._jobs[name] = [self._respond(i, types.InlinedRequest.model_validate(r))
+        self._client._jobs[name] = [self._respond(i, types.InlinedRequest.model_validate(r), model)
                                     for i, r in enumerate(src)]
         self._client._job_polls[name] = 0
         config = types.CreateBatchJobConfig.model_validate(config or {})
@@ -232,7 +238,7 @@ class _Batches:
             dest = types.BatchJobDestination(inlined_responses=self._client._jobs[name])
         return types.BatchJob(name=name, state=state, dest=dest)
 
-    def _respond(self, index: int, request: types.InlinedRequest) -> types.InlinedResponse:
+    def _respond(self, index: int, request: types.InlinedRequest, model: str) -> types.InlinedResponse:
         parts = request.contents[0].parts
         prompt = next(p.text for p in parts if p.text)
         self._client.prompts.append(prompt)
@@ -242,4 +248,4 @@ class _Batches:
         outcome = self._client.batch_outcomes.get(index, Reply(text=f"[00:00.00]{prompt}"))
         if isinstance(outcome, types.JobError):
             return types.InlinedResponse(error=outcome)
-        return types.InlinedResponse(response=_response(outcome, None))
+        return types.InlinedResponse(response=_response(outcome, None, model))

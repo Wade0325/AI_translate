@@ -28,11 +28,14 @@ from app.api.transcription import QUEUED_TEXT, REATTACHED_TEXT, SUBMISSION_FAILE
 from app.core.default_prompt import build_prompt, build_user_text_prompt
 from app.core.error_codes import ErrorCode
 from app.core.task_status import TaskStatus
+from app.core.version import APP_VERSION
 from app.exceptions import TransientError
 from app.provider import registry
+from app.provider.local import weights
 from app.runtime import run_mode
 from tests.support.db_faults import writes_fail
 from tests.support.fake_provider import FAKE_MODEL, Empty, Fail, Listen, ServedAs
+from tests.support.fake_torch import RTX_4080, fake_torch
 from tests.support.synthetic_audio import VOICED, synthetic_audio
 from tests.support.synthetic_video import stream_types
 from tests.support.task_api import (
@@ -42,6 +45,7 @@ from tests.support.task_api import (
     ping,
     receive,
     stored_segments,
+    task_record,
     upload,
 )
 from tests.support.waiting import cancel_when_dispatched, wait_until
@@ -276,6 +280,14 @@ def frozen_original(engine, task_uuid: str) -> str | None:
 
     with sessionmaker(bind=engine)() as db:
         return HistoryRepository().get_log_by_uuid(db, task_uuid).lrc_content
+
+
+def started_fields(db_session, task_uuid: str) -> tuple:
+    """任務開始轉錄時記下的（#343）：(轉錄環境, 送出的提示詞, 有沒有附使用者文稿)。"""
+    record = task_record(db_session, task_uuid)
+    environment = record.transcription_environment
+    return (json.loads(environment) if environment else None, record.sent_prompt,
+            record.user_supplied_text_attached)
 
 
 def in_voiced_region(t: float) -> bool:
@@ -1512,16 +1524,6 @@ INTERJECTION_UNLABELLED = {
 ONE_SPEAKER_LABELLED_LRC = "[00:00.24][S0] おはよう。\n[00:01.50][S0] こんにちは。"
 
 
-def task_record(engine, task_uuid: str):
-    """任務紀錄（讀完就脫離 session，只讀欄位）。"""
-    from sqlalchemy.orm import sessionmaker
-
-    from app.repositories.history_repository import HistoryRepository
-
-    with sessionmaker(bind=engine, expire_on_commit=False)() as db:
-        return HistoryRepository().get_log_by_uuid(db, task_uuid)
-
-
 def make_old_task(engine, task_uuid: str, multi_speaker: bool | None) -> None:
     """把任務紀錄改成人數做出來之前的樣子：沒有說話者人數，只有當時的 Multi-Speaker 開關（None 是開關
     做出來之前，#259）。片段與凍結的原始轉錄副本照舊。"""
@@ -1561,13 +1563,13 @@ class TestSpeakerCount:
     def downloads(self, api, task_uuid: str) -> dict:
         return {fmt: download(api, task_uuid, fmt) for fmt in ("lrc", "txt", "srt", "vtt")}
 
-    def test_task_record_keeps_the_count_and_not_the_old_switch(self, api, fake, test_engine):
+    def test_task_record_keeps_the_count_and_not_the_old_switch(self, api, fake, db_session):
         # 沒帶人數是照模型判斷；新任務不再寫 multi_speaker
         default = self.finish(api, fake, "uid-count-default", ONE_SPEAKER)
         three = self.finish(api, fake, "uid-count-three", ONE_SPEAKER, speaker_count=3)
 
         assert [(r.speaker_count, r.multi_speaker) for r in (
-            task_record(test_engine, default["task_uuid"]), task_record(test_engine, three["task_uuid"]))
+            task_record(db_session, default["task_uuid"]), task_record(db_session, three["task_uuid"]))
         ] == [("auto", None), ("3", None)]
 
     def test_auto_labels_several_speakers(self, api, fake):
@@ -2416,6 +2418,65 @@ class TestUserSuppliedText:
         assert len(fake.calls) == 1
 
 
+# ─── 轉錄環境與送出的提示詞（#343） ──────────────────────────────────────────
+
+@pytest.fixture
+def local_fake(fake):
+    """註冊成「local」的假供應商：模型與模型能力照本機的 moss-align（不吃提示詞、在 GPU 佇列上轉錄），
+    轉錄照劇本；測試結束後換回真的本機。"""
+    from app.provider.local.provider import local_provider
+
+    fake.model = weights.MOSS_ALIGN
+    fake.model_capabilities = local_provider.capabilities()[weights.MOSS_ALIGN]
+    previous = registry.register("local", fake)
+    yield fake
+    registry.register("local", previous)
+
+
+def test_a_local_task_records_its_environment_but_no_prompt(api, local_fake, db_session, monkeypatch):
+    # 本機的轉錄環境有顯卡與驅動、模型權重釘住的 revision；本機的模型不吃提示詞，不記
+    fake_torch(monkeypatch, card=RTX_4080)
+    monkeypatch.setattr(weights, "command_output", lambda *command: (
+        "576.02\n" if command[0] == "nvidia-smi" else None))
+    local_fake.script = list(SCRIPT)
+
+    end = transcribe(api, "uid-local-environment", provider="local", model=weights.MOSS_ALIGN)[-1]
+
+    assert end["status_code"] == TaskStatus.COMPLETED
+    environment, prompt, user_text_attached = started_fields(db_session, end["task_uuid"])
+    assert (environment["app_version"], environment["provider"], environment["model"]) == (
+        APP_VERSION, "local", weights.MOSS_ALIGN)
+    assert environment["model_revisions"] == {
+        repo: weights.REPO_REVISIONS[repo] for repo in weights.MODEL_REPOS[weights.MOSS_ALIGN]}
+    assert (environment["gpu"]["name"], environment["gpu"]["driver"]) == (RTX_4080[0], "576.02")
+    assert "model_versions" not in environment
+    assert prompt is None
+    assert user_text_attached is False
+
+
+def test_a_task_cancelled_in_the_queue_records_no_environment(api, fake, db_session):
+    # 轉錄環境與提示詞是開始轉錄時記的：在佇列裡就被取消、沒有開始的任務沒有
+    fake.hold = threading.Event()
+    fake.script = list(SCRIPT)
+    running_file, queued_file = upload(api, "a.wav"), upload(api, "b.wav")
+
+    with api.websocket_connect("/api/v1/ws/uid-running-environment") as running, \
+            api.websocket_connect("/api/v1/ws/uid-queued-environment") as queued:
+        submit(running, running_file)
+        assert fake.started.wait(TIMEOUT)
+        submit(queued, queued_file)  # GPU 佇列只有一個 worker：排在佇列裡
+        cancel_when_dispatched(api, "uid-queued-environment")
+        queued_end = receive_until_terminal(queued)[-1]
+        fake.hold.set()
+        running_end = receive_until_terminal(running)[-1]
+
+    assert queued_end["status_code"] == TaskStatus.CANCELLED
+    assert started_fields(db_session, queued_end["task_uuid"]) == (None, None, None)
+    environment, prompt, _ = started_fields(db_session, running_end["task_uuid"])
+    assert environment["model"] == FAKE_MODEL
+    assert prompt == fake.prompts[0]
+
+
 # ─── 中文一律輸出繁體（#14） ─────────────────────────────────────────────────
 
 class TestTraditionalOutput:
@@ -3232,6 +3293,7 @@ class TestCompletingTheSameTaskAgain:
         fake.script = [list(FIRST_RUN), list(SECOND_RUN)]
         fake.usage = (200_000, 40_000)
         fake.service_tier = "flex"
+        fake.model_version = "fake-model-001"  # 轉錄環境補記的模型版本：兩次不同，分得出記的是哪一次
         done = transcribe(api, "uid-again")[-1]
         assert done["status_code"] == TaskStatus.COMPLETED
         assert [s["text"] for s in stored_segments(api, done["task_uuid"])] == FIRST_TEXTS
@@ -3239,11 +3301,14 @@ class TestCompletingTheSameTaskAgain:
         assert done["result"]["cost"] == pytest.approx(0.15)
         fake.usage = (400_000, 80_000)
         fake.service_tier = None
+        fake.model_version = "fake-model-002"
         return done["task_uuid"]
 
     def test_without_corrections_the_new_result_replaces_all(
-            self, api, redelivery, task_uuid, test_engine):
+            self, api, redelivery, task_uuid, test_engine, db_session):
         first = completion_record(api, task_uuid)
+        first_environment, prompt, _ = started_fields(db_session, task_uuid)
+        assert first_environment["model_versions"] == ["fake-model-001"]
 
         done = redelivery.redeliver(task_uuid)
 
@@ -3254,6 +3319,9 @@ class TestCompletingTheSameTaskAgain:
         assert [line.split("] ")[-1] for line in frozen.splitlines()] == SECOND_TEXTS
         second = completion_record(api, task_uuid)
         assert second["tail_loss_from_seconds"] is None
+        # 說明原始轉錄的轉錄環境與提示詞也換成這一次的（#343）
+        assert started_fields(db_session, task_uuid) == (
+            {**first_environment, "model_versions": ["fake-model-002"]}, prompt, False)
         assert (second["total_tokens"], second["cost"]) == (480_000, pytest.approx(0.60))
         assert second["service_tier_used"] == "standard"
         assert second["completed_at"] > first["completed_at"]
@@ -3267,12 +3335,14 @@ class TestCompletingTheSameTaskAgain:
         lambda engine, task_uuid, keys: mark_review_state(engine, task_uuid, keys[2], "verified"),
     ], ids=["corrected", "review-state-only"])
     def test_once_the_user_touched_the_task_its_result_is_kept(
-            self, api, redelivery, task_uuid, test_engine, touch, app_log):
+            self, api, redelivery, task_uuid, test_engine, db_session, touch, app_log):
         touch(test_engine, task_uuid, [s["seg_key"] for s in stored_segments(api, task_uuid)])
         segments = stored_segments(api, task_uuid)
         version_and_records = corrected_version_and_records(test_engine, task_uuid)
         frozen = frozen_original(test_engine, task_uuid)
         first = completion_record(api, task_uuid)
+        sources = started_fields(db_session, task_uuid)
+        assert sources[0]["model_versions"] == ["fake-model-001"]
 
         done = redelivery.redeliver(task_uuid)
 
@@ -3283,6 +3353,8 @@ class TestCompletingTheSameTaskAgain:
         assert frozen_original(test_engine, task_uuid) == frozen
         second = completion_record(api, task_uuid)
         assert second["tail_loss_from_seconds"] == first["tail_loss_from_seconds"]
+        # 轉錄環境與提示詞說明的是留下來的那份原始轉錄：開始時與完成時都不換成這一次的（#343）
+        assert started_fields(db_session, task_uuid) == sources
         # 這一次執行的紀錄照常更新：狀態、完成時間、用量與費用、處理模式
         assert second["status"] == TaskStatus.COMPLETED
         assert (second["total_tokens"], second["cost"]) == (480_000, pytest.approx(0.60))

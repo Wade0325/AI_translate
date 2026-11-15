@@ -6,6 +6,7 @@
 轉檔與去靜音。測試只從外部觀察：狀態廣播、API 回應、存下來的任務紀錄與片段、可以下載的輸出格式與
 保留音檔、暫存資料夾裡還留著哪些檔案、假供應商收到了什麼，以及批次存進資料庫的樣子。
 """
+import json
 import threading
 from contextlib import ExitStack
 from dataclasses import replace
@@ -19,6 +20,7 @@ from app.api.transcription import SUBMISSION_FAILED_TEXT, TASK_GONE
 from app.core.default_prompt import build_prompt
 from app.core.error_codes import ErrorCode
 from app.core.task_status import TaskStatus
+from app.core.version import APP_VERSION
 from app.repositories.correction_repository import Correction, CorrectionField, CorrectionRepository
 from app.exceptions import TransientError
 from app.runtime import run_mode
@@ -48,6 +50,7 @@ from tests.support.task_api import (
     receive_until,
     shown,
     stored_segments,
+    task_record,
     upload,
 )
 from tests.support.waiting import TIMEOUT, wait_until
@@ -488,6 +491,48 @@ def test_supplement_is_sent_after_the_built_in_template(api, in_process_run_mode
               source_lang="ja-JP")
 
     assert batch_fake.prompts == [build_prompt(source_lang="ja-JP") + "\n\n說話者是兩位主持人"]
+
+
+# ─── 轉錄環境與送出的提示詞（#343） ──────────────────────────────────────────
+
+def test_each_file_records_its_environment_and_the_prompt_it_was_sent(
+        api, in_process_run_mode, batch_fake, db_session):
+    # 和單檔任務一樣，開始時記下轉錄環境與這個檔案送出的提示詞：個別檔案的補充說明照樣在裡面
+    batch_fake.script = [list(LINES), list(LINES)]
+    names = ["environment-a.wav", "environment-b.wav"]
+
+    messages = run_batch(api, in_process_run_mode, "batch-environment", names,
+                         fields_per_file={"environment-b.wav": {"prompt": "人名照寫：佐藤"}})
+
+    records = [task_record(db_session, end["task_uuid"]) for end in ends(messages, names)]
+    assert [r.sent_prompt for r in records] == batch_fake.prompts
+    assert batch_fake.prompts[1].endswith("\n\n人名照寫：佐藤")
+    assert [r.user_supplied_text_attached for r in records] == [False, False]
+    for r in records:
+        environment = json.loads(r.transcription_environment)
+        assert (environment["app_version"], environment["provider"], environment["model"]) == (
+            APP_VERSION, "fake", FAKE_MODEL)
+
+
+def test_files_finished_from_recovery_keep_their_environment_and_add_the_model_version(
+        api, in_process_run_mode, batch_fake, db_session):
+    # 輪詢時應用程式重啟，結果之後才從復原入口回來：開始時記下的轉錄環境留著，回應寫明的模型版本補記上去
+    batch_fake.script = [list(LINES)]
+    batch_fake.model_version = "fake-model-002"
+    batch_fake.batch_polls = [Restart()]
+    name = "environment-restarted.wav"
+    submitted = submit_batch(api, in_process_run_mode, "batch-environment-restarted", [name])
+    task_uuid = of_file(submitted, name)[-1]["task_uuid"]
+    started = json.loads(task_record(db_session, task_uuid).transcription_environment)
+
+    [end] = ends(recover(api, "batch-environment-restarted"), [name])
+    in_process_run_mode.close(wait=True)  # 等復原整個跑完再查
+
+    assert end["task_uuid"] == task_uuid
+    record = task_record(db_session, task_uuid)
+    assert json.loads(record.transcription_environment) == {
+        **started, "model_versions": ["fake-model-002"]}
+    assert record.sent_prompt == batch_fake.prompts[0]
 
 
 # ─── 語音視圖 ────────────────────────────────────────────────────────────────

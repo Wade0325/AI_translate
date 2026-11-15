@@ -43,6 +43,12 @@ class TranscriptionTaskResult(BaseModel):
                     "幾乎一定還有沒轉到的話，掉尾的檢查不等一分鐘的聲音（app.services.tail_loss，#326）。"
                     "最後一段沒有文字（#325）不算。只在轉接器回傳與分段轉錄內部使用，不記進任務紀錄。",
     )
+    model_versions: List[str] = Field(
+        default_factory=list,
+        description="回應寫明的模型版本（Gemini 回應的 model_version），依出現的順序、不重複；分段轉錄的"
+                    "各段是分開的請求，版本不同時都列出。沒寫的供應商（本機）是空的。任務完成時補記進轉錄"
+                    "環境（#343）。",
+    )
     tail_loss_from: Optional[float] = Field(
         default=None,
         description="可能掉尾的起點（原音檔的時間軸，秒）：從這裡起可能有內容沒有轉錄到，例如供應商"
