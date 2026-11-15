@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.core.task_status import TaskStatus
 from app.database.models import TranscriptionLog
 from app.database.session import get_db
+from app.repositories.correction_repository import CorrectionRepository
 from app.repositories.history_repository import HistoryRepository
 from app.repositories.transcript_segment_repository import TranscriptSegmentRepository
 from app.services import audio_store, correctability
@@ -202,16 +203,18 @@ def download_transcript(
 
 @router.delete("/{task_uuid}")
 def delete_history(task_uuid: str, db: Session = Depends(get_db)):
-    """刪除單筆歷史紀錄，連帶清掉結構化片段與保留音檔。
+    """刪除單筆歷史紀錄，連帶清掉結構化片段、校正紀錄與保留音檔。
 
-    SQLite 預設不強制外鍵，所以片段不能只靠 ON DELETE CASCADE，這裡明確刪除。
+    SQLite 預設不強制外鍵，所以片段與校正紀錄不能只靠 ON DELETE CASCADE，這裡明確刪除。三者在
+    同一個交易裡刪（刪任務紀錄時一起 commit）：任務紀錄刪不掉時，校正不會先不見（ADR 0007）。
     """
     log = history_repo.get_log_by_uuid(db, task_uuid)
     if not log:
         raise HTTPException(status_code=404, detail="找不到此任務紀錄")
 
     audio_filename = log.audio_filename
-    segment_repo.delete_for_task(db, task_uuid)
+    CorrectionRepository.delete_for_task(db, task_uuid, commit=False)
+    segment_repo.delete_for_task(db, task_uuid, commit=False)
     if not history_repo.delete_log(db, task_uuid):
         raise HTTPException(status_code=404, detail="找不到此任務紀錄")
     if audio_filename:

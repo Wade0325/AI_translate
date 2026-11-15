@@ -14,8 +14,12 @@
 - 暫時錯誤在出錯的那一步等一段時間再做一次：分段轉錄重試出錯的那一段
   （:mod:`app.services.chunked_transcription`），批次重做上傳、送出或查詢（:mod:`app.tasks.batch_core`）；
   執行模式不重試整個任務。萬一有暫時錯誤漏到這裡，一律照失敗處理，任務不會停在處理中。
-- 完成和片段一起寫：任務紀錄記成完成（連同凍結的原始轉錄副本）和片段在同一個交易，片段
-  寫不進去就照失敗處理。同一個任務再完成一次時，使用者動過的片段不刪、不覆寫（ADR-0007）。
+- 完成和轉錄結果一起寫：任務紀錄記成完成，和轉錄結果（片段、凍結的原始轉錄副本、掉尾的起點）
+  在同一個交易，片段寫不進去就照失敗處理。
+- 同一個任務再完成一次時（Docker 模式的重派、批次從復原入口再結束一次），任務只要有任何校正紀錄
+  或確認狀態，這次的轉錄結果就不寫，原本的都留著：校正紀錄對照的原始轉錄不能在使用者背後換掉
+  （ADR 0011）。完成時送給畫面的輸出從留下來的結果產生；這一次執行的紀錄（狀態、完成時間、耗時、
+  用量與費用、處理模式）照常更新。沒有的任務整批換成這次的結果。
 - 說話者標記照說話者人數：任務紀錄記下人數，完成時送給畫面的輸出格式照
   :func:`app.services.output_format.speaker_labels_for` 帶或不帶說話者標記，和之後下載的相同；人數做出來
   之前的任務照當時的 Multi-Speaker 開關。片段與凍結的原始轉錄副本不論人數都有說話者編號（#351、ADR-0007）。
@@ -65,6 +69,7 @@ from app.database.session import SessionLocal, without_db_details
 from app.exceptions import TranscriptionCancelledError
 from app.provider.base import ProgressAndCancel
 from app.provider.registry import UnsupportedModelError, model_capabilities
+from app.repositories.correction_repository import CorrectionRepository
 from app.repositories.transcript_segment_repository import TranscriptSegmentRepository
 from app.repositories.transcription_log_repository import TranscriptionLogRepository
 from app.runtime import run_mode
@@ -367,7 +372,8 @@ class TaskLifecycle:
             logger.warning(f"Could not read audio duration for {self._input.name}.")
 
     def _complete(self, db: Session, result: TranscriptionTaskResult) -> _Outcome:
-        """完成：中文轉成繁體輸出，產生輸出格式、計價、存任務紀錄與片段。"""
+        """完成：中文轉成繁體輸出，產生輸出格式、計價、記下這一次執行，再存這次的轉錄結果；任務已經有
+        校正紀錄或確認狀態時改成留著原本的（:meth:`_keep_previous_transcript`）。"""
         logger.info(
             f"Transcription complete. Task ID: {self._task_uuid}. "
             f"Tokens used: {result.total_tokens:,}")
@@ -388,7 +394,10 @@ class TaskLifecycle:
         elapsed = self._elapsed()
         tokens, cost = self._price(result, elapsed)
 
-        # 和片段寫進同一個交易：看得到完成時片段已經在了；片段寫不進去就連完成一起退回，照失敗處理
+        # 這一次執行的紀錄，和轉錄結果寫進同一個交易：看得到完成時片段已經在了；片段寫不進去就連完成
+        # 一起退回，照失敗處理。這個 UPDATE 也鎖住任務紀錄到 commit 為止；記校正紀錄之前也鎖同一列
+        # （app.repositories.correction_repository 的 _lock_task），下面判斷時才不會漏掉剛記下的校正紀錄。
+        # 標確認狀態的寫入也要先鎖這一列，才同樣不會漏掉
         completed = self._records.update_log_unless_cancelled(db, self._task_uuid, {
             "status": TaskStatus.COMPLETED,
             "audio_duration_seconds": self._duration,
@@ -396,31 +405,31 @@ class TaskLifecycle:
             "total_tokens": tokens,
             "cost": cost,
             "completed_at": datetime.now(),
-            # 凍結的原始轉錄副本（ADR-0007）：不論說話者人數都帶說話者標記
-            "lrc_content": output_format.frozen_copy(result) or None,
             "service_tier_used": result.service_tier_used or "standard",
-            # 沒有掉尾時寫 None：同一個任務再完成一次時，不留著上一次的起點
-            "tail_loss_from_seconds": result.tail_loss_from,
         }, commit=False)
         # 只有取消不蓋掉；其他狀態照實記成完成（例如啟動清掃把還在跑的任務記成了失敗）
         if not completed and self._is_record_cancelled(db):
             # 取消端點剛好先把紀錄記成已取消：完成不蓋掉取消，也不宣告完成
             return self._cancel(db, result)
+        kept: Optional[dict] = None
         if completed:
-            self._save_segments(db, result)
+            if CorrectionRepository.touched_by_user(db, self._task_uuid):
+                kept = self._keep_previous_transcript(db)
+            else:
+                self._save_transcript(db, result)
             db.commit()
             logger.info(f"Task status updated to COMPLETED. Task ID: {self._task_uuid}")
         else:
             # 片段也不寫：沒有紀錄的片段找不到，Postgres 也會擋下
             logger.warning(f"找不到任務紀錄（可能在處理中被刪掉了）: {self._task_uuid}")
 
-        response = _completed_response(
+        response = kept or _completed_response(
             self._task_uuid, transcripts, tokens=tokens, cost=cost, model=self._task.model,
             source_language=self._task.source_lang, duration=self._duration,
             speaker_count=output_format.speakers_in_output(result.segments, labels),
             selected_speaker_count=self._task.speaker_count, tail_loss_from=result.tail_loss_from)
         return _Outcome(TaskStatus.COMPLETED, _COMPLETED_TEXT, broadcast_result=response,
-                        return_value={"raw_lrc_text": transcripts["lrc"]})
+                        return_value={"raw_lrc_text": response["transcripts"]["lrc"]})
 
     def _cancel(self, db: Session, usage: Optional[TranscriptionTaskResult] = None) -> _Outcome:
         """取消：不是失敗，任務紀錄寫 CANCELLED。
@@ -622,16 +631,31 @@ class TaskLifecycle:
             # 派送時驗證過；之後才從模型清單拿掉的模型照 token 計價
             return "per_token"
 
-    def _save_segments(self, db: Session, result: TranscriptionTaskResult) -> None:
-        """片段是校正介面的資料來源；同一個任務再完成一次時，使用者動過的片段不刪、不覆寫
-        （ADR-0007），其他片段換成這次的結果。只寫進目前的交易，由 :meth:`_complete` 提交。
+    def _save_transcript(self, db: Session, result: TranscriptionTaskResult) -> None:
+        """存這次的轉錄結果：片段、凍結的原始轉錄副本與掉尾的起點都換成這次的，這次沒有的片段也拿掉。
+        只寫進目前的交易，由 :meth:`_complete` 提交。
 
         片段已經依開始時間排好、序號連續（分段轉錄合併時、批次放回原音檔的時間軸時排好）。
         """
-        if not result.segments:
-            return
-        count = TranscriptSegmentRepository.replace_untouched(db, self._task_uuid, result.segments)
+        self._records.update_log_unless_cancelled(db, self._task_uuid, {
+            # 凍結的原始轉錄副本（ADR-0007）：不論說話者人數都帶說話者標記
+            "lrc_content": output_format.frozen_copy(result) or None,
+            # 沒有掉尾時寫 None：同一個任務再完成一次時，不留著上一次的起點
+            "tail_loss_from_seconds": result.tail_loss_from,
+        }, commit=False)
+        count = TranscriptSegmentRepository.replace_for_task(db, self._task_uuid, result.segments)
         logger.info(f"已寫入 {count} 個轉錄片段 (task={self._task_uuid})")
+
+    def _keep_previous_transcript(self, db: Session) -> dict:
+        """不存這次的轉錄結果，回傳完成時送給畫面的結果：從留下來的轉錄結果產生（:func:`completed_result`），
+        和之後下載的相同，用量與費用是 :meth:`_complete` 剛記下的這一次。在提交之前讀，送出去的就是
+        這個交易寫下的。
+        """
+        logger.info(f"任務已有校正紀錄或確認狀態，保留原本的轉錄結果 (task={self._task_uuid})")
+        # _complete 的 UPDATE 不更新 session 裡已經載入的物件：還留著先前載入的任務紀錄時，它的欄位是
+        # 更新前的值，先讓它過期，讀到的才是這次記下的。任務紀錄剛在這個交易裡記成完成，一定讀得到
+        db.expire_all()
+        return cast(dict, completed_result(db, self._task_uuid))
 
     def _elapsed(self) -> float:
         return time.time() - self._started_at
