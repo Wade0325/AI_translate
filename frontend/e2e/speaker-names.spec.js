@@ -87,6 +87,12 @@ test('另一位說話者已經用了這個名稱：寫出是哪一位，對話�
     fake.bulk([['S0', 'speaker_name', '王小明']])
     const backend = await openCorrection(page, mockBackend, { routes: fake.routes })
 
+    // 選單的「全部換成」寫名稱，中文名稱和「的」之間不空格
+    await rowAt(page, 0).locator('.correction-speaker').click()
+    await expect(openMenu(page)).toContainText('王小明的 2 個片段全部換成')
+    await page.keyboard.press('Escape')
+    await expect(openMenu(page)).toHaveCount(0)
+
     await chooseFromMenu(page, 1, '替 S1 取名字…')
     await nameInput(page).fill('王小明')
     await nameInput(page).press('Enter')

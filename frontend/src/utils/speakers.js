@@ -122,7 +122,20 @@ export function showsAsCorrected(segment, singleSpeaker) {
  * @param {SpeakerNames} [names]
  */
 export function reassignMessage(changed, toSpeaker, names = {}) {
-  return `已把 ${changed} 個片段換成 ${speakerText(toSpeaker, names)}`;
+  return sentence('已把', changed, '個片段換成', speakerText(toSpeaker, names));
+}
+
+/**
+ * 把幾段字接成一句中文：接縫的一邊是英數字時空一格，兩邊都是中文時不空，例如「S0 的 3 個片段」、「王小明的 3 個片段」。
+ * 說話者編號是英數字、名稱多半是中文，句子裡寫說話者的地方用它接，取了名字之後中文不會多出空格。
+ *
+ * @param {...(string | number)} parts
+ */
+export function sentence(...parts) {
+  return parts.map(String).reduce((out, part) => {
+    if (!out || !part) return out + part;
+    return /[A-Za-z0-9]$/.test(out) || /^[A-Za-z0-9]/.test(part) ? `${out} ${part}` : out + part;
+  }, '');
 }
 
 /**

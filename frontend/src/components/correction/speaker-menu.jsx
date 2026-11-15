@@ -1,6 +1,6 @@
 import { Dropdown } from "antd"
 import { ChevronDown } from "lucide-react"
-import { NO_SPEAKER_LABEL, choiceLabel, speakerChoices, speakerText } from "@/utils/speakers"
+import { choiceLabel, sentence, speakerChoices, speakerText } from "@/utils/speakers"
 
 /** 說話者編號（S0、S1…）的顏色：照編號輪流用，同一位說話者在整份裡顏色不變。 */
 const SPEAKER_COLORS = ["#2dd4a8", "#d4a72d", "#47b8d4", "#e07a9f", "#8b5cf6", "#e0884f", "#7fc97f", "#c9c95c"]
@@ -76,12 +76,8 @@ export function SpeakerMenu({ segKey, speaker, info, disabled, actions }) {
     }
     items.push({ type: "group", label: "這個片段改成", children: choiceItems("one") })
     if (count > 1) {
-        // 編號與名稱和中文之間空一格，「未指定的」不空
-        const source = speaker ? `${speakerText(speaker, info.names)} 的` : `${NO_SPEAKER_LABEL}的`
-        items.push(
-            { type: "divider" },
-            { type: "group", label: `${source} ${count} 個片段全部換成`, children: choiceItems("all") },
-        )
+        const label = sentence(speakerText(speaker, info.names), "的", count, "個片段全部換成")
+        items.push({ type: "divider" }, { type: "group", label, children: choiceItems("all") })
     }
     const onClick = ({ key }) => {
         if (key === "rename") {

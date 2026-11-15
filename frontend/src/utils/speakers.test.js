@@ -6,6 +6,7 @@ import {
   nextSpeakerAfter,
   reassignMessage,
   renameMessage,
+  sentence,
   shownSpeaker,
   showsAsCorrected,
   speakerChoices,
@@ -96,7 +97,8 @@ describe('reassignMessage：全部換成另一位之後寫的結果', () => {
   });
 
   it('換成的那一位取了名字時寫名稱（#359）', () => {
-    expect(reassignMessage(3, 'S0', { S0: '王小明' })).toBe('已把 3 個片段換成 王小明');
+    expect(reassignMessage(3, 'S0', { S0: '王小明' })).toBe('已把 3 個片段換成王小明');
+    expect(reassignMessage(3, 'S0', { S0: 'Amy' })).toBe('已把 3 個片段換成 Amy');
   });
 });
 
@@ -159,6 +161,20 @@ describe('speakerNameProblem：名稱哪裡不合規則（#359 第 6 點，和�
     for (const name of ['Sam 2', '第 2 位來賓', 'S1 的助理', '10 點的客人']) {
       expect(speakerNameProblem(name)).toBeNull();
     }
+  });
+});
+
+describe('sentence：接成一句中文，英數字和中文之間空一格（#359）', () => {
+  it('編號和中文之間空一格，名稱是中文時不空', () => {
+    expect(sentence('S0', '的', 3, '個片段全部換成')).toBe('S0 的 3 個片段全部換成');
+    expect(sentence('王小明', '的', 3, '個片段全部換成')).toBe('王小明的 3 個片段全部換成');
+    expect(sentence('未指定', '的', 4, '個片段全部換成')).toBe('未指定的 4 個片段全部換成');
+  });
+
+  it('看接縫的那個字：英文名稱、中英夾雜的名稱', () => {
+    expect(sentence('Amy', '的', 2, '個片段')).toBe('Amy 的 2 個片段');
+    expect(sentence('換成', '王 Amy')).toBe('換成王 Amy');
+    expect(sentence('王 Amy', '的')).toBe('王 Amy 的');
   });
 });
 
