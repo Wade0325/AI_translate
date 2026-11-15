@@ -251,7 +251,7 @@ test('資料與隱私：說明保留音檔留多久、放在哪，確認後立�
     await page.goto('/settings')
 
     const card = providerCard(page, '資料與隱私')
-    await expect(card.getByText(/上傳超過 30 天的，在下次開啟 app 時刪除/)).toBeVisible()
+    await expect(card.getByText(/留 30 天，從上傳時算起；校正過或標過確認狀態的任務，從最後一次校正或標確認狀態起算。超過的在下次開啟 app 時刪除/)).toBeVisible()
     await expect(card.getByText('/app/audio_store')).toBeVisible()
     await expect(card.getByText('目前保留 2 個音檔，共 3.0 MB')).toBeVisible()
     // Docker 模式沒有單一的資料夾，不說明 data 資料夾

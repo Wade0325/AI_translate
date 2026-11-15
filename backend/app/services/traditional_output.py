@@ -48,7 +48,7 @@ from typing import Any, Dict, FrozenSet, List, Mapping, Optional, Sequence, Tupl
 
 import opencc
 
-from app.services import output_format
+from app.core.word_timings import aligner_words
 from app.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -263,9 +263,9 @@ def _converted_words(words: Sequence[Mapping[str, Any]], text: str,
             return unchanged
         converted.extend(spread)
     # 原本對得上片段文字的詞，換完也要對得上，不然寧可原樣留著
-    if ([word.get("text") for word in words] == output_format.aligner_words(text)
+    if ([word.get("text") for word in words] == aligner_words(text)
             and [word["text"] for word in converted]
-            != output_format.aligner_words(_joined(pieces))):
+            != aligner_words(_joined(pieces))):
         return unchanged
     return converted
 
@@ -275,7 +275,7 @@ def _spread(words: Sequence[Mapping[str, Any]], phrase: str) -> Optional[List[Di
     if any(word.get("start") is None or word.get("end") is None for word in words):
         return None
     start, end = min(word["start"] for word in words), max(word["end"] for word in words)
-    texts = output_format.aligner_words(phrase)
+    texts = aligner_words(phrase)
     step = (end - start) / len(texts) if texts else 0.0
     return [{**words[0], "text": word_text, "start": start + step * i,
              "end": end if i == len(texts) - 1 else start + step * (i + 1)}

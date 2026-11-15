@@ -9,7 +9,7 @@ import time
 import uuid
 
 import pytest
-from sqlalchemy import event
+from sqlalchemy import event, update
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.database.models import CorrectionRecord, TranscriptionLog, TranscriptSegment
@@ -17,6 +17,7 @@ from app.repositories.correction_repository import (
     Correction,
     CorrectionField,
     CorrectionRepository,
+    ReviewState,
 )
 from app.repositories.transcript_segment_repository import TranscriptSegmentRepository
 from app.services import output_format
@@ -171,6 +172,34 @@ class TestCorrectedVersion:
 
         assert (segment["text"], segment["deleted"], segment["corrected"],
                 segment["has_correction_records"]) == ("", True, False, False)
+
+    def test_word_timings_follow_the_corrected_text(self, db_session):
+        # #357：改過文字的片段，逐字時間照校正後的文字重算（沒改到的字沿用原本的時間），下載與校正頁都
+        # 讀這一份；只改說話者、沒改過的片段照原樣；刪掉的片段沒有逐字時間。片段存的逐字時間不變
+        timed = [
+            {"seg_key": "0-0", "start": 1.0, "end": 2.5, "speaker": "S0", "text": "今天開會。",
+             "words": [{"text": "今", "start": 1.0, "end": 1.2}, {"text": "天", "start": 1.2, "end": 1.4},
+                       {"text": "開", "start": 1.6, "end": 1.8}, {"text": "會", "start": 1.8, "end": 2.0}]},
+            {"seg_key": "0-1", "start": 3.0, "end": 4.0, "speaker": "S0", "text": "好的。",
+             "words": [{"text": "好", "start": 3.0, "end": 3.2}, {"text": "的", "start": 3.2, "end": 3.4}]},
+            {"seg_key": "0-2", "start": 5.0, "end": 6.0, "speaker": "S0", "text": "散會。",
+             "words": [{"text": "散", "start": 5.0, "end": 5.2}, {"text": "會", "start": 5.2, "end": 5.4}]},
+        ]
+        task_uuid = uuid.uuid4()
+        db_session.add(TranscriptionLog(task_uuid=task_uuid, status="COMPLETED"))
+        TranscriptSegmentRepository.replace_for_task(db_session, task_uuid, timed)
+        db_session.commit()
+        _record(db_session, task_uuid, ("0-0", TEXT, "今天下午開會。"), ("0-1", SPEAKER, "S1"),
+                ("0-2", TEXT, ""))
+
+        version = _corrected(db_session, task_uuid)
+        assert [(w["text"], round(w["start"], 6), round(w["end"], 6)) for w in version["0-0"]["words"]] == [
+            ("今", 1.0, 1.2), ("天", 1.2, 1.4), ("下", 1.4, 1.5), ("午", 1.5, 1.6), ("開", 1.6, 1.8),
+            ("會", 1.8, 2.0)]
+        assert version["0-1"]["words"] == timed[1]["words"]
+        assert version["0-2"]["words"] is None
+        stored = TranscriptSegmentRepository.segments_for_task(db_session, task_uuid)
+        assert [seg["words"] for seg in stored] == [seg["words"] for seg in timed]
 
     def test_queries_a_fixed_number_of_times_however_many_segments(self, db_session, task, test_engine):
         many = uuid.uuid4()
@@ -411,3 +440,39 @@ class TestOneOperationAtATime:
         assert waited == [True]
         records = CorrectionRepository.records_for_segment(db_session, task, "0-0")
         assert [(r.old_value, r.new_value) for r in records] == [("今日は晴れです。", "A"), ("A", "B")]
+
+
+class TestReviewStatesWithTheTaskLocked:
+    """確認狀態不是校正，但和校正紀錄一樣先鎖住任務、在同一個交易裡寫（#341；API 從
+    test_transcripts_api.py 測，這裡測 API 那一層測不到的交易與鎖）。"""
+
+    def test_a_refused_operation_writes_no_review_state_either(self, db_session, task):
+        with pytest.raises(ValueError, match="沒有片段 9-9"):
+            CorrectionRepository.record_operation(
+                db_session, task, [Correction("0-0", TEXT, "A")],
+                review_states={"0-0": ReviewState.VERIFIED, "9-9": ReviewState.FLAGGED})
+
+        assert _segment_row(db_session, task, "0-0").review_state is None
+        assert CorrectionRepository.touched_by_user(db_session, task) is False
+
+    def test_a_review_state_waits_while_the_task_is_locked(self, db_session, task, test_engine):
+        # 任務再完成一次時先鎖住任務紀錄、再判斷使用者動過沒有（app.tasks.lifecycle 的 _complete）：
+        # 標確認狀態要等那個交易 commit 才寫，判斷時才不會漏掉
+        holder = sessionmaker(bind=test_engine)()
+        writer_session = sessionmaker(bind=test_engine)()
+        holder.execute(update(TranscriptionLog).where(TranscriptionLog.task_uuid == task)
+                       .values(status=TranscriptionLog.status))
+        writer = threading.Thread(target=lambda: CorrectionRepository.record_operation(
+            writer_session, task, [], review_states={"0-0": ReviewState.VERIFIED}))
+        try:
+            writer.start()
+            time.sleep(0.3)
+            waited = writer.is_alive()
+            holder.commit()
+            writer.join(timeout=20)
+        finally:
+            holder.close()
+            writer_session.close()
+
+        assert waited is True
+        assert _segment_row(db_session, task, "0-0").review_state == "verified"

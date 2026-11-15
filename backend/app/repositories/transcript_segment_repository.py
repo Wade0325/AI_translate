@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, Iterable, List, Optional, Set
+from typing import Any, Collection, Dict, Iterable, List, Optional, Set
 
 from sqlalchemy.orm import Session
 
@@ -54,16 +54,16 @@ class TranscriptSegmentRepository:
         return len(rows)
 
     @staticmethod
-    def list_for_task(db: Session, task_uuid) -> List[TranscriptSegment]:
+    def list_for_task(db: Session, task_uuid,
+                      seg_keys: Optional[Collection[str]] = None) -> List[TranscriptSegment]:
+        """依 seq 讀回一個任務的片段；給 ``seg_keys`` 時只讀這些片段。"""
         uuid_val = coerce_uuid(task_uuid)
         if uuid_val is None:
             return []
-        return (
-            db.query(TranscriptSegment)
-            .filter(TranscriptSegment.task_uuid == uuid_val)
-            .order_by(TranscriptSegment.seq)
-            .all()
-        )
+        query = db.query(TranscriptSegment).filter(TranscriptSegment.task_uuid == uuid_val)
+        if seg_keys is not None:
+            query = query.filter(TranscriptSegment.seg_key.in_(list(seg_keys)))
+        return query.order_by(TranscriptSegment.seq).all()
 
     @staticmethod
     def tasks_with_segments(db: Session, task_uuids: Iterable[Any]) -> Set[str]:
@@ -80,14 +80,17 @@ class TranscriptSegmentRepository:
         return {str(row[0]) for row in rows}
 
     @staticmethod
-    def segments_for_task(db: Session, task_uuid) -> List[Dict[str, Any]]:
-        """依 seq 讀回片段，形狀和寫入時傳進來的相同（``_to_row_values`` 的反向）。"""
+    def segments_for_task(db: Session, task_uuid,
+                          seg_keys: Optional[Collection[str]] = None) -> List[Dict[str, Any]]:
+        """依 seq 讀回片段，形狀和寫入時傳進來的相同（``_to_row_values`` 的反向），另外帶著確認狀態
+        （``review_state``：使用者標的，寫入轉錄結果時不帶；沒有標是 None）。給 ``seg_keys`` 時只讀
+        這些片段。"""
         return [
             {"seg_key": row.seg_key, "seq": row.seq, "start": row.start_sec, "end": row.end_sec,
              "speaker": row.speaker, "text": row.text, "text_alt": row.text_alt,
              "source": row.source, "words": TranscriptSegmentRepository.words(row),
-             "confidence": row.confidence}
-            for row in TranscriptSegmentRepository.list_for_task(db, task_uuid)
+             "confidence": row.confidence, "review_state": row.review_state or None}
+            for row in TranscriptSegmentRepository.list_for_task(db, task_uuid, seg_keys)
         ]
 
     @staticmethod
