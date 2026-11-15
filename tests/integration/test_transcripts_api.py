@@ -144,3 +144,35 @@ class TestDeleteCascade:
             .count()
         )
         assert remaining == 0
+
+
+class TestCorrectable:
+    """直接開校正頁的網址時，畫面照這兩個欄位寫出為什麼不能校正（#347）。"""
+
+    def _get(self, client: TestClient, log: TranscriptionLog) -> dict:
+        return client.get(f"/api/v1/transcripts/{log.task_uuid}").json()
+
+    def test_completed_task_with_segments(self, client: TestClient, db_session: Session):
+        log = _create_log(db_session)
+        _create_segment(db_session, log.task_uuid)
+        data = self._get(client, log)
+        assert data["correctable"] is True
+        assert data["uncorrectable_reason"] is None
+
+    def test_task_that_is_still_transcribing(self, client: TestClient, db_session: Session):
+        log = _create_log(db_session, status="PROCESSING")
+        data = self._get(client, log)
+        assert data["correctable"] is False
+        assert data["uncorrectable_reason"] == "not_completed"
+
+    def test_task_without_segments(self, client: TestClient, db_session: Session):
+        data = self._get(client, _create_log(db_session))
+        assert data["correctable"] is False
+        assert data["uncorrectable_reason"] == "no_segments"
+
+    def test_task_with_translation(self, client: TestClient, db_session: Session):
+        log = _create_log(db_session, source_language="ja-JP", target_language="zh-TW")
+        _create_segment(db_session, log.task_uuid)
+        data = self._get(client, log)
+        assert data["correctable"] is False
+        assert data["uncorrectable_reason"] == "with_translation"
