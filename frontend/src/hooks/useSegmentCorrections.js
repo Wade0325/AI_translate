@@ -1,12 +1,12 @@
 import { useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { message } from 'antd';
 import { api } from '../services/api';
+import { bulkUndoMessage } from '../utils/correctionHistory';
 import {
   deleteRequest,
   correctTextRequest,
   isUserDeleted,
   restoreRequest,
-  revertRequest,
   saveFailureMessage,
   savesReducer,
   undoMessage,
@@ -19,7 +19,7 @@ const UNDO_SHOWN_MS = 6000;
 
 /**
  * 校正頁改文字、刪掉與還原片段（#348）：片段的校正後版本、每個片段的存檔狀態、正在改哪一個片段，以及剛存的
- * 那一次操作（「已存檔，復原」用）。
+ * 那一次操作（「已存檔，復原」用）。校正的歷程（#355）：讀一個片段的歷程、回到某一版、整批復原。
  *
  * 每一次校正就是一個請求，存檔的結果（後端回的片段新內容）直接換進列表。actions 裡的函式身分不變，片段列表的
  * 每一列可以照常用 memo，只有改到的那幾列重畫。
@@ -98,6 +98,16 @@ export function useSegmentCorrections(taskUuid, initialSegments) {
 
     const saving = (segKey) => latest.current.saves[segKey]?.status === 'saving';
 
+    /** 復原一次操作，換上那次操作改到的片段的新內容；回傳復原端點的回應。 */
+    const undoOperation = async (operationId) => {
+      const result = await api.transcripts.undo(taskUuid, operationId);
+      applySegments(result.segments);
+      // 正在改的片段被復原了：照復原之後的內容，不把改之前打的字存回去
+      const editingKey = latest.current.editing?.segKey;
+      if (editingKey && result.segments.some((s) => s.seg_key === editingKey)) setEditing(null);
+      return result;
+    };
+
     /** 這個片段正在改時，結束改（不存）：在同一列按了刪除、還原或回到原始轉錄，以那個動作為準。 */
     const dropEditing = (segKey) => {
       if (latest.current.editing?.segKey === segKey) setEditing(null);
@@ -142,13 +152,35 @@ export function useSegmentCorrections(taskUuid, initialSegments) {
         send(segKey, restoreRequest(segment));
       },
 
-      /** 回到原始轉錄：文字與說話者都回去，照樣記成一次校正。 */
-      revert(segKey) {
-        const segment = segmentOf(segKey);
-        const request = segment && revertRequest(segment);
-        if (!request || saving(segKey)) return;
+      /**
+       * 回到歷程裡的某一版（#355）：把那一版的內容當成一次普通的校正送出（utils/correctionHistory.js 的
+       * historyEntries 算好的 request）。回到原始轉錄是文字與說話者都回去，後端各記一筆、共用一個操作編號。
+       */
+      returnTo(segKey, request) {
+        if (!request || !segmentOf(segKey) || saving(segKey)) return;
         dropEditing(segKey);
         send(segKey, request);
+      },
+
+      /** 讀一個片段的歷程（#355）：它的每一筆校正紀錄（舊的在前）與原始轉錄。 */
+      history(segKey) {
+        return api.transcripts.correctionRecords(taskUuid, segKey);
+      },
+
+      /**
+       * 歷程裡的「整批復原」（#355）：復原一次改很多個片段的操作。之後又改過的片段略過，寫出略過了幾個。
+       * 整批復原本身也是一次操作，存完一樣出現「已存檔，復原」。
+       */
+      async undoBulk(operationId) {
+        setLastOperation(null);
+        try {
+          const result = await undoOperation(operationId);
+          const { type, content } = bulkUndoMessage(result);
+          message[type](content);
+          if (result.operation_id) setLastOperation(result.operation_id);
+        } catch (error) {
+          message.error(`沒有復原：${saveFailureMessage(error)}`);
+        }
       },
 
       /** 重試存檔失敗的那一次。 */
@@ -168,11 +200,7 @@ export function useSegmentCorrections(taskUuid, initialSegments) {
         if (!operationId) return;
         setLastOperation(null);
         try {
-          const result = await api.transcripts.undo(taskUuid, operationId);
-          applySegments(result.segments);
-          // 正在改的片段被復原了：照復原之後的內容，不把改之前打的字存回去
-          const editingKey = latest.current.editing?.segKey;
-          if (editingKey && result.segments.some((s) => s.seg_key === editingKey)) setEditing(null);
+          const result = await undoOperation(operationId);
           const { type, content } = undoMessage(result);
           message[type](content);
         } catch (error) {

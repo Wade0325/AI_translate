@@ -156,6 +156,13 @@ export const api = {
     undo(taskUuid, operationId) {
       return request(`/transcripts/${taskUuid}/operations/${operationId}/undo`, { method: 'POST' });
     },
+    /**
+     * 一個片段的歷程（#355）：{ seg_key, original_text, original_speaker, records }，records 是文字與說話者的每一筆
+     * 校正紀錄，舊的在前，每一筆帶著操作編號與那次操作改到幾個片段（operation_segment_count）
+     */
+    correctionRecords(taskUuid, segKey) {
+      return request(`/transcripts/${taskUuid}/segments/${encodeURIComponent(segKey)}/correction-records`);
+    },
   },
   batch: {
     tasks() {

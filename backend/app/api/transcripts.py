@@ -7,7 +7,8 @@
 音檔用 FileResponse 直接服務；Starlette 會處理 Range 請求，播放器才能拖曳。
 
 校正（#341，ADR 0011）：讀到的片段是校正後版本，另外帶著原始轉錄；改一個片段的文字、說話者與確認狀態，
-以及復原一次操作，都從這裡寫。校正後版本與校正紀錄的規則在 ``app.repositories.correction_repository``，
+以及復原一次操作，都從這裡寫。一個片段的歷程（它的每一筆校正紀錄，#355）也從這裡讀；回到某一版與整批復原
+不另開端點，用上面兩個寫入端點。校正後版本與校正紀錄的規則在 ``app.repositories.correction_repository``，
 這裡只檢查請求。寫入端點和 History 的清單、讀取端點用同一個「能不能校正」的判斷
 （``app.services.correctability``）。轉錄的文字不寫進日誌（#25 故事 84）。
 
@@ -16,6 +17,8 @@
 """
 
 import re
+import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Collection, Dict, List, Optional, Tuple, cast
 
@@ -23,16 +26,19 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
-from app.database.models import TranscriptionLog, TranscriptSegment
+from app.database.models import CorrectionRecord, TranscriptionLog, TranscriptSegment
 from app.database.session import get_db
 from app.repositories.correction_repository import (
     Correction,
     CorrectionField,
     CorrectionRepository,
+    OperationSize,
     ReviewState,
 )
 from app.repositories.transcript_segment_repository import TranscriptSegmentRepository
 from app.schemas.schemas import (
+    CorrectionRecordResponse,
+    SegmentCorrectionHistoryResponse,
     SegmentCorrectionRequest,
     SegmentCorrectionResponse,
     TranscriptResponse,
@@ -188,6 +194,42 @@ def correct_segment(task_uuid: str, seg_key: str, body: SegmentCorrectionRequest
     if not segments:  # 寫完之後任務剛好被刪掉
         raise HTTPException(status_code=404, detail="找不到此片段")
     return SegmentCorrectionResponse(operation_id=operation_id, segment=segments[0])
+
+
+@router.get("/{task_uuid}/segments/{seg_key}/correction-records",
+            response_model=SegmentCorrectionHistoryResponse)
+def get_segment_history(task_uuid: str, seg_key: str, db: Session = Depends(get_db)):
+    """一個片段的歷程（#355）：它的文字與說話者的每一筆校正紀錄，依編號排序，加上原始轉錄。
+
+    每一筆帶著操作編號，以及那次操作一共有幾筆、改到幾個片段：改到超過一個片段的是一次改很多個片段的操作，
+    畫面標出來並可以整批復原（復原一次操作的端點）。回到某一版是把那一版的內容用 PATCH 送出，不另開端點。
+    說話者名稱的紀錄（對象是說話者，不是片段）與確認狀態（不是校正）不列。
+    """
+    log = _get_log(db, task_uuid)
+    segment = _segment(db, log, seg_key)
+    records = CorrectionRepository.records_for_segment(db, log.task_uuid, seg_key)
+    sizes = CorrectionRepository.operation_sizes(db, log.task_uuid, {r.operation_id for r in records})
+    return SegmentCorrectionHistoryResponse(
+        seg_key=seg_key,
+        original_text=cast(Optional[str], segment.text) or "",
+        original_speaker=cast(Optional[str], segment.speaker) or None,
+        records=[_record_response(record, sizes[cast(uuid.UUID, record.operation_id)]) for record in records],
+    )
+
+
+def _record_response(record: CorrectionRecord, size: OperationSize) -> CorrectionRecordResponse:
+    created_at = cast(Optional[datetime], record.created_at)
+    return CorrectionRecordResponse(
+        id=cast(int, record.id),
+        field=cast(str, record.field),
+        old_value=cast(Optional[str], record.old_value),
+        new_value=cast(Optional[str], record.new_value),
+        operation_id=cast(uuid.UUID, record.operation_id),
+        # 到秒就好，而且 isoformat（'T' 分隔）才能被所有瀏覽器的 new Date() 解析
+        created_at=created_at.isoformat(timespec="seconds") if created_at else None,
+        operation_record_count=size.records,
+        operation_segment_count=size.segments,
+    )
 
 
 @router.post("/{task_uuid}/operations/{operation_id}/undo", response_model=UndoOperationResponse)
