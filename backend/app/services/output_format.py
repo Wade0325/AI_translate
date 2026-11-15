@@ -30,7 +30,9 @@
 
 版本有兩個（#346，見 :class:`Version`）：原始轉錄從片段產生；校正後版本從校正紀錄的 repository 算出的
 校正後版本產生（ADR 0011，下載、校正頁與匯出都讀同一處），刪掉的片段略過。沒有校正的任務兩個版本相同。
-沒有片段的任務不能校正，兩個版本都是從存下來的 LRC 轉換的內容。凍結的原始轉錄副本不回寫。
+沒有片段的任務不能校正，兩個版本都是從存下來的 LRC 轉換的內容。凍結的原始轉錄副本不回寫。改過文字的
+片段，逐字時間由那裡照校正後的文字重算（#357，見 :func:`app.services.word_timings.for_corrected_text`），
+交給這裡同一套斷行與拆字幕的規則，不另外寫一套。
 
 四種格式由同一串行產生，說話者標記跟著任務的 Multi-Speaker 開關（#13 Q1，見
 :func:`shows_speaker_labels`）：開時寫成「[S0] 文字」；關時四種格式都不寫，片段照樣存說話者編號，
@@ -66,6 +68,7 @@ from app.repositories.correction_repository import CorrectionRepository
 from app.repositories.history_repository import HistoryRepository
 from app.repositories.transcript_segment_repository import TranscriptSegmentRepository
 from app.services.transcription.models import TranscriptionTaskResult
+from app.services.word_timings import aligner_words, words_match
 from app.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -203,7 +206,6 @@ def parse_lrc(lrc_text: str) -> List[Cue]:
 MAX_LINE_SECONDS = 12.0
 _SENTENCE_END_RE = re.compile(r"(?<=[。．！？!?…])")
 _CLAUSE_END_RE = re.compile(r"(?<=[、，,])")
-_BREAK_MARK_RE = re.compile(r"([。．！？!?…、，,])")
 
 
 @dataclass(frozen=True)
@@ -229,7 +231,8 @@ def _lines(segments: Sequence[Mapping[str, Any]], *, labels: bool) -> List[_Line
     不重疊，也不上色（ADR-0008）。先產生標記再拿掉的話，不同說話者的字幕會重疊，畫面上卻看不出
     是誰。
 
-    逐字時間對不上文字的片段整段一行（見 :func:`_words_match`），一個任務只記一條警告。
+    逐字時間對不上文字的片段整段一行（見 :func:`app.services.word_timings.words_match`），一個任務
+    只記一條警告。
     """
     lines: List[_Line] = []
     unmatched: List[float] = []
@@ -238,7 +241,7 @@ def _lines(segments: Sequence[Mapping[str, Any]], *, labels: bool) -> List[_Line
         if not text:
             continue
         words = segment.get("words") or None
-        if words and not _words_match(text, words):
+        if words and not words_match(text, words):
             unmatched.append(segment["start"])
             words = None
         speaker = segment.get("speaker") if labels else None
@@ -260,13 +263,6 @@ def _one_line(text: str) -> str:
     不影響詞的對應。
     """
     return _LINE_BREAK_RE.sub(" ", text).strip()
-
-
-def _words_match(text: str, words: Sequence[Mapping[str, Any]]) -> bool:
-    """逐字時間的詞和整段文字斷出來的詞（:func:`aligner_words`）一個一個相同，每個詞也都有
-    起訖時間。不同時（例如對齊器的規則改了）就不知道哪個時間屬於哪一句。"""
-    return ([w.get("text") for w in words] == aligner_words(text)
-            and all(w.get("start") is not None and w.get("end") is not None for w in words))
 
 
 def _labelled(speaker: Optional[str], text: str) -> str:
@@ -367,41 +363,6 @@ def _split_keep(text: str, pattern: re.Pattern) -> List[str]:
 
 def _count_words(text: str) -> int:
     return len(aligner_words(text))
-
-
-def aligner_words(text: str) -> List[str]:
-    """對齊器（Qwen3-ForcedAligner，不指定語言）把文字斷成的詞，和本機一樣先在斷行標點後補空白。
-
-    照抄 transformers 5.13 ``Qwen3ASRProcessor.split_words_for_alignment`` 的預設規則：
-    漢字一字一詞；連續的字母與數字（含假名、「ー」「々」和 '）是一個詞，遇到空白或漢字才斷開；
-    標點與符號直接丟掉，也不會讓詞斷開（「ABC-DEF」是一個詞「ABCDEF」）。
-    """
-    words: List[str] = []
-    buffer: List[str] = []
-
-    def flush() -> None:
-        if buffer:
-            words.append("".join(buffer))
-            buffer.clear()
-
-    for char in _BREAK_MARK_RE.sub(r"\1 ", text).strip():
-        if _is_cjk_ideograph(char):
-            flush()
-            words.append(char)
-        elif char.isspace():
-            flush()
-        elif char == "'" or unicodedata.category(char)[0] in "LN":
-            buffer.append(char)
-    flush()
-    return words
-
-
-def _is_cjk_ideograph(char: str) -> bool:
-    code = ord(char)
-    return (0x4E00 <= code <= 0x9FFF or 0x3400 <= code <= 0x4DBF
-            or 0x20000 <= code <= 0x2A6DF or 0x2A700 <= code <= 0x2B73F
-            or 0x2B740 <= code <= 0x2B81F or 0x2B820 <= code <= 0x2CEAF
-            or 0xF900 <= code <= 0xFAFF or 0x2F800 <= code <= 0x2FA1F)
 
 
 # ─── 行 → 字幕：拆開長字幕（SRT／VTT） ───────────────────────────────────────

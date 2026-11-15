@@ -493,26 +493,6 @@ class TestDownloadVersions:
         assert response.json()["detail"] == "無法產生此格式的字幕內容"
         assert _download(client, log, fmt, "original").text == FROM_SEGMENTS[fmt]
 
-    def test_corrected_text_no_longer_matching_word_timings_is_one_subtitle(
-            self, client: TestClient, db_session: Session):
-        # 逐字時間是原始轉錄的：改過文字的片段對不上，校正後版本整段一則字幕，不會照原始轉錄的詞
-        # 拆出原來的文字（重新對齊逐字時間在 #357）。原始轉錄照樣拆成三則
-        text = "今日はゆっくり休んでくださいね、ずっと頑張ってきたんだから、少しくらい甘えてもいいんですよ。"
-        words = [{"text": w, "start": a, "end": b} for w, a, b in (
-            ("今", 10.0, 10.25), ("日", 10.25, 10.5), ("はゆっくり", 10.5, 11.0), ("休", 11.0, 11.25),
-            ("んでくださいね", 11.25, 12.0), ("ずっと", 12.5, 12.75), ("頑", 12.75, 13.0),
-            ("張", 13.0, 13.25), ("ってきたんだから", 13.25, 14.0), ("少", 14.5, 14.75),
-            ("しくらい", 14.75, 15.0), ("甘", 15.0, 15.25), ("えてもいいんですよ", 15.25, 16.5))]
-        segment = {"seg_key": "0000", "seq": 0, "start": 10.0, "end": 17.0, "speaker": "S0",
-                   "text": text, "words": words}
-        log = _with_segments(db_session, _create_log(db_session), [segment])
-        corrected = text.replace("今日は", "今日こそ")
-        CorrectionRepository.record_operation(
-            db_session, log.task_uuid, [Correction("0000", CorrectionField.TEXT, corrected)])
-
-        assert _download(client, log, "srt").text == f"1\n00:00:10,000 --> 00:00:17,000\n[S0] {corrected}\n"
-        assert _download(client, log, "srt", "original").text.count("-->") == 3
-
     def test_corrected_version_follows_the_multi_speaker_switch_too(
             self, client: TestClient, db_session: Session):
         # 帶不帶說話者標記照當時的規則（Multi-Speaker 開關），對著被下載的那個版本算：關著時校正後
@@ -526,6 +506,100 @@ class TestDownloadVersions:
         log = _corrected_task(db_session)
 
         assert _download(client, log, "srt", "latest").status_code == 422
+
+
+# ─── 改過文字的片段照常斷句與拆字幕（#357）─────────────────────────────────────
+# 逐字時間對的是原始轉錄的文字。校正後版本照校正後的文字重算（沒改到的字沿用原本的時間，改到的字照字數
+# 平均分配），交給同一套斷行與拆字幕的規則；這張之前，改過文字的片段整段變成一則字幕。期望值寫成黃金檔，
+# 原始轉錄的是這張之前 main 的下載
+
+MEETING = "今天先請王小明報告進度。預算的部分，我們下週開會的時候再請財務部門一起仔細討論一下比較好。大家有沒有問題？"
+REPLY = "好，沒有問題。"
+
+
+def _timed(text: str, start: float, step: float = 0.3, pause: float = 0.8) -> list:
+    """本機的逐字時間：一個漢字一個詞，每個詞 step 秒、一個接一個；句尾標點停 pause 秒，讀點不算詞。"""
+    words, time = [], start
+    for char in text:
+        if char in "。？":
+            time += pause
+        elif char != "，":
+            words.append({"text": char, "start": round(time, 3), "end": round(time + step, 3)})
+            time += step
+    return words
+
+
+MEETING_SEGMENTS = [
+    {"seg_key": "0000", "seq": 0, "start": 10.0, "end": 30.0, "speaker": "S0", "text": MEETING,
+     "words": _timed(MEETING, 10.2)},
+    {"seg_key": "0001", "seq": 1, "start": 31.0, "end": 33.5, "speaker": "S1", "text": REPLY,
+     "words": _timed(REPLY, 31.1)},
+]
+# 一句一則；第二句超過字寬上限，用逐字時間拆成兩則
+MEETING_ORIGINAL_SRT = """1
+00:00:10,200 --> 00:00:13,500
+[S0] 今天先請王小明報告進度。
+
+2
+00:00:14,300 --> 00:00:18,800
+[S0] 預算的部分，我們下週開會的時候再
+
+3
+00:00:18,800 --> 00:00:23,600
+[S0] 請財務部門一起仔細討論一下比較好。
+
+4
+00:00:24,400 --> 00:00:26,500
+[S0] 大家有沒有問題？
+
+5
+00:00:31,100 --> 00:00:32,600
+<font color="#FFDD55">[S1] 好，沒有問題。</font>
+"""
+# 「王小明」改成「王曉明」：照樣一句一則、第二句拆成兩則，每一則的起訖時間都和原始轉錄相同
+MEETING_CORRECTED_SRT = """1
+00:00:10,200 --> 00:00:13,500
+[S0] 今天先請王曉明報告進度。
+
+2
+00:00:14,300 --> 00:00:18,800
+[S0] 預算的部分，我們下週開會的時候再
+
+3
+00:00:18,800 --> 00:00:23,600
+[S0] 請財務部門一起仔細討論一下比較好。
+
+4
+00:00:24,400 --> 00:00:26,500
+[S0] 大家有沒有問題？
+
+5
+00:00:31,100 --> 00:00:32,600
+<font color="#FFDD55">[S1] 好，沒有問題。</font>
+"""
+
+
+class TestCorrectedTextKeepsItsLineBreaks:
+    def test_one_character_changed_still_breaks_by_sentence_at_the_original_times(
+            self, client: TestClient, db_session: Session):
+        log = _with_segments(db_session, _create_log(db_session), MEETING_SEGMENTS)
+        CorrectionRepository.record_operation(db_session, log.task_uuid, [
+            Correction("0000", CorrectionField.TEXT, MEETING.replace("王小明", "王曉明"))])
+
+        assert _download(client, log, "srt").text == MEETING_CORRECTED_SRT
+        assert _download(client, log, "srt", "original").text == MEETING_ORIGINAL_SRT
+
+    def test_shortened_sentence_ends_at_its_last_remaining_word(
+            self, client: TestClient, db_session: Session):
+        # 刪掉的字連同時間一起拿掉：第二句改短後在「論」的結束（22.1 秒）結束，其他句子不動
+        log = _with_segments(db_session, _create_log(db_session), MEETING_SEGMENTS)
+        CorrectionRepository.record_operation(db_session, log.task_uuid, [Correction(
+            "0000", CorrectionField.TEXT, "今天先請王小明報告進度。預算的部分我們下週再討論。大家有沒有問題？")])
+
+        assert _download(client, log, "lrc").text == (
+            "[00:10.20][S0] 今天先請王小明報告進度。\n[00:14.30][S0] 預算的部分我們下週再討論。\n"
+            "[00:24.40][S0] 大家有沒有問題？\n[00:31.10][S1] 好，沒有問題。")
+        assert "00:00:14,300 --> 00:00:22,100\n[S0] 預算的部分我們下週再討論。" in _download(client, log, "srt").text
 
 
 class TestDownloadFilename:

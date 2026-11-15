@@ -123,7 +123,7 @@ export function wordAt(words, t, segmentEnd) {
   return t < end ? i : -1;
 }
 
-/** 對齊器算成字的字元：字母（含假名與漢字）、數字與 '（backend/app/services/output_format.py 的 aligner_words）。 */
+/** 對齊器算成字的字元：字母（含假名與漢字）、數字與 '（backend/app/services/word_timings.py 的 aligner_words）。 */
 const WORD_CHAR = /^[\p{L}\p{N}']$/u;
 /** 空白：對齊器在這裡斷開兩個字，所以一個字不能跨過它。 */
 const SPACE = /^\s$/u;
@@ -135,7 +135,7 @@ const SPACE = /^\s$/u;
  * 對齊器斷字時丟掉標點與符號（「ABC-DEF」是一個字「ABCDEF」），所以一個字可以跨過中間的符號，但不能跨過
  * 空白（對齊器在空白斷字）。文字和
  * 逐字時間對不上時（字數不同、有字不一樣）回 null，整段照原樣顯示、不標字；下載的輸出格式遇到這種片段
- * 也是整段一行（output_format 的 _words_match）。
+ * 也是整段一行（word_timings 的 words_match）。
  *
  * @param {string | null | undefined} text
  * @param {Word[] | null | undefined} words
