@@ -168,6 +168,18 @@ export const api = {
       return request(`/transcripts/${taskUuid}/operations/${operationId}/undo`, { method: 'POST' });
     },
     /**
+     * 一次改很多個片段的確認狀態（#349）：現在的確認狀態是 onlyIf 的片段改成 reviewState（null 是沒有確認狀態），
+     * 在同一個交易裡做完；segKeys 不給時看這個任務的全部片段。不是校正，不留校正紀錄。回
+     * { changed, seg_keys }：實際改到的片段（依片段的順序）
+     *
+     * @param {string} taskUuid
+     * @param {{ reviewState: string | null, onlyIf: string | null, segKeys?: string[] }} change
+     */
+    changeReviewStates(taskUuid, { reviewState, onlyIf, segKeys }) {
+      const body = { review_state: reviewState, only_if: onlyIf, ...(segKeys ? { seg_keys: segKeys } : {}) };
+      return request(`/transcripts/${taskUuid}/review-states`, { method: 'PATCH', body });
+    },
+    /**
      * 把這位說話者全部換成另一位（#354）：fromSpeaker 是 null 時換的是沒有說話者的片段。回
      * { operation_id, changed, segments }：整批復原用的操作編號（一個片段都沒改到時是 null）、改到幾個片段，與它們的新內容
      */
