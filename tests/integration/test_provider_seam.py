@@ -15,6 +15,7 @@ import textwrap
 import threading
 from contextlib import ExitStack, contextmanager
 from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import unquote
 
@@ -2937,25 +2938,34 @@ class TestNonAsciiFilename:
         assert leftovers(data_dir) == []
 
 
-# ─── 存片段：和完成一起寫，同一個任務再完成一次時不刪校正（#114） ───────────
+# ─── 存片段：和完成一起寫；同一個任務再完成一次時，使用者動過就保留原本的結果（#114、#342） ───
 
 class Redelivers:
     """Docker 模式的 Celery 重派：同一個任務（同一個 task id、同一份參數）再執行一次，
-    其餘照轉；用 ``run_mode.use`` 換上。行程內執行模式不會重派任務。"""
+    其餘照轉；用 ``run_mode.use`` 換上。行程內執行模式不會重派任務。
+
+    另外記下每一則狀態廣播（``published``）：重派時沒有畫面在聽，要從這裡看任務宣告了什麼。
+    """
 
     def __init__(self, inner):
         self._inner = inner
         self._params = {}
+        self.published: list[dict] = []
 
     def submit_transcription(self, task_id, task_params_dict, queue):
         self._inner.submit_transcription(task_id, task_params_dict, queue)
         self._params[task_id] = task_params_dict
 
-    def redeliver(self, task_id: str) -> None:
-        """同一個任務再執行一次，跑完才回來。"""
+    def publish(self, message: dict) -> None:
+        self.published.append(message)
+        self._inner.publish(message)
+
+    def redeliver(self, task_id: str) -> dict:
+        """同一個任務再執行一次，跑完才回來；回傳它結束時宣告的內容（最後一則狀態廣播）。"""
         from app.tasks.transcribe_core import run_transcription
 
         run_transcription(self._params[task_id], task_id)
+        return self.published[-1]
 
     def __getattr__(self, name):
         return getattr(self._inner, name)
@@ -2969,8 +2979,8 @@ def redelivery(run_mode_spy):
     run_mode.use(previous)
 
 
-def mark_segment(engine, task_uuid: str, seg_key: str, **fields) -> None:
-    """使用者在一個片段上校正或標確認狀態：校正介面是 v0.2，還沒有端點，直接寫進片段。"""
+def mark_review_state(engine, task_uuid: str, seg_key: str, review_state: str) -> None:
+    """使用者在一個片段上標確認狀態：還沒有端點（#341），直接寫進片段。"""
     from sqlalchemy.orm import sessionmaker
 
     from app.database.models import TranscriptSegment
@@ -2980,9 +2990,41 @@ def mark_segment(engine, task_uuid: str, seg_key: str, **fields) -> None:
         marked = db.query(TranscriptSegment).filter(
             TranscriptSegment.task_uuid == coerce_uuid(task_uuid),
             TranscriptSegment.seg_key == seg_key,
-        ).update(fields)
+        ).update({TranscriptSegment.review_state: review_state})
         db.commit()
     assert marked == 1
+
+
+def correct_text(engine, task_uuid: str, seg_key: str, text: str) -> None:
+    """使用者校正一個片段的文字：還沒有端點（#341），直接記一筆校正紀錄。"""
+    from sqlalchemy.orm import sessionmaker
+
+    from app.repositories.correction_repository import (
+        Correction,
+        CorrectionField,
+        CorrectionRepository,
+    )
+
+    with sessionmaker(bind=engine)() as db:
+        recorded = CorrectionRepository.record_operation(
+            db, task_uuid, [Correction(seg_key, CorrectionField.TEXT, text)])
+    assert recorded is not None
+
+
+def corrected_version_and_records(engine, task_uuid: str) -> tuple[list[dict], list[tuple]]:
+    """一個任務的校正後版本（每個片段帶著原始轉錄），以及每一筆校正紀錄（編號、對象、改了什麼、改前、
+    改後、操作編號）。"""
+    from sqlalchemy.orm import sessionmaker
+
+    from app.database.models import CorrectionRecord
+    from app.repositories.correction_repository import CorrectionRepository
+    from app.utils.identifiers import coerce_uuid
+
+    with sessionmaker(bind=engine)() as db:
+        records = db.query(CorrectionRecord).filter(
+            CorrectionRecord.task_uuid == coerce_uuid(task_uuid)).order_by(CorrectionRecord.id)
+        return (CorrectionRepository.corrected_version(db, task_uuid),
+                [(r.id, r.target, r.field, r.old_value, r.new_value, r.operation_id) for r in records])
 
 
 @contextmanager
@@ -3001,18 +3043,21 @@ def segments_unwritable(engine):
             conn.execute(text("DROP TRIGGER segments_unwritable"))
 
 
-# 第一次完成有四個片段；再完成一次時，模型聽成不一樣的文字，而且少了最後一段
+# 第一次完成時切成四段，只轉到原音檔的 6 秒就停了（可能掉尾）；再完成一次時轉到了結尾，模型聽成不一樣
+# 的文字，切法也不同，只有三段
 FIRST_RUN = [
-    (0.2, 1.5, 0, "おはよう。"),
-    (2.3, 3.6, 1, "こんにちは。"),
-    (4.4, 5.6, 0, "またね。"),
-    (6.0, 6.8, 1, "じゃあね。"),
+    (0.2, 0.8, 0, "おはよう。"),
+    (0.9, 1.5, 1, "こんにちは。"),
+    (2.3, 2.9, 0, "またね。"),
+    (3.0, 3.6, 1, "じゃあね。"),
 ]
 SECOND_RUN = [
     (0.2, 1.5, 0, "おはよ。"),
     (2.3, 3.6, 1, "こんにちわ。"),
-    (4.4, 5.6, 0, "まったね。"),
+    (4.4, 6.8, 0, "まったね。"),
 ]
+FIRST_TEXTS = [line[3] for line in FIRST_RUN]
+SECOND_TEXTS = [line[3] for line in SECOND_RUN]
 
 
 class TestSegmentsAreSavedWithTheCompletion:
@@ -3028,48 +3073,122 @@ class TestSegmentsAreSavedWithTheCompletion:
         assert stored_segments(api, task_uuid) == []
 
 
+def completion_record(api, task_uuid: str) -> dict:
+    """任務紀錄（History）裡這一次執行的欄位，以及描述轉錄結果的掉尾起點。"""
+    record = api.get(f"/api/v1/history/{task_uuid}").json()
+    return {"status": record["status"], "total_tokens": record["total_tokens"],
+            "cost": record["cost"], "service_tier_used": record["service_tier_used"],
+            "completed_at": datetime.fromisoformat(record["completed_at"]),
+            "tail_loss_from_seconds": record["tail_loss_from_seconds"]}
+
+
+def assert_broadcast_is_the_download(api, done: dict) -> None:
+    """完成時送給畫面的四種輸出格式，和之後下載的逐字相同。"""
+    for fmt in ("lrc", "srt", "vtt", "txt"):
+        assert done["result"]["transcripts"][fmt] == download(api, done["task_uuid"], fmt), fmt
+
+
 class TestCompletingTheSameTaskAgain:
+    """同一個任務再完成一次（Docker 模式的重派；批次從復原入口再結束一次也走同一個完成）。
+
+    任務已經有校正紀錄或確認狀態時，這次的結果不寫進片段，原本的轉錄結果都留著：校正紀錄對照的
+    原始轉錄不能在使用者背後換掉（ADR 0011）。這一次執行的紀錄照常更新。
+
+    第一次以 Flex 完成，用 240,000 個 token（打五折，0.15 美元）；第二次以標準完成，用 480,000 個
+    （0.60 美元）。價目見 TestSingleFileTask 的計價測試。掉尾的門檻改成 2 秒，見 TestTailLoss。
+    """
+
+    @pytest.fixture(autouse=True)
+    def _priced_and_tail_loss(self, fake, settings, monkeypatch):
+        fake.model_capabilities = replace(fake.model_capabilities, pricing="per_token")
+        monkeypatch.setattr(settings, "flex_cost_discount", 0.5)
+        monkeypatch.setattr(settings, "tail_loss_min_seconds", 2.0)
+
     @pytest.fixture
     def task_uuid(self, api, fake, redelivery):
-        """完成過一次（FIRST_RUN）的任務；再完成一次時，假供應商回 SECOND_RUN。"""
+        """完成過一次（FIRST_RUN）的任務；再完成一次時，假供應商回 SECOND_RUN，處理模式與用量都不同。"""
         fake.script = [list(FIRST_RUN), list(SECOND_RUN)]
-        return transcribe(api, "uid-again")[-1]["task_uuid"]
+        fake.usage = (200_000, 40_000)
+        fake.service_tier = "flex"
+        done = transcribe(api, "uid-again")[-1]
+        assert done["status_code"] == TaskStatus.COMPLETED
+        assert [s["text"] for s in stored_segments(api, done["task_uuid"])] == FIRST_TEXTS
+        assert done["result"]["tail_loss_from_seconds"] == pytest.approx(6.0)
+        assert done["result"]["cost"] == pytest.approx(0.15)
+        fake.usage = (400_000, 80_000)
+        fake.service_tier = None
+        return done["task_uuid"]
 
-    def test_without_touched_segments_the_new_result_replaces_all(
-            self, api, redelivery, task_uuid):
-        redelivery.redeliver(task_uuid)
-
-        # 和以前一樣整批換成這次的結果，這次沒有的那一段也拿掉
-        assert [s["text"] for s in stored_segments(api, task_uuid)] == [
-            "おはよ。", "こんにちわ。", "まったね。"]
-
-    def test_segments_the_user_touched_are_kept_others_take_the_new_result(
+    def test_without_corrections_the_new_result_replaces_all(
             self, api, redelivery, task_uuid, test_engine):
-        keys = [s["seg_key"] for s in stored_segments(api, task_uuid)]
-        # 使用者校正了第一段，把第三段標成已確認
-        mark_segment(test_engine, task_uuid, keys[0], text="おはようございます。", source="edited")
-        mark_segment(test_engine, task_uuid, keys[2], review_state="verified")
-        corrected, _, verified, _ = stored_segments(api, task_uuid)
+        first = completion_record(api, task_uuid)
 
-        redelivery.redeliver(task_uuid)
+        done = redelivery.redeliver(task_uuid)
 
-        # 這兩段不刪、不覆寫；其他片段換成這次的結果，這次沒有的第四段拿掉
+        # 整批換成這次的結果：片段（這次沒有的第四段也拿掉）、凍結的原始轉錄副本、掉尾的起點
+        assert done["status_code"] == TaskStatus.COMPLETED
+        assert [s["text"] for s in stored_segments(api, task_uuid)] == SECOND_TEXTS
+        frozen = frozen_original(test_engine, task_uuid)
+        assert [line.split("] ")[-1] for line in frozen.splitlines()] == SECOND_TEXTS
+        second = completion_record(api, task_uuid)
+        assert second["tail_loss_from_seconds"] is None
+        assert (second["total_tokens"], second["cost"]) == (480_000, pytest.approx(0.60))
+        assert second["service_tier_used"] == "standard"
+        assert second["completed_at"] > first["completed_at"]
+        assert_broadcast_is_the_download(api, done)
+        assert done["result"]["tail_loss_from_seconds"] is None
+
+    @pytest.mark.parametrize("touch", [
+        # 使用者校正了第一段的文字
+        lambda engine, task_uuid, keys: correct_text(engine, task_uuid, keys[0], "おはようございます。"),
+        # 只把第三段標成已確認，沒有校正
+        lambda engine, task_uuid, keys: mark_review_state(engine, task_uuid, keys[2], "verified"),
+    ], ids=["corrected", "review-state-only"])
+    def test_once_the_user_touched_the_task_its_result_is_kept(
+            self, api, redelivery, task_uuid, test_engine, touch, app_log):
+        touch(test_engine, task_uuid, [s["seg_key"] for s in stored_segments(api, task_uuid)])
         segments = stored_segments(api, task_uuid)
-        assert [s["text"] for s in segments] == ["おはようございます。", "こんにちわ。", "またね。"]
-        assert (segments[0], segments[2]) == (corrected, verified)
+        version_and_records = corrected_version_and_records(test_engine, task_uuid)
+        frozen = frozen_original(test_engine, task_uuid)
+        first = completion_record(api, task_uuid)
+
+        done = redelivery.redeliver(task_uuid)
+
+        # 轉錄結果一個都不換：片段、校正紀錄與校正後版本、凍結的原始轉錄副本、掉尾的起點
+        assert done["status_code"] == TaskStatus.COMPLETED
+        assert stored_segments(api, task_uuid) == segments
+        assert corrected_version_and_records(test_engine, task_uuid) == version_and_records
+        assert frozen_original(test_engine, task_uuid) == frozen
+        second = completion_record(api, task_uuid)
+        assert second["tail_loss_from_seconds"] == first["tail_loss_from_seconds"]
+        # 這一次執行的紀錄照常更新：狀態、完成時間、用量與費用、處理模式
+        assert second["status"] == TaskStatus.COMPLETED
+        assert (second["total_tokens"], second["cost"]) == (480_000, pytest.approx(0.60))
+        assert second["service_tier_used"] == "standard"
+        assert second["completed_at"] > first["completed_at"]
+        # 送給畫面的是留下來的結果，不是這次沒有存下來的
+        assert_broadcast_is_the_download(api, done)
+        lrc = done["result"]["transcripts"]["lrc"]
+        assert all(text in lrc for text in FIRST_TEXTS)
+        assert not any(text in lrc for text in SECOND_TEXTS)
+        assert done["result"]["tail_loss_from_seconds"] == pytest.approx(6.0)
+        assert (done["result"]["tokens_used"], done["result"]["cost"]) == (480_000, pytest.approx(0.60))
+        # 日誌只寫任務 id，不寫內容
+        assert [entry for entry in app_log if "保留原本的轉錄結果" in entry] == [
+            f"任務已有校正紀錄或確認狀態，保留原本的轉錄結果 (task={task_uuid})"]
 
     def test_failing_to_store_the_new_segments_leaves_the_old_ones_untouched(
             self, api, redelivery, task_uuid, test_engine):
-        first_key = stored_segments(api, task_uuid)[0]["seg_key"]
-        mark_segment(test_engine, task_uuid, first_key, text="おはようございます。", source="edited")
         before = stored_segments(api, task_uuid)
+        frozen = frozen_original(test_engine, task_uuid)
 
         with segments_unwritable(test_engine), pytest.raises(Exception, match="disk is full"):
             redelivery.redeliver(task_uuid)
 
-        # 這次的片段寫不進去：任務記成失敗，使用者的校正和上一次的結果都原封不動
+        # 這次的片段寫不進去：任務記成失敗，上一次的結果原封不動
         assert api.get(f"/api/v1/history/{task_uuid}").json()["status"] == TaskStatus.FAILED
         assert stored_segments(api, task_uuid) == before
+        assert frozen_original(test_engine, task_uuid) == frozen
 
 
 # ─── 失敗的任務照樣記用量 ───────────────────────────────────────────────────

@@ -303,7 +303,7 @@ FROM_SEGMENTS = {
 
 
 def _with_segments(db: Session, log: TranscriptionLog, segments=SEGMENTS) -> TranscriptionLog:
-    TranscriptSegmentRepository.replace_untouched(db, log.task_uuid, segments)
+    TranscriptSegmentRepository.replace_for_task(db, log.task_uuid, segments)
     db.commit()
     return log
 
@@ -314,7 +314,7 @@ class TestDownloadFromSegments:
             self, client: TestClient, db_session: Session, fmt):
         # 存下來的 LRC 只是凍結的原始轉錄副本，有片段時下載不讀它
         log = _create_log(db_session, lrc_content="[00:00.00]凍結的原始轉錄副本")
-        TranscriptSegmentRepository.replace_untouched(db_session, log.task_uuid, SEGMENTS)
+        TranscriptSegmentRepository.replace_for_task(db_session, log.task_uuid, SEGMENTS)
         db_session.commit()
 
         response = client.get(f"/api/v1/history/{log.task_uuid}/download/{fmt}")
