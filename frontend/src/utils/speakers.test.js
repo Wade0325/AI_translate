@@ -10,7 +10,7 @@ import {
   showsAsCorrected,
   speakerChoices,
   speakerCounts,
-  speakerLabel,
+  speakerText,
   speakerNameProblem,
 } from './speakers';
 
@@ -100,15 +100,15 @@ describe('reassignMessage：全部換成另一位之後寫的結果', () => {
   });
 });
 
-describe('speakerLabel：片段那一列寫的說話者（#359）', () => {
+describe('speakerText：片段那一列寫的說話者（#359）', () => {
   it('取了名字的寫名稱，沒取的寫說話者編號', () => {
     const names = { S0: '王小明' };
-    expect(speakerLabel('S0', names)).toBe('王小明');
-    expect(speakerLabel('S1', names)).toBe('S1');
+    expect(speakerText('S0', names)).toBe('王小明');
+    expect(speakerText('S1', names)).toBe('S1');
   });
 
   it('沒有說話者的片段寫「未指定」', () => {
-    expect(speakerLabel(null, { S0: '王小明' })).toBe(NO_SPEAKER_LABEL);
+    expect(speakerText(null, { S0: '王小明' })).toBe(NO_SPEAKER_LABEL);
   });
 });
 
@@ -146,6 +146,18 @@ describe('speakerNameProblem：名稱哪裡不合規則（#359 第 6 點，和�
   it('寫成 S 加數字（全形與小寫也算）', () => {
     for (const name of ['S1', 's12', 'Ｓ１']) {
       expect(speakerNameProblem(name)).toBe('名稱不能寫成 S 加數字，會和說話者編號分不出來');
+    }
+  });
+
+  it('寫成時間（全形也算）：LRC 的播放器會把它當成時間戳', () => {
+    for (const name of ['00:05.00', '1:02', '12:30:15', '００：０５']) {
+      expect(speakerNameProblem(name)).toBe('名稱不能寫成時間（例如 00:05.00），LRC 會把它當成時間戳');
+    }
+  });
+
+  it('帶數字但不是編號也不是時間的名稱可以', () => {
+    for (const name of ['Sam 2', '第 2 位來賓', 'S1 的助理', '10 點的客人']) {
+      expect(speakerNameProblem(name)).toBeNull();
     }
   });
 });

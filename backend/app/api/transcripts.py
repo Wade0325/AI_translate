@@ -83,8 +83,12 @@ _LINE_BREAKS = re.compile(r"\s*[\n\r\x0b\x0c\x1c-\x1e\x85\u2028\u2029]+\s*")
 SPEAKER_NAME_MAX_LENGTH = 30
 """說話者名稱最多幾個字（去掉前後的空白之後算，#359）。"""
 
-_SPEAKER_ID_LIKE = re.compile(r"s\d+")
-"""寫成說話者編號的名稱（S 加數字；全形與大小寫照 ``speaker_name_key`` 一起算），會和沒取名字的說話者分不出來。"""
+_SPEAKER_ID_LIKE = re.compile(r"s[0-9]+")
+"""寫成說話者編號的名稱（S 加數字；全形與大小寫照 ``speaker_name_key`` 換過再比），會和沒取名字的說話者分不出來。"""
+
+_TIME_LIKE = re.compile(r"[0-9]+:[0-9]+(?:[.:][0-9]+)?")
+"""寫成時間的名稱（例如 00:05.00，全形照 ``speaker_name_key`` 換過再比）：LRC 寫成 ``[00:01.00][00:05.00] 文字``，
+播放器會把它當成第二個時間戳。"""
 
 _UNCORRECTABLE = {
     Uncorrectable.NOT_COMPLETED: "這個任務還沒完成，完成之後才能校正",
@@ -372,7 +376,7 @@ def _speaker_name(name: str) -> str:
     """請求裡的說話者名稱要存成什麼：前後的空白去掉，空的是清掉名稱。不合規則時回 400（#359 第 6 點）。
 
     方括號與換行不行：輸出的說話者標記用方括號包住名稱，LRC 一行一個時間戳。寫成 S 加數字也不行：輸出裡會和沒取
-    名字的說話者的編號分不出來。
+    名字的說話者的編號分不出來。寫成時間（例如 00:05.00）也不行：LRC 的播放器會把方括號裡的它當成時間戳。
     """
     name = name.strip()
     if len(name) > SPEAKER_NAME_MAX_LENGTH:
@@ -383,6 +387,8 @@ def _speaker_name(name: str) -> str:
         raise HTTPException(status_code=400, detail="名稱不能換行")
     if _SPEAKER_ID_LIKE.fullmatch(speaker_name_key(name)):
         raise HTTPException(status_code=400, detail="名稱不能寫成 S 加數字：那是說話者編號的寫法，會和沒取名字的說話者分不出來")
+    if _TIME_LIKE.fullmatch(speaker_name_key(name)):
+        raise HTTPException(status_code=400, detail="名稱不能寫成時間（例如 00:05.00）：LRC 會把它當成時間戳")
     return name
 
 
@@ -402,10 +408,7 @@ def set_speaker_name(task_uuid: str, speaker: str, body: SpeakerNameRequest, db:
     except UnknownSpeaker as e:
         raise HTTPException(status_code=404, detail=f"這個任務沒有說話者 {speaker}") from e
     except SpeakerNameTaken as e:
-        raise HTTPException(
-            status_code=409,
-            detail=f"{e.speaker} 已經叫「{e.name}」：同一個任務裡兩位說話者不能取同一個名稱",
-        ) from e
+        raise HTTPException(status_code=409, detail=str(e)) from e
     except ValueError as e:
         # 任務剛好被刪掉：什麼都沒寫
         raise HTTPException(status_code=404, detail="找不到此任務紀錄") from e

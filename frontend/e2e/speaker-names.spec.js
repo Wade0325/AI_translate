@@ -115,6 +115,7 @@ test('不合規則的名稱邊打邊寫出原因，不能存；按 Esc 不存就
         ['[主持人]', '名稱不能有方括號（[ 或 ]）'],
         ['S2', '名稱不能寫成 S 加數字，會和說話者編號分不出來'],
         ['名'.repeat(31), '名稱最多 30 個字'],
+        ['00:05.00', '名稱不能寫成時間（例如 00:05.00），LRC 會把它當成時間戳'],
     ]) {
         await nameInput(page).fill(name)
         await expect(dialog(page).getByRole('alert')).toHaveText(reason)

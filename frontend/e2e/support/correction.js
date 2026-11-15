@@ -197,7 +197,7 @@ export function correctionsBackend(segments, fields = {}) {
     return {
         records,
         settings,
-        /** @param {[string, 'text' | 'speaker', string | null][]} changes [片段鍵, 改了什麼, 改後] */
+        /** @param {[string, 'text' | 'speaker' | 'speaker_name', string | null][]} changes [片段鍵或說話者編號, 改了什麼, 改後] */
         bulk(changes) {
             const operationId = `op-${operations += 1}`
             for (const [segKey, field, after] of changes) record(segKey, field, after, operationId)
@@ -209,8 +209,10 @@ export function correctionsBackend(segments, fields = {}) {
             }),
             'PUT /transcripts/task-1/speakers/:speaker/name': ({ params, body }) => {
                 const name = body.name.trim()
+                // 和後端的 speaker_name_key 一樣：全形半形與大小寫不分
+                const key = (text) => text.normalize('NFKC').toLowerCase()
                 const taken = Object.entries(speakerNames())
-                    .find(([speaker, other]) => speaker !== params.speaker && other.toLowerCase() === name.toLowerCase())
+                    .find(([speaker, other]) => speaker !== params.speaker && key(other) === key(name))
                 if (name && taken) {
                     return reply(409, { detail: `${taken[0]} 已經叫「${taken[1]}」：同一個任務裡兩位說話者不能取同一個名稱` })
                 }

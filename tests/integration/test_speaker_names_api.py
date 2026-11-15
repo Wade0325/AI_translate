@@ -284,6 +284,21 @@ class TestRefusedSpeakerNames:
 
         assert "說話者編號" in detail
 
+    @pytest.mark.parametrize("name", ["00:05.00", "1:02", "12:30:15", "００：０５"])
+    def test_a_name_written_like_a_time(self, client, db_session, name):
+        # LRC 寫成 [00:01.00][00:05.00] 文字，播放器會把名稱當成第二個時間戳
+        task = _task(db_session)
+
+        detail = self._refused(_name(client, task.task_uuid, "S1", name), 400, db_session, task.task_uuid)
+
+        assert "時間" in detail
+
+    def test_names_with_digits_that_are_not_ids_or_times_are_fine(self, client, db_session):
+        task = _task(db_session)
+
+        assert _name(client, task.task_uuid, "S0", "Sam 2").status_code == 200
+        assert _name(client, task.task_uuid, "S1", "第 2 位來賓").status_code == 200
+
     @pytest.mark.parametrize("speaker", ["S5", "s0", "S00"])
     def test_a_speaker_the_task_does_not_have(self, client, db_session, speaker):
         task = _task(db_session)

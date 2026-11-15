@@ -77,14 +77,14 @@ class UnknownSpeaker(SpeakerNameRefused):
 
 
 class SpeakerNameTaken(SpeakerNameRefused):
-    """另一位說話者現在的名稱和要取的名稱看起來一樣（:func:`speaker_name_key`）。"""
+    """另一位說話者現在的名稱和要取的名稱看起來一樣（:func:`speaker_name_key`）。
+
+    訊息寫給使用者看，api 原樣放進回應：固定句子，只帶同一個任務裡已經用了這個名稱的說話者編號與它現在的名稱，
+    兩者都是使用者自己在這個任務裡看得到的內容。
+    """
 
     def __init__(self, speaker: str, name: str):
-        super().__init__(speaker)
-        self.speaker = speaker
-        """已經用了這個名稱的說話者編號。"""
-        self.name = name
-        """它現在的名稱。"""
+        super().__init__(f"{speaker} 已經叫「{name}」：同一個任務裡兩位說話者不能取同一個名稱")
 
 
 class ReviewState(StrEnum):
@@ -453,7 +453,7 @@ class CorrectionRepository:
     def set_speaker_name(db: Session, task_uuid, speaker: str, name: str) -> Optional[uuid.UUID]:
         """替一個說話者編號取說話者名稱（#359），``name`` 是空字串時清掉名稱。取名字算一次校正：有變時記一筆說話者
         名稱的校正紀錄，回傳操作編號，可以用 :meth:`undo_operation` 復原；和現在的名稱相同時什麼都不記，回傳 None。
-        名稱的格式（長度、方括號、換行）由呼叫的人檢查。
+        名稱的格式（長度、方括號、換行、不能寫成說話者編號或時間）由呼叫的人檢查（``app.api.transcripts``）。
 
         鎖住任務之後才判斷，同時送來的另一次校正不會讓判斷過時：
 

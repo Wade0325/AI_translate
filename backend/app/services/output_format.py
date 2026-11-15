@@ -146,7 +146,7 @@ def for_segments(
     fmt: OutputFormat,
     *,
     speaker_labels: bool,
-    speaker_names: Optional[Mapping[str, str]] = None,
+    speaker_names: Mapping[str, str],
 ) -> str:
     """片段（形狀和 :meth:`TranscriptSegmentRepository.segments_for_task` 相同）的一種輸出格式。沒有任何一行時
     是空字串。
@@ -156,7 +156,7 @@ def for_segments(
     上色照樣看編號。不帶標記時名稱也不寫。
     """
     lines = _lines(segments, labels=speaker_labels)
-    return _render(lines, fmt, speaker_names or {}) if lines else ""
+    return _render(lines, fmt, speaker_names) if lines else ""
 
 
 def for_result(result: TranscriptionTaskResult, *, speaker_labels: bool = True) -> OutputFiles:
@@ -659,16 +659,10 @@ VTT_COLOR_CLASSES: Tuple[Optional[str], ...] = (None, "yellow", "cyan", "lime")
 S3 綠（lime，規格說它就是字幕慣稱的 green）。這些是純色，紅色弱的人分不出黃和綠，靠行首的說話者
 標記分辨。"""
 
-_APP_LABEL_RE = re.compile(r"\[S(\d+)\]")
-
-
 def _color_index(cue: Cue) -> int:
-    """這一行在 :data:`SPEAKER_COLORS` 裡的位置；0 是白色，不上色。看的和 :func:`_speaker` 相同：有說話者編號
-    時看編號（取了說話者名稱也一樣），沒有時看行首的 [Sn]。"""
-    if cue.speaker is not None:
-        match = _SPEAKER_ID_RE.fullmatch(cue.speaker)
-    else:
-        match = _APP_LABEL_RE.match(cue.text)
+    """這一行在 :data:`SPEAKER_COLORS` 裡的位置；0 是白色，不上色。照 :func:`_speaker` 認出的說話者：有說話者
+    編號時看編號（取了說話者名稱也一樣），沒有時看行首的 [Sn]；Gemini 舊 LRC 的「Speaker 1:」不上色。"""
+    match = _SPEAKER_ID_RE.fullmatch(_speaker(cue) or "")
     return int(match.group(1)) % len(SPEAKER_COLORS) if match else 0
 
 

@@ -122,7 +122,7 @@ export function showsAsCorrected(segment, singleSpeaker) {
  * @param {SpeakerNames} [names]
  */
 export function reassignMessage(changed, toSpeaker, names = {}) {
-  return `已把 ${changed} 個片段換成 ${speakerLabel(toSpeaker, names)}`;
+  return `已把 ${changed} 個片段換成 ${speakerText(toSpeaker, names)}`;
 }
 
 /**
@@ -131,7 +131,7 @@ export function reassignMessage(changed, toSpeaker, names = {}) {
  * @param {string | null} speaker
  * @param {SpeakerNames} names
  */
-export function speakerLabel(speaker, names) {
+export function speakerText(speaker, names) {
   if (!speaker) return NO_SPEAKER_LABEL;
   return names[speaker] || speaker;
 }
@@ -161,7 +161,9 @@ export function speakerNameProblem(draft) {
   const name = draft.trim();
   if (Array.from(name).length > SPEAKER_NAME_MAX_LENGTH) return `名稱最多 ${SPEAKER_NAME_MAX_LENGTH} 個字`;
   if (/[[\]]/.test(name)) return '名稱不能有方括號（[ 或 ]）';
-  if (/^s\d+$/i.test(name.normalize('NFKC'))) return '名稱不能寫成 S 加數字，會和說話者編號分不出來';
+  const key = name.normalize('NFKC');
+  if (/^s[0-9]+$/i.test(key)) return '名稱不能寫成 S 加數字，會和說話者編號分不出來';
+  if (/^[0-9]+:[0-9]+(?:[.:][0-9]+)?$/.test(key)) return '名稱不能寫成時間（例如 00:05.00），LRC 會把它當成時間戳';
   return null;
 }
 
