@@ -6,10 +6,11 @@ import { replacementPlan, searchSegments, stepMatch } from '../utils/segmentSear
  * utils/segmentSearch.js。
  *
  * 換到一個符合的片段（打了要找的字、按上一個或下一個）時，reveal 換成一個新的物件，片段列表把那一列捲到看得到的
- * 地方；同時呼叫 onReveal，由頁面停止跟著播放捲動，免得播放把畫面拉回去。
+ * 地方；同時用那個片段在 segments 裡的位置呼叫 onReveal，由頁面停止跟著播放捲動（免得播放把畫面拉回去），
+ * 那個片段被篩選掉了時也由頁面換回全部（#349）。
  *
  * @param {import('../utils/segmentSearch').SearchableSegment[]} segments 校正後版本的片段
- * @param {{ onReveal: () => void }} options
+ * @param {{ onReveal: (index: number) => void }} options
  */
 export function useSegmentSearch(segments, { onReveal }) {
   const [open, setOpen] = useState(false);
@@ -39,7 +40,7 @@ export function useSegmentSearch(segments, { onReveal }) {
       setCurrent(index);
       if (index >= 0) {
         setReveal({ index: found[index].index });
-        latest.current.onReveal();
+        latest.current.onReveal(found[index].index);
       }
     };
     return {

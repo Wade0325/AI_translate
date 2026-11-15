@@ -130,10 +130,15 @@ function replaceText(text, find, replacement) {
  * mockBackend；records 是記下的紀錄，settings 是任務的設定，給測試檢查；bulk 直接記一次改很多個片段的操作，回傳
  * 操作編號。
  *
+ * 確認狀態（#349）直接記在片段上（reviewStates），不留校正紀錄：PATCH 的 review_state，以及一次改很多個
+ * 片段的確認狀態（PATCH /transcripts/task-1/review-states，現在是 only_if 的才改）。
+ *
  * @param {ReturnType<typeof segment>[]} segments 原始轉錄
  */
 export function correctionsBackend(segments, fields = {}) {
     const originals = new Map(segments.map((s) => [s.seg_key, s]))
+    /** @type {Map<string, string | null>} */
+    const reviewStates = new Map(segments.map((s) => [s.seg_key, s.review_state ?? null]))
     const settings = { single_speaker: Boolean(fields.single_speaker), speaker_count: fields.speaker_count ?? null }
     /** @type {{ id: number, seg_key: string, field: 'text' | 'speaker', before: string | null, after: string | null,
      *   operation_id: string, created_at: string }[]} */
@@ -151,7 +156,7 @@ export function correctionsBackend(segments, fields = {}) {
         const latestText = records.findLast((r) => r.seg_key === segKey && r.field === 'text')
         const deleted = !text
         return {
-            ...original, text, speaker,
+            ...original, text, speaker, review_state: reviewStates.get(segKey),
             corrected: text !== original.text || speaker !== original.speaker,
             deleted,
             deleted_text: deleted && latestText ? latestText.before : null,
@@ -183,6 +188,7 @@ export function correctionsBackend(segments, fields = {}) {
 
     return {
         records,
+        reviewStates,
         settings,
         /** @param {[string, 'text' | 'speaker', string | null][]} changes [片段鍵, 改了什麼, 改後] */
         bulk(changes) {
@@ -215,7 +221,15 @@ export function correctionsBackend(segments, fields = {}) {
                 let recorded = false
                 if ('text' in body) recorded = record(params.seg_key, 'text', normalized(body.text), operationId) || recorded
                 if ('speaker' in body) recorded = record(params.seg_key, 'speaker', body.speaker, operationId) || recorded
+                if ('review_state' in body) reviewStates.set(params.seg_key, body.review_state)
                 return { operation_id: recorded ? operationId : null, segment: view(params.seg_key) }
+            },
+            'PATCH /transcripts/task-1/review-states': ({ body }) => {
+                const wanted = body.seg_keys ?? segments.map((s) => s.seg_key)
+                const changed = segments.map((s) => s.seg_key)
+                    .filter((key) => wanted.includes(key) && reviewStates.get(key) === body.only_if)
+                changed.forEach((key) => reviewStates.set(key, body.review_state))
+                return { changed: changed.length, seg_keys: changed }
             },
             'POST /transcripts/task-1/replace-all': ({ body }) => {
                 const operationId = `op-${operations += 1}`

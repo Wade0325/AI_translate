@@ -1,8 +1,9 @@
 import { memo, useMemo, useState } from "react"
 import { Button } from "antd"
-import { ChevronDown, ChevronRight, Trash2 } from "lucide-react"
+import { Check, ChevronDown, ChevronRight, Flag, Trash2 } from "lucide-react"
 import { formatClock } from "@/utils/formatters"
 import { wordPieces } from "@/utils/playhead"
+import { FLAGGED, VERIFIED } from "@/utils/reviewStates"
 import { isUserDeleted, keepEditorFocus, shownText } from "@/utils/segmentCorrections"
 import { shownSpeaker, showsAsCorrected } from "@/utils/speakers"
 import { splitByMatches } from "@/utils/segmentSearch"
@@ -55,6 +56,17 @@ const CHIP_STYLE = {
 const HISTORY_CHIP_STYLE = { ...CHIP_STYLE, borderColor: "#3a3a5c", background: "transparent", color: "#8888a8" }
 
 /**
+ * 確認狀態的按鈕（#349）：已確認與待查各一個，標上的那個上色。
+ *
+ * @type {{ state: import("@/utils/reviewStates").ReviewState, label: string, shortcut: string, color: string,
+ *   Icon: typeof Check }[]}
+ */
+const REVIEW_BUTTONS = [
+    { state: VERIFIED, label: "已確認", shortcut: "V", color: "#2dd4a8", Icon: Check },
+    { state: FLAGGED, label: "待查", shortcut: "F", color: "#e0884f", Icon: Flag },
+]
+
+/**
  * 使用者點了（或拖曳選取了）文字之後，選取的範圍在 container 文字裡的位置，開始改時游標放在那裡。沒有選取時是
  * null（游標放在最後）；拖曳選取了這段文字以外的地方（例如要複製好幾段）時是 false，不開始改。
  *
@@ -102,14 +114,19 @@ function marked(text, ranges, className, offset = 0) {
  * - 使用者刪掉的片段留在原位，淡化並加上刪除線，可以還原。
  * - 點說話者是選單：改這個片段的說話者，或把這位說話者的片段全部換成另一位。整份當成同一位說話者時不顯示說話者：
  *   只改過說話者的片段不標「校正過」（標「歷程」），歷程裡也不列說話者的校正。
+ * - 確認狀態（#349）：已確認與待查各一個按鈕，按一下標上，再按一次清掉；和校正互不影響。用滑鼠按時不拿走焦點：
+ *   焦點留在按鈕上時，接著按空白鍵會再按一次這個按鈕，不是播放。
+ * - 目前這個片段（快捷鍵作用的片段，#349）加一圈框。點這一列的任何地方，這一列就是目前這個片段。
  * - 尋找時標出符合的字（#356），現在跳到的那個片段標得更明顯。
  *
  * 播放時頁面每一格畫面都重畫，這裡用 memo：只有反白、正在唸的字、存檔狀態或內容變了的那幾列才重畫。
  *
  * @param {{
  *   segment: import("@/utils/segmentCorrections").Segment & { start: number,
- *              words?: { text?: string | null, start: number, end?: number | null }[] | null },
+ *              words?: { text?: string | null, start: number, end?: number | null }[] | null,
+ *              review_state?: string | null },
  *   active: boolean,
+ *   current: boolean,
  *   activeWord: number,
  *   canPlay: boolean,
  *   onSeek: (seconds: number) => void,
@@ -123,7 +140,8 @@ function marked(text, ranges, className, offset = 0) {
  * }} props
  */
 function SegmentRowView({
-    segment, active, activeWord, canPlay, onSeek, editing, save, singleSpeaker, speakerInfo, actions, matchRanges, currentMatch,
+    segment, active, current, activeWord, canPlay, onSeek, editing, save, singleSpeaker, speakerInfo, actions,
+    matchRanges, currentMatch,
 }) {
     const [expanded, setExpanded] = useState(false)
     const key = segment.seg_key
@@ -189,12 +207,16 @@ function SegmentRowView({
     return (
         <div
             data-active={active || undefined}
+            data-current={current || undefined}
             data-deleted={deleted || undefined}
+            data-review-state={segment.review_state || undefined}
+            onClick={() => actions.select(key)}
             data-current-match={currentMatch || undefined}
             style={{
                 ...ROW_STYLE,
                 background: active ? "rgba(45, 212, 168, 0.12)" : "transparent",
                 borderLeft: `3px solid ${active ? "#2dd4a8" : "transparent"}`,
+                boxShadow: current ? "inset 0 0 0 1px #7b7bdb" : undefined,
             }}
         >
             {canPlay ? (
@@ -284,6 +306,23 @@ function SegmentRowView({
                         style={{ marginTop: 1, color: "#8888a8" }}
                     />
                 )}
+                {REVIEW_BUTTONS.map(({ state, label, shortcut, color, Icon }) => {
+                    const pressed = segment.review_state === state
+                    return (
+                        <Button
+                            key={state}
+                            type="text"
+                            size="small"
+                            aria-label={label}
+                            aria-pressed={pressed}
+                            title={`${pressed ? "取消" : "標成"}${label}（${shortcut}）`}
+                            icon={<Icon size={14} />}
+                            onMouseDown={keepEditorFocus}
+                            onClick={() => actions.toggleReviewState(segment, state)}
+                            style={{ marginTop: 1, color: pressed ? color : "#55557a", background: pressed ? `${color}26` : undefined }}
+                        />
+                    )
+                })}
             </div>
         </div>
     )

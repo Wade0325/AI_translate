@@ -287,6 +287,11 @@ def test_main_app_in_standalone_mode(tmp_path):
         print("PROBE patch", client.patch(segment, json={"text": "A"}, headers=other).status_code,
               client.patch(segment, json={"text": "A"}, headers=own).status_code,
               client.patch(segment, json={"text": "A"}).status_code)
+        review_states = "/api/v1/transcripts/not-a-uuid/review-states"
+        verify_rest = {"review_state": "verified", "only_if": None}
+        print("PROBE review-states", client.patch(review_states, json=verify_rest, headers=other).status_code,
+              client.patch(review_states, json=verify_rest, headers=own).status_code,
+              client.patch(review_states, json=verify_rest).status_code)
         print("PROBE upload", client.post("/api/v1/upload", headers=other,
                                           files={"file": ("a.wav", b"RIFF", "audio/wav")}).status_code)
         print("PROBE settings", client.post("/api/v1/setting/models", headers=other,
@@ -314,6 +319,7 @@ def test_main_app_in_standalone_mode(tmp_path):
         # 寫入請求只收 app 自己的頁面送的：別的網站送的不交給端點；自己的頁面與不是瀏覽器送的照常
         # 交給端點（任務 id 格式不對，所以是 400）
         "PROBE patch 403 400 400",
+        "PROBE review-states 403 400 400",
         "PROBE upload 403",
         "PROBE settings 403",
         "PROBE delete 403",
