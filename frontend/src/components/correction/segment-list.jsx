@@ -1,5 +1,6 @@
-import { useEffect, useRef } from "react"
-import { useVirtualizer } from "@tanstack/react-virtual"
+import { useCallback, useEffect, useMemo, useRef } from "react"
+import { defaultRangeExtractor, useVirtualizer } from "@tanstack/react-virtual"
+import { isTypingTarget } from "@/utils/segmentEditing"
 import { SegmentRow } from "./segment-row"
 
 /** 使用者自己捲動列表的按鍵（列表取得焦點時瀏覽器拿來捲動的那些）。 */
@@ -16,10 +17,11 @@ function fullyVisible(container, index) {
 
 /**
  * 校正頁的片段列表（#347）：只畫看得到的那幾列（2 小時的音檔可能有上千個片段），每列的高度照文字
- * 實際的行數量。
+ * 實際的行數量。正在改的那一列（#348）捲到看不到的地方也照樣畫著，打到一半的字才不會不見。
  *
  * 跟著播放：following 時，followIndex 那一列跑出看得到的範圍就捲到列表中間。使用者自己捲動（滾輪、
- * 觸控、拖捲軸、鍵盤）時呼叫 onUserScroll，由頁面停止跟著播放，不把畫面搶回去。
+ * 觸控、拖捲軸、鍵盤）時呼叫 onUserScroll，由頁面停止跟著播放，不把畫面搶回去；在文字框裡打字用的
+ * 空白鍵與方向鍵不算捲動。
  *
  * @param {{
  *   segments: any[],
@@ -30,10 +32,24 @@ function fullyVisible(container, index) {
  *   canPlay: boolean,
  *   onUserScroll: () => void,
  *   onSeek: (seconds: number) => void,
+ *   editing: { segKey: string, selection: { start: number, end: number } | null } | null,
+ *   saves: import("@/utils/segmentEditing").Saves,
+ *   actions: import("./correction-view").RowActions,
  * }} props
  */
-export function SegmentList({ segments, activeSet, activeWords, followIndex, following, canPlay, onUserScroll, onSeek }) {
+export function SegmentList({
+    segments, activeSet, activeWords, followIndex, following, canPlay, onUserScroll, onSeek, editing, saves, actions,
+}) {
     const containerRef = useRef(/** @type {HTMLDivElement | null} */ (null))
+    const editingIndex = useMemo(
+        () => (editing ? segments.findIndex((s) => s.seg_key === editing.segKey) : -1),
+        [segments, editing],
+    )
+    const rangeExtractor = useCallback((range) => {
+        const indexes = defaultRangeExtractor(range)
+        if (editingIndex < 0 || indexes.includes(editingIndex)) return indexes
+        return [...indexes, editingIndex].sort((a, b) => a - b)
+    }, [editingIndex])
     // eslint-disable-next-line react-hooks/incompatible-library -- 列表自己決定哪幾列要重畫，這裡不需要 React Compiler 幫忙記住
     const virtualizer = useVirtualizer({
         count: segments.length,
@@ -41,6 +57,7 @@ export function SegmentList({ segments, activeSet, activeWords, followIndex, fol
         estimateSize: () => 43,
         overscan: 8,
         getItemKey: (index) => segments[index].seg_key,
+        rangeExtractor,
     })
 
     useEffect(() => {
@@ -52,7 +69,7 @@ export function SegmentList({ segments, activeSet, activeWords, followIndex, fol
             if (event.target === container) stopFollowing()
         }
         const onKeyDown = (event) => {
-            if (SCROLL_KEYS.has(event.key)) stopFollowing()
+            if (SCROLL_KEYS.has(event.key) && !isTypingTarget(event.target)) stopFollowing()
         }
         container.addEventListener("wheel", stopFollowing, { passive: true })
         container.addEventListener("touchmove", stopFollowing, { passive: true })
@@ -95,6 +112,9 @@ export function SegmentList({ segments, activeSet, activeWords, followIndex, fol
                             activeWord={activeWords.get(item.index) ?? -1}
                             canPlay={canPlay}
                             onSeek={onSeek}
+                            editing={item.index === editingIndex ? editing : null}
+                            save={saves[segments[item.index].seg_key]}
+                            actions={actions}
                         />
                     </div>
                 ))}

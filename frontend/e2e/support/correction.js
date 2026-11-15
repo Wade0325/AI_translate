@@ -1,0 +1,164 @@
+/**
+ * 校正頁的瀏覽器測試共用的假資料：片段、轉錄文件、保留音檔，以及記得每次校正的假後端（#347、#348）。
+ *
+ * 形狀照 backend/app/schemas/schemas.py 的 TranscriptResponse 與 TranscriptSegmentResponse；欄位一改名，這裡要跟著改。
+ */
+
+/** seconds 秒的無聲 WAV（8 kHz、單聲道、16 位元）：保留音檔的內容不重要，播放器要真的能播、能拖曳。 */
+export function silentWav(seconds) {
+    const rate = 8000
+    const data = rate * seconds * 2
+    const wav = Buffer.alloc(44 + data)
+    wav.write('RIFF', 0)
+    wav.writeUInt32LE(36 + data, 4)
+    wav.write('WAVEfmt ', 8)
+    wav.writeUInt32LE(16, 16)
+    wav.writeUInt16LE(1, 20)
+    wav.writeUInt16LE(1, 22)
+    wav.writeUInt32LE(rate, 24)
+    wav.writeUInt32LE(rate * 2, 28)
+    wav.writeUInt16LE(2, 32)
+    wav.writeUInt16LE(16, 34)
+    wav.write('data', 36)
+    wav.writeUInt32LE(data, 40)
+    return wav
+}
+
+/** 一字一個逐字時間，平均分在片段裡（漢字一字一詞，標點沒有逐字時間；和本機的對齊器一樣）。 */
+export function wordsOf(text, start, end) {
+    const chars = Array.from(text).filter((c) => /[\p{L}\p{N}]/u.test(c))
+    const step = (end - start) / chars.length
+    return chars.map((c, i) => ({ text: c, start: start + i * step, end: start + (i + 1) * step }))
+}
+
+/** 沒有校正過的片段：校正後版本（text、speaker）和原始轉錄（original_text、original_speaker）相同。 */
+export const segment = (seq, start, end, speaker, text, { words = true } = {}) => ({
+    seg_key: `0.${String(seq).padStart(4, '0')}`, seq, start, end, speaker, text,
+    original_speaker: speaker, original_text: text, corrected: false, deleted: false, deleted_text: null,
+    has_correction_records: false, text_alt: null, source: words ? 'aligned' : null, confidence: null, review_state: null,
+    words: words ? wordsOf(text, start, end) : null,
+})
+
+/** GET /transcripts/<task_uuid> 的形狀。 */
+export const transcript = (taskUuid, segments, fields = {}) => ({
+    task_uuid: taskUuid, status: 'COMPLETED', original_filename: 'meeting.wav', audio_duration_seconds: 20.0,
+    audio_available: true, correctable: true, uncorrectable_reason: null,
+    segment_count: segments.length, segments, ...fields,
+})
+
+export const MEETING = [
+    segment(0, 0.5, 3.5, 'S0', '大家早安，今天先看進度。'),
+    segment(1, 4.0, 7.5, 'S1', '前端的校正頁可以播放了。'),
+    segment(2, 7.0, 9.0, 'S0', '等一下。'),
+    segment(3, 10.0, 14.0, 'S1', '點一個字就從那個字開始。'),
+]
+
+/**
+ * task-1 的保留音檔：和後端的 FileResponse 一樣支援 Range（只回整個檔時 Chromium 不讓播放器跳到別的時間）。
+ * 假後端只回 JSON 與文字，所以另外攔；比假後端晚註冊的攔截先處理。
+ */
+export async function serveAudio(page, seconds) {
+    const wav = silentWav(seconds)
+    await page.route('**/api/v1/transcripts/task-1/audio', (route) => {
+        const range = /bytes=(\d+)-(\d*)/.exec(route.request().headers().range ?? '')
+        const headers = { 'Accept-Ranges': 'bytes' }
+        if (!range) return route.fulfill({ status: 200, contentType: 'audio/wav', headers, body: wav })
+        const start = Number(range[1])
+        const end = range[2] ? Number(range[2]) : wav.length - 1
+        return route.fulfill({
+            status: 206, contentType: 'audio/wav', headers: { ...headers, 'Content-Range': `bytes ${start}-${end}/${wav.length}` },
+            body: wav.subarray(start, end + 1),
+        })
+    })
+}
+
+/** 校正頁的假後端：任務 task-1 的片段與保留音檔，再加上 routes。 */
+export async function openCorrection(page, mockBackend, { segments = MEETING, fields = {}, seconds = 20, routes = {}, audio = true } = {}) {
+    const backend = await mockBackend({
+        routes: { 'GET /transcripts/task-1': transcript('task-1', segments, fields), ...routes },
+    })
+    if (audio) await serveAudio(page, seconds)
+    await page.goto('/correction/task-1')
+    return backend
+}
+
+export const audioState = (page) => page.locator('audio').evaluate((a) => ({ time: a.currentTime, paused: a.paused, rate: a.playbackRate }))
+/** 文字裡有 text 的那一列（正在改的那一列文字在文字框裡，用 rowAt 找）。 */
+export const row = (page, text) => page.locator('[data-index]', { hasText: text })
+/** 第 index 列（從 0 起）。 */
+export const rowAt = (page, index) => page.locator(`[data-index="${index}"]`)
+/** 那一列反白時找得到一個元素，沒有反白時是 0 個。 */
+export const highlight = (page, text) => row(page, text).locator('[data-active]')
+
+/** 和後端存的時候同一個規則（backend/app/api/transcripts.py 的 _normalized_text）。 */
+const normalized = (text) => text.trim().replace(/\s*[\n\r]+\s*/g, ' ')
+
+/**
+ * 記得每次校正的假後端（#348）：照 ADR 0011 的規則，每次校正記一筆校正紀錄（和現在的內容相同的不記），
+ * 校正後版本由原始轉錄加上最新的紀錄算出來，GET、PATCH 與復原讀的都是同一份。回傳的 routes 交給 mockBackend；
+ * records 是記下的紀錄，給測試檢查。
+ *
+ * @param {ReturnType<typeof segment>[]} segments 原始轉錄
+ */
+export function correctionsBackend(segments, fields = {}) {
+    const originals = new Map(segments.map((s) => [s.seg_key, s]))
+    /** @type {{ seg_key: string, field: 'text' | 'speaker', before: string | null, after: string | null, operation_id: string }[]} */
+    const records = []
+    let operations = 0
+
+    const current = (segKey, field) => {
+        const latest = records.findLast((r) => r.seg_key === segKey && r.field === field)
+        return latest ? latest.after : originals.get(segKey)[field]
+    }
+    const view = (segKey) => {
+        const original = originals.get(segKey)
+        const text = current(segKey, 'text') ?? ''
+        const speaker = current(segKey, 'speaker')
+        const latestText = records.findLast((r) => r.seg_key === segKey && r.field === 'text')
+        const deleted = !text
+        return {
+            ...original, text, speaker,
+            corrected: text !== original.text || speaker !== original.speaker,
+            deleted,
+            deleted_text: deleted && latestText ? latestText.before : null,
+            has_correction_records: records.some((r) => r.seg_key === segKey),
+            // 改過文字的片段，逐字時間照校正後的文字重算（#357）；這裡照字數平均分，刪掉的沒有
+            words: text === original.text ? original.words : (deleted ? null : wordsOf(text, original.start, original.end)),
+        }
+    }
+    const record = (segKey, field, after, operationId) => {
+        const before = current(segKey, field)
+        if (before === after) return false
+        records.push({ seg_key: segKey, field, before, after, operation_id: operationId })
+        return true
+    }
+
+    return {
+        records,
+        routes: {
+            'GET /transcripts/task-1': () => transcript('task-1', segments.map((s) => view(s.seg_key)), fields),
+            'PATCH /transcripts/task-1/segments/:seg_key': ({ params, body }) => {
+                const operationId = `op-${operations += 1}`
+                let recorded = false
+                if ('text' in body) recorded = record(params.seg_key, 'text', normalized(body.text), operationId) || recorded
+                if ('speaker' in body) recorded = record(params.seg_key, 'speaker', body.speaker, operationId) || recorded
+                return { operation_id: recorded ? operationId : null, segment: view(params.seg_key) }
+            },
+            'POST /transcripts/task-1/operations/:operation_id/undo': ({ params }) => {
+                const undoId = `op-${operations += 1}`
+                const undone = records.filter((r) => r.operation_id === params.operation_id).reverse()
+                let restored = 0
+                for (const r of undone) {
+                    if (current(r.seg_key, r.field) !== r.after) continue
+                    record(r.seg_key, r.field, r.before, undoId)
+                    restored += 1
+                }
+                const segKeys = [...new Set(undone.map((r) => r.seg_key))]
+                return {
+                    restored, skipped: undone.length - restored, operation_id: restored ? undoId : null,
+                    segments: segKeys.map(view),
+                }
+            },
+        },
+    }
+}

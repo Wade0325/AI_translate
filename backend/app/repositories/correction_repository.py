@@ -306,6 +306,8 @@ class CorrectionRepository:
         * ``original_text``、``original_speaker``：原始轉錄的文字與說話者；
         * ``corrected``：文字或說話者和原始轉錄不同；
         * ``deleted``：校正後的文字是空的（刪掉的片段，輸出時略過）。原始轉錄就沒有文字的片段也是；
+        * ``deleted_text``：使用者刪掉的片段，刪掉之前的文字（最新一筆文字紀錄的改前），校正頁的「還原」
+          把它送回去（#348）；沒刪掉、或原始轉錄就沒有文字的片段是 None；
         * ``has_correction_records``：這個片段有沒有校正紀錄（改回原樣之後仍是有）。
 
         不論片段有多少個，都只查兩次：片段一次、校正紀錄一次。
@@ -322,6 +324,8 @@ class CorrectionRepository:
             text = _current(latest, text_key, original_text)
             speaker = _current(latest, speaker_key, original_speaker)
             text_changed = text != original_text
+            deleted = _is_deleted(text)
+            text_record = latest.get(text_key)
             words = segment["words"]
             if text_changed:
                 words = word_timings.for_corrected_text(
@@ -334,7 +338,8 @@ class CorrectionRepository:
                 "original_text": original_text,
                 "original_speaker": original_speaker,
                 "corrected": text_changed or speaker != original_speaker,
-                "deleted": _is_deleted(text),
+                "deleted": deleted,
+                "deleted_text": _old(text_record) if deleted and text_record is not None else None,
                 "has_correction_records": text_key in latest or speaker_key in latest,
             })
         return version

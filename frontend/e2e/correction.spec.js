@@ -1,88 +1,8 @@
 import { test, expect } from './support/test.js'
 import { reply, transcriptionMessages } from './support/backend.js'
-
-/** seconds 秒的無聲 WAV（8 kHz、單聲道、16 位元）：保留音檔的內容不重要，播放器要真的能播、能拖曳。 */
-function silentWav(seconds) {
-    const rate = 8000
-    const data = rate * seconds * 2
-    const wav = Buffer.alloc(44 + data)
-    wav.write('RIFF', 0)
-    wav.writeUInt32LE(36 + data, 4)
-    wav.write('WAVEfmt ', 8)
-    wav.writeUInt32LE(16, 16)
-    wav.writeUInt16LE(1, 20)
-    wav.writeUInt16LE(1, 22)
-    wav.writeUInt32LE(rate, 24)
-    wav.writeUInt32LE(rate * 2, 28)
-    wav.writeUInt16LE(2, 32)
-    wav.writeUInt16LE(16, 34)
-    wav.write('data', 36)
-    wav.writeUInt32LE(data, 40)
-    return wav
-}
-
-/** 一字一個逐字時間，平均分在片段裡（漢字一字一詞，標點沒有逐字時間；和本機的對齊器一樣）。 */
-function wordsOf(text, start, end) {
-    const chars = Array.from(text).filter((c) => /[\p{L}\p{N}]/u.test(c))
-    const step = (end - start) / chars.length
-    return chars.map((c, i) => ({ text: c, start: start + i * step, end: start + (i + 1) * step }))
-}
-
-/** 沒有校正過的片段：校正後版本（text、speaker）和原始轉錄（original_text、original_speaker）相同。 */
-const segment = (seq, start, end, speaker, text, { words = true } = {}) => ({
-    seg_key: `0.${String(seq).padStart(4, '0')}`, seq, start, end, speaker, text,
-    original_speaker: speaker, original_text: text, corrected: false, deleted: false, has_correction_records: false,
-    text_alt: null, source: words ? 'aligned' : null, confidence: null, review_state: null,
-    words: words ? wordsOf(text, start, end) : null,
-})
-
-/** GET /transcripts/<task_uuid> 的形狀（backend/app/schemas/schemas.py 的 TranscriptResponse）。 */
-const transcript = (taskUuid, segments, fields = {}) => ({
-    task_uuid: taskUuid, status: 'COMPLETED', original_filename: 'meeting.wav', audio_duration_seconds: 20.0,
-    audio_available: true, correctable: true, uncorrectable_reason: null,
-    segment_count: segments.length, segments, ...fields,
-})
-
-const MEETING = [
-    segment(0, 0.5, 3.5, 'S0', '大家早安，今天先看進度。'),
-    segment(1, 4.0, 7.5, 'S1', '前端的校正頁可以播放了。'),
-    segment(2, 7.0, 9.0, 'S0', '等一下。'),
-    segment(3, 10.0, 14.0, 'S1', '點一個字就從那個字開始。'),
-]
-
-/**
- * task-1 的保留音檔：和後端的 FileResponse 一樣支援 Range（只回整個檔時 Chromium 不讓播放器跳到別的時間）。
- * 假後端只回 JSON 與文字，所以另外攔；比假後端晚註冊的攔截先處理。
- */
-async function serveAudio(page, seconds) {
-    const wav = silentWav(seconds)
-    await page.route('**/api/v1/transcripts/task-1/audio', (route) => {
-        const range = /bytes=(\d+)-(\d*)/.exec(route.request().headers().range ?? '')
-        const headers = { 'Accept-Ranges': 'bytes' }
-        if (!range) return route.fulfill({ status: 200, contentType: 'audio/wav', headers, body: wav })
-        const start = Number(range[1])
-        const end = range[2] ? Number(range[2]) : wav.length - 1
-        return route.fulfill({
-            status: 206, contentType: 'audio/wav', headers: { ...headers, 'Content-Range': `bytes ${start}-${end}/${wav.length}` },
-            body: wav.subarray(start, end + 1),
-        })
-    })
-}
-
-/** 校正頁的假後端：任務 task-1 的片段與保留音檔，再加上 routes。 */
-async function openCorrection(page, mockBackend, { segments = MEETING, fields = {}, seconds = 20, routes = {}, audio = true } = {}) {
-    const backend = await mockBackend({
-        routes: { 'GET /transcripts/task-1': transcript('task-1', segments, fields), ...routes },
-    })
-    if (audio) await serveAudio(page, seconds)
-    await page.goto('/correction/task-1')
-    return backend
-}
-
-const audioState = (page) => page.locator('audio').evaluate((a) => ({ time: a.currentTime, paused: a.paused, rate: a.playbackRate }))
-const row = (page, text) => page.locator('[data-index]', { hasText: text })
-/** 那一列反白時找得到一個元素，沒有反白時是 0 個。 */
-const highlight = (page, text) => row(page, text).locator('[data-active]')
+import {
+    MEETING, audioState, highlight, openCorrection, row, segment, serveAudio, transcript,
+} from './support/correction.js'
 
 test('History 只有能校正的任務有「校正」，點了開校正頁，網址帶任務 id', async ({ page, mockBackend }) => {
     const record = (task_uuid, original_filename, correctable) => ({
@@ -130,11 +50,17 @@ test('點片段的時間從那個片段的開頭播放，正在唸的片段反�
     await expect(highlight(page, '點一個字')).toHaveCount(1)
     await expect(highlight(page, '大家早安')).toHaveCount(0)
 
-    // 「進」是第一段的第 9 個字（標點不算）：0.5 + 8 × 0.3 = 2.9 秒
+    // 「進」是第一段的第 9 個字（標點不算）：0.5 + 8 × 0.3 = 2.9 秒。點了同時開始改這一段（#348），
+    // 游標在「進」的前面
     await row(page, '大家早安').locator('.correction-word', { hasText: '進' }).click()
     const atWord = await audioState(page)
     expect(atWord.time).toBeGreaterThanOrEqual(2.89)
     expect(atWord.time).toBeLessThan(3.2)
+    const editor = page.getByLabel('片段的文字')
+    await expect(editor).toBeFocused()
+    expect(await editor.evaluate((t) => t.value.slice(t.selectionStart))).toMatch(/^進度。$|^度。$/)
+    // 不改就按 Esc：回到原本的文字，正在唸的字照樣標出來
+    await editor.press('Escape')
     await expect(row(page, '大家早安').locator('.correction-word-active')).toHaveText(/進|度/)
     // 標點沒有逐字時間，不能點
     await expect(row(page, '大家早安').locator('.correction-word', { hasText: '，' })).toHaveCount(0)
@@ -175,7 +101,7 @@ test('Gemini 的片段沒有逐字時間：只標出片段，沒有可以點的�
     await expect(page.locator('.correction-word')).toHaveCount(0)
 })
 
-test('保留音檔已經不在時，播放列換成一句說明，文字照樣看得到', async ({ page, mockBackend }) => {
+test('保留音檔已經不在時，播放列換成一句說明，文字照樣看得到、可以校正', async ({ page, mockBackend }) => {
     // 第一段從 0 秒開始（Gemini 常見）：沒有在播放，就不能反白它
     const fromZero = [segment(0, 0, 3.5, 'S0', '大家早安，今天先看進度。'), ...MEETING.slice(1)]
     const backend = await mockBackend({
@@ -183,11 +109,11 @@ test('保留音檔已經不在時，播放列換成一句說明，文字照樣�
     })
     await page.goto('/correction/task-1')
 
-    await expect(page.getByRole('status')).toHaveText('保留音檔已經不在，無法播放；文字照樣看得到')
+    await expect(page.getByRole('status')).toHaveText('保留音檔已經不在，無法播放；文字照樣可以校正')
     await expect(page.getByRole('button', { name: '播放' })).toHaveCount(0)
     await expect(row(page, '大家早安')).toBeVisible()
     // 時間與字不能點，也不去要音檔
-    await expect(page.locator('[data-index] button')).toHaveCount(0)
+    await expect(page.getByTitle('從這個片段的開頭播放')).toHaveCount(0)
     await expect(page.locator('.correction-word')).toHaveCount(0)
     expect(backend.requests.map((r) => r.path)).not.toContain('/transcripts/task-1/audio')
     // 沒有正在唸的片段：不反白，捲動之後也沒有「回到正在播放的片段」
@@ -203,7 +129,7 @@ test('打開之後保留音檔才讀不到時，播放列也換成一句說明',
         routes: { 'GET /transcripts/task-1/audio': reply(404, { detail: '音檔已不存在（未保留或已超過保留期限）' }) },
     })
 
-    await expect(page.getByRole('status')).toHaveText('保留音檔無法播放；文字照樣看得到')
+    await expect(page.getByRole('status')).toHaveText('保留音檔無法播放；文字照樣可以校正')
     await expect(row(page, '大家早安')).toBeVisible()
 })
 
@@ -248,7 +174,7 @@ test('跟著播放：使用者自己捲走時不搶回去，按「回到正在�
 
     // 從第 200 段開始播：列表跟著捲過去
     await page.getByLabel('片段列表').evaluate((list) => { list.scrollTop = list.scrollHeight / 2 })
-    await row(page, '第 200 句').getByRole('button').click()
+    await row(page, '第 200 句').getByTitle('從這個片段的開頭播放').click()
     await expect(page.locator('[data-active]')).toBeInViewport()
     await expect(page.getByRole('button', { name: '回到正在播放的片段' })).toHaveCount(0)
 

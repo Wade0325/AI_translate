@@ -1,21 +1,51 @@
 import { useCallback, useMemo, useState } from "react"
 import { Link } from "react-router-dom"
 import { Button } from "antd"
-import { ArrowLeft, LocateFixed } from "lucide-react"
+import { ArrowLeft, Download, LocateFixed } from "lucide-react"
 import { api } from "@/services/api"
 import { useAudioPlayer } from "@/hooks/useAudioPlayer"
+import { useSegmentCorrections } from "@/hooks/useSegmentCorrections"
 import { lastStarted, segmentSpans, segmentsAt, wordAt } from "@/utils/playhead"
+import { REWIND_SECONDS } from "@/utils/segmentEditing"
+import { TranscriptDownloadMenu } from "@/components/transcript-download-menu"
 import { PlayerBar } from "./player-bar"
 import { SegmentList } from "./segment-list"
 
 /** 保留音檔超過保留天數、被「立即刪除」刪掉，或關掉保留音檔時完成的任務（後端的 audio_available 是 false）。 */
-export const AUDIO_GONE = "保留音檔已經不在，無法播放；文字照樣看得到"
+export const AUDIO_GONE = "保留音檔已經不在，無法播放；文字照樣可以校正"
 /** 打開頁面之後才讀不到（例如在設定頁立即刪除了），或瀏覽器播不了這個檔。 */
-export const AUDIO_FAILED = "保留音檔無法播放；文字照樣看得到"
+export const AUDIO_FAILED = "保留音檔無法播放；文字照樣可以校正"
 
 /**
- * 校正頁的內容（#347，這一刀唯讀）：上方固定的播放列，下方是片段列表。播放時反白正在唸的片段並
- * 跟著捲動；使用者自己捲走時停止跟著，給一個「回到正在播放的片段」的按鈕。
+ * 片段列表每一列用的動作：改文字、刪掉與還原（useSegmentCorrections），以及打字時的 Tab 與 Shift+Tab。
+ *
+ * @typedef {ReturnType<typeof useSegmentCorrections>["actions"]
+ *   & { playback: (action: "toggle-playback" | "rewind") => void }} RowActions
+ */
+
+/** 按「復原」時不讓正在改的文字框失去焦點：復原的是剛存的另一次，正在打的字照樣留著。 */
+const keepFocus = (event) => event.preventDefault()
+
+/** @type {import("react").CSSProperties} */
+const TOAST_STYLE = {
+    display: "flex",
+    alignItems: "center",
+    gap: 4,
+    padding: "4px 6px 4px 14px",
+    borderRadius: 6,
+    background: "#2a2a48",
+    border: "1px solid #3a3a5c",
+    color: "#e8e8e8",
+    fontSize: 13,
+    boxShadow: "0 4px 12px rgba(0, 0, 0, 0.4)",
+}
+
+/**
+ * 校正頁的內容：上方固定的播放列，下方是片段列表（#347）。播放時反白正在唸的片段並跟著捲動；使用者自己捲走時
+ * 停止跟著，給一個「回到正在播放的片段」的按鈕。
+ *
+ * 改文字、刪掉與還原片段（#348）：點文字就改，每一次校正馬上存，沒有整頁的存檔鈕；存完出現幾秒的「已存檔，
+ * 復原」。正在改的時候不跟著播放捲動，免得改到一半那一列被捲走；改完再接著跟。
  *
  * @param {{ transcript: {
  *   task_uuid: string,
@@ -26,8 +56,8 @@ export const AUDIO_FAILED = "保留音檔無法播放；文字照樣看得到"
  * } }} props
  */
 export function CorrectionView({ transcript }) {
-    const { audioRef, audioProps, playing, time, duration, rate, failed, toggle, seek, setRate } = useAudioPlayer()
-    const { segments } = transcript
+    const { audioRef, audioProps, playing, time, duration, rate, failed, toggle, seek, skip, setRate } = useAudioPlayer()
+    const { segments, saves, editing, lastOperation, actions } = useSegmentCorrections(transcript.task_uuid, transcript.segments)
     const total = duration ?? transcript.audio_duration_seconds ?? 0
     const canPlay = transcript.audio_available && !failed
 
@@ -48,6 +78,12 @@ export function CorrectionView({ transcript }) {
         seek(seconds, { andPlay: true })
     }, [seek])
     const onUserScroll = useCallback(() => setFollowing(false), [])
+
+    /** @type {RowActions} */
+    const rowActions = useMemo(() => ({
+        ...actions,
+        playback: (action) => (action === "rewind" ? skip(-REWIND_SECONDS) : toggle()),
+    }), [actions, skip, toggle])
 
     let notice = null
     if (!transcript.audio_available) notice = AUDIO_GONE
@@ -71,6 +107,17 @@ export function CorrectionView({ transcript }) {
                     {transcript.original_filename || "—"}
                 </span>
                 <span style={{ color: "#8888a8", fontSize: 12, whiteSpace: "nowrap" }}>{segments.length} 個片段</span>
+                {/* 預設給校正後版本，另有原始轉錄（檔名多一段 .original） */}
+                <div style={{ marginLeft: "auto", flexShrink: 0 }}>
+                    <TranscriptDownloadMenu
+                        taskUuid={transcript.task_uuid}
+                        fileName={transcript.original_filename}
+                        withOriginal
+                        trigger={["click"]}
+                    >
+                        <Button size="small" icon={<Download size={14} />}>下載</Button>
+                    </TranscriptDownloadMenu>
+                </div>
             </div>
             <PlayerBar
                 playing={playing}
@@ -88,21 +135,34 @@ export function CorrectionView({ transcript }) {
                     activeSet={activeSet}
                     activeWords={activeWords}
                     followIndex={followIndex}
-                    following={following}
+                    following={following && !editing}
                     canPlay={canPlay}
                     onUserScroll={onUserScroll}
                     onSeek={onSeek}
+                    editing={editing}
+                    saves={saves}
+                    actions={rowActions}
                 />
-                {!following && followIndex >= 0 && (
-                    <Button
-                        type="primary"
-                        icon={<LocateFixed size={14} />}
-                        onClick={() => setFollowing(true)}
-                        style={{ position: "absolute", left: "50%", bottom: 16, transform: "translateX(-50%)", boxShadow: "0 4px 12px rgba(0, 0, 0, 0.4)" }}
-                    >
-                        回到正在播放的片段
-                    </Button>
-                )}
+                <div style={{ position: "absolute", left: "50%", bottom: 16, transform: "translateX(-50%)", display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
+                    {!following && followIndex >= 0 && (
+                        <Button
+                            type="primary"
+                            icon={<LocateFixed size={14} />}
+                            onClick={() => setFollowing(true)}
+                            style={{ boxShadow: "0 4px 12px rgba(0, 0, 0, 0.4)" }}
+                        >
+                            回到正在播放的片段
+                        </Button>
+                    )}
+                    {lastOperation && (
+                        <div role="status" style={TOAST_STYLE}>
+                            已存檔
+                            <Button type="link" size="small" onMouseDown={keepFocus} onClick={actions.undo}>
+                                復原
+                            </Button>
+                        </div>
+                    )}
+                </div>
             </div>
         </div>
     )

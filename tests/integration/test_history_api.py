@@ -767,6 +767,17 @@ class TestHasCorrections:
         log = _corrected_task(db_session, original_filename="corrected-346.wav")
         assert _listed(client, log)["has_corrections"] is True
 
+    def test_a_correction_saved_from_the_correction_page_marks_the_task(
+            self, client: TestClient, db_session: Session):
+        # 校正頁存的校正（#341 的 PATCH）：History 的清單標出這個任務有校正，刪除時的確認多一句（#348）
+        log = _with_segments(db_session, _create_log(db_session, original_filename="patched-348.wav"))
+        assert _listed(client, log)["has_corrections"] is False
+
+        response = client.patch(f"/api/v1/transcripts/{log.task_uuid}/segments/0000", json={"text": "改過"})
+
+        assert response.status_code == 200, response.text
+        assert _listed(client, log)["has_corrections"] is True
+
     def test_correction_changed_back_still_counts(self, client: TestClient, db_session: Session):
         # 改回和原始轉錄相同之後，校正紀錄還在（ADR 0011：只增不改），下載選單照樣有原始轉錄
         log = _with_segments(db_session, _create_log(db_session, original_filename="reverted-346.wav"))
