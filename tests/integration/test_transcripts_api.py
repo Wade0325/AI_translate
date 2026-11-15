@@ -1031,6 +1031,190 @@ class TestRefusedWrites:
         assert client.post(_undo_url(log.task_uuid, "not-an-operation")).status_code == 400
 
 
+# ─── 一次改很多個片段的確認狀態：其餘全部標成已確認與它的復原（#349） ─────────────
+
+def _review_states_url(task_uuid) -> str:
+    return f"/api/v1/transcripts/{task_uuid}/review-states"
+
+
+def _with_segments(db: Session, count: int = 4) -> TranscriptionLog:
+    """一個能校正的任務，片段 0000、0001…（count 個），都還沒有確認狀態。"""
+    log = _create_log(db)
+    for seq in range(count):
+        _create_segment(db, log.task_uuid, seg_key=f"{seq:04d}", seq=seq, start_sec=seq * 2.0,
+                        end_sec=seq * 2.0 + 1.5, text=f"第 {seq} 段")
+    return log
+
+
+def _review_states(client: TestClient, task_uuid) -> dict:
+    """{片段鍵: 確認狀態}，從讀取端點讀。"""
+    segments = client.get(f"/api/v1/transcripts/{task_uuid}").json()["segments"]
+    return {s["seg_key"]: s["review_state"] for s in segments}
+
+
+VERIFY_REST = {"review_state": "verified", "only_if": None}
+"""其餘全部標成已確認：還沒有確認狀態的片段全部標成已確認。"""
+
+
+def _undo_verify_rest(seg_keys) -> dict:
+    """它的復原：那一次標的片段裡，現在還是已確認的清掉。"""
+    return {"review_state": None, "only_if": "verified", "seg_keys": seg_keys}
+
+
+class TestReviewStatesInBulk:
+    """其餘全部標成已確認（#349）：還沒有確認狀態的片段全部標成已確認，待查的不動，在同一個交易裡做完。
+    它不是校正，不留校正紀錄、不算一次操作；復原只清掉這一次標的片段，在這之間被改成待查的不動。"""
+
+    def test_marks_every_segment_without_a_review_state_and_leaves_the_others(self, client, db_session):
+        log = _with_segments(db_session)
+        client.patch(_url(log.task_uuid, "0001"), json={"review_state": "flagged"})
+        client.patch(_url(log.task_uuid, "0002"), json={"review_state": "verified"})
+        # 校正過的片段不會自動變成已確認（#25 故事 62），所以它也還沒有確認狀態，一起標
+        client.patch(_url(log.task_uuid, "0003"), json={"text": "改過的文字"})
+
+        response = client.patch(_review_states_url(log.task_uuid), json=VERIFY_REST)
+
+        assert response.status_code == 200, response.text
+        assert response.json() == {"changed": 2, "seg_keys": ["0000", "0003"]}
+        assert _review_states(client, log.task_uuid) == {
+            "0000": "verified", "0001": "flagged", "0002": "verified", "0003": "verified"}
+        # 不是校正：校正紀錄只有剛才改文字的那一筆
+        assert [field for field, *_ in _records(db_session, log.task_uuid)] == ["text"]
+
+    def test_a_deleted_segment_without_a_review_state_is_marked_too(self, client, db_session):
+        log = _with_segments(db_session, count=2)
+        client.patch(_url(log.task_uuid, "0001"), json={"text": ""})
+
+        response = client.patch(_review_states_url(log.task_uuid), json=VERIFY_REST)
+
+        assert response.json()["seg_keys"] == ["0000", "0001"]
+
+    def test_undo_brings_every_segment_back(self, client, db_session):
+        log = _with_segments(db_session)
+        client.patch(_url(log.task_uuid, "0001"), json={"review_state": "flagged"})
+        client.patch(_url(log.task_uuid, "0002"), json={"review_state": "verified"})
+        before = _review_states(client, log.task_uuid)
+        marked = client.patch(_review_states_url(log.task_uuid), json=VERIFY_REST).json()["seg_keys"]
+
+        response = client.patch(_review_states_url(log.task_uuid), json=_undo_verify_rest(marked))
+
+        assert response.status_code == 200, response.text
+        assert response.json() == {"changed": 2, "seg_keys": ["0000", "0003"]}
+        assert _review_states(client, log.task_uuid) == before
+        assert _records(db_session, log.task_uuid) == []
+
+    def test_undo_leaves_a_segment_that_was_flagged_in_between(self, client, db_session):
+        log = _with_segments(db_session)
+        marked = client.patch(_review_states_url(log.task_uuid), json=VERIFY_REST).json()["seg_keys"]
+        client.patch(_url(log.task_uuid, "0002"), json={"review_state": "flagged"})
+
+        response = client.patch(_review_states_url(log.task_uuid), json=_undo_verify_rest(marked))
+
+        assert response.json()["seg_keys"] == ["0000", "0001", "0003"]
+        assert _review_states(client, log.task_uuid) == {
+            "0000": None, "0001": None, "0002": "flagged", "0003": None}
+
+    def test_nothing_left_to_mark(self, client, db_session):
+        log = _with_segments(db_session, count=2)
+        client.patch(_url(log.task_uuid, "0000"), json={"review_state": "flagged"})
+        client.patch(_url(log.task_uuid, "0001"), json={"review_state": "verified"})
+
+        response = client.patch(_review_states_url(log.task_uuid), json=VERIFY_REST)
+
+        assert response.status_code == 200, response.text
+        assert response.json() == {"changed": 0, "seg_keys": []}
+
+    def test_an_empty_list_of_segments_changes_nothing(self, client, db_session):
+        log = _with_segments(db_session, count=2)
+
+        response = client.patch(_review_states_url(log.task_uuid), json={**VERIFY_REST, "seg_keys": []})
+
+        assert response.json() == {"changed": 0, "seg_keys": []}
+        assert set(_review_states(client, log.task_uuid).values()) == {None}
+
+    def test_a_long_task_is_marked_in_one_request(self, client, db_session):
+        # 2 小時的音檔可能有上千個片段；SQLite 一個語句能帶的參數有上限，標記與復原都要照樣做完
+        log = _create_log(db_session)
+        db_session.add_all([TranscriptSegment(task_uuid=log.task_uuid, seg_key=f"{seq:05d}", seq=seq,
+                                              start_sec=float(seq), end_sec=seq + 0.5, text=f"第 {seq} 段")
+                            for seq in range(1500)])
+        db_session.commit()
+
+        marked = client.patch(_review_states_url(log.task_uuid), json=VERIFY_REST).json()
+        undone = client.patch(_review_states_url(log.task_uuid), json=_undo_verify_rest(marked["seg_keys"])).json()
+
+        assert (marked["changed"], undone["changed"]) == (1500, 1500)
+        assert set(_review_states(client, log.task_uuid).values()) == {None}
+
+
+class TestReviewStatesInBulkRefused:
+    """擋下的請求一個片段都不動，錯誤訊息照現有端點的寫法（一句中文的 detail）。"""
+
+    def _refused(self, response, status: int, client: TestClient, task_uuid=None) -> None:
+        assert response.status_code == status, response.text
+        if status != 422:
+            detail = response.json()["detail"]
+            assert isinstance(detail, str) and detail
+        if task_uuid is not None:
+            assert set(_review_states(client, task_uuid).values()) == {None}
+
+    def test_unknown_task(self, client):
+        self._refused(client.patch(_review_states_url(uuid.uuid4()), json=VERIFY_REST), 404, client)
+
+    def test_malformed_task_id(self, client):
+        self._refused(client.patch(_review_states_url("not-a-uuid"), json=VERIFY_REST), 400, client)
+
+    @pytest.mark.parametrize("status", ["PROCESSING", "FAILED", "CANCELLED"])
+    def test_task_not_completed(self, client, db_session, status):
+        log = _with_segments(db_session)
+        log.status = status
+        db_session.commit()
+
+        self._refused(client.patch(_review_states_url(log.task_uuid), json=VERIFY_REST), 409, client, log.task_uuid)
+
+    def test_task_without_segments(self, client, db_session):
+        log = _create_log(db_session)
+
+        self._refused(client.patch(_review_states_url(log.task_uuid), json=VERIFY_REST), 409, client)
+
+    def test_task_with_translation(self, client, db_session):
+        log = _create_log(db_session, source_language="ja-JP", target_language="zh-TW")
+        _create_segment(db_session, log.task_uuid)
+
+        self._refused(client.patch(_review_states_url(log.task_uuid), json=VERIFY_REST), 409, client)
+
+    @pytest.mark.parametrize("body", [
+        {"review_state": "done", "only_if": None},
+        {"review_state": "VERIFIED", "only_if": None},
+        {"review_state": "", "only_if": None},
+        {"review_state": None, "only_if": "done"},
+    ])
+    def test_unknown_review_state(self, client, db_session, body):
+        log = _with_segments(db_session)
+
+        self._refused(client.patch(_review_states_url(log.task_uuid), json=body), 400, client, log.task_uuid)
+
+    @pytest.mark.parametrize("state", [None, "verified", "flagged"])
+    def test_the_same_state_on_both_sides(self, client, db_session, state):
+        log = _with_segments(db_session)
+
+        self._refused(client.patch(_review_states_url(log.task_uuid), json={"review_state": state, "only_if": state}),
+                      400, client, log.task_uuid)
+
+    def test_an_unknown_segment_refuses_the_whole_request(self, client, db_session):
+        log = _with_segments(db_session)
+
+        self._refused(client.patch(_review_states_url(log.task_uuid), json={**VERIFY_REST, "seg_keys": ["0000", "9999"]}),
+                      404, client, log.task_uuid)
+
+    @pytest.mark.parametrize("body", [{"review_state": "verified"}, {"only_if": None}, {**VERIFY_REST, "text": "A"}])
+    def test_a_malformed_body(self, client, db_session, body):
+        # only_if 一定要帶（null 是「還沒有確認狀態的」），不帶的不當成「不論現在是什麼」
+        log = _with_segments(db_session)
+
+        self._refused(client.patch(_review_states_url(log.task_uuid), json=body), 422, client, log.task_uuid)
+
+
 # ─── 保留天數從校正起算（#350） ───────────────────────────────────────────────
 
 class TestAudioRetention:
@@ -1079,6 +1263,22 @@ class TestAudioRetention:
         audio_store.purge_expired()
 
         assert audio.exists()
+
+    def test_marking_review_states_in_bulk_also_restarts_the_count(self, client, db_session, store):
+        log, audio = self._with_old_audio(db_session, store)
+
+        assert client.patch(_review_states_url(log.task_uuid), json=VERIFY_REST).json()["changed"] == 1
+        audio_store.purge_expired()
+
+        assert audio.exists()
+
+    def test_marking_in_bulk_that_changes_nothing_does_not_restart_the_count(self, client, db_session, store):
+        log, audio = self._with_old_audio(db_session, store)
+
+        assert client.patch(_review_states_url(log.task_uuid), json=_undo_verify_rest(None)).json()["changed"] == 0
+        audio_store.purge_expired()
+
+        assert not audio.exists()
 
     def test_an_undo_also_restarts_the_count(self, client, db_session, store):
         log, audio = self._with_old_audio(db_session, store)
