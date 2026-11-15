@@ -112,15 +112,17 @@ function replaceText(text, find, replacement) {
 }
 
 /**
- * 記得每次校正的假後端（#348）：照 ADR 0011 的規則，每次校正記一筆校正紀錄（和現在的內容相同的不記），
- * 校正後版本由原始轉錄加上最新的紀錄算出來，GET、PATCH、全部取代（#356）與復原讀的都是同一份。回傳的 routes 交給
- * mockBackend；records 是記下的紀錄，給測試檢查。
+ * 記得每次校正的假後端（#348、#355、#356）：照 ADR 0011 的規則，每次校正記一筆校正紀錄（和現在的內容相同的不記），
+ * 校正後版本由原始轉錄加上最新的紀錄算出來，GET、PATCH、全部取代、復原與片段的歷程讀的都是同一份。回傳的 routes
+ * 交給 mockBackend；records 是記下的紀錄，給測試檢查；bulk 記一次改很多個片段的操作（把這位說話者全部換成另一位
+ * 的端點還沒有合併），回傳操作編號。
  *
  * @param {ReturnType<typeof segment>[]} segments 原始轉錄
  */
 export function correctionsBackend(segments, fields = {}) {
     const originals = new Map(segments.map((s) => [s.seg_key, s]))
-    /** @type {{ seg_key: string, field: 'text' | 'speaker', before: string | null, after: string | null, operation_id: string }[]} */
+    /** @type {{ id: number, seg_key: string, field: 'text' | 'speaker', before: string | null, after: string | null,
+     *   operation_id: string, created_at: string }[]} */
     const records = []
     let operations = 0
 
@@ -147,12 +149,28 @@ export function correctionsBackend(segments, fields = {}) {
     const record = (segKey, field, after, operationId) => {
         const before = current(segKey, field)
         if (before === after) return false
-        records.push({ seg_key: segKey, field, before, after, operation_id: operationId })
+        // 後端寫伺服器的本地時間，到秒、不帶時區；每一筆隔一分鐘，畫面上才分得出先後
+        const created = new Date(2026, 10, 15, 21, records.length, 5)
+        const pad = (n) => String(n).padStart(2, '0')
+        const createdAt = `${created.getFullYear()}-${pad(created.getMonth() + 1)}-${pad(created.getDate())}`
+            + `T${pad(created.getHours())}:${pad(created.getMinutes())}:${pad(created.getSeconds())}`
+        records.push({ id: records.length + 1, seg_key: segKey, field, before, after, operation_id: operationId, created_at: createdAt })
         return true
+    }
+    /** 那次操作一共有幾筆、改到幾個片段（backend/app/schemas/schemas.py 的 CorrectionRecordResponse）。 */
+    const operationSize = (operationId) => {
+        const same = records.filter((r) => r.operation_id === operationId)
+        return { operation_record_count: same.length, operation_segment_count: new Set(same.map((r) => r.seg_key)).size }
     }
 
     return {
         records,
+        /** @param {[string, 'text' | 'speaker', string | null][]} changes [片段鍵, 改了什麼, 改後] */
+        bulk(changes) {
+            const operationId = `op-${operations += 1}`
+            for (const [segKey, field, after] of changes) record(segKey, field, after, operationId)
+            return operationId
+        },
         routes: {
             'GET /transcripts/task-1': () => transcript('task-1', segments.map((s) => view(s.seg_key)), fields),
             'PATCH /transcripts/task-1/segments/:seg_key': ({ params, body }) => {
@@ -193,6 +211,16 @@ export function correctionsBackend(segments, fields = {}) {
                 return {
                     restored, skipped: undone.length - restored, operation_id: restored ? undoId : null,
                     segments: segKeys.map(view),
+                }
+            },
+            'GET /transcripts/task-1/segments/:seg_key/correction-records': ({ params }) => {
+                const original = originals.get(params.seg_key)
+                return {
+                    seg_key: params.seg_key, original_text: original.text, original_speaker: original.speaker,
+                    records: records.filter((r) => r.seg_key === params.seg_key).map((r) => ({
+                        id: r.id, field: r.field, old_value: r.before, new_value: r.after, operation_id: r.operation_id,
+                        created_at: r.created_at, ...operationSize(r.operation_id),
+                    })),
                 }
             },
         },

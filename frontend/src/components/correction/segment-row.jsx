@@ -3,9 +3,10 @@ import { Button } from "antd"
 import { ChevronDown, ChevronRight, Trash2 } from "lucide-react"
 import { formatClock } from "@/utils/formatters"
 import { wordPieces } from "@/utils/playhead"
-import { isUserDeleted, keepEditorFocus, shownText, speakerCorrected } from "@/utils/segmentCorrections"
+import { isUserDeleted, keepEditorFocus, shownText } from "@/utils/segmentCorrections"
 import { splitByMatches } from "@/utils/segmentSearch"
 import { SegmentEditor } from "./segment-editor"
+import { SegmentHistory } from "./segment-history"
 
 /** 說話者編號（S0、S1…）的顏色：照編號輪流用，同一位說話者在整份裡顏色不變。 */
 const SPEAKER_COLORS = ["#2dd4a8", "#d4a72d", "#47b8d4", "#e07a9f", "#8b5cf6", "#e0884f", "#7fc97f", "#c9c95c"]
@@ -56,6 +57,9 @@ const CHIP_STYLE = {
     whiteSpace: "nowrap",
 }
 
+/** @type {import("react").CSSProperties} */
+const HISTORY_CHIP_STYLE = { ...CHIP_STYLE, borderColor: "#3a3a5c", background: "transparent", color: "#8888a8" }
+
 /**
  * 使用者點了（或拖曳選取了）文字之後，選取的範圍在 container 文字裡的位置，開始改時游標放在那裡。沒有選取時是
  * null（游標放在最後）；拖曳選取了這段文字以外的地方（例如要複製好幾段）時是 false，不開始改。
@@ -99,7 +103,8 @@ function marked(text, ranges, className, offset = 0) {
  * - 播放到這段時反白；有逐字時間時標出正在唸的字。點時間從片段的開頭播。
  * - 點文字就開始改，游標放在點的地方；點的是一個字時，同時從那個字開始播（#347），邊聽邊改。
  * - 存檔中、已存與失敗寫在這一列；失敗時寫原因，留著打的字，可以重試或放棄。
- * - 校正過的片段有「校正過」，展開看得到原始轉錄，可以一鍵回到原始轉錄。
+ * - 校正過的片段有「校正過」，展開是這個片段的歷程（#355）：每一筆校正紀錄與原始轉錄，可以回到任何一版。
+ *   改回和原始轉錄相同、或刪掉的片段照樣有校正紀錄，按「歷程」展開。
  * - 使用者刪掉的片段留在原位，淡化並加上刪除線，可以還原。
  * - 尋找時標出符合的字（#356），現在跳到的那個片段標得更明顯。
  *
@@ -240,67 +245,46 @@ function SegmentRowView({ segment, active, activeWord, canPlay, onSeek, editing,
                         <Button size="small" type="link" onMouseDown={onButtonMouseDown} onClick={() => actions.discard(key)} style={{ color: "#8888a8" }}>放棄</Button>
                     </div>
                 )}
-                {expanded && segment.corrected && !deleted && (
-                    <div style={{ marginTop: 6, padding: "6px 10px", borderRadius: 4, background: "#1a1a34", border: "1px solid #2a2a48" }}>
-                        <div style={{ color: "#8888a8", fontSize: 12, lineHeight: "20px" }}>原始轉錄</div>
-                        <div style={{ color: "#b8b8d0", fontSize: 13, lineHeight: "22px", overflowWrap: "anywhere" }}>
-                            {speakerCorrected(segment) && (
-                                <span style={{ marginRight: 8, fontWeight: 600 }}>{segment.original_speaker || "（沒有說話者）"}</span>
-                            )}
-                            {segment.original_text || "（沒有文字）"}
-                        </div>
-                        <Button
-                            size="small"
-                            style={{ marginTop: 6 }}
-                            disabled={saving}
-                            onMouseDown={onButtonMouseDown}
-                            onClick={() => {
-                                setExpanded(false)
-                                actions.revert(key)
-                            }}
-                        >
-                            回到原始轉錄
-                        </Button>
-                    </div>
+                {expanded && segment.has_correction_records && (
+                    <SegmentHistory segment={segment} saving={saving} actions={actions} onButtonMouseDown={onButtonMouseDown} />
                 )}
             </div>
             <div style={{ display: "flex", alignItems: "flex-start", gap: 6, flexShrink: 0 }}>
                 {saving && <span style={STATUS_STYLE}>存檔中…</span>}
                 {save?.status === "saved" && <span style={{ ...STATUS_STYLE, color: "#2dd4a8" }}>已存</span>}
-                {deleted ? (
+                {deleted && (
                     <>
                         <span style={STATUS_STYLE}>已刪掉</span>
                         <Button size="small" autoInsertSpace={false} disabled={saving} onClick={() => actions.restore(key)} style={{ marginTop: 2 }}>
                             還原
                         </Button>
                     </>
-                ) : (
-                    <>
-                        {segment.corrected && (
-                            <button
-                                type="button"
-                                aria-expanded={expanded}
-                                title={expanded ? "收起原始轉錄" : "看原始轉錄"}
-                                onMouseDown={onButtonMouseDown}
-                                onClick={() => setExpanded((open) => !open)}
-                                style={CHIP_STYLE}
-                            >
-                                校正過
-                                {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-                            </button>
-                        )}
-                        <Button
-                            type="text"
-                            size="small"
-                            aria-label="刪掉這個片段"
-                            title="刪掉這個片段"
-                            icon={<Trash2 size={14} />}
-                            disabled={saving || !text}
-                            onMouseDown={onButtonMouseDown}
-                            onClick={() => actions.remove(key)}
-                            style={{ marginTop: 1, color: "#8888a8" }}
-                        />
-                    </>
+                )}
+                {segment.has_correction_records && (
+                    <button
+                        type="button"
+                        aria-expanded={expanded}
+                        title={expanded ? "收起歷程" : "看這個片段的每一次校正，可以回到任何一版"}
+                        onMouseDown={onButtonMouseDown}
+                        onClick={() => setExpanded((open) => !open)}
+                        style={segment.corrected && !deleted ? CHIP_STYLE : HISTORY_CHIP_STYLE}
+                    >
+                        {segment.corrected && !deleted ? "校正過" : "歷程"}
+                        {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                    </button>
+                )}
+                {!deleted && (
+                    <Button
+                        type="text"
+                        size="small"
+                        aria-label="刪掉這個片段"
+                        title="刪掉這個片段"
+                        icon={<Trash2 size={14} />}
+                        disabled={saving || !text}
+                        onMouseDown={onButtonMouseDown}
+                        onClick={() => actions.remove(key)}
+                        style={{ marginTop: 1, color: "#8888a8" }}
+                    />
                 )}
             </div>
         </div>

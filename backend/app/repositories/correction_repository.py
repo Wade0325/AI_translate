@@ -29,10 +29,11 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
+from datetime import datetime
 from enum import StrEnum
 from typing import Any, Callable, Collection, Dict, Iterable, Iterator, List, Mapping, Optional, Sequence, Set, Tuple, cast
 
-from sqlalchemy import update
+from sqlalchemy import case, distinct, func, update
 from sqlalchemy.orm import Session
 
 from app.core import word_timings
@@ -115,6 +116,43 @@ class UndoResult:
     """這次復原自己的操作編號；一筆都沒有還原時是 None。"""
     seg_keys: Tuple[str, ...] = ()
     """那次操作改到的片段的鍵（依第一次改到的順序），還原的與略過的都算；說話者名稱的對象不在內。"""
+
+
+@dataclass(frozen=True)
+class OperationSize:
+    """一次操作有多大（校正的歷程用，#355）。"""
+
+    record_count: int
+    """一共記了幾筆校正紀錄，說話者名稱的也算。"""
+    segment_count: int
+    """改到幾個片段。超過一個就是一次改很多個片段的操作（全部取代、把這位說話者全部換成另一位，
+    以及它們的整批復原）；一個片段的文字與說話者一起改（例如回到原始轉錄）是兩筆、一個片段。
+    校正紀錄沒有記操作的種類（ADR 0011），只改到一個片段的全部取代看起來和一般的校正一樣。"""
+
+
+@dataclass(frozen=True)
+class SegmentRecord:
+    """片段的歷程裡的一筆校正紀錄（#355）。改前與改後的「沒有」照 :func:`_normalized`。"""
+
+    id: int
+    field: CorrectionField
+    old_value: Optional[str]
+    new_value: Optional[str]
+    operation_id: uuid.UUID
+    created_at: Optional[datetime]
+    operation: OperationSize
+    """這一筆所屬的那次操作有多大。"""
+
+
+@dataclass(frozen=True)
+class SegmentHistory:
+    """一個片段的歷程（#355）：原始轉錄，加上它的文字與說話者的每一筆校正紀錄（依編號排序，舊的在前）。"""
+
+    original_text: str
+    """原始轉錄的文字；沒有文字是空字串。"""
+    original_speaker: Optional[str]
+    """原始轉錄的說話者；沒有說話者是 None。"""
+    records: Tuple[SegmentRecord, ...]
 
 
 _Key = Tuple[CorrectionField, str]
@@ -285,6 +323,22 @@ class _CurrentContent:
         self._latest[key] = record
 
 
+def _operation_sizes(db: Session, task_uuid: uuid.UUID, operations: Collection[uuid.UUID]) -> Dict[uuid.UUID, OperationSize]:
+    """這個任務裡這些操作各有多大：{操作編號: OperationSize}。一次查完，不論有幾個操作。"""
+    if not operations:
+        return {}
+    segment_target = case(
+        (CorrectionRecord.field.in_([field.value for field in SEGMENT_FIELDS]), CorrectionRecord.target))
+    rows = (
+        db.query(CorrectionRecord.operation_id, func.count(CorrectionRecord.id), func.count(distinct(segment_target)))
+        .filter(CorrectionRecord.task_uuid == task_uuid, CorrectionRecord.operation_id.in_(list(operations)))
+        .group_by(CorrectionRecord.operation_id)
+        .all()
+    )
+    return {cast(uuid.UUID, operation): OperationSize(record_count=int(records), segment_count=int(segments))
+            for operation, records, segments in rows}
+
+
 class CorrectionRepository:
     @staticmethod
     def record_operation(db: Session, task_uuid, corrections: Sequence[Correction], *,
@@ -422,6 +476,31 @@ class CorrectionRepository:
         """一個片段的文字與說話者的校正紀錄，依編號排序（舊的在前）。"""
         return _records(db, _task_uuid(task_uuid), CorrectionRecord.target == seg_key,
                         CorrectionRecord.field.in_([field.value for field in SEGMENT_FIELDS]))
+
+    @staticmethod
+    def segment_history(db: Session, task_uuid, seg_key: str) -> Optional[SegmentHistory]:
+        """一個片段的歷程（#355）：原始轉錄，加上這個片段的文字與說話者的每一筆校正紀錄，每一筆帶著它那次操作
+        有多大（:class:`OperationSize`）。說話者名稱的紀錄（對象是說話者）不在裡面；確認狀態不是校正，也不在。
+
+        這個任務沒有這個片段時回傳 None。不論有幾筆都只查三次：片段、它的校正紀錄、這些操作的大小各一次。
+        """
+        uuid_val = _task_uuid(task_uuid)
+        segments = TranscriptSegmentRepository.list_for_task(db, uuid_val, [seg_key])
+        if not segments:
+            return None
+        segment = segments[0]
+        records = CorrectionRepository.records_for_segment(db, uuid_val, seg_key)
+        sizes = _operation_sizes(db, uuid_val, {cast(uuid.UUID, r.operation_id) for r in records})
+        return SegmentHistory(
+            original_text=cast(str, _normalized(CorrectionField.TEXT, cast(Optional[str], segment.text))),
+            original_speaker=_normalized(CorrectionField.SPEAKER, cast(Optional[str], segment.speaker)),
+            records=tuple(
+                SegmentRecord(id=cast(int, r.id), field=CorrectionField(r.field), old_value=_old(r), new_value=_new(r),
+                              operation_id=cast(uuid.UUID, r.operation_id),
+                              created_at=cast(Optional[datetime], r.created_at),
+                              operation=sizes[cast(uuid.UUID, r.operation_id)])
+                for r in records),
+        )
 
     @staticmethod
     def speaker_names(db: Session, task_uuid) -> Dict[str, str]:
