@@ -9,10 +9,11 @@
 校正（#341，ADR 0011）：讀到的片段是校正後版本，另外帶著原始轉錄；改一個片段的文字、說話者與確認狀態，
 一次改很多個片段的確認狀態（#349）、把這位說話者全部換成另一位（#354）、全部取代（#356），以及復原一次操作，
 都從這裡寫。一個片段的歷程（它的每一筆校正紀錄，#355）也從這裡讀；回到某一版與整批復原不另開端點，用改一個
-片段與復原的端點。「整份當成同一位說話者」的切換（#354）也在這裡改，它是任務的設定，不是校正。校正後版本與
-校正紀錄的規則在 ``app.repositories.correction_repository``，這裡只檢查請求，以及把請求換成要記的校正
-（全部取代怎麼比對在 ``app.core.text_replacement``）。寫入端點和 History 的清單、讀取端點用同一個「能不能校正」
-的判斷（``app.services.correctability``）。轉錄的文字不寫進日誌（#25 故事 84）。
+片段與復原的端點。「整份當成同一位說話者」的切換（#354）也在這裡改，它是任務的設定，不是校正。替說話者取說話者
+名稱（#359）也從這裡寫，它是對象為說話者編號的校正。校正後版本與校正紀錄的規則在
+``app.repositories.correction_repository``，這裡只檢查請求，以及把請求換成要記的校正（全部取代怎麼比對在
+``app.core.text_replacement``）。寫入端點和 History 的清單、讀取端點用同一個「能不能校正」的判斷
+（``app.services.correctability``）。轉錄的文字不寫進日誌（#25 故事 84）。
 
 寫入端點沒有使用者驗證：免安裝模式只收 app 自己的頁面送的寫入請求，做在 ``app.core.api_access``，
 這裡不各自處理。
@@ -36,6 +37,9 @@ from app.repositories.correction_repository import (
     CorrectionRepository,
     ReviewState,
     SegmentContent,
+    SpeakerNameTaken,
+    UnknownSpeaker,
+    speaker_name_key,
 )
 from app.repositories.transcript_segment_repository import TranscriptSegmentRepository
 from app.repositories.transcription_log_repository import TranscriptionLogRepository
@@ -48,6 +52,8 @@ from app.schemas.schemas import (
     SegmentCorrectionRecordsResponse,
     SegmentCorrectionRequest,
     SegmentCorrectionResponse,
+    SpeakerNameRequest,
+    SpeakerNameResponse,
     SpeakerReassignRequest,
     SpeakerReassignResponse,
     TranscriptResponse,
@@ -75,6 +81,16 @@ _SPEAKER_ID = re.compile(r"S(?:0|[1-9][0-9]{0,2})")
 
 _LINE_BREAKS = re.compile(r"\s*[\n\r\x0b\x0c\x1c-\x1e\x85\u2028\u2029]+\s*")
 """換行，連同它前後的空白：``str.splitlines`` 當成換行的字元都算。"""
+
+SPEAKER_NAME_MAX_LENGTH = 30
+"""說話者名稱最多幾個字（去掉前後的空白之後算，#359）。"""
+
+_SPEAKER_ID_LIKE = re.compile(r"s[0-9]+")
+"""寫成說話者編號的名稱（S 加數字；全形與大小寫照 ``speaker_name_key`` 換過再比），會和沒取名字的說話者分不出來。"""
+
+_TIME_LIKE = re.compile(r"[0-9]+:[0-9]+(?:[.:][0-9]+)?")
+"""寫成時間的名稱（例如 00:05.00，全形照 ``speaker_name_key`` 換過再比）：LRC 寫成 ``[00:01.00][00:05.00] 文字``，
+播放器會把它當成第二個時間戳。"""
 
 _UNCORRECTABLE = {
     Uncorrectable.NOT_COMPLETED: "這個任務還沒完成，完成之後才能校正",
@@ -132,6 +148,7 @@ def get_transcript(task_uuid: str, db: Session = Depends(get_db)):
         uncorrectable_reason=blocker,
         single_speaker=_single_speaker(log),
         next_speaker=CorrectionRepository.next_speaker(db, log.task_uuid),
+        speaker_names=CorrectionRepository.speaker_names(db, log.task_uuid),
         segment_count=len(segments),
         segments=segments,
     )
@@ -358,6 +375,7 @@ def undo_operation(task_uuid: str, operation_id: str, db: Session = Depends(get_
         skipped=result.skipped,
         operation_id=result.operation_id,
         segments=_segments(db, log, result.seg_keys) if result.seg_keys else [],
+        speaker_names=CorrectionRepository.speaker_names(db, log.task_uuid),
     )
 
 
@@ -382,6 +400,51 @@ def reassign_speaker(task_uuid: str, body: SpeakerReassignRequest, db: Session =
         changed=len(result.seg_keys),
         segments=_segments(db, log, result.seg_keys) if result.seg_keys else [],
     )
+
+
+def _speaker_name(name: str) -> str:
+    """請求裡的說話者名稱要存成什麼：前後的空白去掉，空的是清掉名稱。不合規則時回 400（#359 第 6 點）。
+
+    方括號與換行不行：輸出的說話者標記用方括號包住名稱，LRC 一行一個時間戳。寫成 S 加數字也不行：輸出裡會和沒取
+    名字的說話者的編號分不出來。寫成時間（例如 00:05.00）也不行：LRC 的播放器會把方括號裡的它當成時間戳。
+    """
+    name = name.strip()
+    if len(name) > SPEAKER_NAME_MAX_LENGTH:
+        raise HTTPException(status_code=400, detail=f"名稱太長：最多 {SPEAKER_NAME_MAX_LENGTH} 個字")
+    if "[" in name or "]" in name:
+        raise HTTPException(status_code=400, detail="名稱不能有方括號（[ 或 ]）：輸出裡用方括號包住名稱")
+    if _LINE_BREAKS.search(name):
+        raise HTTPException(status_code=400, detail="名稱不能換行")
+    if _SPEAKER_ID_LIKE.fullmatch(speaker_name_key(name)):
+        raise HTTPException(status_code=400, detail="名稱不能寫成 S 加數字：那是說話者編號的寫法，會和沒取名字的說話者分不出來")
+    if _TIME_LIKE.fullmatch(speaker_name_key(name)):
+        raise HTTPException(status_code=400, detail="名稱不能寫成時間（例如 00:05.00）：LRC 會把它當成時間戳")
+    return name
+
+
+@router.put("/{task_uuid}/speakers/{speaker}/name", response_model=SpeakerNameResponse)
+def set_speaker_name(task_uuid: str, speaker: str, body: SpeakerNameRequest, db: Session = Depends(get_db)):
+    """替一個說話者編號設定或清掉說話者名稱（#359）：``name`` 是空字串時清掉，回到顯示說話者編號。
+
+    取名字算一次校正：有變時記一筆校正紀錄（對象是說話者編號），可以用復原的端點收回；和現在的名稱相同時什麼都不記，
+    沒有操作編號。名稱只在這個任務裡有效。``speaker`` 要是這個任務現有的說話者（校正後版本裡有片段是它，刪掉的片段
+    也算），不然回 404。同一個任務裡另一位說話者已經用了看起來一樣的名稱時回 409，說明是哪一位；那一位已經沒有片段
+    時名稱移過來，規則見 ``CorrectionRepository.set_speaker_name``。名稱不寫進日誌。
+    """
+    log = _correctable_log(db, task_uuid)
+    name = _speaker_name(body.name)
+    try:
+        operation_id = CorrectionRepository.set_speaker_name(db, log.task_uuid, speaker, name)
+    except UnknownSpeaker as e:
+        raise HTTPException(status_code=404, detail=f"這個任務沒有說話者 {speaker}") from e
+    except SpeakerNameTaken as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    except ValueError as e:
+        # 任務剛好被刪掉：什麼都沒寫
+        raise HTTPException(status_code=404, detail="找不到此任務紀錄") from e
+    names = CorrectionRepository.speaker_names(db, log.task_uuid)
+    return SpeakerNameResponse(operation_id=operation_id, speaker=speaker, name=names.get(speaker),
+                               speaker_names=names)
 
 
 @router.patch("/{task_uuid}", response_model=TranscriptSettingsResponse)

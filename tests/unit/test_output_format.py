@@ -952,3 +952,93 @@ class TestMultiSpeakerSwitch:
     def test_tasks_from_before_the_switch_count_as_on(self, multi_speaker, labels):
         # 開關做出來之前的任務沒有這個值，當成開：下載結果不變（本機的舊任務一直都帶標記）
         assert output_format.shows_speaker_labels(multi_speaker) is labels
+
+
+# ─── 說話者名稱（#359） ──────────────────────────────────────────────────────
+
+def named(fmt: str, *segments, names: dict, labels: bool = True) -> str:
+    """校正後版本的輸出：取了說話者名稱的說話者，說話者標記寫名稱。"""
+    return output_format.for_segments(list(segments), output_format.OutputFormat(fmt),
+                                      speaker_labels=labels, speaker_names=names)
+
+
+PROGRESS = [
+    {"start": 1.0, "end": 2.0, "speaker": "S0", "text": "今天先看進度。"},
+    {"start": 3.0, "end": 4.0, "speaker": "S1", "text": "好。"},
+]
+
+
+class TestSpeakerNames:
+    """取了說話者名稱的說話者，說話者標記寫名稱（#359）：四種格式都只把方括號裡的編號換成名稱，沒取名字的
+    照舊寫編號。每一行另外帶著說話者編號，字幕的重疊與上色照編號算，不受名稱影響（ADR-0008）。"""
+
+    def test_only_the_id_in_brackets_becomes_the_name_in_every_format(self):
+        names = {"S0": "王小明"}
+        assert named("lrc", *PROGRESS, names=names) == "[00:01.00][王小明] 今天先看進度。\n[00:03.00][S1] 好。"
+        assert named("txt", *PROGRESS, names=names) == "[王小明] 今天先看進度。\n[S1] 好。"
+        assert named("srt", *PROGRESS, names=names) == (
+            "1\n00:00:01,000 --> 00:00:02,000\n[王小明] 今天先看進度。\n\n"
+            '2\n00:00:03,000 --> 00:00:04,000\n<font color="#FFDD55">[S1] 好。</font>\n')
+        assert named("vtt", *PROGRESS, names=names) == (
+            "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n[王小明] 今天先看進度。\n\n"
+            "00:00:03.000 --> 00:00:04.000\n<c.yellow>[S1] 好。</c>\n")
+
+    def test_without_names_it_is_the_same_as_before(self):
+        assert {fmt: named(fmt, *SENTENCES, names={}) for fmt in ("lrc", "srt", "vtt", "txt")} == (
+            formats(*SENTENCES).model_dump())
+
+    def test_overlap_and_colors_follow_the_speaker_id_not_the_name(self):
+        # 和 test_interjection_by_another_speaker_does_not_cut_the_line 同一段（ADR-0008），兩位都取了名字：
+        # S1 講到 15.5 秒，S0 在 11.0 秒插話，兩行照樣重疊；S1 自己的下一行在 14.0 秒開始，照樣截在那裡。
+        # 顏色照編號：S1 黃色，S0 白色
+        segments = [{"start": 7.5, "end": 15.5, "speaker": "S1", "text": "你拉不拉货，但是"},
+                    {"start": 11.0, "end": 12.0, "speaker": "S0", "text": "对"},
+                    {"start": 14.0, "end": 16.0, "speaker": "S1", "text": "你说呢"}]
+        names = {"S0": "李大華", "S1": "王小明"}
+        assert named("srt", *segments, names=names) == (
+            '1\n00:00:07,500 --> 00:00:14,000\n<font color="#FFDD55">[王小明] 你拉不拉货，但是</font>\n\n'
+            "2\n00:00:11,000 --> 00:00:12,000\n[李大華] 对\n\n"
+            '3\n00:00:14,000 --> 00:00:16,000\n<font color="#FFDD55">[王小明] 你说呢</font>\n')
+        assert named("vtt", *segments, names=names) == (
+            "WEBVTT\n\n"
+            "00:00:07.500 --> 00:00:14.000\n<c.yellow>[王小明] 你拉不拉货，但是</c>\n\n"
+            "00:00:11.000 --> 00:00:12.000\n[李大華] 对\n\n"
+            "00:00:14.000 --> 00:00:16.000\n<c.yellow>[王小明] 你说呢</c>\n")
+
+    def test_vtt_escapes_the_name_like_the_text(self):
+        names = {"S0": "A&B <主持>"}
+        assert named("vtt", *PROGRESS, names=names).split("\n")[3] == "[A&amp;B &lt;主持&gt;] 今天先看進度。"
+        assert named("srt", *PROGRESS, names=names).split("\n")[2] == "[A&B <主持>] 今天先看進度。"
+        assert named("lrc", *PROGRESS, names=names).split("\n")[0] == "[00:01.00][A&B <主持>] 今天先看進度。"
+
+    def test_long_line_pieces_each_carry_the_name_and_count_its_width(self):
+        # 字寬上限連同行首的說話者標記算：27 個字寬的這一行，寫 [S1] 時 29.5 個字寬、一則就放得下；寫 9 個字的名稱
+        # 時 37.5 個字寬，拆成兩則，每一則都帶名稱，顏色照編號
+        text = "我們先看一下上一季的營收，其實跟預期差不多但是成本這邊"
+        segment = {"start": 100.0, "end": 109.0, "speaker": "S1", "text": text, "words": han_per_word(text, 100.0)}
+        assert srt_cues(segment) == [("00:01:40,000 --> 00:01:46,500", f'<font color="#FFDD55">[S1] {text}</font>')]
+        assert named("srt", segment, names={"S1": "財務部的王小明經理"}).strip().split("\n\n") == [
+            '1\n00:01:40,000 --> 00:01:43,000\n<font color="#FFDD55">[財務部的王小明經理] 我們先看一下上一季的營收，</font>',
+            '2\n00:01:43,000 --> 00:01:46,500\n<font color="#FFDD55">[財務部的王小明經理] 其實跟預期差不多但是成本這邊</font>',
+        ]
+
+    def test_kana_in_a_name_does_not_make_a_chinese_line_japanese(self):
+        # 日文的字寬上限（26）看的是說的話有沒有假名，不看名稱：連同名稱 28.5 個字寬的中文行照中文的上限（32），
+        # 一則就放得下
+        text = "我們先看一下上一季的營收其實跟預期差不多但是成本"
+        segment = {"start": 100.0, "end": 109.0, "speaker": "S0", "text": text, "words": han_per_word(text, 100.0)}
+        assert named("srt", segment, names={"S0": "さくら"}).split("\n")[1:3] == [
+            "00:01:40,000 --> 00:01:46,000", f"[さくら] {text}"]
+
+    def test_a_long_name_leaves_at_least_half_the_width_for_the_speech(self):
+        # 名稱最長 30 個字：連同方括號比上限（32）還寬時，說的話照樣至少有一半的字寬（16），不會拆成一字一則
+        text = "我們先看一下上一季的營收其實跟預期差不多"
+        segment = {"start": 100.0, "end": 109.0, "speaker": "S0", "text": text, "words": han_per_word(text, 100.0)}
+        cues = named("srt", segment, names={"S0": "名" * 30}).strip().split("\n\n")
+        assert [cue.split("\n")[2] for cue in cues] == [
+            f"[{'名' * 30}] 我們先看一下上一季的", f"[{'名' * 30}] 營收其實跟預期差不多"]
+
+    def test_without_speaker_labels_names_are_not_written_either(self):
+        # 不帶說話者標記時（整份當成同一位說話者），取了名字也不寫
+        assert named("txt", *PROGRESS, names={"S0": "王小明"}, labels=False) == "今天先看進度。\n好。"
+        assert "<font" not in named("srt", *PROGRESS, names={"S0": "王小明"}, labels=False)

@@ -22,6 +22,7 @@ import { FindBar } from "./find-bar"
 import { PlayerBar } from "./player-bar"
 import { ReviewToolbar } from "./review-toolbar"
 import { SegmentList } from "./segment-list"
+import { SpeakerNameDialog } from "./speaker-name-dialog"
 
 /** 保留音檔超過保留天數、被「立即刪除」刪掉，或關掉保留音檔時完成的任務（後端的 audio_available 是 false）。 */
 export const AUDIO_GONE = "保留音檔已經不在，無法播放；文字照樣可以校正"
@@ -35,14 +36,15 @@ const SPEAKER_MODES = [
 ]
 
 /**
- * 片段列表每一列用的動作：改文字、刪掉與還原、改說話者（useSegmentCorrections）、打字時的 Tab 與 Shift+Tab，以及
- * 標確認狀態與換成目前這個片段（#349）。
+ * 片段列表每一列用的動作：改文字、刪掉與還原、改說話者（useSegmentCorrections）、打字時的 Tab 與 Shift+Tab、
+ * 標確認狀態與換成目前這個片段（#349），以及打開替說話者取名字的對話框（startRenaming，#359）。
  *
  * @typedef {ReturnType<typeof useSegmentCorrections>["actions"] & {
  *   playback: (action: import("@/utils/segmentCorrections").PlaybackAction) => void,
  *   select: (segKey: string) => void,
  *   toggleReviewState: (segment: import("@/utils/reviewStates").ReviewedSegment,
  *                       state: import("@/utils/reviewStates").ReviewState) => void,
+ *   startRenaming: (speaker: string) => void,
  * }} RowActions
  */
 
@@ -100,7 +102,8 @@ const TOAST_STYLE = {
  * （見 reviewStates.js）。
  *
  * 說話者（#354）：上方的切換決定整份當成同一位說話者（不顯示說話者，也沒有改說話者的操作），或照模型分出的說話者
- * 顯示；切換是任務的設定，不算校正。顯示說話者時，點片段的說話者可以改這個片段，或把這位說話者全部換成另一位。
+ * 顯示；切換是任務的設定，不算校正。顯示說話者時，點片段的說話者可以改這個片段，或把這位說話者全部換成另一位，也可以
+ * 替這位說話者取名字（#359）：取了名字的說話者在每一列都寫名稱，存完出現「復原」。
  *
  * 尋找與全部取代（#356）：在這一頁按 Ctrl+F 開的是頁面自己的尋找列（FindBar），不是瀏覽器內建的尋找。跳到一個
  * 符合的片段時停止跟著播放捲動；那個片段被篩選掉了時篩選換回全部，才看得到它。尋找不換目前這個片段。
@@ -112,15 +115,17 @@ const TOAST_STYLE = {
  *   audio_available: boolean,
  *   single_speaker?: boolean,
  *   next_speaker?: string,
+ *   speaker_names?: Record<string, string>,
  *   segments: any[],
  * } }} props
  */
 export function CorrectionView({ transcript }) {
     const { audioRef, audioProps, playing, time, duration, rate, failed, toggle, seek, skip, setRate } = useAudioPlayer()
-    const { segments, saves, editing, lastOperation, nextSpeaker, actions, setReviewStates } = useSegmentCorrections(
-        transcript.task_uuid, transcript.segments, transcript.next_speaker,
-    )
+    const { segments, saves, editing, lastOperation, nextSpeaker, speakerNames, actions, setReviewStates } =
+        useSegmentCorrections(transcript.task_uuid, transcript.segments, transcript.next_speaker, transcript.speaker_names)
     const review = useReviewStates(transcript.task_uuid, setReviewStates)
+    // 正在取名字的說話者（#359）：對話框放在這裡，不放在片段那一列，那一列被捲走時才不會跟著不見
+    const [renaming, setRenaming] = useState(/** @type {string | null} */ (null))
     const { singleSpeaker, switching, switchTo } = useSingleSpeaker(transcript.task_uuid, Boolean(transcript.single_speaker))
     const total = duration ?? transcript.audio_duration_seconds ?? 0
     const canPlay = transcript.audio_available && !failed
@@ -168,8 +173,9 @@ export function CorrectionView({ transcript }) {
             speakers: counts.map(([speaker]) => speaker).filter((speaker) => speaker !== null),
             counts: new Map(counts),
             nextSpeaker,
+            names: speakerNames,
         }
-    }, [speakerCountsJson, nextSpeaker])
+    }, [speakerCountsJson, nextSpeaker, speakerNames])
 
     /** @type {RowActions} */
     const rowActions = useMemo(() => ({
@@ -177,6 +183,7 @@ export function CorrectionView({ transcript }) {
         playback: (action) => (action === "rewind" ? skip(-REWIND_SECONDS) : toggle()),
         select: setCurrentKey,
         toggleReviewState: review.actions.toggle,
+        startRenaming: setRenaming,
     }), [actions, skip, toggle, review.actions])
 
     /** 拖播放進度：目前這個片段換成拖到的那裡正在播放的片段。 */
@@ -234,7 +241,7 @@ export function CorrectionView({ transcript }) {
             default:
                 break
         }
-    }, !confirmOpen)
+    }, !confirmOpen && renaming === null)  // 確認或取名字的對話框打開時不聽，按鍵是給對話框的
 
     /** 換篩選；目前這個片段被篩選掉了時，換到它後面最近的片段。 */
     const applyFilter = (kind) => {
@@ -354,6 +361,14 @@ export function CorrectionView({ transcript }) {
                 </div>
             </div>
             {search.open && <FindBar search={search} onReplaceAll={actions.replaceAll} onClose={onCloseFind} />}
+            {renaming && (
+                <SpeakerNameDialog
+                    speaker={renaming}
+                    name={speakerNames[renaming] ?? null}
+                    onSave={actions.renameSpeaker}
+                    onClose={() => setRenaming(null)}
+                />
+            )}
             <PlayerBar
                 playing={playing}
                 time={time}

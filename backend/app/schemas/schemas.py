@@ -1,7 +1,7 @@
 from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing import Dict, List, Optional
 from uuid import UUID
-from pydantic import ConfigDict, StrictBool
+from pydantic import ConfigDict, StrictBool, StrictStr
 
 
 class ProviderConfigRequest(BaseModel):
@@ -282,6 +282,8 @@ class UndoOperationResponse(BaseModel):
     """這次復原自己的操作編號（復原也可以再復原）；一筆都沒有還原時是 None。"""
     segments: List[TranscriptSegmentResponse] = []
     """那次操作改到的片段的新內容，還原的與略過的都在內。"""
+    speaker_names: Dict[str, str] = {}
+    """復原之後這個任務的說話者名稱（#359）：{說話者編號: 名稱}，只列取了名字的。復原的是取名字時，校正頁照它換。"""
 
 
 class ReviewStatesRequest(BaseModel):
@@ -332,6 +334,27 @@ class SpeakerReassignResponse(BaseModel):
     """改到幾個片段。"""
     segments: List[TranscriptSegmentResponse] = []
     """改到的片段的新內容，依片段的順序。"""
+
+
+class SpeakerNameRequest(BaseModel):
+    """PUT /transcripts/{task_uuid}/speakers/{speaker}/name：替一個說話者編號設定或清掉說話者名稱（#359）。
+
+    名稱的規則在 ``app.api.transcripts`` 檢查，錯誤時回一句中文的 detail。"""
+    model_config = ConfigDict(extra="forbid")
+
+    name: StrictStr
+    """說話者名稱：前後的空白去掉；空字串（或只有空白）是清掉名稱，回到顯示說話者編號。"""
+
+
+class SpeakerNameResponse(BaseModel):
+    """設定或清掉說話者名稱的結果。"""
+    operation_id: Optional[UUID] = None
+    """這次記下的校正紀錄的操作編號（復原時用）；和現在的名稱相同、什麼都沒記時是 None。"""
+    speaker: str
+    name: Optional[str] = None
+    """這位說話者現在的名稱；沒有名稱時是 None。"""
+    speaker_names: Dict[str, str] = {}
+    """這個任務現在的說話者名稱：{說話者編號: 名稱}，只列取了名字的。"""
 
 
 class TranscriptSettingsRequest(BaseModel):
@@ -414,6 +437,8 @@ class TranscriptResponse(BaseModel):
     """整份當成同一位說話者（#354）：下載不帶說話者標記，校正頁不顯示說話者與改說話者的操作。"""
     next_speaker: str = "S0"
     """新的說話者編號：這個任務還沒用過的下一個號碼（#354）。"""
+    speaker_names: Dict[str, str] = {}
+    """每個說話者編號現在的說話者名稱（#359）：{說話者編號: 名稱}，只列取了名字的。"""
     segment_count: int = 0
     segments: List[TranscriptSegmentResponse] = []
 
