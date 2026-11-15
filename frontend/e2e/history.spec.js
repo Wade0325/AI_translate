@@ -1,13 +1,16 @@
 import { test, expect, download } from './support/test.js'
 import { TRANSCRIPTS, reply } from './support/backend.js'
 
+/** 校正後版本的 SRT：第一句改過文字。 */
+const CORRECTED_SRT = TRANSCRIPTS.srt.replace('測試的第一句', '校正過的第一句')
+
 const RECORDS = [
     {
         task_uuid: 'task-1', request_timestamp: '2026-10-20T10:00:00', completed_at: '2026-10-20T10:03:00',
         status: 'COMPLETED', original_filename: 'meeting.wav', audio_duration_seconds: 300.0,
         model_used: 'moss-align', source_language: 'zh-TW', total_tokens: 0, cost: 0.0,
         error_code: null, error_message: null, is_batch: false, session_id: 'session-1', file_uid: 'file-1',
-        service_tier_used: 'standard', tail_loss_from_seconds: null, correctable: true,
+        service_tier_used: 'standard', tail_loss_from_seconds: null, correctable: true, has_corrections: false,
     },
     {
         task_uuid: 'task-2', request_timestamp: '2026-10-21T09:00:00', completed_at: null,
@@ -15,7 +18,7 @@ const RECORDS = [
         model_used: 'gemini-3.5-flash', source_language: 'ja-JP', total_tokens: 1200, cost: 0.0042,
         error_code: 'GEMINI_UNAVAILABLE', error_message: '503 UNAVAILABLE: The model is overloaded.',
         is_batch: false, session_id: 'session-2', file_uid: 'file-2',
-        service_tier_used: 'standard', tail_loss_from_seconds: null, correctable: false,
+        service_tier_used: 'standard', tail_loss_from_seconds: null, correctable: false, has_corrections: false,
     },
 ]
 
@@ -35,6 +38,9 @@ async function openDownloadMenu(page, filename) {
     await recordRow(page, filename).getByRole('button', { name: 'download' }).hover()
 }
 
+/** 展開的下載選單（側欄的導覽也是 menu，要分開）。 */
+const downloadMenu = (page) => page.locator('.ant-dropdown-menu').filter({ visible: true })
+
 test('列出任務紀錄，從已完成的那一列下載 SRT', async ({ page, mockBackend }) => {
     const backend = await mockBackend({
         routes: { ...HISTORY_ROUTES, 'GET /history/task-1/download/srt': TRANSCRIPTS.srt },
@@ -51,6 +57,50 @@ test('列出任務紀錄，從已完成的那一列下載 SRT', async ({ page, m
     await openDownloadMenu(page, 'meeting.wav')
     expect(await download(page, () => page.getByRole('menuitem', { name: 'SRT' }).click()))
         .toEqual({ filename: 'meeting.srt', text: TRANSCRIPTS.srt })
+})
+
+test('有校正的任務：下載選單分成校正後版本與原始轉錄，原始轉錄的檔名多一段 .original（#346）', async ({ page, mockBackend }) => {
+    const corrected = { ...RECORDS[0], has_corrections: true }
+    const backend = await mockBackend({
+        routes: {
+            ...HISTORY_ROUTES,
+            'GET /history': { items: [corrected, RECORDS[1]], total: 2, page: 1, page_size: 10, total_pages: 1 },
+            // 形狀照後端：version=original 給原始轉錄，其他（預設）給校正後版本
+            'GET /history/task-1/download/srt': ({ query }) => (
+                query.version === 'original' ? TRANSCRIPTS.srt : CORRECTED_SRT),
+        },
+    })
+    await page.goto('/history')
+
+    await openDownloadMenu(page, 'meeting.wav')
+    const menu = downloadMenu(page)
+    await expect(menu.getByText('校正後版本')).toBeVisible()
+    await expect(menu.getByText('原始轉錄')).toBeVisible()
+    // 兩組都有四種輸出格式
+    await expect(menu.getByRole('menuitem')).toHaveText(['LRC', 'SRT', 'VTT', 'TXT', 'LRC', 'SRT', 'VTT', 'TXT'])
+
+    expect(await download(page, () => menu.getByRole('menuitem', { name: 'SRT' }).first().click()))
+        .toEqual({ filename: 'meeting.srt', text: CORRECTED_SRT })
+    await expect(page.getByText('已下載 SRT 檔')).toBeVisible()
+
+    await openDownloadMenu(page, 'meeting.wav')
+    expect(await download(page, () => menu.getByRole('menuitem', { name: 'SRT' }).last().click()))
+        .toEqual({ filename: 'meeting.original.srt', text: TRANSCRIPTS.srt })
+    await expect(page.getByText('已下載原始轉錄的 SRT 檔')).toBeVisible()
+
+    expect(backend.requests.filter((r) => r.path === '/history/task-1/download/srt').map((r) => r.query))
+        .toEqual([{ version: 'corrected' }, { version: 'original' }])
+})
+
+test('沒有校正的任務：下載選單和以前一樣只有四種輸出格式，沒有原始轉錄那一組（#346）', async ({ page, mockBackend }) => {
+    await mockBackend({ routes: HISTORY_ROUTES })
+    await page.goto('/history')
+
+    await openDownloadMenu(page, 'meeting.wav')
+    const menu = downloadMenu(page)
+    await expect(menu.getByRole('menuitem')).toHaveText(['LRC', 'SRT', 'VTT', 'TXT'])
+    await expect(menu.getByText('原始轉錄')).toHaveCount(0)
+    await expect(menu.getByText('校正後版本')).toHaveCount(0)
 })
 
 test('失敗的那一列在檔名下面寫出原因，滑過去看下一步與錯誤碼（#24 門檻 4）', async ({ page, mockBackend }) => {

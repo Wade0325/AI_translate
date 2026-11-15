@@ -1,19 +1,21 @@
 import { useCallback } from 'react';
 import JSZip from 'jszip';
 import { message } from 'antd';
+import { api } from '../services/api';
 import { downloadBlob } from '../utils/download';
-import { planFileDownload, planZipDownload } from '../utils/transcriptDownload';
+import { fetchTranscripts, planFileDownload, planZipDownload } from '../utils/transcriptDownload';
 
 const ZIP_MESSAGE_KEY = 'zipDownload';
 
 /**
- * 轉錄頁與結果頁的「下載單檔結果」與「打包所有已完成檔案」。要下載什麼、檔名與拿不到內容時的
- * 訊息由 utils/transcriptDownload.js 決定，這裡只觸發下載與顯示訊息。
+ * 轉錄頁與結果頁的「下載單檔結果」與「打包所有已完成檔案」。內容向下載端點拿校正後版本（#346）；
+ * 要下載什麼、檔名與拿不到內容時的訊息由 utils/transcriptDownload.js 決定，這裡只觸發下載與顯示訊息。
  */
 export function useDownloadBundle(fileList) {
-  /** file 是檔案卡上的檔案（name 與 result），format 是輸出格式。 */
-  const downloadFile = useCallback((file, format) => {
-    const { download, notice } = planFileDownload(file, format);
+  /** file 是檔案卡上的檔案（name 與 task_uuid），format 是輸出格式。 */
+  const downloadFile = useCallback(async (file, format) => {
+    const [fetched] = await fetchTranscripts([file], format, api);
+    const { download, notice } = planFileDownload(fetched, format);
     if (!download) {
       message.open(notice);
       return;
@@ -28,14 +30,15 @@ export function useDownloadBundle(fileList) {
       return;
     }
 
-    const { entries, zipFileName, notice } = planZipDownload(completedFiles, format);
+    message.loading({ content: '正在打包檔案...', key: ZIP_MESSAGE_KEY });
+    const fetched = await fetchTranscripts(completedFiles, format, api);
+    const { entries, zipFileName, notice } = planZipDownload(fetched, format);
     if (entries.length === 0) {
-      message.open(notice);
+      message.open({ ...notice, key: ZIP_MESSAGE_KEY });
       return;
     }
 
     try {
-      message.loading({ content: '正在打包檔案...', key: ZIP_MESSAGE_KEY });
       const zip = new JSZip();
       entries.forEach(({ fileName, content }) => zip.file(fileName, content));
       const zipBlob = await zip.generateAsync({ type: 'blob' });

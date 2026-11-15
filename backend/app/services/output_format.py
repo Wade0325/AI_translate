@@ -28,7 +28,9 @@
 
 除了交界的跳動，這些差異都出在舊的處理，這裡的結果比較準。
 
-版本目前只有原始轉錄，校正後版本留給 v0.2。
+版本有兩個（#346，見 :class:`Version`）：原始轉錄從片段產生；校正後版本從校正紀錄的 repository 算出的
+校正後版本產生（ADR 0011，下載、校正頁與匯出都讀同一處），刪掉的片段略過。沒有校正的任務兩個版本相同。
+沒有片段的任務不能校正，兩個版本都是從存下來的 LRC 轉換的內容。凍結的原始轉錄副本不回寫。
 
 四種格式由同一串行產生，說話者標記跟著任務的 Multi-Speaker 開關（#13 Q1，見
 :func:`shows_speaker_labels`）：開時寫成「[S0] 文字」；關時四種格式都不寫，片段照樣存說話者編號，
@@ -60,6 +62,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.database.models import TranscriptionLog
+from app.repositories.correction_repository import CorrectionRepository
 from app.repositories.history_repository import HistoryRepository
 from app.repositories.transcript_segment_repository import TranscriptSegmentRepository
 from app.services.transcription.models import TranscriptionTaskResult
@@ -76,8 +79,12 @@ class OutputFormat(StrEnum):
 
 
 class Version(StrEnum):
+    """下載哪一個版本（#346）。字串是下載端點的 ``version`` 參數，前端照它送，不要改既有的值。"""
+
+    CORRECTED = "corrected"
+    """校正後版本：原始轉錄套上使用者所有的校正，刪掉的片段不在裡面。下載端點的預設。"""
     ORIGINAL = "original"
-    """原始轉錄。校正後版本（v0.2）加在這裡。"""
+    """原始轉錄：校正之前由模型產生的版本，和校正做出來之前的下載逐位元組相同。"""
 
 
 class OutputFiles(BaseModel):
@@ -100,13 +107,15 @@ def for_task(
     """給定任務、輸出格式與版本，回傳檔案內容。
 
     任務沒有轉錄結果（沒有片段，也沒有存下來的 LRC）時回傳 None；沒有片段的任務，存下來的
-    LRC 解析不出任何一行時，SRT／VTT／TXT 是空字串。版本目前只有原始轉錄一種。
+    LRC 解析不出任何一行時，SRT／VTT／TXT 是空字串。片段都沒有文字（校正後版本的片段全部刪掉）時，
+    LRC、SRT、TXT 是空字串，VTT 只有檔頭。
 
-    說話者標記照任務記下的 Multi-Speaker 開關（:func:`shows_speaker_labels`）。沒有片段的任務都在
-    開關做出來之前，照以前從存下來的 LRC 轉換：任務完成時一定存了片段（見
-    :mod:`app.tasks.lifecycle`）。
+    校正後版本的片段由 :meth:`CorrectionRepository.corrected_version` 算出，文字是空的（刪掉的）片段
+    不產生行；沒有校正的任務兩個版本相同。說話者標記照任務記下的 Multi-Speaker 開關
+    （:func:`shows_speaker_labels`），對著被下載的那個版本的片段產生。沒有片段的任務都在開關做出來
+    之前，照以前從存下來的 LRC 轉換，兩個版本相同：任務完成時一定存了片段（見 :mod:`app.tasks.lifecycle`）。
     """
-    segments = TranscriptSegmentRepository.segments_for_task(db, task.task_uuid)
+    segments = _segments(db, task, version)
     if segments:
         labels = shows_speaker_labels(cast(Optional[bool], task.multi_speaker))
         return _render(_lines(segments, labels=labels), fmt)
@@ -114,6 +123,13 @@ def for_task(
     if not stored_lrc:
         return None
     return getattr(convert_from_lrc(stored_lrc), fmt.value)
+
+
+def _segments(db: Session, task: TranscriptionLog, version: Version) -> List[Dict[str, Any]]:
+    """這個版本的片段，形狀和 :meth:`TranscriptSegmentRepository.segments_for_task` 相同。"""
+    if version is Version.CORRECTED:
+        return CorrectionRepository.corrected_version(db, task.task_uuid)
+    return TranscriptSegmentRepository.segments_for_task(db, task.task_uuid)
 
 
 def for_result(result: TranscriptionTaskResult, *, speaker_labels: bool = True) -> OutputFiles:
