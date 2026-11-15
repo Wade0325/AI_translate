@@ -28,9 +28,11 @@ function wordsOf(text, start, end) {
     return chars.map((c, i) => ({ text: c, start: start + i * step, end: start + (i + 1) * step }))
 }
 
+/** 沒有校正過的片段：校正後版本（text、speaker）和原始轉錄（original_text、original_speaker）相同。 */
 const segment = (seq, start, end, speaker, text, { words = true } = {}) => ({
-    seg_key: `0.${String(seq).padStart(4, '0')}`, seq, start, end, speaker, text, text_alt: null,
-    source: words ? 'aligned' : null, confidence: null, review_state: null,
+    seg_key: `0.${String(seq).padStart(4, '0')}`, seq, start, end, speaker, text,
+    original_speaker: speaker, original_text: text, corrected: false, deleted: false, has_correction_records: false,
+    text_alt: null, source: words ? 'aligned' : null, confidence: null, review_state: null,
     words: words ? wordsOf(text, start, end) : null,
 })
 

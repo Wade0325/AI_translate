@@ -1,5 +1,6 @@
 from pydantic import BaseModel, Field
 from typing import List, Optional
+from uuid import UUID
 from pydantic import ConfigDict
 
 
@@ -224,18 +225,60 @@ class TranscriptWord(BaseModel):
 
 
 class TranscriptSegmentResponse(BaseModel):
-    """一個轉錄片段。text_alt 是另一個模型對同一段的結果，供分歧標示用。"""
+    """一個轉錄片段：``text`` 與 ``speaker`` 是校正後版本，另外帶著原始轉錄（#341，算法見
+    ``app.repositories.correction_repository``）。text_alt 是另一個模型對同一段的結果，供分歧標示用。"""
     seg_key: str
     seq: int
     start: float
     end: Optional[float] = None
     speaker: Optional[str] = None
-    text: Optional[str] = None
+    """校正後版本的說話者；沒有說話者是 None。"""
+    text: str = ""
+    """校正後版本的文字；刪掉的片段是空字串。"""
+    original_speaker: Optional[str] = None
+    original_text: str = ""
+    corrected: bool = False
+    """文字或說話者和原始轉錄不同。"""
+    deleted: bool = False
+    """校正後的文字是空的（刪掉的片段，下載的校正後版本裡沒有它）。"""
+    has_correction_records: bool = False
+    """有校正紀錄；改回和原始轉錄相同之後仍是 True。"""
     text_alt: Optional[str] = None
     source: Optional[str] = None
     confidence: Optional[float] = None
     review_state: Optional[str] = None
+    """確認狀態：verified（已確認）、flagged（待查）或 None。"""
     words: Optional[List[TranscriptWord]] = None
+
+
+class SegmentCorrectionRequest(BaseModel):
+    """PATCH /transcripts/{task_uuid}/segments/{seg_key}：帶 text、speaker、review_state 其中一個或多個，
+    沒帶的不改。text 是空的（去掉前後的空白之後）就是刪掉這個片段；speaker 與 review_state 的 null 是清除。
+    各欄位的規則在 ``app.api.transcripts`` 檢查，錯誤時回一句中文的 detail。"""
+    model_config = ConfigDict(extra="forbid")
+
+    text: Optional[str] = None
+    speaker: Optional[str] = None
+    review_state: Optional[str] = None
+
+
+class SegmentCorrectionResponse(BaseModel):
+    """改一個片段的結果：這個片段的新內容，與這次記下的校正紀錄共用的操作編號（復原時用）。
+    沒有記任何一筆（只改了確認狀態，或內容和現在的相同）時沒有操作編號。"""
+    operation_id: Optional[UUID] = None
+    segment: TranscriptSegmentResponse
+
+
+class UndoOperationResponse(BaseModel):
+    """復原一次操作的結果。"""
+    restored: int
+    """還原了幾筆校正紀錄。"""
+    skipped: int
+    """略過幾筆：那次操作之後又被改過。"""
+    operation_id: Optional[UUID] = None
+    """這次復原自己的操作編號（復原也可以再復原）；一筆都沒有還原時是 None。"""
+    segments: List[TranscriptSegmentResponse] = []
+    """那次操作改到的片段的新內容，還原的與略過的都在內。"""
 
 
 class TranscriptResponse(BaseModel):
