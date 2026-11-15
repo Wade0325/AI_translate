@@ -41,25 +41,34 @@ test('History 只有能校正的任務有「校正」，點了開校正頁，網
 
 test('點片段的時間從那個片段的開頭播放，正在唸的片段反白；點一個字從那個字開始播', async ({ page, mockBackend }) => {
     await openCorrection(page, mockBackend)
+    // 點了會跳過去接著播，時間一直在走：CI 的機器忙時，量到時已經播過一段。所以記下跳過去的位置（seeking 那一刻的
+    // currentTime）來比
+    await page.locator('audio').evaluate((a) => {
+        a.addEventListener('seeking', () => { a.dataset.seekedTo = String(a.currentTime) })
+    })
+    const seekedTo = () => page.locator('audio').evaluate((a) => Number(a.dataset.seekedTo ?? NaN))
 
     await row(page, '點一個字').getByRole('button', { name: '00:10' }).click()
     await expect.poll(async () => (await audioState(page)).paused).toBe(false)
-    const { time } = await audioState(page)
-    expect(time).toBeGreaterThanOrEqual(10)
-    expect(time).toBeLessThan(12)
+    await expect.poll(seekedTo).toBeGreaterThanOrEqual(10)
+    expect(await seekedTo()).toBeLessThan(10.5)
     await expect(highlight(page, '點一個字')).toHaveCount(1)
     await expect(highlight(page, '大家早安')).toHaveCount(0)
 
     // 「進」是第一段的第 9 個字（標點不算）：0.5 + 8 × 0.3 = 2.9 秒。點了同時開始改這一段（#348），
-    // 游標在「進」的前面
+    // 游標在「進」的前面。看反白之前暫停在跳過去的位置：一直播的話，機器忙時看反白的時候已經唸過「進」與「度」（3.5 秒）
     await row(page, '大家早安').locator('.correction-word', { hasText: '進' }).click()
-    const atWord = await audioState(page)
-    expect(atWord.time).toBeGreaterThanOrEqual(2.89)
-    expect(atWord.time).toBeLessThan(3.2)
+    await expect.poll(seekedTo).toBeLessThan(3.2)
+    const atWord = await seekedTo()
+    expect(atWord).toBeGreaterThanOrEqual(2.89)
     const editor = page.getByLabel('片段的文字')
     await expect(editor).toBeFocused()
     expect(await editor.evaluate((t) => t.value.slice(t.selectionStart))).toMatch(/^進度。$|^度。$/)
     // 不改就按 Esc：回到原本的文字，正在唸的字照樣標出來
+    await page.locator('audio').evaluate((a, time) => {
+        a.pause()
+        a.currentTime = time
+    }, atWord)
     await editor.press('Escape')
     await expect(row(page, '大家早安').locator('.correction-word-active')).toHaveText(/進|度/)
     // 標點沒有逐字時間，不能點
