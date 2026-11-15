@@ -102,11 +102,13 @@ export function SegmentHistory({ segment, saving, singleSpeaker = false, actions
 
     const recordCount = loaded.history ? shownRecords(loaded.history, singleSpeaker).length : 0
     const hiddenCount = (loaded.history?.records.length ?? 0) - recordCount
+    const hidden = `${hiddenCount} 筆說話者的校正，整份當成同一位說話者時不列`
+    let summary = ""
+    if (loaded.history) summary = recordCount ? `：${recordCount} 筆校正，最上面是最新的` : `：只有 ${hidden}`
     return (
         <section aria-label="這個片段的歷程" style={PANEL_STYLE}>
             <div style={{ color: "#8888a8", fontSize: 12, lineHeight: "20px", paddingBottom: 4 }}>
-                歷程{loaded.history && `：${recordCount} 筆校正，最上面是最新的`}
-                {hiddenCount > 0 && `；另有 ${hiddenCount} 筆說話者的校正，整份當成同一位說話者時不列`}
+                歷程{summary}{recordCount > 0 && hiddenCount > 0 && `；另有 ${hidden}`}
             </div>
             {loaded.error && (
                 <div role="alert" style={{ display: "flex", alignItems: "center", columnGap: 4, color: "#ff7875", fontSize: 12, lineHeight: "24px" }}>

@@ -242,6 +242,11 @@ export function useSegmentCorrections(taskUuid, initialSegments, initialNextSpea
         dispatch({ type: 'discard', segKey });
       },
 
+      /** 收起「已存檔，復原」，不復原（例如切換整份當成同一位說話者之後）。 */
+      dismissUndo() {
+        setLastOperation(null);
+      },
+
       /** 「已存檔，復原」：收回剛存的那一次。 */
       async undo() {
         const operationId = latest.current.lastOperation?.id;

@@ -140,15 +140,18 @@ test('整份當成同一位說話者時不顯示說話者與相關操作；切�
     await speakerButton(page, 2).click()
     await pick(page, '這個片段改成', 'S1')
     await expect(rowAt(page, 2).getByRole('button', { name: '校正過' })).toBeVisible()
+    await expect(page.getByRole('status')).toContainText('已存檔')
 
     await switchSpeakerMode(page, '整份當成同一位')
 
+    // 剛才改說話者的「復原」也收起來：整份當成同一位時沒有說話者的操作
+    await expect(page.getByRole('status')).toHaveCount(0)
     await expect(page.locator('.correction-speaker')).toHaveCount(0)
     await expect(rowAt(page, 2).getByRole('button', { name: '校正過' })).toHaveCount(0)
     expect(writes(backend).at(-1)).toEqual(['PATCH', '', { single_speaker: true }])
     // 歷程還在，但不列說話者的校正，也不寫原始轉錄的說話者
     await rowAt(page, 2).getByRole('button', { name: '歷程' }).click()
-    await expect(rowAt(page, 2)).toContainText('另有 1 筆說話者的校正')
+    await expect(rowAt(page, 2)).toContainText('只有 1 筆說話者的校正，整份當成同一位說話者時不列')
     await expect(rowAt(page, 2)).not.toContainText(/S[01]/)
 
     // 設定存在任務上：重新整理之後還是整份當成同一位

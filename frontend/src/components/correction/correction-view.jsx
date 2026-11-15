@@ -140,7 +140,11 @@ export function CorrectionView({ transcript }) {
                         options={SPEAKER_MODES}
                         value={singleSpeaker ? "single" : "model"}
                         disabled={switching}
-                        onChange={(value) => switchTo(value === "single")}
+                        onChange={(value) => {
+                            // 切換之後收起「復原」：剛才換說話者的提示在整份當成同一位時不該留著
+                            actions.dismissUndo()
+                            switchTo(value === "single")
+                        }}
                     />
                 </div>
                 {/* 預設給校正後版本，另有原始轉錄（檔名多一段 .original） */}
