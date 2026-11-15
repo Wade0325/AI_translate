@@ -1,5 +1,6 @@
 import { renameExtension, uniqueFileNames } from './download';
 import { localDateKey } from './formatters';
+import { CORRECTED } from './transcriptVersions';
 
 /**
  * 轉錄頁與結果頁的下載：檔案卡上一個已完成的檔案要下載什麼內容、檔名叫什麼，拿不到內容時怎麼
@@ -20,9 +21,6 @@ import { localDateKey } from './formatters';
  * @typedef {{ type: 'success' | 'warning', content: string }} Notice 給 antd message 的訊息
  * @typedef {{ fileName: string, content: string }} Download
  */
-
-/** 檔案卡下載的版本：校正後版本（下載端點的 version，backend/app/services/output_format.py 的 Version）。 */
-const VERSION = 'corrected';
 
 /** 拿不到內容的原因各自怎麼說；句子的主詞是檔名（見 subjectOf），依這個順序排。 */
 const MISSING_TEXT = {
@@ -57,7 +55,7 @@ export function fetchTranscripts(files, format, api) {
 async function fetchOne(file, format, api) {
   if (!file.task_uuid) return { file, missing: 'no-task' };
   try {
-    const content = await api.history.downloadTranscript(file.task_uuid, format, { version: VERSION });
+    const content = await api.history.downloadTranscript(file.task_uuid, format, { version: CORRECTED });
     return content ? { file, content } : { file, missing: 'empty' };
   } catch (error) {
     if (error?.status !== 404) return { file, missing: 'failed' };

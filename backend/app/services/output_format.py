@@ -82,7 +82,8 @@ class Version(StrEnum):
     """下載哪一個版本（#346）。字串是下載端點的 ``version`` 參數，前端照它送，不要改既有的值。"""
 
     CORRECTED = "corrected"
-    """校正後版本：原始轉錄套上使用者所有的校正，刪掉的片段不在裡面。下載端點的預設。"""
+    """校正後版本：原始轉錄套上片段的校正（文字、說話者、刪掉的片段不在裡面）。下載端點的預設。
+    說話者名稱還沒寫進輸出，由 #359 加上。"""
     ORIGINAL = "original"
     """原始轉錄：校正之前由模型產生的版本，和校正做出來之前的下載逐位元組相同。"""
 
@@ -102,13 +103,14 @@ def for_task(
     db: Session,
     task: TranscriptionLog,
     fmt: OutputFormat,
-    version: Version = Version.ORIGINAL,
+    version: Version,
 ) -> Optional[str]:
-    """給定任務、輸出格式與版本，回傳檔案內容。
+    """給定任務、輸出格式與版本，回傳檔案內容。版本沒有預設值，呼叫的地方各自寫明（下載端點預設給
+    校正後版本，#346）。
 
     任務沒有轉錄結果（沒有片段，也沒有存下來的 LRC）時回傳 None；沒有片段的任務，存下來的
     LRC 解析不出任何一行時，SRT／VTT／TXT 是空字串。片段都沒有文字（校正後版本的片段全部刪掉）時，
-    LRC、SRT、TXT 是空字串，VTT 只有檔頭。
+    四種格式都是空字串，和 :func:`for_result` 相同（VTT 不只寫檔頭）。
 
     校正後版本的片段由 :meth:`CorrectionRepository.corrected_version` 算出，文字是空的（刪掉的）片段
     不產生行；沒有校正的任務兩個版本相同。說話者標記照任務記下的 Multi-Speaker 開關
@@ -117,8 +119,8 @@ def for_task(
     """
     segments = _segments(db, task, version)
     if segments:
-        labels = shows_speaker_labels(cast(Optional[bool], task.multi_speaker))
-        return _render(_lines(segments, labels=labels), fmt)
+        lines = _lines(segments, labels=shows_speaker_labels(cast(Optional[bool], task.multi_speaker)))
+        return _render(lines, fmt) if lines else ""
     stored_lrc = HistoryRepository().resolve_lrc_content(db, task, backfill=True)
     if not stored_lrc:
         return None
@@ -127,7 +129,7 @@ def for_task(
 
 def _segments(db: Session, task: TranscriptionLog, version: Version) -> List[Dict[str, Any]]:
     """這個版本的片段，形狀和 :meth:`TranscriptSegmentRepository.segments_for_task` 相同。"""
-    if version is Version.CORRECTED:
+    if version == Version.CORRECTED:
         return CorrectionRepository.corrected_version(db, task.task_uuid)
     return TranscriptSegmentRepository.segments_for_task(db, task.task_uuid)
 

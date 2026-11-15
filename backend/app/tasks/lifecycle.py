@@ -626,11 +626,14 @@ class TaskLifecycle:
 
 def completed_result(db: Session, task_uuid) -> Optional[dict]:
     """一個完成的任務完成時送給畫面的結果，從任務紀錄與片段重新產生（輸出格式模組），和完成時
-    廣播的相同；沒有紀錄、或紀錄不是完成時是 None。批次取回結果時用它，不另外存一份。"""
+    廣播的相同；沒有紀錄、或紀錄不是完成時是 None。批次取回結果時用它，不另外存一份。
+
+    四種輸出格式和下載端點的預設一樣是校正後版本（#346）：完成之後校正過的任務，取回時拿到的是改好的
+    內容，和之後下載的相同。還沒有校正時就是原始轉錄，和完成時廣播的相同。"""
     record = TranscriptionLogRepository().get(db, task_uuid)
     if record is None or record.status != TaskStatus.COMPLETED:
         return None
-    transcripts = {fmt.value: output_format.for_task(db, record, fmt) or ""
+    transcripts = {fmt.value: output_format.for_task(db, record, fmt, output_format.Version.CORRECTED) or ""
                    for fmt in output_format.OutputFormat}
     segments = TranscriptSegmentRepository.segments_for_task(db, record.task_uuid)
     return _completed_response(

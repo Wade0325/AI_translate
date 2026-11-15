@@ -480,15 +480,38 @@ class TestDownloadVersions:
         frozen = db_session.query(TranscriptionLog).filter_by(task_uuid=log.task_uuid).one().lrc_content
         assert frozen == "[00:01.00][S0] おはよう。"
 
-    def test_every_segment_deleted_has_nothing_to_download(self, client: TestClient, db_session: Session):
+    @pytest.mark.parametrize("fmt", ["lrc", "srt", "vtt", "txt"])
+    def test_every_segment_deleted_has_nothing_to_download(
+            self, client: TestClient, db_session: Session, fmt):
+        # 四種格式一樣：VTT 不會只下載到檔頭
         log = _with_segments(db_session, _create_log(db_session), SEGMENTS)
         CorrectionRepository.record_operation(db_session, log.task_uuid, [
             Correction(seg["seg_key"], CorrectionField.TEXT, "") for seg in SEGMENTS])
 
-        response = _download(client, log, "srt")
+        response = _download(client, log, fmt)
         assert response.status_code == 404
         assert response.json()["detail"] == "無法產生此格式的字幕內容"
-        assert _download(client, log, "srt", "original").text == FROM_SEGMENTS["srt"]
+        assert _download(client, log, fmt, "original").text == FROM_SEGMENTS[fmt]
+
+    def test_corrected_text_no_longer_matching_word_timings_is_one_subtitle(
+            self, client: TestClient, db_session: Session):
+        # 逐字時間是原始轉錄的：改過文字的片段對不上，校正後版本整段一則字幕，不會照原始轉錄的詞
+        # 拆出原來的文字（重新對齊逐字時間在 #357）。原始轉錄照樣拆成三則
+        text = "今日はゆっくり休んでくださいね、ずっと頑張ってきたんだから、少しくらい甘えてもいいんですよ。"
+        words = [{"text": w, "start": a, "end": b} for w, a, b in (
+            ("今", 10.0, 10.25), ("日", 10.25, 10.5), ("はゆっくり", 10.5, 11.0), ("休", 11.0, 11.25),
+            ("んでくださいね", 11.25, 12.0), ("ずっと", 12.5, 12.75), ("頑", 12.75, 13.0),
+            ("張", 13.0, 13.25), ("ってきたんだから", 13.25, 14.0), ("少", 14.5, 14.75),
+            ("しくらい", 14.75, 15.0), ("甘", 15.0, 15.25), ("えてもいいんですよ", 15.25, 16.5))]
+        segment = {"seg_key": "0000", "seq": 0, "start": 10.0, "end": 17.0, "speaker": "S0",
+                   "text": text, "words": words}
+        log = _with_segments(db_session, _create_log(db_session), [segment])
+        corrected = text.replace("今日は", "今日こそ")
+        CorrectionRepository.record_operation(
+            db_session, log.task_uuid, [Correction("0000", CorrectionField.TEXT, corrected)])
+
+        assert _download(client, log, "srt").text == f"1\n00:00:10,000 --> 00:00:17,000\n[S0] {corrected}\n"
+        assert _download(client, log, "srt", "original").text.count("-->") == 3
 
     def test_corrected_version_follows_the_multi_speaker_switch_too(
             self, client: TestClient, db_session: Session):

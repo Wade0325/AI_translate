@@ -84,7 +84,7 @@ def _download_filename(original_filename: Optional[str], fmt: str, version: Vers
     """下載的檔名：音檔的主檔名換上輸出格式的副檔名。原始轉錄多一段 ``.original``（#346），例如
     ``會議.srt`` 是校正後版本、``會議.original.srt`` 是原始轉錄，放在同一個資料夾不會搞混。"""
     stem = Path(original_filename or "transcript").stem
-    marker = ".original" if version is Version.ORIGINAL else ""
+    marker = ".original" if version == Version.ORIGINAL else ""
     return f"{stem}{marker}.{fmt}"
 
 
