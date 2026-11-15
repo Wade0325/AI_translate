@@ -107,7 +107,8 @@ const EMPTY_STATS = {
 
 /**
  * 沒有另外指定時各端點的回應。鍵是「方法 路徑」（路徑不含 /api/v1 與查詢字串），值是 JSON
- * 內容，或 {@link reply} 包好的回應，或收到請求後才決定回應的函式。
+ * 內容，或 {@link reply} 包好的回應，或收到請求後才決定回應的函式。路徑裡可以有 :名稱 這樣的參數
+ * （例如 /history/:task_uuid），比對到的值放在請求的 params 給函式用；完全相同的鍵優先。
  */
 const DEFAULT_ROUTES = {
     'GET /providers': PROVIDERS,
@@ -125,6 +126,8 @@ const DEFAULT_ROUTES = {
     'GET /history/stats': EMPTY_STATS,
     'GET /history': { items: [], total: 0, page: 1, page_size: 10, total_pages: 1 },
     'GET /history/active': [],
+    // 下載端點（#346）：沒有校正的任務，校正後版本（預設）和原始轉錄都是完成時的內容
+    'GET /history/:task_uuid/download/:fmt': ({ params }) => TRANSCRIPTS[params.fmt],
     'GET /batch/tasks': [],
     // 去靜音與切點預覽是開發者工具，預設沒開（#13 Q6）
     'GET /vad/enabled': { enabled: false },
@@ -140,6 +143,24 @@ function toFulfill(response) {
     return typeof body === 'string'
         ? { status, contentType: 'text/plain; charset=utf-8', body }
         : { status, json: body }
+}
+
+/**
+ * 請求（「方法 路徑」）對到的端點與路徑參數：完全相同的鍵優先，再找有 :名稱 參數的鍵；都沒有時是 null。
+ */
+function findRoute(table, key) {
+    if (key in table) return { handler: table[key], params: {} }
+    for (const [pattern, handler] of Object.entries(table)) {
+        if (!pattern.includes('/:')) continue
+        const names = []
+        const source = pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/:(\w+)/g, (_, name) => {
+            names.push(name)
+            return '([^/]+)'
+        })
+        const match = new RegExp(`^${source}$`).exec(key)
+        if (match) return { handler, params: Object.fromEntries(names.map((name, i) => [name, decodeURIComponent(match[i + 1])])) }
+    }
+    return null
 }
 
 /** 請求的內容：JSON 就解析，其他（例如上傳音檔的 multipart）照原樣；沒有內容時是 null。 */
@@ -253,13 +274,14 @@ export async function mockBackend(page, {
         }
         backend.requests.push(entry)
 
-        if (!(key in table)) {
+        const matched = findRoute(table, key)
+        if (!matched) {
             backend.unhandled.push(key)
             await route.fulfill({ status: 404, json: { detail: `假後端沒有設定 ${key}` } })
             return
         }
-        const handler = table[key]
-        const response = typeof handler === 'function' ? await handler(entry) : handler
+        const { handler, params } = matched
+        const response = typeof handler === 'function' ? await handler({ ...entry, params }) : handler
         await route.fulfill(toFulfill(response))
     })
 

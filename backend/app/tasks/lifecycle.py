@@ -663,19 +663,22 @@ class TaskLifecycle:
 
 def completed_result(db: Session, task_uuid) -> Optional[dict]:
     """一個完成的任務完成時送給畫面的結果，從任務紀錄與片段重新產生（輸出格式模組），和完成時
-    廣播的相同；沒有紀錄、或紀錄不是完成時是 None。批次取回結果時用它，不另外存一份。"""
+    廣播的相同；沒有紀錄、或紀錄不是完成時是 None。批次取回結果時用它，不另外存一份。
+
+    四種輸出格式和下載端點的預設一樣是校正後版本（#346）：完成之後校正過的任務，取回時拿到的是改好的
+    內容，和之後下載的相同。還沒有校正時就是原始轉錄，和完成時廣播的相同。"""
     record = TranscriptionLogRepository().get(db, task_uuid)
     if record is None or record.status != TaskStatus.COMPLETED:
         return None
-    transcripts = {fmt.value: output_format.for_task(db, record, fmt) or ""
+    version = output_format.Version.CORRECTED
+    transcripts = {fmt.value: output_format.for_task(db, record, fmt, version) or ""
                    for fmt in output_format.OutputFormat}
-    segments = TranscriptSegmentRepository.segments_for_task(db, record.task_uuid)
-    labels = output_format.task_speaker_labels(record)
     return _completed_response(
         record.task_uuid, transcripts, tokens=record.total_tokens or 0, cost=record.cost or 0.0,
         model=record.model_used or "", source_language=record.source_language or "",
         duration=record.audio_duration_seconds or 0.0,
-        speaker_count=output_format.speakers_in_output(segments, labels),
+        # 說話者數目和四種格式對著同一個版本算
+        speaker_count=output_format.speakers_in_task(db, record, version),
         selected_speaker_count=speakers.from_column(cast(Optional[str], record.speaker_count)),
         tail_loss_from=cast(Optional[float], record.tail_loss_from_seconds))
 

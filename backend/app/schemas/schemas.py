@@ -162,6 +162,8 @@ class HistoryLogResponse(BaseModel):
     tail_loss_from_seconds: Optional[float] = None
     # 能不能校正（app.services.correctability）：History 照它決定要不要給「校正」的入口（#347）
     correctable: bool = False
+    # 有沒有校正紀錄（改回原樣的也算）：History 的下載選單照它決定要不要多一組「原始轉錄」（#346）
+    has_corrections: bool = False
 
     model_config = ConfigDict(from_attributes=True)
 

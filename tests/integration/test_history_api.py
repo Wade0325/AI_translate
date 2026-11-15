@@ -9,12 +9,14 @@
 import json
 import uuid
 from datetime import datetime, timedelta
+from typing import Optional
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
 from app.database.models import BatchJob, TranscriptionLog
+from app.repositories.correction_repository import Correction, CorrectionField, CorrectionRepository
 from app.repositories.transcript_segment_repository import TranscriptSegmentRepository
 
 
@@ -300,6 +302,12 @@ FROM_SEGMENTS = {
 }
 
 
+def _with_segments(db: Session, log: TranscriptionLog, segments=SEGMENTS) -> TranscriptionLog:
+    TranscriptSegmentRepository.replace_for_task(db, log.task_uuid, segments)
+    db.commit()
+    return log
+
+
 class TestDownloadFromSegments:
     @pytest.mark.parametrize("fmt", ["lrc", "srt", "vtt", "txt"])
     def test_every_format_comes_from_segments_not_the_stored_lrc(
@@ -372,6 +380,200 @@ class TestDownloadWithoutSegments:
         response = client.get(f"/api/v1/history/{log.task_uuid}/download/srt")
         assert response.status_code == 404
         assert response.json()["detail"] == "無法產生此格式的字幕內容"
+
+
+# ─── 下載的版本（#346）────────────────────────────────────────────────────────
+# 下載預設給校正後版本，version=original 給原始轉錄（ADR 0011：校正後版本由原始轉錄加校正紀錄算出，
+# 凍結的原始轉錄副本不回寫）。寫入校正的端點（#341）還沒做好，校正直接用 #340 的 repository 記
+
+FOUR_SEGMENTS = [
+    {"seg_key": "0000", "start": 1.0, "end": 2.0, "speaker": "S0", "text": "おはよう。"},
+    {"seg_key": "0001", "start": 3.0, "end": 4.0, "speaker": "S1", "text": "えーと。"},
+    {"seg_key": "0002", "start": 5.0, "end": 6.0, "speaker": "S1", "text": "こんにちは。"},
+    {"seg_key": "0003", "start": 7.0, "end": 8.0, "speaker": "S0", "text": "さようなら。"},
+]
+# 原始轉錄：和這張之前的下載逐位元組相同。片段沒有逐字時間，一段一行，在片段的結束時結束
+FOUR_ORIGINAL = {
+    "lrc": ("[00:01.00][S0] おはよう。\n[00:03.00][S1] えーと。\n"
+            "[00:05.00][S1] こんにちは。\n[00:07.00][S0] さようなら。"),
+    "srt": ("1\n00:00:01,000 --> 00:00:02,000\n[S0] おはよう。\n\n"
+            "2\n00:00:03,000 --> 00:00:04,000\n<font color=\"#FFDD55\">[S1] えーと。</font>\n\n"
+            "3\n00:00:05,000 --> 00:00:06,000\n<font color=\"#FFDD55\">[S1] こんにちは。</font>\n\n"
+            "4\n00:00:07,000 --> 00:00:08,000\n[S0] さようなら。\n"),
+    "vtt": ("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n[S0] おはよう。\n\n"
+            "00:00:03.000 --> 00:00:04.000\n<c.yellow>[S1] えーと。</c>\n\n"
+            "00:00:05.000 --> 00:00:06.000\n<c.yellow>[S1] こんにちは。</c>\n\n"
+            "00:00:07.000 --> 00:00:08.000\n[S0] さようなら。\n"),
+    "txt": "[S0] おはよう。\n[S1] えーと。\n[S1] こんにちは。\n[S0] さようなら。",
+}
+# 校正後版本：0000 改了文字，0001 刪掉了（不出現，SRT 的編號照樣連續），0002 的說話者改成 S2
+# （顏色跟著說話者編號換成青色）
+FOUR_CORRECTED = {
+    "lrc": "[00:01.00][S0] おはようございます。\n[00:05.00][S2] こんにちは。\n[00:07.00][S0] さようなら。",
+    "srt": ("1\n00:00:01,000 --> 00:00:02,000\n[S0] おはようございます。\n\n"
+            "2\n00:00:05,000 --> 00:00:06,000\n<font color=\"#66CCFF\">[S2] こんにちは。</font>\n\n"
+            "3\n00:00:07,000 --> 00:00:08,000\n[S0] さようなら。\n"),
+    "vtt": ("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n[S0] おはようございます。\n\n"
+            "00:00:05.000 --> 00:00:06.000\n<c.cyan>[S2] こんにちは。</c>\n\n"
+            "00:00:07.000 --> 00:00:08.000\n[S0] さようなら。\n"),
+    "txt": "[S0] おはようございます。\n[S2] こんにちは。\n[S0] さようなら。",
+}
+FOUR_CORRECTIONS = [
+    Correction("0000", CorrectionField.TEXT, "おはようございます。"),
+    Correction("0001", CorrectionField.TEXT, ""),
+    Correction("0002", CorrectionField.SPEAKER, "S2"),
+]
+
+
+def _download(client: TestClient, log: TranscriptionLog, fmt: str, version: Optional[str] = None):
+    params = {"version": version} if version else {}
+    return client.get(f"/api/v1/history/{log.task_uuid}/download/{fmt}", params=params)
+
+
+def _corrected_task(db: Session, **kwargs) -> TranscriptionLog:
+    """四個片段的任務，記了 FOUR_CORRECTIONS 這一次操作。"""
+    log = _with_segments(db, _create_log(db, **kwargs), FOUR_SEGMENTS)
+    CorrectionRepository.record_operation(db, log.task_uuid, FOUR_CORRECTIONS)
+    return log
+
+
+class TestDownloadVersions:
+    @pytest.mark.parametrize("fmt", ["lrc", "srt", "vtt", "txt"])
+    def test_corrected_version_is_the_default(self, client: TestClient, db_session: Session, fmt):
+        log = _corrected_task(db_session)
+
+        for version in (None, "corrected"):
+            response = _download(client, log, fmt, version)
+            assert response.status_code == 200
+            assert response.text == FOUR_CORRECTED[fmt]
+
+    @pytest.mark.parametrize("fmt", ["lrc", "srt", "vtt", "txt"])
+    def test_original_version_is_the_same_as_before_corrections(
+            self, client: TestClient, db_session: Session, fmt):
+        log = _corrected_task(db_session)
+
+        response = _download(client, log, fmt, "original")
+        assert response.status_code == 200
+        assert response.text == FOUR_ORIGINAL[fmt]
+
+    @pytest.mark.parametrize("version", [None, "corrected", "original"])
+    @pytest.mark.parametrize("fmt", ["lrc", "srt", "vtt", "txt"])
+    def test_task_without_corrections_has_the_same_content_in_both_versions(
+            self, client: TestClient, db_session: Session, fmt, version):
+        log = _with_segments(db_session, _create_log(db_session), FOUR_SEGMENTS)
+
+        assert _download(client, log, fmt, version).text == FOUR_ORIGINAL[fmt]
+
+    @pytest.mark.parametrize("version", [None, "corrected", "original"])
+    @pytest.mark.parametrize("fmt", ["lrc", "srt", "vtt", "txt"])
+    def test_task_without_segments_gives_the_stored_lrc_in_both_versions(
+            self, client: TestClient, db_session: Session, fmt, version):
+        # 片段上線前的任務不能校正，兩個版本都是從存下來的 LRC 轉換的內容
+        log = _create_log(db_session, lrc_content=STORED_LRC)
+
+        assert _download(client, log, fmt, version).text == FROM_STORED_LRC[fmt]
+
+    def test_corrections_do_not_change_the_frozen_copy(self, client: TestClient, db_session: Session):
+        log = _corrected_task(db_session, lrc_content="[00:01.00][S0] おはよう。")
+
+        db_session.expire_all()
+        frozen = db_session.query(TranscriptionLog).filter_by(task_uuid=log.task_uuid).one().lrc_content
+        assert frozen == "[00:01.00][S0] おはよう。"
+
+    @pytest.mark.parametrize("fmt", ["lrc", "srt", "vtt", "txt"])
+    def test_every_segment_deleted_has_nothing_to_download(
+            self, client: TestClient, db_session: Session, fmt):
+        # 四種格式一樣：VTT 不會只下載到檔頭
+        log = _with_segments(db_session, _create_log(db_session), SEGMENTS)
+        CorrectionRepository.record_operation(db_session, log.task_uuid, [
+            Correction(seg["seg_key"], CorrectionField.TEXT, "") for seg in SEGMENTS])
+
+        response = _download(client, log, fmt)
+        assert response.status_code == 404
+        assert response.json()["detail"] == "無法產生此格式的字幕內容"
+        assert _download(client, log, fmt, "original").text == FROM_SEGMENTS[fmt]
+
+    def test_corrected_text_no_longer_matching_word_timings_is_one_subtitle(
+            self, client: TestClient, db_session: Session):
+        # 逐字時間是原始轉錄的：改過文字的片段對不上，校正後版本整段一則字幕，不會照原始轉錄的詞
+        # 拆出原來的文字（重新對齊逐字時間在 #357）。原始轉錄照樣拆成三則
+        text = "今日はゆっくり休んでくださいね、ずっと頑張ってきたんだから、少しくらい甘えてもいいんですよ。"
+        words = [{"text": w, "start": a, "end": b} for w, a, b in (
+            ("今", 10.0, 10.25), ("日", 10.25, 10.5), ("はゆっくり", 10.5, 11.0), ("休", 11.0, 11.25),
+            ("んでくださいね", 11.25, 12.0), ("ずっと", 12.5, 12.75), ("頑", 12.75, 13.0),
+            ("張", 13.0, 13.25), ("ってきたんだから", 13.25, 14.0), ("少", 14.5, 14.75),
+            ("しくらい", 14.75, 15.0), ("甘", 15.0, 15.25), ("えてもいいんですよ", 15.25, 16.5))]
+        segment = {"seg_key": "0000", "seq": 0, "start": 10.0, "end": 17.0, "speaker": "S0",
+                   "text": text, "words": words}
+        log = _with_segments(db_session, _create_log(db_session), [segment])
+        corrected = text.replace("今日は", "今日こそ")
+        CorrectionRepository.record_operation(
+            db_session, log.task_uuid, [Correction("0000", CorrectionField.TEXT, corrected)])
+
+        assert _download(client, log, "srt").text == f"1\n00:00:10,000 --> 00:00:17,000\n[S0] {corrected}\n"
+        assert _download(client, log, "srt", "original").text.count("-->") == 3
+
+    def test_corrected_version_follows_the_multi_speaker_switch_too(
+            self, client: TestClient, db_session: Session):
+        # 帶不帶說話者標記照當時的規則（Multi-Speaker 開關），對著被下載的那個版本算：關著時校正後
+        # 版本一樣不帶，也不上色
+        log = _corrected_task(db_session, multi_speaker=False)
+
+        assert _download(client, log, "txt").text == "おはようございます。\nこんにちは。\nさようなら。"
+        assert "color" not in _download(client, log, "srt").text
+
+    def test_labels_follow_the_speakers_left_in_the_corrected_version(
+            self, client: TestClient, db_session: Session):
+        # 照模型判斷的任務（#352）：輸出有兩位以上的說話者才帶標記，對著被下載的那個版本算。校正把 S1 的
+        # 兩段改成 S0 之後只剩一位，校正後版本不帶也不上色；原始轉錄照樣有兩位、帶標記
+        log = _with_segments(db_session, _create_log(db_session, speaker_count="auto"), FOUR_SEGMENTS)
+        CorrectionRepository.record_operation(db_session, log.task_uuid, [
+            Correction("0001", CorrectionField.SPEAKER, "S0"),
+            Correction("0002", CorrectionField.SPEAKER, "S0")])
+
+        assert _download(client, log, "txt").text == "おはよう。\nえーと。\nこんにちは。\nさようなら。"
+        assert "color" not in _download(client, log, "srt").text
+        assert _download(client, log, "lrc", "original").text == FOUR_ORIGINAL["lrc"]
+
+    def test_completed_result_counts_speakers_in_the_corrected_version(self, db_session: Session):
+        # 批次取回的結果是校正後版本（#346）：結果頁的說話者數目和四種格式對著同一個版本算（#352）
+        from app.tasks.lifecycle import completed_result
+
+        log = _with_segments(db_session, _create_log(db_session, speaker_count="auto"), FOUR_SEGMENTS)
+        CorrectionRepository.record_operation(db_session, log.task_uuid, [
+            Correction("0001", CorrectionField.SPEAKER, "S0"),
+            Correction("0002", CorrectionField.SPEAKER, "S0")])
+
+        result = completed_result(db_session, log.task_uuid)
+        assert result is not None
+        assert (result["speaker_count"], result["selected_speaker_count"]) == (1, "auto")
+        assert "[S" not in result["transcripts"]["lrc"]
+
+    def test_unknown_version_is_rejected(self, client: TestClient, db_session: Session):
+        log = _corrected_task(db_session)
+
+        assert _download(client, log, "srt", "latest").status_code == 422
+
+
+class TestDownloadFilename:
+    @pytest.mark.parametrize("version, filename", [
+        (None, "%E6%9C%83%E8%AD%B0.srt"),
+        ("corrected", "%E6%9C%83%E8%AD%B0.srt"),
+        ("original", "%E6%9C%83%E8%AD%B0.original.srt"),
+    ])
+    def test_original_version_has_original_before_the_extension(
+            self, client: TestClient, db_session: Session, version, filename):
+        # 會議.srt 是校正後版本、會議.original.srt 是原始轉錄；中文檔名照原本的寫法（RFC 5987）編碼
+        log = _corrected_task(db_session, original_filename="會議.mp3")
+
+        response = _download(client, log, "srt", version)
+        assert response.headers["content-disposition"] == f"attachment; filename*=UTF-8''{filename}"
+
+    def test_task_without_a_filename_is_named_transcript(self, client: TestClient, db_session: Session):
+        log = _corrected_task(db_session, original_filename=None)
+
+        response = _download(client, log, "txt", "original")
+        assert response.headers["content-disposition"] == "attachment; filename*=UTF-8''transcript.original.txt"
 
 
 # ─── 用量彙總 API ─────────────────────────────────────────────────────────────
@@ -452,12 +654,6 @@ class TestHistoryUsage:
 # 能校正的任務：已完成、有片段，而且不是轉錄並翻譯的任務（#345 第 1 節）。History 照這個值決定要不要
 # 顯示「校正」按鈕
 
-def _with_segments(db: Session, log: TranscriptionLog) -> TranscriptionLog:
-    TranscriptSegmentRepository.replace_for_task(db, log.task_uuid, SEGMENTS)
-    db.commit()
-    return log
-
-
 def _listed(client: TestClient, log: TranscriptionLog) -> dict:
     """History 清單裡這個任務的那一筆；用檔名搜尋，不受其他測試留下的紀錄影響。"""
     items = client.get("/api/v1/history", params={"keyword": log.original_filename}).json()["items"]
@@ -510,3 +706,40 @@ class TestCorrectable:
     def test_detail_reports_it_too(self, client: TestClient, db_session: Session):
         log = _with_segments(db_session, _create_log(db_session, original_filename="detail-347.wav"))
         assert client.get(f"/api/v1/history/{log.task_uuid}").json()["correctable"] is True
+
+
+# ─── 有沒有校正（#346）────────────────────────────────────────────────────────
+# History 的下載選單照這個值決定要不要多一組「原始轉錄」：有校正紀錄的任務才有
+
+class TestHasCorrections:
+    def test_task_without_correction_records_has_none(self, client: TestClient, db_session: Session):
+        log = _with_segments(db_session, _create_log(db_session, original_filename="plain-346.wav"))
+        assert _listed(client, log)["has_corrections"] is False
+
+    def test_task_with_a_correction_has_corrections(self, client: TestClient, db_session: Session):
+        log = _corrected_task(db_session, original_filename="corrected-346.wav")
+        assert _listed(client, log)["has_corrections"] is True
+
+    def test_correction_changed_back_still_counts(self, client: TestClient, db_session: Session):
+        # 改回和原始轉錄相同之後，校正紀錄還在（ADR 0011：只增不改），下載選單照樣有原始轉錄
+        log = _with_segments(db_session, _create_log(db_session, original_filename="reverted-346.wav"))
+        CorrectionRepository.record_operation(
+            db_session, log.task_uuid, [Correction("0000", CorrectionField.TEXT, "改過")])
+        CorrectionRepository.record_operation(
+            db_session, log.task_uuid, [Correction("0000", CorrectionField.TEXT, SEGMENTS[0]["text"])])
+
+        assert _listed(client, log)["has_corrections"] is True
+
+    def test_each_task_in_a_page_gets_its_own_value(self, client: TestClient, db_session: Session):
+        corrected = _corrected_task(db_session, original_filename="page-346-a.wav")
+        plain = _with_segments(db_session, _create_log(db_session, original_filename="page-346-b.wav"))
+        bare = _create_log(db_session, original_filename="page-346-c.wav", lrc_content=STORED_LRC)
+
+        items = client.get("/api/v1/history", params={"keyword": "page-346"}).json()["items"]
+        values = {i["task_uuid"]: i["has_corrections"] for i in items}
+        assert values == {str(corrected.task_uuid): True, str(plain.task_uuid): False,
+                          str(bare.task_uuid): False}
+
+    def test_detail_reports_it_too(self, client: TestClient, db_session: Session):
+        log = _corrected_task(db_session, original_filename="detail-346.wav")
+        assert client.get(f"/api/v1/history/{log.task_uuid}").json()["has_corrections"] is True

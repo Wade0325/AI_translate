@@ -3288,10 +3288,10 @@ class TestCompletingTheSameTaskAgain:
         assert (second["total_tokens"], second["cost"]) == (480_000, pytest.approx(0.60))
         assert second["service_tier_used"] == "standard"
         assert second["completed_at"] > first["completed_at"]
-        # 送給畫面的是留下來的結果，不是這次沒有存下來的
+        # 送給畫面的是留下來的結果，不是這次沒有存下來的；和下載一樣是校正後版本（#346）
         assert_broadcast_is_the_download(api, done)
         lrc = done["result"]["transcripts"]["lrc"]
-        assert all(text in lrc for text in FIRST_TEXTS)
+        assert all(segment["text"] in lrc for segment in version_and_records[0])
         assert not any(text in lrc for text in SECOND_TEXTS)
         assert done["result"]["tail_loss_from_seconds"] == pytest.approx(6.0)
         assert (done["result"]["tokens_used"], done["result"]["cost"]) == (480_000, pytest.approx(0.60))

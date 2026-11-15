@@ -23,7 +23,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, Dict, List, Optional, Sequence, Tuple, cast
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple, cast
 
 from sqlalchemy import update
 from sqlalchemy.orm import Session
@@ -303,6 +303,21 @@ class CorrectionRepository:
                            CorrectionRecord.field == CorrectionField.SPEAKER_NAME.value)
         names = {target: _new(r) for (_, target), r in _latest(records).items()}
         return {target: name for target, name in names.items() if name}
+
+    @staticmethod
+    def tasks_with_records(db: Session, task_uuids: Iterable[Any]) -> Set[str]:
+        """這些任務裡有校正紀錄的那些（任務紀錄 id 的字串），改回原樣、復原過的也算。一次查完，
+        History 的一頁不會一個任務查一次（#346：有校正的任務，下載選單多一組原始轉錄）。"""
+        uuids = [u for u in (coerce_uuid(t) for t in task_uuids) if u is not None]
+        if not uuids:
+            return set()
+        rows = (
+            db.query(CorrectionRecord.task_uuid)
+            .filter(CorrectionRecord.task_uuid.in_(uuids))
+            .distinct()
+            .all()
+        )
+        return {str(row[0]) for row in rows}
 
     @staticmethod
     def touched_by_user(db: Session, task_uuid) -> bool:

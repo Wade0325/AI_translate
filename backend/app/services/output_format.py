@@ -28,7 +28,9 @@
 
 除了交界的跳動，這些差異都出在舊的處理，這裡的結果比較準。
 
-版本目前只有原始轉錄，校正後版本留給 v0.2。
+版本有兩個（#346，見 :class:`Version`）：原始轉錄從片段產生；校正後版本從校正紀錄的 repository 算出的
+校正後版本產生（ADR 0011，下載、校正頁與匯出都讀同一處），刪掉的片段略過。沒有校正的任務兩個版本相同。
+沒有片段的任務不能校正，兩個版本都是從存下來的 LRC 轉換的內容。凍結的原始轉錄副本不回寫。
 
 四種格式由同一串行產生，帶不帶說話者標記照任務的說話者人數（#351 第 3 點，規則見
 :class:`SpeakerLabels`）：帶時寫成「[S0] 文字」；不帶時四種格式都不寫，片段照樣存說話者編號，
@@ -61,6 +63,7 @@ from sqlalchemy.orm import Session
 
 from app.core.speaker_count import SpeakerCount, from_column, is_single
 from app.database.models import TranscriptionLog
+from app.repositories.correction_repository import CorrectionRepository
 from app.repositories.history_repository import HistoryRepository
 from app.repositories.transcript_segment_repository import TranscriptSegmentRepository
 from app.services.transcription.models import TranscriptionTaskResult
@@ -77,8 +80,13 @@ class OutputFormat(StrEnum):
 
 
 class Version(StrEnum):
+    """下載哪一個版本（#346）。字串是下載端點的 ``version`` 參數，前端照它送，不要改既有的值。"""
+
+    CORRECTED = "corrected"
+    """校正後版本：原始轉錄套上片段的校正（文字、說話者、刪掉的片段不在裡面）。下載端點的預設。
+    說話者名稱還沒寫進輸出，由 #359 加上。"""
     ORIGINAL = "original"
-    """原始轉錄。校正後版本（v0.2）加在這裡。"""
+    """原始轉錄：校正之前由模型產生的版本，和校正做出來之前的下載逐位元組相同。"""
 
 
 class SpeakerLabels(StrEnum):
@@ -108,23 +116,36 @@ def for_task(
     db: Session,
     task: TranscriptionLog,
     fmt: OutputFormat,
-    version: Version = Version.ORIGINAL,
+    version: Version,
 ) -> Optional[str]:
-    """給定任務、輸出格式與版本，回傳檔案內容。
+    """給定任務、輸出格式與版本，回傳檔案內容。版本沒有預設值，呼叫的地方各自寫明（下載端點預設給
+    校正後版本，#346）。
 
     任務沒有轉錄結果（沒有片段，也沒有存下來的 LRC）時回傳 None；沒有片段的任務，存下來的
-    LRC 解析不出任何一行時，SRT／VTT／TXT 是空字串。版本目前只有原始轉錄一種。
+    LRC 解析不出任何一行時，SRT／VTT／TXT 是空字串。片段都沒有文字（校正後版本的片段全部刪掉）時，
+    四種格式都是空字串，和 :func:`for_result` 相同（VTT 不只寫檔頭）。
 
-    說話者標記照任務記下的說話者人數（:func:`speaker_labels_for`）。沒有片段的任務都在 Multi-Speaker
-    開關做出來之前，照以前從存下來的 LRC 轉換：任務完成時一定存了片段（見 :mod:`app.tasks.lifecycle`）。
+    校正後版本的片段由 :meth:`CorrectionRepository.corrected_version` 算出，文字是空的（刪掉的）片段
+    不產生行；沒有校正的任務兩個版本相同。說話者標記照任務記下的說話者人數（:func:`speaker_labels_for`），
+    對著被下載的那個版本的片段算（#346）：例如照模型判斷的任務，校正後只剩一位說話者時就不帶。沒有片段的
+    任務都在 Multi-Speaker 開關做出來之前，照以前從存下來的 LRC 轉換，兩個版本相同：任務完成時一定存了
+    片段（見 :mod:`app.tasks.lifecycle`）。
     """
-    segments = TranscriptSegmentRepository.segments_for_task(db, task.task_uuid)
+    segments = _segments(db, task, version)
     if segments:
-        return _render(_labelled_lines(segments, task_speaker_labels(task)), fmt)
+        lines = _labelled_lines(segments, task_speaker_labels(task))
+        return _render(lines, fmt) if lines else ""
     stored_lrc = HistoryRepository().resolve_lrc_content(db, task, backfill=True)
     if not stored_lrc:
         return None
     return getattr(convert_from_lrc(stored_lrc), fmt.value)
+
+
+def _segments(db: Session, task: TranscriptionLog, version: Version) -> List[Dict[str, Any]]:
+    """這個版本的片段，形狀和 :meth:`TranscriptSegmentRepository.segments_for_task` 相同。"""
+    if version == Version.CORRECTED:
+        return CorrectionRepository.corrected_version(db, task.task_uuid)
+    return TranscriptSegmentRepository.segments_for_task(db, task.task_uuid)
 
 
 def for_result(result: TranscriptionTaskResult, *,
@@ -166,6 +187,12 @@ def task_speaker_labels(task: TranscriptionLog) -> SpeakerLabels:
     """任務紀錄的說話者標記規則（:func:`speaker_labels_for`）。"""
     return speaker_labels_for(from_column(cast(Optional[str], task.speaker_count)),
                               cast(Optional[bool], task.multi_speaker))
+
+
+def speakers_in_task(db: Session, task: TranscriptionLog, version: Version) -> int:
+    """這個任務的這個版本有幾位說話者（:func:`speakers_in_output`），照任務的說話者標記規則，對著和
+    :func:`for_task` 同一個版本的片段算。"""
+    return speakers_in_output(_segments(db, task, version), task_speaker_labels(task))
 
 
 def speakers_in_output(segments: Sequence[Mapping[str, Any]], rule: SpeakerLabels) -> int:
