@@ -98,14 +98,25 @@ export function useSegmentCorrections(taskUuid, initialSegments) {
 
     const saving = (segKey) => latest.current.saves[segKey]?.status === 'saving';
 
-    /** 復原一次操作，換上那次操作改到的片段的新內容；回傳復原端點的回應。 */
-    const undoOperation = async (operationId) => {
-      const result = await api.transcripts.undo(taskUuid, operationId);
-      applySegments(result.segments);
-      // 正在改的片段被復原了：照復原之後的內容，不把改之前打的字存回去
-      const editingKey = latest.current.editing?.segKey;
-      if (editingKey && result.segments.some((s) => s.seg_key === editingKey)) setEditing(null);
-      return result;
+    /**
+     * 復原一次操作，換上那次操作改到的片段的新內容，結果照 messageOf 寫在頁面上方。回傳復原端點的回應；
+     * 沒有復原（連不上、被擋下）時寫原因，回傳 null。
+     */
+    const undoOperation = async (operationId, messageOf) => {
+      setLastOperation(null);
+      try {
+        const result = await api.transcripts.undo(taskUuid, operationId);
+        applySegments(result.segments);
+        // 正在改的片段被復原了：照復原之後的內容，不把改之前打的字存回去
+        const editingKey = latest.current.editing?.segKey;
+        if (editingKey && result.segments.some((s) => s.seg_key === editingKey)) setEditing(null);
+        const { type, content } = messageOf(result);
+        message[type](content);
+        return result;
+      } catch (error) {
+        message.error(`沒有復原：${saveFailureMessage(error)}`);
+        return null;
+      }
     };
 
     /** 這個片段正在改時，結束改（不存）：在同一列按了刪除、還原或回到原始轉錄，以那個動作為準。 */
@@ -162,8 +173,8 @@ export function useSegmentCorrections(taskUuid, initialSegments) {
         send(segKey, request);
       },
 
-      /** 讀一個片段的歷程（#355）：它的每一筆校正紀錄（舊的在前）與原始轉錄。 */
-      history(segKey) {
+      /** 讀一個片段的校正紀錄（#355 的歷程）：每一筆（舊的在前）與原始轉錄。 */
+      correctionRecords(segKey) {
         return api.transcripts.correctionRecords(taskUuid, segKey);
       },
 
@@ -172,15 +183,8 @@ export function useSegmentCorrections(taskUuid, initialSegments) {
        * 整批復原本身也是一次操作，存完一樣出現「已存檔，復原」。
        */
       async undoBulk(operationId) {
-        setLastOperation(null);
-        try {
-          const result = await undoOperation(operationId);
-          const { type, content } = bulkUndoMessage(result);
-          message[type](content);
-          if (result.operation_id) setLastOperation(result.operation_id);
-        } catch (error) {
-          message.error(`沒有復原：${saveFailureMessage(error)}`);
-        }
+        const result = await undoOperation(operationId, bulkUndoMessage);
+        if (result?.operation_id) setLastOperation(result.operation_id);
       },
 
       /** 重試存檔失敗的那一次。 */
@@ -197,15 +201,7 @@ export function useSegmentCorrections(taskUuid, initialSegments) {
       /** 「已存檔，復原」：收回剛存的那一次。 */
       async undo() {
         const operationId = latest.current.lastOperation;
-        if (!operationId) return;
-        setLastOperation(null);
-        try {
-          const result = await undoOperation(operationId);
-          const { type, content } = undoMessage(result);
-          message[type](content);
-        } catch (error) {
-          message.error(`沒有復原：${saveFailureMessage(error)}`);
-        }
+        if (operationId) await undoOperation(operationId, undoMessage);
       },
     };
   }, [taskUuid]);

@@ -50,11 +50,12 @@ describe('historyEntries：片段的歷程（#355）', () => {
     expect(second.request).toBeNull();
   });
 
-  it('現在的內容就是那一版時，標成現在、沒有要送的', () => {
+  it('文字與說話者各自最新的一筆是現在的內容：標成現在、沒有要送的', () => {
     const records = [record('text', '今天先看進度', '第一版'), record('speaker', 'S0', 'S1')];
     const entries = historyEntries(history(records), segment({ text: '第一版', speaker: 'S1', corrected: true }));
 
     expect(entries.map((e) => e.current)).toEqual([true, true, false]);
+    expect(entries.map((e) => e.request)).toEqual([null, null, { text: '今天先看進度', speaker: 'S0' }]);
   });
 
   it('回到原始轉錄：文字與說話者有變的都回去，在同一個請求裡（後端各記一筆、共用一個操作編號）', () => {
@@ -65,7 +66,7 @@ describe('historyEntries：片段的歷程（#355）', () => {
     expect(original.current).toBe(false);
   });
 
-  it('回到原始轉錄之後，原始轉錄是現在的內容，之前的每一筆都還能回去', () => {
+  it('回到原始轉錄之後，原始轉錄和現在相同、沒有要送的，之前的每一筆都還能回去', () => {
     const records = [
       record('text', '今天先看進度', '第一版'),
       record('text', '第一版', '第二版'),
@@ -73,9 +74,21 @@ describe('historyEntries：片段的歷程（#355）', () => {
     ];
     const entries = historyEntries(history(records), segment({ has_correction_records: true }));
 
-    expect(entries.map((e) => e.current)).toEqual([true, false, false, true]);
-    expect(entries[1].request).toEqual({ text: '第二版' });
-    expect(entries.at(-1).request).toBeNull();
+    // 「現在」只標在最新的那一筆，原始轉錄只是和現在相同
+    expect(entries.map((e) => e.current)).toEqual([true, false, false, false]);
+    expect(entries.map((e) => e.request)).toEqual([null, { text: '第二版' }, { text: '第一版' }, null]);
+  });
+
+  it('和現在相同但不是最新的那一版：不標現在，也沒有要送的', () => {
+    const records = [
+      record('text', '今天先看進度', '第一版'),
+      record('text', '第一版', '第二版'),
+      record('text', '第二版', '第一版'),
+    ];
+    const entries = historyEntries(history(records), segment({ text: '第一版', corrected: true }));
+
+    expect(entries.map((e) => [e.current, e.request])).toEqual([
+      [true, null], [false, { text: '第二版' }], [false, null], [false, { text: '今天先看進度' }]]);
   });
 
   it('刪掉片段是文字改成空的：回到那一筆就是刪掉；說話者的「沒有」是 null', () => {

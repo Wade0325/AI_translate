@@ -50,7 +50,8 @@ function RecordChange({ entry }) {
 
 /**
  * 片段的歷程（#355）：展開「校正過」（或「歷程」）時列出這個片段的每一筆校正紀錄，最上面是最新的一筆，最下面是
- * 原始轉錄，每一版都可以「回到這一版」。
+ * 原始轉錄，每一版都有「回到這一版」。文字與說話者各自最新的一筆標「現在」；其他和現在的內容相同的版本標
+ * 「和現在相同」，按鈕不能按（送出也不會記任何一筆）。
  *
  * - 回到某一版是再記一筆校正紀錄，之前的都留著，所以回去之後還能再回來；存完一樣出現「已存檔，復原」。
  * - 屬於整批操作（全部取代、把這位說話者全部換成另一位）的那一筆標出來，寫明那次一共改了幾個片段，可以整批復原；
@@ -66,14 +67,14 @@ function RecordChange({ entry }) {
  */
 export function SegmentHistory({ segment, saving, actions, onButtonMouseDown }) {
     const [loaded, setLoaded] = useState(/** @type {{
-        history: import("@/utils/correctionHistory").SegmentHistory | null, error: unknown,
+        history: import("@/utils/correctionHistory").SegmentCorrectionRecords | null, error: unknown,
     }} */ ({ history: null, error: null }))
     const [attempt, setAttempt] = useState(0)
     const [undoing, setUndoing] = useState(false)
 
     useEffect(() => {
         let current = true
-        actions.history(segment.seg_key)
+        actions.correctionRecords(segment.seg_key)
             .then((history) => current && setLoaded({ history, error: null }))
             // 讀不到時留著上一次讀到的，另外寫原因
             .catch((error) => current && setLoaded((last) => ({ history: last.history, error })))
@@ -130,6 +131,7 @@ export function SegmentHistory({ segment, saving, actions, onButtonMouseDown }) 
                                         </>
                                     )}
                                     {entry.current && <Tag color="green" style={TAG_STYLE}>現在</Tag>}
+                                    {!entry.current && !entry.request && <Tag style={TAG_STYLE}>和現在相同</Tag>}
                                 </div>
                                 {entry.kind === "original" ? (
                                     <div style={VALUE_STYLE}>
@@ -144,16 +146,15 @@ export function SegmentHistory({ segment, saving, actions, onButtonMouseDown }) 
                                 )}
                             </div>
                             <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4, flexShrink: 0 }}>
-                                {entry.request && (
-                                    <Button
-                                        size="small"
-                                        disabled={busy}
-                                        onMouseDown={onButtonMouseDown}
-                                        onClick={() => actions.returnTo(segment.seg_key, entry.request)}
-                                    >
-                                        回到這一版
-                                    </Button>
-                                )}
+                                <Button
+                                    size="small"
+                                    disabled={busy || !entry.request}
+                                    title={entry.request ? undefined : "現在已經是這一版"}
+                                    onMouseDown={onButtonMouseDown}
+                                    onClick={() => actions.returnTo(segment.seg_key, entry.request)}
+                                >
+                                    回到這一版
+                                </Button>
                                 {entry.kind === "record" && entry.bulk && (
                                     <Button
                                         size="small"

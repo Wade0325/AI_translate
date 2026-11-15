@@ -289,7 +289,8 @@ class CorrectionRecordResponse(BaseModel):
     id: int
     """編號：同一個任務裡的先後看它，不看時間。"""
     field: str
-    """改了什麼：text（文字）或 speaker（說話者）。"""
+    """改了什麼：text（文字）或 speaker（說話者），是 ``app.repositories.correction_repository.CorrectionField``
+    的值；schemas 不依賴 repositories，所以型別寫 str。"""
     old_value: Optional[str] = None
     """改前。文字的「沒有」是空字串（刪掉的片段），說話者的「沒有」是 None。"""
     new_value: Optional[str] = None
@@ -303,8 +304,8 @@ class CorrectionRecordResponse(BaseModel):
     """那次操作改到幾個片段；超過一個就是一次改很多個片段的操作，可以整批復原。"""
 
 
-class SegmentCorrectionHistoryResponse(BaseModel):
-    """GET /transcripts/{task_uuid}/segments/{seg_key}/correction-records：一個片段的歷程。
+class SegmentCorrectionRecordsResponse(BaseModel):
+    """GET /transcripts/{task_uuid}/segments/{seg_key}/correction-records：一個片段的校正紀錄（校正頁上的歷程）。
 
     records 是這個片段的文字與說話者的校正紀錄，依編號排序（舊的在前）；說話者名稱的紀錄（對象是說話者）與
     確認狀態（不是校正）不在裡面。原始轉錄是歷程最早的一版，一起帶著。"""

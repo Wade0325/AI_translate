@@ -33,7 +33,8 @@ test('改兩次之後展開歷程：最新的在最上面、原始轉錄在最�
     await expect(entries(page, 1).nth(0)).toContainText('改前前端的校正頁可以改字了。')
     await expect(entries(page, 1).nth(0)).toContainText('改後前端的校正頁可以邊聽邊改了。')
     await expect(entries(page, 1).nth(0)).toContainText('現在')
-    await expect(entries(page, 1).nth(0).getByRole('button', { name: '回到這一版' })).toHaveCount(0)
+    // 每一版都有「回到這一版」，現在已經是這一版時不能按
+    await expect(entries(page, 1).nth(0).getByRole('button', { name: '回到這一版' })).toBeDisabled()
     await expect(entries(page, 1).nth(1)).toContainText('改後前端的校正頁可以改字了。')
     await expect(entries(page, 1).nth(2)).toContainText('原始轉錄')
     await expect(entries(page, 1).nth(2)).toContainText('前端的校正頁可以播放了。')
@@ -43,7 +44,9 @@ test('改兩次之後展開歷程：最新的在最上面、原始轉錄在最�
     await expect(text(page, 1)).toHaveText('前端的校正頁可以播放了。')
     await expect(entries(page, 1)).toHaveCount(4)
     await expect(entries(page, 1).nth(0)).toContainText('改後前端的校正頁可以播放了。')
-    await expect(entries(page, 1).last()).toContainText('現在')
+    await expect(entries(page, 1).nth(0)).toContainText('現在')
+    await expect(entries(page, 1).last()).toContainText('和現在相同')
+    await expect(entries(page, 1).last().getByRole('button', { name: '回到這一版' })).toBeDisabled()
     // 改回和原始轉錄相同：不再是「校正過」，歷程照樣開著
     await expect(rowAt(page, 1).getByRole('button', { name: '歷程' })).toHaveAttribute('aria-expanded', 'true')
     await expect(page.getByRole('status').filter({ hasText: '已存檔' })).toBeVisible()
@@ -133,7 +136,7 @@ test('刪掉的片段與改回原樣的片段照樣按「歷程」展開', async
 
     await rowAt(page, 3).getByRole('button', { name: '歷程' }).click()
     await expect(entries(page, 3)).toHaveCount(3)
-    await expect(entries(page, 3).last()).toContainText('現在')
+    await expect(entries(page, 3).last()).toContainText('和現在相同')
 })
 
 test('讀不到歷程時寫原因，可以重試', async ({ page, mockBackend }) => {

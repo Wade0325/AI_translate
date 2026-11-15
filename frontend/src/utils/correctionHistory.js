@@ -11,24 +11,24 @@ import { revertRequest } from './segmentCorrections';
  *   operation_id: string, created_at: string | null, operation_record_count: number,
  *   operation_segment_count: number }} CorrectionRecord 一筆校正紀錄
  * @typedef {{ seg_key: string, original_text: string, original_speaker: string | null,
- *   records: CorrectionRecord[] }} SegmentHistory 一個片段的歷程（後端的回應，紀錄是舊的在前）
+ *   records: CorrectionRecord[] }} SegmentCorrectionRecords 一個片段的校正紀錄（後端的回應，紀錄是舊的在前）
  * @typedef {{ kind: 'record', key: string, field: 'text' | 'speaker', before: string | null,
  *   after: string | null, createdAt: string | null, operationId: string, bulk: boolean, segmentCount: number,
  *   current: boolean, request: import('./segmentCorrections').SegmentRequest | null }} RecordEntry
- *   歷程裡的一筆校正紀錄。current：那一項現在就是這一筆的改後；request：「回到這一版」要送的 PATCH body，
- *   current 時是 null
+ *   歷程裡的一筆校正紀錄。current：那一項現在的內容就是從這一筆來的（那一項最新的一筆）；request：「回到這一版」
+ *   要送的 PATCH body，那一項現在已經是這一版時是 null
  * @typedef {{ kind: 'original', key: 'original', text: string, speaker: string | null, current: boolean,
- *   request: import('./segmentCorrections').SegmentRequest | null }} OriginalEntry 歷程最下面的原始轉錄
+ *   request: import('./segmentCorrections').SegmentRequest | null }} OriginalEntry
+ *   歷程最下面的原始轉錄。current：還沒有任何校正紀錄
  * @typedef {RecordEntry | OriginalEntry} HistoryEntry
  */
 
-/** 一個片段現在的文字或說話者。「沒有」的寫法和後端相同：文字是空字串，說話者是 null。 */
-function currentValue(segment, field) {
-  return field === 'text' ? (segment.text ?? '') : (segment.speaker ?? null);
-}
+/** 「沒有」的寫法和後端相同：文字是空字串，說話者是 null。 */
+const EMPTY = { text: '', speaker: null };
 
-function sameValue(field, a, b) {
-  return field === 'text' ? (a ?? '') === (b ?? '') : (a ?? null) === (b ?? null);
+/** 比對與送出用的值：「沒有」換成那一項的寫法。 */
+function valueOf(field, value) {
+  return value ?? EMPTY[field];
 }
 
 /**
@@ -36,18 +36,23 @@ function sameValue(field, a, b) {
  *
  * - 一筆校正紀錄改的是文字或說話者其中一項；回到那一筆，就是把那一項改回它當時的改後。
  * - 回到原始轉錄是文字與說話者都回去，在同一個請求裡送出，後端有變的各記一筆、共用一個操作編號。
- * - 那一版就是現在的內容時（current）沒有要送的，畫面標成「現在」。
+ * - 文字與說話者各自最新的一筆就是現在的內容（current），畫面標成「現在」；沒有任何校正紀錄時是原始轉錄。
+ *   其他和現在的內容相同的版本（例如回到原始轉錄之後的原始轉錄）沒有要送的（request 是 null）。
  * - 改到超過一個片段的操作（全部取代、把這位說話者全部換成另一位，以及它們的整批復原）是整批操作（bulk），
  *   可以整批復原。一個片段的文字與說話者一起改是兩筆、一個片段，不算。
  *
- * @param {SegmentHistory} history
+ * @param {SegmentCorrectionRecords} history
  * @param {import('./segmentCorrections').Segment} segment 這個片段現在的內容（校正後版本）
  * @returns {HistoryEntry[]}
  */
 export function historyEntries(history, segment) {
+  const newest = new Set();
   /** @type {HistoryEntry[]} */
   const entries = [...history.records].reverse().map((record) => {
-    const current = sameValue(record.field, currentValue(segment, record.field), record.new_value);
+    const current = !newest.has(record.field);
+    newest.add(record.field);
+    const after = valueOf(record.field, record.new_value);
+    const same = valueOf(record.field, segment[record.field]) === after;
     return {
       kind: 'record',
       key: String(record.id),
@@ -59,17 +64,16 @@ export function historyEntries(history, segment) {
       bulk: record.operation_segment_count > 1,
       segmentCount: record.operation_segment_count,
       current,
-      request: current ? null : { [record.field]: record.new_value ?? (record.field === 'text' ? '' : null) },
+      request: same ? null : { [record.field]: after },
     };
   });
-  const revert = revertRequest({ ...segment, original_text: history.original_text, original_speaker: history.original_speaker });
   entries.push({
     kind: 'original',
     key: 'original',
-    text: history.original_text ?? '',
-    speaker: history.original_speaker ?? null,
-    current: revert === null,
-    request: revert,
+    text: valueOf('text', history.original_text),
+    speaker: valueOf('speaker', history.original_speaker),
+    current: history.records.length === 0,
+    request: revertRequest({ ...segment, original_text: history.original_text, original_speaker: history.original_speaker }),
   });
   return entries;
 }
