@@ -339,6 +339,37 @@ class TestCorrectText:
         assert [(f, old, new) for f, old, new, _ in _records(db_session, log.task_uuid)] == [
             ("text", "這個就是實作層", ""), ("text", "", "這個就是實作層")]
 
+    def test_a_deleted_segment_carries_the_text_it_had_before_it_was_deleted(self, client, db_session):
+        # 校正頁的「還原」送回刪掉之前的文字（#348）：改過再刪掉的，還原成改過的文字，不是原始轉錄
+        log = _correctable(db_session)
+        client.patch(_url(log.task_uuid), json={"text": "這個就是十座城"})
+
+        deleted = client.patch(_url(log.task_uuid), json={"text": ""}).json()["segment"]
+
+        assert (deleted["deleted"], deleted["deleted_text"]) == (True, "這個就是十座城")
+        assert _segment(client, log.task_uuid)["deleted_text"] == "這個就是十座城"
+        restored = client.patch(_url(log.task_uuid), json={"text": deleted["deleted_text"]}).json()["segment"]
+        assert (restored["text"], restored["deleted"], restored["deleted_text"]) == ("這個就是十座城", False, None)
+
+    def test_undoing_a_restore_deletes_it_again_with_the_same_text_to_restore(self, client, db_session):
+        log = _correctable(db_session)
+        client.patch(_url(log.task_uuid), json={"text": ""})
+        restore = client.patch(_url(log.task_uuid), json={"text": "這個就是實作層"}).json()
+
+        undone = client.post(_undo_url(log.task_uuid, restore["operation_id"])).json()["segments"][0]
+
+        assert (undone["deleted"], undone["deleted_text"]) == (True, "這個就是實作層")
+
+    def test_only_segments_the_user_deleted_carry_deleted_text(self, client, db_session):
+        log = _correctable(db_session)
+        _create_segment(db_session, log.task_uuid, seg_key="0001", seq=1, start_sec=5.0, end_sec=6.0, text="")
+        client.patch(_url(log.task_uuid), json={"text": "改過的"})
+
+        assert _segment(client, log.task_uuid)["deleted_text"] is None
+        # 原始轉錄就沒有文字的片段也算刪掉的片段（下載時略過），但不是使用者刪的，沒有可以還原的文字
+        empty = _segment(client, log.task_uuid, "0001")
+        assert (empty["deleted"], empty["deleted_text"]) == (True, None)
+
     def test_the_same_content_as_now_records_nothing(self, client, db_session):
         log = _correctable(db_session)
 

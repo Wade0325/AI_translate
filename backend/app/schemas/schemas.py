@@ -241,6 +241,9 @@ class TranscriptSegmentResponse(BaseModel):
     """文字或說話者和原始轉錄不同。"""
     deleted: bool = False
     """校正後的文字是空的（刪掉的片段，下載的校正後版本裡沒有它）。"""
+    deleted_text: Optional[str] = None
+    """使用者刪掉的片段，刪掉之前的文字：校正頁的「還原」把它送回去（#348）。沒刪掉、或原始轉錄就沒有文字的
+    片段是 None。"""
     has_correction_records: bool = False
     """有校正紀錄；改回和原始轉錄相同之後仍是 True。"""
     text_alt: Optional[str] = None
