@@ -88,7 +88,7 @@ test('History 只有能校正的任務有「校正」，點了開校正頁，網
         status: 'COMPLETED', original_filename, audio_duration_seconds: 20.0, model_used: 'moss-align',
         source_language: 'zh-TW', total_tokens: 0, cost: 0.0, error_code: null, error_message: null,
         is_batch: false, session_id: 's', file_uid: 'f', service_tier_used: 'standard', tail_loss_from_seconds: null,
-        correctable,
+        correctable, has_corrections: false,
     })
     await mockBackend({
         routes: {
