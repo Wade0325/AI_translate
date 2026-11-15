@@ -4,12 +4,12 @@ import { normalizedText } from './segmentCorrections';
  * 校正頁的尋找與全部取代（#356）不依賴畫面的部分：怎麼比對、符合的片段、全部取代會改到幾個片段與幾處、上一個與
  * 下一個的順序，以及尋找列的按鍵。
  *
- * 比對的規則和伺服器相同（backend/app/core/text_replacement.py），兩邊用同一份案例測試
+ * 比對的規則和伺服器相同（backend/app/core/text_replacement.py，函式名稱相同），兩邊用同一份案例測試
  * （tests/fixtures/replace_all/cases.json），這裡算的數目就是伺服器實際改到的數目：
  *
  * - 一般文字比對，不支援正規表示式。
- * - 英文不分大小寫：只有半形的 A–Z 和 a–z 當成同一個字；全形與半形是不同的字，其他文字照原樣比對。
- *   只換半形英文字母，換過之後字數不變，找到的位置就是原本文字裡的位置。
+ * - 英文不分大小寫：A–Z 和 a–z 當成同一個字，全形的 Ａ–Ｚ 和 ａ–ｚ 也是；全形與半形是不同的字，其他文字照原樣
+ *   比對。只換英文字母，換過之後字數不變，找到的位置就是原本文字裡的位置。
  * - 從左到右找，找到的不重疊。
  * - 找的是校正後版本的文字（片段的 text），刪掉的片段不找。
  *
@@ -20,9 +20,9 @@ import { normalizedText } from './segmentCorrections';
  * @typedef {'next' | 'previous' | 'close'} FindAction 尋找框裡按的鍵要做的事
  */
 
-/** 半形的 A–Z 換成 a–z，其他字不動（字數不變）。 */
+/** 英文字母換成小寫（半形的 A–Z 換成 a–z，全形的 Ａ–Ｚ 換成 ａ–ｚ），其他字不動（字數不變）。 */
 function folded(text) {
-  return text.replace(/[A-Z]/g, (char) => char.toLowerCase());
+  return text.replace(/[A-ZＡ-Ｚ]/g, (char) => String.fromCharCode(char.charCodeAt(0) + 0x20));
 }
 
 /**
@@ -89,7 +89,7 @@ export function searchSegments(segments, query) {
  * @param {SearchableSegment[]} segments 校正後版本的片段
  * @param {string} query
  * @param {string} replacement
- * @returns {{ segments: number, occurrences: number, emptied: number,
+ * @returns {{ changedSegments: number, occurrences: number, emptied: number,
  *   changes: { segKey: string, text: string, occurrences: number }[] }}
  */
 export function replacementPlan(segments, query, replacement) {
@@ -100,7 +100,7 @@ export function replacementPlan(segments, query, replacement) {
     if (text !== normalizedText(current)) changes.push({ segKey, text, occurrences: ranges.length });
   }
   return {
-    segments: changes.length,
+    changedSegments: changes.length,
     occurrences: changes.reduce((sum, change) => sum + change.occurrences, 0),
     emptied: changes.filter((change) => !change.text).length,
     changes,
@@ -172,9 +172,9 @@ export function findKeyAction(event) {
 /**
  * 全部取代之前確認的那一句：會改到幾個片段、一共幾處；有片段會變成空的時另外寫出來（空的片段就是刪掉）。
  *
- * @param {{ segments: number, occurrences: number, emptied: number }} plan replacementPlan 的結果
+ * @param {{ changedSegments: number, occurrences: number, emptied: number }} plan replacementPlan 的結果
  */
-export function replaceConfirmText({ segments, occurrences, emptied }) {
-  const base = `會改到 ${segments} 個片段，一共 ${occurrences} 處。`;
+export function replaceConfirmText({ changedSegments, occurrences, emptied }) {
+  const base = `會改到 ${changedSegments} 個片段，一共 ${occurrences} 處。`;
   return emptied ? `${base}其中 ${emptied} 個片段會變成空的，等於刪掉（可以還原）。` : base;
 }

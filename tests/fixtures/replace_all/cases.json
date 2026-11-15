@@ -1,134 +1,229 @@
 [
   {
     "name": "三個片段裡有兩個含有要找的詞：一處或兩處都算，第三個不變",
-    "texts": ["王曉明先說明進度。", "謝謝王曉明，王曉明的報告很清楚。", "下一位請準備。"],
+    "texts": [
+      "王曉明先說明進度。",
+      "謝謝王曉明，王曉明的報告很清楚。",
+      "下一位請準備。"
+    ],
     "find": "王曉明",
     "replacement": "王小明",
     "expected": {
       "changed_segments": 2,
       "occurrences": 3,
-      "texts": ["王小明先說明進度。", "謝謝王小明，王小明的報告很清楚。", "下一位請準備。"]
+      "texts": [
+        "王小明先說明進度。",
+        "謝謝王小明，王小明的報告很清楚。",
+        "下一位請準備。"
+      ]
     }
   },
   {
     "name": "英文不分大小寫；取代之後和原本相同的片段不算",
-    "texts": ["Mimiji 可以離線轉錄", "MIMIJI 和 mimiji 都一樣", "沒有提到"],
+    "texts": [
+      "Mimiji 可以離線轉錄",
+      "MIMIJI 和 mimiji 都一樣",
+      "沒有提到"
+    ],
     "find": "mimiji",
     "replacement": "Mimiji",
     "expected": {
       "changed_segments": 1,
       "occurrences": 2,
-      "texts": ["Mimiji 可以離線轉錄", "Mimiji 和 Mimiji 都一樣", "沒有提到"]
+      "texts": [
+        "Mimiji 可以離線轉錄",
+        "Mimiji 和 Mimiji 都一樣",
+        "沒有提到"
+      ]
     }
   },
   {
     "name": "全形與半形是不同的字",
-    "texts": ["ＡＩ 的翻譯", "AI 的翻譯", "ai 的翻譯"],
+    "texts": [
+      "ＡＩ 的翻譯",
+      "AI 的翻譯",
+      "ai 的翻譯"
+    ],
     "find": "AI",
     "replacement": "人工智慧",
     "expected": {
       "changed_segments": 2,
       "occurrences": 2,
-      "texts": ["ＡＩ 的翻譯", "人工智慧 的翻譯", "人工智慧 的翻譯"]
+      "texts": [
+        "ＡＩ 的翻譯",
+        "人工智慧 的翻譯",
+        "人工智慧 的翻譯"
+      ]
+    }
+  },
+  {
+    "name": "全形英文字母也不分大小寫，但和半形不同",
+    "texts": [
+      "ＡＩ 的翻譯",
+      "ａｉ 的翻譯",
+      "AI 的翻譯"
+    ],
+    "find": "ａｉ",
+    "replacement": "人工智慧",
+    "expected": {
+      "changed_segments": 2,
+      "occurrences": 2,
+      "texts": [
+        "人工智慧 的翻譯",
+        "人工智慧 的翻譯",
+        "AI 的翻譯"
+      ]
     }
   },
   {
     "name": "不支援正規表示式：點與括號都是普通的字",
-    "texts": ["價格是 1.5 元（笑）", "價格是 135 元"],
+    "texts": [
+      "價格是 1.5 元（笑）",
+      "價格是 135 元"
+    ],
     "find": "1.5 元（笑）",
     "replacement": "1.5 元",
     "expected": {
       "changed_segments": 1,
       "occurrences": 1,
-      "texts": ["價格是 1.5 元", "價格是 135 元"]
+      "texts": [
+        "價格是 1.5 元",
+        "價格是 135 元"
+      ]
     }
   },
   {
     "name": "從左到右找，找到的不重疊",
-    "texts": ["啊啊啊", "abcABCAbc"],
+    "texts": [
+      "啊啊啊",
+      "abcABCAbc"
+    ],
     "find": "啊啊",
     "replacement": "啊",
     "expected": {
       "changed_segments": 1,
       "occurrences": 1,
-      "texts": ["啊啊", "abcABCAbc"]
+      "texts": [
+        "啊啊",
+        "abcABCAbc"
+      ]
     }
   },
   {
     "name": "一個片段裡大小寫不同的好幾處都換",
-    "texts": ["abcABCAbc"],
+    "texts": [
+      "abcABCAbc"
+    ],
     "find": "ABC",
     "replacement": "x",
     "expected": {
       "changed_segments": 1,
       "occurrences": 3,
-      "texts": ["xxx"]
+      "texts": [
+        "xxx"
+      ]
     }
   },
   {
     "name": "取代的文字裡含有要找的詞，不會再換一次",
-    "texts": ["小明說好", "我是王小明"],
+    "texts": [
+      "小明說好",
+      "我是王小明"
+    ],
     "find": "小明",
     "replacement": "王小明",
     "expected": {
       "changed_segments": 2,
       "occurrences": 2,
-      "texts": ["王小明說好", "我是王王小明"]
+      "texts": [
+        "王小明說好",
+        "我是王王小明"
+      ]
     }
   },
   {
     "name": "取代成空字串：變成空的片段等於刪掉，前後的空白去掉",
-    "texts": ["嗯", "那個 我們開始", "好的"],
+    "texts": [
+      "嗯",
+      "那個 我們開始",
+      "好的"
+    ],
     "find": "嗯",
     "replacement": "",
     "expected": {
       "changed_segments": 1,
       "occurrences": 1,
-      "texts": ["", "那個 我們開始", "好的"]
+      "texts": [
+        "",
+        "那個 我們開始",
+        "好的"
+      ]
     }
   },
   {
     "name": "取代成空字串之後前後的空白去掉，中間的照留",
-    "texts": ["那個 我們開始", "我們 那個 開始"],
+    "texts": [
+      "那個 我們開始",
+      "我們 那個 開始"
+    ],
     "find": "那個",
     "replacement": "",
     "expected": {
       "changed_segments": 2,
       "occurrences": 2,
-      "texts": ["我們開始", "我們  開始"]
+      "texts": [
+        "我們開始",
+        "我們  開始"
+      ]
     }
   },
   {
     "name": "原始轉錄有換行：改到的片段照改一個片段的規則收成一行",
-    "texts": ["第一行\n第二行 王曉明", "第一行\n第二行"],
+    "texts": [
+      "第一行\n第二行 王曉明",
+      "第一行\n第二行"
+    ],
     "find": "王曉明",
     "replacement": "王小明",
     "expected": {
       "changed_segments": 1,
       "occurrences": 1,
-      "texts": ["第一行 第二行 王小明", "第一行\n第二行"]
+      "texts": [
+        "第一行 第二行 王小明",
+        "第一行\n第二行"
+      ]
     }
   },
   {
     "name": "只差在前後的空白：收好之後和原本相同，不算改到",
-    "texts": ["好的 ", "好的"],
+    "texts": [
+      "好的 ",
+      "好的"
+    ],
     "find": "好的",
     "replacement": "好的",
     "expected": {
       "changed_segments": 0,
       "occurrences": 0,
-      "texts": ["好的 ", "好的"]
+      "texts": [
+        "好的 ",
+        "好的"
+      ]
     }
   },
   {
     "name": "沒有符合的片段",
-    "texts": ["今天先看進度。"],
+    "texts": [
+      "今天先看進度。"
+    ],
     "find": "明天",
     "replacement": "後天",
     "expected": {
       "changed_segments": 0,
       "occurrences": 0,
-      "texts": ["今天先看進度。"]
+      "texts": [
+        "今天先看進度。"
+      ]
     }
   }
 ]

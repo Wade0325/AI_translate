@@ -48,14 +48,15 @@ export function FindBar({ search, onReplaceAll, onClose }) {
         inputRef.current?.focus({ cursor: "all" })
     }, [focusRequest])
 
-    const onFindKeyDown = (event) => {
+    /** 尋找框：Enter 下一個、Shift+Enter 上一個、Esc 收起來。「取代為」框只收 Esc。 */
+    const onKeyDown = (event, { navigate }) => {
         const action = findKeyAction({
             key: event.key,
             shiftKey: event.shiftKey,
             isComposing: event.nativeEvent.isComposing,
             keyCode: event.keyCode,
         })
-        if (!action) return
+        if (!action || (action !== "close" && !navigate)) return
         event.preventDefault()
         if (action === "close") onClose()
         else actions.step(action)
@@ -71,7 +72,7 @@ export function FindBar({ search, onReplaceAll, onClose }) {
     }
 
     const total = matches.length
-    const changes = plan?.segments ?? 0
+    const changes = plan?.changedSegments ?? 0
     let replaceTitle
     if (!query) replaceTitle = "先輸入要找的文字"
     else if (!total) replaceTitle = "沒有符合的片段"
@@ -87,7 +88,7 @@ export function FindBar({ search, onReplaceAll, onClose }) {
                 prefix={<Search size={14} color="#8888a8" />}
                 value={query}
                 onChange={(event) => actions.setQuery(event.target.value)}
-                onKeyDown={onFindKeyDown}
+                onKeyDown={(event) => onKeyDown(event, { navigate: true })}
                 style={{ width: 200 }}
             />
             <span aria-live="polite" style={COUNT_STYLE}>{countText(query, total, currentIndex)}</span>
@@ -115,9 +116,7 @@ export function FindBar({ search, onReplaceAll, onClose }) {
                 placeholder="取代為"
                 value={replacement}
                 onChange={(event) => actions.setReplacement(event.target.value)}
-                onKeyDown={(event) => {
-                    if (event.key === "Escape" && !event.nativeEvent.isComposing) onClose()
-                }}
+                onKeyDown={(event) => onKeyDown(event, { navigate: false })}
                 style={{ width: 200 }}
             />
             <Popconfirm

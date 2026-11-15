@@ -8,7 +8,8 @@
 
 校正（#341，ADR 0011）：讀到的片段是校正後版本，另外帶著原始轉錄；改一個片段的文字、說話者與確認狀態，
 全部取代（#356），以及復原一次操作，都從這裡寫。校正後版本與校正紀錄的規則在 ``app.repositories.correction_repository``，
-這裡只檢查請求。寫入端點和 History 的清單、讀取端點用同一個「能不能校正」的判斷
+這裡只檢查請求，以及把請求換成要記的校正（全部取代怎麼比對在 ``app.core.text_replacement``）。寫入端點和
+History 的清單、讀取端點用同一個「能不能校正」的判斷
 （``app.services.correctability``）。轉錄的文字不寫進日誌（#25 故事 84）。
 
 寫入端點沒有使用者驗證：免安裝模式只收 app 自己的頁面送的寫入請求，做在 ``app.core.api_access``，
@@ -223,7 +224,7 @@ def replace_all(task_uuid: str, body: ReplaceAllRequest, db: Session = Depends(g
     def plan(segment: SegmentContent) -> List[Correction]:
         if segment.deleted:
             return []
-        text, count = text_replacement.replace_all(segment.text, body.find, body.replacement)
+        text, count = text_replacement.replace_occurrences(segment.text, body.find, body.replacement)
         if not count:
             return []
         occurrences[segment.seg_key] = count

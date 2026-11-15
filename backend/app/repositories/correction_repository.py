@@ -79,16 +79,13 @@ class Correction:
 
 @dataclass(frozen=True)
 class SegmentContent:
-    """寫校正紀錄時，一個片段現在的內容（鎖住任務之後讀的）：校正後版本的文字與說話者，以及原始轉錄。
-
-    「沒有」的寫法和校正後版本相同：文字的「沒有」是空字串，說話者的「沒有」是 None。
+    """寫校正紀錄時，一個片段現在的內容（鎖住任務之後讀的）：校正後版本的文字，以及原始轉錄的文字。
+    文字的「沒有」是空字串，和校正後版本相同。之後一次改很多個片段的說話者（#354）要用時再加說話者。
     """
 
     seg_key: str
     text: str
-    speaker: Optional[str]
     original_text: str
-    original_speaker: Optional[str]
 
     @property
     def deleted(self) -> bool:
@@ -258,9 +255,7 @@ class _CurrentContent:
             yield SegmentContent(
                 seg_key=seg_key,
                 text=self.value((CorrectionField.TEXT, seg_key)) or "",
-                speaker=self.value((CorrectionField.SPEAKER, seg_key)),
-                original_text=_normalized(CorrectionField.TEXT, cast(Optional[str], self._segments[seg_key].text)) or "",
-                original_speaker=_normalized(CorrectionField.SPEAKER, cast(Optional[str], self._segments[seg_key].speaker)),
+                original_text=cast(Optional[str], self._segments[seg_key].text) or "",
             )
 
     def set_review_state(self, seg_key: str, state: Optional[ReviewState]) -> None:

@@ -36,7 +36,7 @@ describe('全部取代的數目和伺服器一致（和整合測試共用的案�
 
     const plan = replacementPlan(segments, c.find, c.replacement);
 
-    expect([plan.segments, plan.occurrences]).toEqual([c.expected.changed_segments, c.expected.occurrences]);
+    expect([plan.changedSegments, plan.occurrences]).toEqual([c.expected.changed_segments, c.expected.occurrences]);
     // 改到的片段換成算出來的文字之後，就是伺服器存的校正後版本
     const byKey = new Map(plan.changes.map((change) => [change.segKey, change.text]));
     expect(segments.map((s) => (byKey.has(s.seg_key) ? byKey.get(s.seg_key) : s.text))).toEqual(c.expected.texts);
@@ -48,9 +48,9 @@ describe('findOccurrences：一般文字比對（#356）', () => {
     expect(findOccurrences('Mimiji 和 MIMIJI', 'mimiji')).toEqual([{ start: 0, end: 6 }, { start: 9, end: 15 }]);
   });
 
-  it('全形與半形是不同的字；只有半形英文字母不分大小寫', () => {
+  it('全形與半形是不同的字；全形英文字母也不分大小寫，其他文字照原樣比對', () => {
     expect(findOccurrences('ＡＩ 和 ａｉ', 'AI')).toEqual([]);
-    expect(findOccurrences('ＡＩ 和 ａｉ', 'ＡＩ')).toEqual([{ start: 0, end: 2 }]);
+    expect(findOccurrences('ＡＩ 和 ａｉ', 'ａＩ')).toEqual([{ start: 0, end: 2 }, { start: 5, end: 7 }]);
     expect(findOccurrences('Ä 和 ä', 'ä')).toEqual([{ start: 4, end: 5 }]);
   });
 
@@ -94,14 +94,14 @@ describe('replacementPlan：會改到幾個片段、幾處', () => {
   it('取代之後和現在相同的片段不算', () => {
     const plan = replacementPlan(segmentsOf('Mimiji', 'MIMIJI 和 mimiji'), 'mimiji', 'Mimiji');
 
-    expect([plan.segments, plan.occurrences]).toEqual([1, 2]);
+    expect([plan.changedSegments, plan.occurrences]).toEqual([1, 2]);
     expect(plan.changes.map((c) => c.segKey)).toEqual(['0001']);
   });
 
   it('寫出幾個片段會變成空的', () => {
     const plan = replacementPlan(segmentsOf('嗯', '嗯，好的', '好的'), '嗯', '');
 
-    expect([plan.segments, plan.occurrences, plan.emptied]).toEqual([2, 2, 1]);
+    expect([plan.changedSegments, plan.occurrences, plan.emptied]).toEqual([2, 2, 1]);
   });
 });
 
@@ -174,8 +174,8 @@ describe('尋找的按鍵', () => {
 
 describe('replaceConfirmText', () => {
   it('寫明會改到幾個片段、一共幾處；有片段會變成空的時另外寫出來', () => {
-    expect(replaceConfirmText({ segments: 2, occurrences: 3, emptied: 0 })).toBe('會改到 2 個片段，一共 3 處。');
-    expect(replaceConfirmText({ segments: 2, occurrences: 2, emptied: 1 }))
+    expect(replaceConfirmText({ changedSegments: 2, occurrences: 3, emptied: 0 })).toBe('會改到 2 個片段，一共 3 處。');
+    expect(replaceConfirmText({ changedSegments: 2, occurrences: 2, emptied: 1 }))
       .toBe('會改到 2 個片段，一共 2 處。其中 1 個片段會變成空的，等於刪掉（可以還原）。');
   });
 });

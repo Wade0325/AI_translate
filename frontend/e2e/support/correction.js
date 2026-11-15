@@ -95,11 +95,11 @@ export const highlight = (page, text) => row(page, text).locator('[data-active]'
 const normalized = (text) => text.trim().replace(/\s*[\n\r\x0b\x0c\x1c-\x1e\x85\u2028\u2029]+\s*/gu, ' ')
 
 /**
- * 全部取代的比對（backend/app/core/text_replacement.py 的規則）：一般文字比對、只有半形英文字母不分大小寫、
- * 從左到右不重疊。回 [換好的文字, 換了幾處]。
+ * 全部取代的比對（backend/app/core/text_replacement.py 的規則）：一般文字比對、英文字母不分大小寫（全形與半形
+ * 不同）、從左到右不重疊。回 [換好的文字, 換了幾處]。
  */
 function replaceText(text, find, replacement) {
-    const fold = (value) => value.replace(/[A-Z]/g, (c) => c.toLowerCase())
+    const fold = (value) => value.replace(/[A-ZＡ-Ｚ]/g, (c) => String.fromCharCode(c.charCodeAt(0) + 0x20))
     const parts = fold(text).split(fold(find))
     if (parts.length === 1) return [text, 0]
     let pos = 0

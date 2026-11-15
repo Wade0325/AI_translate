@@ -173,3 +173,21 @@ test('改文字時按 Ctrl+F：打到一半的字照樣存，選起來的字拿�
     await expect(counter(page)).toHaveText('1／1 個片段')
     expect(backend.requests.filter((r) => r.method === 'PATCH').map((r) => r.body)).toEqual([{ text: '下一位請準備好。' }])
 })
+
+test('選起來的字找不到時，照樣開尋找列，寫沒有符合的片段', async ({ page, mockBackend }) => {
+    const fake = correctionsBackend(SEGMENTS)
+    await openCorrection(page, mockBackend, { segments: SEGMENTS, routes: fake.routes })
+
+    // 選起頁面上方的檔名（不在任何片段裡）再按 Ctrl+F
+    await page.getByText('meeting.wav').evaluate((element) => {
+        const range = document.createRange()
+        range.selectNodeContents(element)
+        window.getSelection().removeAllRanges()
+        window.getSelection().addRange(range)
+    })
+    await page.keyboard.press('Control+f')
+
+    await expect(findBox(page)).toHaveValue('meeting.wav')
+    await expect(counter(page)).toHaveText('沒有符合的片段')
+    await expect(findBar(page).getByRole('button', { name: '全部取代' })).toBeDisabled()
+})

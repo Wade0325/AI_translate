@@ -49,7 +49,8 @@ export function useSegmentSearch(segments, { onReveal }) {
         setFocusRequest((n) => n + 1);
         if (prefill) {
           setQueryState(prefill);
-          goTo(0, searchSegments(latest.current.segments, prefill));
+          const found = searchSegments(latest.current.segments, prefill);
+          goTo(found.length ? 0 : -1, found);
         }
       },
       close() {
