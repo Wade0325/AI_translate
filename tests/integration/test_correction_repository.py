@@ -172,6 +172,34 @@ class TestCorrectedVersion:
         assert (segment["text"], segment["deleted"], segment["corrected"],
                 segment["has_correction_records"]) == ("", True, False, False)
 
+    def test_word_timings_follow_the_corrected_text(self, db_session):
+        # #357：改過文字的片段，逐字時間照校正後的文字重算（沒改到的字沿用原本的時間），下載與校正頁都
+        # 讀這一份；只改說話者、沒改過的片段照原樣；刪掉的片段沒有逐字時間。片段存的逐字時間不變
+        timed = [
+            {"seg_key": "0-0", "start": 1.0, "end": 2.5, "speaker": "S0", "text": "今天開會。",
+             "words": [{"text": "今", "start": 1.0, "end": 1.2}, {"text": "天", "start": 1.2, "end": 1.4},
+                       {"text": "開", "start": 1.6, "end": 1.8}, {"text": "會", "start": 1.8, "end": 2.0}]},
+            {"seg_key": "0-1", "start": 3.0, "end": 4.0, "speaker": "S0", "text": "好的。",
+             "words": [{"text": "好", "start": 3.0, "end": 3.2}, {"text": "的", "start": 3.2, "end": 3.4}]},
+            {"seg_key": "0-2", "start": 5.0, "end": 6.0, "speaker": "S0", "text": "散會。",
+             "words": [{"text": "散", "start": 5.0, "end": 5.2}, {"text": "會", "start": 5.2, "end": 5.4}]},
+        ]
+        task_uuid = uuid.uuid4()
+        db_session.add(TranscriptionLog(task_uuid=task_uuid, status="COMPLETED"))
+        TranscriptSegmentRepository.replace_for_task(db_session, task_uuid, timed)
+        db_session.commit()
+        _record(db_session, task_uuid, ("0-0", TEXT, "今天下午開會。"), ("0-1", SPEAKER, "S1"),
+                ("0-2", TEXT, ""))
+
+        version = _corrected(db_session, task_uuid)
+        assert [(w["text"], round(w["start"], 6), round(w["end"], 6)) for w in version["0-0"]["words"]] == [
+            ("今", 1.0, 1.2), ("天", 1.2, 1.4), ("下", 1.4, 1.5), ("午", 1.5, 1.6), ("開", 1.6, 1.8),
+            ("會", 1.8, 2.0)]
+        assert version["0-1"]["words"] == timed[1]["words"]
+        assert version["0-2"]["words"] is None
+        stored = TranscriptSegmentRepository.segments_for_task(db_session, task_uuid)
+        assert [seg["words"] for seg in stored] == [seg["words"] for seg in timed]
+
     def test_queries_a_fixed_number_of_times_however_many_segments(self, db_session, task, test_engine):
         many = uuid.uuid4()
         db_session.add(TranscriptionLog(task_uuid=many, status="COMPLETED"))
