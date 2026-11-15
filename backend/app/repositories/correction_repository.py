@@ -32,7 +32,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
-from typing import Any, Collection, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple, cast
+from typing import Any, Callable, Collection, Dict, Iterable, Iterator, List, Mapping, Optional, Sequence, Set, Tuple, cast
 
 from sqlalchemy import case, distinct, func, update
 from sqlalchemy.orm import Session
@@ -80,6 +80,33 @@ class Correction:
     target: str
     field: CorrectionField
     new_value: Optional[str]
+
+
+@dataclass(frozen=True)
+class SegmentContent:
+    """寫校正紀錄時，一個片段現在的內容（鎖住任務之後讀的）：校正後版本的文字與說話者，以及原始轉錄的文字。
+    文字的「沒有」是空字串，說話者的「沒有」是 None，和校正後版本相同。
+    """
+
+    seg_key: str
+    text: str
+    speaker: Optional[str]
+    original_text: str
+
+    @property
+    def deleted(self) -> bool:
+        """刪掉的片段（文字是空的，只有空白也算）。"""
+        return _is_deleted(self.text)
+
+
+@dataclass(frozen=True)
+class OperationResult:
+    """一次改很多個片段的操作的結果。"""
+
+    operation_id: Optional[uuid.UUID]
+    """這次操作的操作編號；一筆都沒有記時是 None。"""
+    seg_keys: Tuple[str, ...] = ()
+    """記了校正紀錄的片段的鍵，依 seq 排序；和現在的內容相同、沒有記的不在內。"""
 
 
 @dataclass(frozen=True)
@@ -255,10 +282,6 @@ class _CurrentContent:
         if self.recorded or self._wrote_review_state:
             audio_store.restart_retention(self._audio_filename)
 
-    def seg_keys(self) -> List[str]:
-        """這個任務每個片段的鍵，依 seq 排序。"""
-        return list(self._segments)
-
     def value(self, key: _Key) -> Optional[str]:
         field, target = key
         segment = self._segments.get(target)
@@ -268,6 +291,16 @@ class _CurrentContent:
         elif segment is not None and field == CorrectionField.SPEAKER:
             original = cast(Optional[str], segment.speaker)
         return _current(self._latest, key, original)
+
+    def segments(self) -> Iterator[SegmentContent]:
+        """每個片段現在的內容，依 seq 排序；同一次操作裡已經記下的紀錄也算進去。"""
+        for seg_key in list(self._segments):
+            yield SegmentContent(
+                seg_key=seg_key,
+                text=self.value((CorrectionField.TEXT, seg_key)) or "",
+                speaker=self.value((CorrectionField.SPEAKER, seg_key)),
+                original_text=cast(Optional[str], self._segments[seg_key].text) or "",
+            )
 
     def set_review_state(self, seg_key: str, state: Optional[ReviewState]) -> None:
         """把片段的確認狀態改成 ``state``（None 是清除），和記下的紀錄一起 commit。不是校正，不留紀錄。"""
@@ -337,24 +370,41 @@ class CorrectionRepository:
         return operation_id if content.recorded else None
 
     @staticmethod
-    def reassign_speaker(db: Session, task_uuid, from_speaker: Optional[str], to_speaker: str,
-                         ) -> Tuple[Optional[uuid.UUID], Tuple[str, ...]]:
+    def record_operation_over_segments(db: Session, task_uuid,
+                                       plan: Callable[[SegmentContent], Iterable[Correction]],
+                                       ) -> OperationResult:
+        """一次改很多個片段的操作（全部取代，#356）：鎖住任務之後，依 seq 把每個片段現在的內容交給
+        ``plan``，``plan`` 回的校正有變的各記一筆，共用一個新的操作編號，在同一個交易裡寫完並 commit。
+        結果和現在的內容相同的片段不記；一筆都沒有記時沒有操作編號。
+
+        ``plan`` 看到的是鎖住任務之後讀的內容，所以比對與取代都以寫入當下的內容為準，不會蓋掉剛存的另一次
+        校正。``plan`` 丟出例外時什麼都不記，例外照樣丟出；任務紀錄不在、或 ``plan`` 回了不在這個任務裡
+        的片段時丟 ``ValueError``。
+        """
+        operation_id = uuid.uuid4()
+        with _CurrentContent(db, _task_uuid(task_uuid)) as content:
+            for segment in content.segments():
+                for correction in plan(segment):
+                    content.change((CorrectionField(correction.field), correction.target),
+                                   correction.new_value, operation_id)
+            seg_keys = tuple(dict.fromkeys(str(r.target) for r in content.recorded
+                                           if CorrectionField(r.field) in SEGMENT_FIELDS))
+        return OperationResult(operation_id=operation_id if content.recorded else None, seg_keys=seg_keys)
+
+    @staticmethod
+    def reassign_speaker(db: Session, task_uuid, from_speaker: Optional[str], to_speaker: str) -> OperationResult:
         """把這位說話者全部換成另一位（#354）：校正後的說話者是 ``from_speaker`` 的每個片段（None 是沒有說話者
         的片段；刪掉的片段也算，還原之後才是換過的說話者），說話者各記一筆改成 ``to_speaker`` 的校正紀錄，共用一個
         操作編號，在同一個交易裡寫完，可以用 :meth:`undo_operation` 整批復原。
 
-        要換哪些片段在鎖住任務之後才判斷，同時送來的另一次校正不會被漏掉或蓋掉。回傳 (操作編號, 改到的片段的鍵)；
-        一個片段都沒有改到時操作編號是 None。任務紀錄不在時丟 ``ValueError``，什麼都不記。
+        走 :meth:`record_operation_over_segments`：要換哪些片段在鎖住任務之後才判斷，同時送來的另一次校正不會被
+        漏掉或蓋掉。一個片段都沒有改到時沒有操作編號；任務紀錄不在時丟 ``ValueError``，什麼都不記。
         """
-        operation_id = uuid.uuid4()
         source = _normalized(CorrectionField.SPEAKER, from_speaker)
-        with _CurrentContent(db, _task_uuid(task_uuid)) as content:
-            for seg_key in content.seg_keys():
-                key = (CorrectionField.SPEAKER, seg_key)
-                if content.value(key) == source:
-                    content.change(key, to_speaker, operation_id)
-        seg_keys = tuple(str(record.target) for record in content.recorded)
-        return (operation_id if seg_keys else None), seg_keys
+        return CorrectionRepository.record_operation_over_segments(
+            db, task_uuid,
+            lambda segment: ([Correction(target=segment.seg_key, field=CorrectionField.SPEAKER, new_value=to_speaker)]
+                             if segment.speaker == source else []))
 
     @staticmethod
     def undo_operation(db: Session, task_uuid, operation_id) -> Optional[UndoResult]:

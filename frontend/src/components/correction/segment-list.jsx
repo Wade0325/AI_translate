@@ -23,6 +23,9 @@ function fullyVisible(container, index) {
  * 觸控、拖捲軸、鍵盤）時呼叫 onUserScroll，由頁面停止跟著播放，不把畫面搶回去；在文字框裡打字用的
  * 空白鍵與方向鍵不算捲動。
  *
+ * 尋找（#356）：matches 是每個符合的片段裡符合的字（鍵是 seg_key），currentMatch 是現在跳到的那一個；reveal 換成新的
+ * 物件時，把那一列捲到列表中間（沒畫出來的片段也找得到）。
+ *
  * @param {{
  *   segments: any[],
  *   activeSet: Set<number>,
@@ -37,13 +40,22 @@ function fullyVisible(container, index) {
  *   singleSpeaker: boolean,
  *   speakerInfo: import("./speaker-menu").SpeakerInfo,
  *   actions: import("./correction-view").RowActions,
+ *   matches: Map<string, import("@/utils/segmentSearch").TextRange[]>,
+ *   currentMatch: string | null,
+ *   reveal: { index: number } | null,
+ *   ref?: import("react").Ref<HTMLDivElement>,
  * }} props
  */
 export function SegmentList({
     segments, activeSet, activeWords, followIndex, following, canPlay, onUserScroll, onSeek, editing, saves,
-    singleSpeaker, speakerInfo, actions,
+    singleSpeaker, speakerInfo, actions, matches, currentMatch, reveal, ref,
 }) {
     const containerRef = useRef(/** @type {HTMLDivElement | null} */ (null))
+    const setContainer = useCallback((element) => {
+        containerRef.current = element
+        if (typeof ref === "function") ref(element)
+        else if (ref) ref.current = element
+    }, [ref])
     const editingIndex = useMemo(
         () => (editing ? segments.findIndex((s) => s.seg_key === editing.segKey) : -1),
         [segments, editing],
@@ -92,9 +104,15 @@ export function SegmentList({
         if (!fullyVisible(container, followIndex)) virtualizer.scrollToIndex(followIndex, { align: "center" })
     }, [following, followIndex, virtualizer])
 
+    useEffect(() => {
+        const container = containerRef.current
+        if (!reveal || !container) return
+        if (!fullyVisible(container, reveal.index)) virtualizer.scrollToIndex(reveal.index, { align: "center" })
+    }, [reveal, virtualizer])
+
     return (
         <div
-            ref={containerRef}
+            ref={setContainer}
             tabIndex={0}
             aria-label="片段列表"
             // 撐滿外層（position: relative 的那一格）：高度不靠百分比，外層的高度由 flex 算出來，
@@ -120,6 +138,8 @@ export function SegmentList({
                             singleSpeaker={singleSpeaker}
                             speakerInfo={speakerInfo}
                             actions={actions}
+                            matchRanges={matches.get(segments[item.index].seg_key)}
+                            currentMatch={segments[item.index].seg_key === currentMatch}
                         />
                     </div>
                 ))}

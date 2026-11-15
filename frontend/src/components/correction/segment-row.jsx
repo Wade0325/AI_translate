@@ -5,6 +5,7 @@ import { formatClock } from "@/utils/formatters"
 import { wordPieces } from "@/utils/playhead"
 import { isUserDeleted, keepEditorFocus, shownText } from "@/utils/segmentCorrections"
 import { shownSpeaker, showsAsCorrected } from "@/utils/speakers"
+import { splitByMatches } from "@/utils/segmentSearch"
 import { SegmentEditor } from "./segment-editor"
 import { SegmentHistory } from "./segment-history"
 import { SpeakerMenu } from "./speaker-menu"
@@ -76,6 +77,21 @@ function selectionIn(container) {
 }
 
 /**
+ * 一段文字裡符合尋找的字標出來（#356）；沒有符合的字時照原樣。
+ *
+ * @param {string} text
+ * @param {import("@/utils/segmentSearch").TextRange[] | undefined} ranges 整個片段文字裡符合的字
+ * @param {string} className 符合的字的 class
+ * @param {number} [offset] text 在片段文字裡的開始位置
+ */
+function marked(text, ranges, className, offset = 0) {
+    if (!ranges) return text
+    return splitByMatches(text, ranges, offset).map((part, i) => (
+        part.match ? <mark key={i} className={className}>{part.text}</mark> : part.text
+    ))
+}
+
+/**
  * 片段列表的一列：開始時間、說話者與文字（#347），改文字、刪掉與還原（#348），以及改說話者（#354）。
  *
  * - 播放到這段時反白；有逐字時間時標出正在唸的字。點時間從片段的開頭播。
@@ -86,6 +102,7 @@ function selectionIn(container) {
  * - 使用者刪掉的片段留在原位，淡化並加上刪除線，可以還原。
  * - 點說話者是選單：改這個片段的說話者，或把這位說話者的片段全部換成另一位。整份當成同一位說話者時不顯示說話者：
  *   只改過說話者的片段不標「校正過」（標「歷程」），歷程裡也不列說話者的校正。
+ * - 尋找時標出符合的字（#356），現在跳到的那個片段標得更明顯。
  *
  * 播放時頁面每一格畫面都重畫，這裡用 memo：只有反白、正在唸的字、存檔狀態或內容變了的那幾列才重畫。
  *
@@ -101,9 +118,13 @@ function selectionIn(container) {
  *   singleSpeaker: boolean,
  *   speakerInfo: import("./speaker-menu").SpeakerInfo,
  *   actions: import("./correction-view").RowActions,
+ *   matchRanges?: import("@/utils/segmentSearch").TextRange[],
+ *   currentMatch?: boolean,
  * }} props
  */
-function SegmentRowView({ segment, active, activeWord, canPlay, onSeek, editing, save, singleSpeaker, speakerInfo, actions }) {
+function SegmentRowView({
+    segment, active, activeWord, canPlay, onSeek, editing, save, singleSpeaker, speakerInfo, actions, matchRanges, currentMatch,
+}) {
     const [expanded, setExpanded] = useState(false)
     const key = segment.seg_key
     const deleted = isUserDeleted(segment)
@@ -113,6 +134,9 @@ function SegmentRowView({ segment, active, activeWord, canPlay, onSeek, editing,
         () => (deleted || text !== segment.text ? null : wordPieces(segment.text, segment.words)),
         [deleted, text, segment],
     )
+    // 找的是校正後版本的文字：存檔中與失敗時寫的是送出的內容，對不上，不標
+    const matchesShown = !deleted && text === segment.text ? matchRanges : undefined
+    const matchClass = currentMatch ? "correction-match correction-match-current" : "correction-match"
     const clock = formatClock(segment.start)
     const saving = save?.status === "saving"
     const corrected = showsAsCorrected(segment, singleSpeaker)
@@ -142,25 +166,31 @@ function SegmentRowView({ segment, active, activeWord, canPlay, onSeek, editing,
     } else if (!text) {
         body = <span style={{ color: "#686888" }}>（沒有文字）</span>
     } else if (pieces) {
-        body = pieces.map((piece, i) => (piece.word == null || !canPlay ? (
-            <span key={i}>{piece.text}</span>
-        ) : (
-            <span
-                key={i}
-                data-word={piece.word}
-                className={piece.word === activeWord ? "correction-word correction-word-active" : "correction-word"}
-            >
-                {piece.text}
-            </span>
-        )))
+        let offset = 0
+        body = pieces.map((piece, i) => {
+            const content = marked(piece.text, matchesShown, matchClass, offset)
+            offset += piece.text.length
+            return piece.word == null || !canPlay ? (
+                <span key={i}>{content}</span>
+            ) : (
+                <span
+                    key={i}
+                    data-word={piece.word}
+                    className={piece.word === activeWord ? "correction-word correction-word-active" : "correction-word"}
+                >
+                    {content}
+                </span>
+            )
+        })
     } else {
-        body = text
+        body = marked(text, matchesShown, matchClass)
     }
 
     return (
         <div
             data-active={active || undefined}
             data-deleted={deleted || undefined}
+            data-current-match={currentMatch || undefined}
             style={{
                 ...ROW_STYLE,
                 background: active ? "rgba(45, 212, 168, 0.12)" : "transparent",

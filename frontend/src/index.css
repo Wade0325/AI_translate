@@ -92,3 +92,15 @@ body.sidebar-resizing {
   background: #2dd4a8;
   color: #1a1a2e;
 }
+
+/* 校正頁的尋找（#356）：符合的字；現在跳到的那個片段裡的更明顯。本機的片段一個字一段，
+   一處符合的字可能切成好幾個 mark，不加圓角，接起來才是連續的一塊 */
+.correction-match {
+  background: rgba(212, 167, 45, 0.35);
+  color: inherit;
+  padding: 0;
+}
+.correction-match-current {
+  background: #d4a72d;
+  color: #1a1a2e;
+}

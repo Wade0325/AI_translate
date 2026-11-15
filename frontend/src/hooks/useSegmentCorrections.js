@@ -22,15 +22,15 @@ const UNDO_SHOWN_MS = 6000;
 const SAVED_LABEL = '已存檔';
 
 /**
- * 剛存的那一次操作：「復原」收回它（id 是操作編號），label 是「復原」旁邊寫的字。
+ * 剛存的那一次操作：「已存檔，復原」那一格寫的字（label）與復原時送的操作編號（id）。
  *
  * @typedef {{ id: string, label: string }} LastOperation
  */
 
 /**
- * 校正頁改文字、刪掉與還原片段（#348）與改說話者（#354）：片段的校正後版本、每個片段的存檔狀態、正在改哪一個
- * 片段、新的說話者編號，以及剛存的那一次操作（「已存檔，復原」用）。校正的歷程（#355）：讀一個片段的歷程、
- * 回到某一版、整批復原。
+ * 校正頁改文字、刪掉與還原片段（#348）、改說話者（#354），以及全部取代（#356）：片段的校正後版本、每個片段的
+ * 存檔狀態、正在改哪一個片段、新的說話者編號，以及剛存的那一次操作（「已存檔，復原」用）。校正的歷程（#355）：
+ * 讀一個片段的歷程、回到某一版、整批復原。
  *
  * 每一次校正就是一個請求，存檔的結果（後端回的片段新內容）直接換進列表。actions 裡的函式身分不變，片段列表的
  * 每一列可以照常用 memo，只有改到的那幾列重畫。
@@ -53,6 +53,8 @@ export function useSegmentCorrections(taskUuid, initialSegments, initialNextSpea
   });
 
   const settleTimers = useRef(/** @type {Map<string, ReturnType<typeof setTimeout>>} */ (new Map()));
+  // 還沒有回應的校正：全部取代等它們存完才送，伺服器取代的才是畫面上最新的內容，晚到的回應也不會蓋掉取代的結果
+  const inflight = useRef(/** @type {Set<Promise<unknown>>} */ (new Set()));
   useEffect(() => {
     const timers = settleTimers.current;
     return () => timers.forEach(clearTimeout);
@@ -99,15 +101,25 @@ export function useSegmentCorrections(taskUuid, initialSegments, initialNextSpea
       dispatch({ type: 'start', segKey, request });
       // 存檔中不給復原上一次：免得按到的不是畫面上最新的那一次
       setLastOperation(null);
+      const pending = api.transcripts.correctSegment(taskUuid, segKey, request);
+      inflight.current.add(pending);
       try {
-        const { operation_id: operationId, segment } = await api.transcripts.correctSegment(taskUuid, segKey, request);
+        const { operation_id: operationId, segment } = await pending;
         applySegments([segment]);
         dispatch({ type: 'succeed', segKey });
         settleTimers.current.set(segKey, setTimeout(() => dispatch({ type: 'settle', segKey }), SAVED_SHOWN_MS));
         if (operationId) setLastOperation({ id: operationId, label: SAVED_LABEL });
       } catch (error) {
         dispatch({ type: 'fail', segKey, message: saveFailureMessage(error) });
+      } finally {
+        inflight.current.delete(pending);
       }
+    };
+
+    /** 復原或全部取代改到正在改的片段時，照伺服器回的內容，不把改之前打的字存回去。 */
+    const dropEditingIn = (updated) => {
+      const editingKey = latest.current.editing?.segKey;
+      if (editingKey && updated.some((s) => s.seg_key === editingKey)) setEditing(null);
     };
 
     const saving = (segKey) => latest.current.saves[segKey]?.status === 'saving';
@@ -121,9 +133,7 @@ export function useSegmentCorrections(taskUuid, initialSegments, initialNextSpea
       try {
         const result = await api.transcripts.undo(taskUuid, operationId);
         applySegments(result.segments);
-        // 正在改的片段被復原了：照復原之後的內容，不把改之前打的字存回去
-        const editingKey = latest.current.editing?.segKey;
-        if (editingKey && result.segments.some((s) => s.seg_key === editingKey)) setEditing(null);
+        dropEditingIn(result.segments);
         const { type, content } = messageOf(result);
         message[type](content);
         return result;
@@ -203,6 +213,8 @@ export function useSegmentCorrections(taskUuid, initialSegments, initialNextSpea
        * 「已把 N 個片段換成 Sx，復原」，按下去整批收回。
        */
       async reassignSpeaker(fromSpeaker, toSpeaker) {
+        // 和全部取代一樣，先等還沒存完的校正：免得晚到的回應蓋掉換過的說話者
+        await Promise.allSettled([...inflight.current]);
         setLastOperation(null);
         try {
           const result = await api.transcripts.reassignSpeaker(taskUuid, fromSpeaker, toSpeaker);
@@ -247,10 +259,39 @@ export function useSegmentCorrections(taskUuid, initialSegments, initialNextSpea
         setLastOperation(null);
       },
 
-      /** 「已存檔，復原」：收回剛存的那一次。 */
+      /**
+       * 全部取代（#356）：伺服器在同一個交易裡改完，算一次操作，做完出現「復原」可以整批收回。還沒存完的校正先等它們
+       * 存完。回伺服器的結果（實際改到的片段數與處數）；沒有取代成功時回 null，並寫出原因。
+       *
+       * @param {string} find
+       * @param {string} replacement
+       */
+      async replaceAll(find, replacement) {
+        await Promise.allSettled([...inflight.current]);
+        setLastOperation(null);
+        try {
+          const result = await api.transcripts.replaceAll(taskUuid, find, replacement);
+          applySegments(result.segments);
+          dropEditingIn(result.segments);
+          if (result.operation_id) {
+            setLastOperation({
+              id: result.operation_id,
+              label: `已取代 ${result.changed_segments} 個片段，一共 ${result.occurrences} 處`,
+            });
+          } else {
+            message.info('沒有片段需要改');
+          }
+          return result;
+        } catch (error) {
+          message.error(`沒有取代：${saveFailureMessage(error)}`);
+          return null;
+        }
+      },
+
+      /** 「已存檔，復原」：收回剛存的那一次（全部取代是整批收回）。 */
       async undo() {
-        const operationId = latest.current.lastOperation?.id;
-        if (operationId) await undoOperation(operationId, undoMessage);
+        const operation = latest.current.lastOperation;
+        if (operation) await undoOperation(operation.id, undoMessage);
       },
     };
   }, [taskUuid]);
