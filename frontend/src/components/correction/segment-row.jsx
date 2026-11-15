@@ -4,15 +4,9 @@ import { ChevronDown, ChevronRight, Trash2 } from "lucide-react"
 import { formatClock } from "@/utils/formatters"
 import { wordPieces } from "@/utils/playhead"
 import { isUserDeleted, keepEditorFocus, shownText, speakerCorrected } from "@/utils/segmentCorrections"
+import { shownSpeaker, showsAsCorrected } from "@/utils/speakers"
 import { SegmentEditor } from "./segment-editor"
-
-/** 說話者編號（S0、S1…）的顏色：照編號輪流用，同一位說話者在整份裡顏色不變。 */
-const SPEAKER_COLORS = ["#2dd4a8", "#d4a72d", "#47b8d4", "#e07a9f", "#8b5cf6", "#e0884f", "#7fc97f", "#c9c95c"]
-
-function speakerColor(speaker) {
-    const n = Number(/\d+/.exec(speaker)?.[0] ?? 0)
-    return SPEAKER_COLORS[n % SPEAKER_COLORS.length]
-}
+import { SpeakerMenu } from "./speaker-menu"
 
 const ROW_STYLE = {
     display: "flex",
@@ -78,13 +72,15 @@ function selectionIn(container) {
 }
 
 /**
- * 片段列表的一列：開始時間、說話者與文字（#347），以及改文字、刪掉與還原（#348）。
+ * 片段列表的一列：開始時間、說話者與文字（#347），改文字、刪掉與還原（#348），以及改說話者（#354）。
  *
  * - 播放到這段時反白；有逐字時間時標出正在唸的字。點時間從片段的開頭播。
  * - 點文字就開始改，游標放在點的地方；點的是一個字時，同時從那個字開始播（#347），邊聽邊改。
  * - 存檔中、已存與失敗寫在這一列；失敗時寫原因，留著打的字，可以重試或放棄。
  * - 校正過的片段有「校正過」，展開看得到原始轉錄，可以一鍵回到原始轉錄。
  * - 使用者刪掉的片段留在原位，淡化並加上刪除線，可以還原。
+ * - 點說話者是選單：改這個片段的說話者，或把這位說話者的片段全部換成另一位。整份當成同一位說話者時不顯示說話者，
+ *   只改過說話者的片段也不標「校正過」。
  *
  * 播放時頁面每一格畫面都重畫，這裡用 memo：只有反白、正在唸的字、存檔狀態或內容變了的那幾列才重畫。
  *
@@ -97,10 +93,12 @@ function selectionIn(container) {
  *   onSeek: (seconds: number) => void,
  *   editing: import("@/utils/segmentCorrections").Editing | null,
  *   save: import("@/utils/segmentCorrections").SaveState | undefined,
+ *   singleSpeaker: boolean,
+ *   speakerInfo: import("./speaker-menu").SpeakerInfo,
  *   actions: import("./correction-view").RowActions,
  * }} props
  */
-function SegmentRowView({ segment, active, activeWord, canPlay, onSeek, editing, save, actions }) {
+function SegmentRowView({ segment, active, activeWord, canPlay, onSeek, editing, save, singleSpeaker, speakerInfo, actions }) {
     const [expanded, setExpanded] = useState(false)
     const key = segment.seg_key
     const deleted = isUserDeleted(segment)
@@ -112,6 +110,7 @@ function SegmentRowView({ segment, active, activeWord, canPlay, onSeek, editing,
     )
     const clock = formatClock(segment.start)
     const saving = save?.status === "saving"
+    const corrected = showsAsCorrected(segment, singleSpeaker)
     // 這一列正在改時，按這一列的按鈕不讓文字框失去焦點
     const onButtonMouseDown = editing ? keepEditorFocus : undefined
 
@@ -176,18 +175,15 @@ function SegmentRowView({ segment, active, activeWord, canPlay, onSeek, editing,
             ) : (
                 <span className="correction-clock" style={{ ...TIME_STYLE, color: "#8888a8" }}>{clock}</span>
             )}
-            <span
-                style={{
-                    flexShrink: 0,
-                    minWidth: 28,
-                    color: segment.speaker ? speakerColor(segment.speaker) : "#686888",
-                    fontSize: 12,
-                    fontWeight: 600,
-                    lineHeight: "26px",
-                }}
-            >
-                {segment.speaker || ""}
-            </span>
+            {!singleSpeaker && (
+                <SpeakerMenu
+                    segKey={key}
+                    speaker={shownSpeaker(segment, save)}
+                    info={speakerInfo}
+                    disabled={saving || deleted}
+                    actions={actions}
+                />
+            )}
             <div style={{ flex: 1, minWidth: 0 }}>
                 <div
                     className="correction-text"
@@ -212,11 +208,11 @@ function SegmentRowView({ segment, active, activeWord, canPlay, onSeek, editing,
                         <Button size="small" type="link" onMouseDown={onButtonMouseDown} onClick={() => actions.discard(key)} style={{ color: "#8888a8" }}>放棄</Button>
                     </div>
                 )}
-                {expanded && segment.corrected && !deleted && (
+                {expanded && corrected && !deleted && (
                     <div style={{ marginTop: 6, padding: "6px 10px", borderRadius: 4, background: "#1a1a34", border: "1px solid #2a2a48" }}>
                         <div style={{ color: "#8888a8", fontSize: 12, lineHeight: "20px" }}>原始轉錄</div>
                         <div style={{ color: "#b8b8d0", fontSize: 13, lineHeight: "22px", overflowWrap: "anywhere" }}>
-                            {speakerCorrected(segment) && (
+                            {!singleSpeaker && speakerCorrected(segment) && (
                                 <span style={{ marginRight: 8, fontWeight: 600 }}>{segment.original_speaker || "（沒有說話者）"}</span>
                             )}
                             {segment.original_text || "（沒有文字）"}
@@ -248,7 +244,7 @@ function SegmentRowView({ segment, active, activeWord, canPlay, onSeek, editing,
                     </>
                 ) : (
                     <>
-                        {segment.corrected && (
+                        {corrected && (
                             <button
                                 type="button"
                                 aria-expanded={expanded}

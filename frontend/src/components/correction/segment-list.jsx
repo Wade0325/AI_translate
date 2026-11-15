@@ -34,11 +34,14 @@ function fullyVisible(container, index) {
  *   onSeek: (seconds: number) => void,
  *   editing: import("@/utils/segmentCorrections").Editing | null,
  *   saves: import("@/utils/segmentCorrections").Saves,
+ *   singleSpeaker: boolean,
+ *   speakerInfo: import("./speaker-menu").SpeakerInfo,
  *   actions: import("./correction-view").RowActions,
  * }} props
  */
 export function SegmentList({
-    segments, activeSet, activeWords, followIndex, following, canPlay, onUserScroll, onSeek, editing, saves, actions,
+    segments, activeSet, activeWords, followIndex, following, canPlay, onUserScroll, onSeek, editing, saves,
+    singleSpeaker, speakerInfo, actions,
 }) {
     const containerRef = useRef(/** @type {HTMLDivElement | null} */ (null))
     const editingIndex = useMemo(
@@ -114,6 +117,8 @@ export function SegmentList({
                             onSeek={onSeek}
                             editing={item.index === editingIndex ? editing : null}
                             save={saves[segments[item.index].seg_key]}
+                            singleSpeaker={singleSpeaker}
+                            speakerInfo={speakerInfo}
                             actions={actions}
                         />
                     </div>

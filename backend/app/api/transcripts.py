@@ -7,7 +7,8 @@
 音檔用 FileResponse 直接服務；Starlette 會處理 Range 請求，播放器才能拖曳。
 
 校正（#341，ADR 0011）：讀到的片段是校正後版本，另外帶著原始轉錄；改一個片段的文字、說話者與確認狀態，
-以及復原一次操作，都從這裡寫。校正後版本與校正紀錄的規則在 ``app.repositories.correction_repository``，
+把這位說話者全部換成另一位（#354），以及復原一次操作，都從這裡寫。「整份當成同一位說話者」的切換（#354）
+也在這裡改，它是任務的設定，不是校正。校正後版本與校正紀錄的規則在 ``app.repositories.correction_repository``，
 這裡只檢查請求。寫入端點和 History 的清單、讀取端點用同一個「能不能校正」的判斷
 （``app.services.correctability``）。轉錄的文字不寫進日誌（#25 故事 84）。
 
@@ -21,6 +22,7 @@ from typing import Collection, Dict, List, Optional, Tuple, cast
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
+from sqlalchemy import update
 from sqlalchemy.orm import Session
 
 from app.database.models import TranscriptionLog, TranscriptSegment
@@ -35,11 +37,15 @@ from app.repositories.transcript_segment_repository import TranscriptSegmentRepo
 from app.schemas.schemas import (
     SegmentCorrectionRequest,
     SegmentCorrectionResponse,
+    SpeakerReassignRequest,
+    SpeakerReassignResponse,
     TranscriptResponse,
     TranscriptSegmentResponse,
+    TranscriptSettingsRequest,
+    TranscriptSettingsResponse,
     UndoOperationResponse,
 )
-from app.services import audio_store, correctability
+from app.services import audio_store, correctability, output_format
 from app.services.correctability import Uncorrectable
 from app.utils.audio import get_mime_type
 from app.utils.identifiers import coerce_uuid
@@ -113,9 +119,30 @@ def get_transcript(task_uuid: str, db: Session = Depends(get_db)):
         audio_available=audio_store.resolve(log.audio_filename) is not None,
         correctable=blocker is None,
         uncorrectable_reason=blocker,
+        single_speaker=_single_speaker(log),
+        next_speaker=CorrectionRepository.next_speaker(db, log.task_uuid),
         segment_count=len(segments),
         segments=segments,
     )
+
+
+def _single_speaker(log: TranscriptionLog) -> bool:
+    """任務整份當成同一位說話者：下載不帶說話者標記的任務（和下載用同一條規則）。
+
+    說話者人數（#352）合併之前，這個設定是任務紀錄的 Multi-Speaker 開關：關著（False）是整份當成同一位，
+    開著與開關做出來之前的 None 是照模型分出的說話者顯示。人數合併之後改看人數，設定也改寫人數
+    （:func:`_set_single_speaker`），只改這兩處。
+    """
+    return not output_format.shows_speaker_labels(cast(Optional[bool], log.multi_speaker))
+
+
+def _set_single_speaker(db: Session, log: TranscriptionLog, single_speaker: bool) -> None:
+    """把任務切換成整份當成同一位說話者，或照模型分出的說話者顯示（:func:`_single_speaker` 的反向），並 commit。"""
+    db.execute(update(TranscriptionLog)
+               .where(TranscriptionLog.task_uuid == log.task_uuid)
+               .values(multi_speaker=not single_speaker))
+    db.commit()
+    db.refresh(log)
 
 
 def _normalized_text(text: str) -> str:
@@ -213,6 +240,42 @@ def undo_operation(task_uuid: str, operation_id: str, db: Session = Depends(get_
         operation_id=result.operation_id,
         segments=_segments(db, log, result.seg_keys) if result.seg_keys else [],
     )
+
+
+@router.post("/{task_uuid}/speakers/reassign", response_model=SpeakerReassignResponse)
+def reassign_speaker(task_uuid: str, body: SpeakerReassignRequest, db: Session = Depends(get_db)):
+    """把這位說話者全部換成另一位（#354）：校正後的說話者是 ``from_speaker`` 的每個片段（null 是沒有說話者的
+    片段，刪掉的片段也算），說話者都改成 ``to_speaker``。
+
+    每個改到的片段各記一筆校正紀錄，共用一個操作編號，在同一個交易裡寫完；做完可以用復原的端點整批收回。
+    ``to_speaker`` 可以是這個任務還沒出現過的編號（新的說話者）。
+    """
+    log = _correctable_log(db, task_uuid)
+    if body.to_speaker is None or not _SPEAKER_ID.fullmatch(body.to_speaker):
+        raise HTTPException(status_code=400, detail="說話者編號的格式不正確：要是 S 加數字，例如 S0、S1")
+    try:
+        operation_id, seg_keys = CorrectionRepository.reassign_speaker(
+            db, log.task_uuid, body.from_speaker, body.to_speaker)
+    except ValueError as e:
+        # 任務剛好被刪掉：什麼都沒寫
+        raise HTTPException(status_code=404, detail="找不到此任務紀錄") from e
+    return SpeakerReassignResponse(
+        operation_id=operation_id,
+        changed=len(seg_keys),
+        segments=_segments(db, log, seg_keys) if seg_keys else [],
+    )
+
+
+@router.patch("/{task_uuid}", response_model=TranscriptSettingsResponse)
+def update_transcript_settings(task_uuid: str, body: TranscriptSettingsRequest, db: Session = Depends(get_db)):
+    """改任務的設定：在「整份當成同一位說話者」與「照模型分出的說話者顯示」之間切換（#354）。
+
+    改的是任務的設定，不算校正，不留校正紀錄，也不重新轉錄；片段照樣存著模型分出的說話者編號。切換之後，
+    下載帶不帶說話者標記照輸出格式模組的規則（:func:`app.services.output_format.shows_speaker_labels`）。
+    """
+    log = _correctable_log(db, task_uuid)
+    _set_single_speaker(db, log, body.single_speaker)
+    return TranscriptSettingsResponse(single_speaker=_single_speaker(log))
 
 
 @router.get("/{task_uuid}/audio")

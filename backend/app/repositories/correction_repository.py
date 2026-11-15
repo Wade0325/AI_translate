@@ -27,6 +27,7 @@
 
 from __future__ import annotations
 
+import re
 import uuid
 from dataclasses import dataclass
 from enum import StrEnum
@@ -53,6 +54,9 @@ class CorrectionField(StrEnum):
 
 SEGMENT_FIELDS = (CorrectionField.TEXT, CorrectionField.SPEAKER)
 """對象是片段的校正。"""
+
+_SPEAKER_NUMBER = re.compile(r"S(\d+)")
+"""說話者編號（S0、S1…）裡的號碼：找新的說話者編號時用（:meth:`CorrectionRepository.next_speaker`）。"""
 
 
 class ReviewState(StrEnum):
@@ -213,6 +217,10 @@ class _CurrentContent:
         if self.recorded or self._wrote_review_state:
             audio_store.restart_retention(self._audio_filename)
 
+    def seg_keys(self) -> List[str]:
+        """這個任務每個片段的鍵，依 seq 排序。"""
+        return list(self._segments)
+
     def value(self, key: _Key) -> Optional[str]:
         field, target = key
         segment = self._segments.get(target)
@@ -273,6 +281,26 @@ class CorrectionRepository:
             for seg_key, state in (review_states or {}).items():
                 content.set_review_state(seg_key, state)
         return operation_id if content.recorded else None
+
+    @staticmethod
+    def reassign_speaker(db: Session, task_uuid, from_speaker: Optional[str], to_speaker: str,
+                         ) -> Tuple[Optional[uuid.UUID], Tuple[str, ...]]:
+        """把這位說話者全部換成另一位（#354）：校正後的說話者是 ``from_speaker`` 的每個片段（None 是沒有說話者
+        的片段；刪掉的片段也算，還原之後才是換過的說話者），說話者各記一筆改成 ``to_speaker`` 的校正紀錄，共用一個
+        操作編號，在同一個交易裡寫完，可以用 :meth:`undo_operation` 整批復原。
+
+        要換哪些片段在鎖住任務之後才判斷，同時送來的另一次校正不會被漏掉或蓋掉。回傳 (操作編號, 改到的片段的鍵)；
+        一個片段都沒有改到時操作編號是 None。任務紀錄不在時丟 ``ValueError``，什麼都不記。
+        """
+        operation_id = uuid.uuid4()
+        source = _normalized(CorrectionField.SPEAKER, from_speaker)
+        with _CurrentContent(db, _task_uuid(task_uuid)) as content:
+            for seg_key in content.seg_keys():
+                key = (CorrectionField.SPEAKER, seg_key)
+                if content.value(key) == source:
+                    content.change(key, to_speaker, operation_id)
+        seg_keys = tuple(str(record.target) for record in content.recorded)
+        return (operation_id if seg_keys else None), seg_keys
 
     @staticmethod
     def undo_operation(db: Session, task_uuid, operation_id) -> Optional[UndoResult]:
@@ -373,6 +401,28 @@ class CorrectionRepository:
                            CorrectionRecord.field == CorrectionField.SPEAKER_NAME.value)
         names = {target: _new(r) for (_, target), r in _latest(records).items()}
         return {target: name for target, name in names.items() if name}
+
+    @staticmethod
+    def next_speaker(db: Session, task_uuid) -> str:
+        """新的說話者編號（#354）：這個任務還沒用過的下一個號碼，例如用過 S0 到 S2 時是 S3；一個說話者編號都沒有
+        的任務是 S0。
+
+        「用過」包括原始轉錄的說話者、校正紀錄改過的說話者，以及取了說話者名稱的說話者編號：全部換成別人、或
+        指定之後又復原的編號，在原始轉錄與校正紀錄裡仍是另一個人，說話者名稱也是以編號為對象（#359），再拿來給
+        新的說話者會接手別人的名稱。所以取用過的最大號碼加一，不補中間空出來的號碼。查兩次資料庫。
+        """
+        uuid_val = _task_uuid(task_uuid)
+        used: Set[Optional[str]] = {
+            row[0] for row in db.query(TranscriptSegment.speaker)
+            .filter(TranscriptSegment.task_uuid == uuid_val).distinct()}
+        for field, target, new_value in (
+                db.query(CorrectionRecord.field, CorrectionRecord.target, CorrectionRecord.new_value)
+                .filter(CorrectionRecord.task_uuid == uuid_val,
+                        CorrectionRecord.field.in_([CorrectionField.SPEAKER.value,
+                                                    CorrectionField.SPEAKER_NAME.value]))):
+            used.add(target if field == CorrectionField.SPEAKER_NAME.value else new_value)
+        numbers = [int(m.group(1)) for m in (_SPEAKER_NUMBER.fullmatch(s or "") for s in used) if m]
+        return f"S{max(numbers) + 1 if numbers else 0}"
 
     @staticmethod
     def tasks_with_records(db: Session, task_uuids: Iterable[Any]) -> Set[str]:
