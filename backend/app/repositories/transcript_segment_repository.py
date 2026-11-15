@@ -1,12 +1,10 @@
 """transcript_segments 的資料庫操作。
 
-片段存的是原始轉錄，寫入後不再改；每一次校正另存一筆校正紀錄，校正後版本由兩者算出來（ADR 0011，
+片段存的是原始轉錄，校正不改它：每一次校正另存一筆校正紀錄，校正後版本由兩者算出來（ADR 0011，
 見 :mod:`app.repositories.correction_repository`）。片段的 ``source`` 只記原始轉錄的來源。
 
-同一個任務再完成一次時（Docker 模式的重派、批次從復原入口再結束一次），任務只要有任何校正紀錄或
-確認狀態，就不寫這次的片段，原本的片段一個都不動：校正紀錄對照的原始轉錄不能在使用者背後換掉。
-沒有的任務才用 :meth:`TranscriptSegmentRepository.replace_for_task` 整批換成這次的結果。這條規則由
-任務生命週期判斷（:mod:`app.tasks.lifecycle`）。
+同一個任務再完成一次時，什麼情況下整批換成這次的結果（:meth:`TranscriptSegmentRepository.replace_for_task`）、
+什麼情況下原本的片段一個都不動，由任務生命週期決定（:mod:`app.tasks.lifecycle`）。
 """
 
 from __future__ import annotations
@@ -41,8 +39,8 @@ class TranscriptSegmentRepository:
     def replace_for_task(db: Session, task_uuid, segments: List[Dict[str, Any]]) -> int:
         """一個任務的片段整批換成 ``segments``（原本有、這次沒有的也拿掉），回傳寫入的筆數。
 
-        只給沒有校正紀錄與確認狀態的任務用（見模組說明）。只寫進目前的交易、不 commit：任務生命週期
-        把它和任務記成完成一起提交。
+        只給沒有校正紀錄與確認狀態的任務用（見 :mod:`app.tasks.lifecycle`）。只寫進目前的交易、不
+        commit：任務生命週期把它和任務記成完成一起提交。
         """
         uuid_val = coerce_uuid(task_uuid)
         if uuid_val is None:

@@ -149,10 +149,9 @@ class TranscriptSegment(Base):
     （#115 之前的沒有）。說話者分離給出的每一段各一列，可逐段更新、可標記、可回溯；Gemini 的
     片段是它 LRC 的一行，Gemini 寫明結束的才有結束時間。
 
-    片段存的是原始轉錄，寫入後不再改；校正另存成校正紀錄（``CorrectionRecord``，ADR 0011），
-    以 ``seg_key``（確定性的切段序號 + 片段序號）為對象，``source`` 只記原始轉錄的來源。同一個
-    任務再完成一次時，任務已經有校正紀錄或確認狀態就不寫這次的片段，原本的都留著；沒有的才整批
-    換成這次的結果（見 ``app.tasks.lifecycle``）。``text_alt`` 存另一個模型對同一段的轉錄
+    片段存的是原始轉錄，校正不改它：校正另存成校正紀錄（``CorrectionRecord``，ADR 0011），以
+    ``seg_key``（確定性的切段序號 + 片段序號）為對象；``source`` 只記原始轉錄的來源。同一個任務
+    再完成一次時換不換片段，見 ``app.tasks.lifecycle``。``text_alt`` 存另一個模型對同一段的轉錄
     （local provider 的 VibeVoice 文字），兩者不一致處即是需要人工複查的候選。
     """
 

@@ -2979,7 +2979,7 @@ def redelivery(run_mode_spy):
     run_mode.use(previous)
 
 
-def mark_segment(engine, task_uuid: str, seg_key: str, **fields) -> None:
+def mark_review_state(engine, task_uuid: str, seg_key: str, review_state: str) -> None:
     """使用者在一個片段上標確認狀態：還沒有端點（#341），直接寫進片段。"""
     from sqlalchemy.orm import sessionmaker
 
@@ -2990,7 +2990,7 @@ def mark_segment(engine, task_uuid: str, seg_key: str, **fields) -> None:
         marked = db.query(TranscriptSegment).filter(
             TranscriptSegment.task_uuid == coerce_uuid(task_uuid),
             TranscriptSegment.seg_key == seg_key,
-        ).update(fields)
+        ).update({TranscriptSegment.review_state: review_state})
         db.commit()
     assert marked == 1
 
@@ -3011,8 +3011,9 @@ def correct_text(engine, task_uuid: str, seg_key: str, text: str) -> None:
     assert recorded is not None
 
 
-def corrections(engine, task_uuid: str) -> tuple[list[dict], list[tuple]]:
-    """一個任務的校正後版本（帶著原始轉錄），以及每一筆校正紀錄（對象、改了什麼、改前、改後、操作編號）。"""
+def corrected_version_and_records(engine, task_uuid: str) -> tuple[list[dict], list[tuple]]:
+    """一個任務的校正後版本（每個片段帶著原始轉錄），以及每一筆校正紀錄（編號、對象、改了什麼、改前、
+    改後、操作編號）。"""
     from sqlalchemy.orm import sessionmaker
 
     from app.database.models import CorrectionRecord
@@ -3076,7 +3077,8 @@ def completion_record(api, task_uuid: str) -> dict:
     """任務紀錄（History）裡這一次執行的欄位，以及描述轉錄結果的掉尾起點。"""
     record = api.get(f"/api/v1/history/{task_uuid}").json()
     return {"status": record["status"], "total_tokens": record["total_tokens"],
-            "cost": record["cost"], "completed_at": datetime.fromisoformat(record["completed_at"]),
+            "cost": record["cost"], "service_tier_used": record["service_tier_used"],
+            "completed_at": datetime.fromisoformat(record["completed_at"]),
             "tail_loss_from_seconds": record["tail_loss_from_seconds"]}
 
 
@@ -3092,25 +3094,29 @@ class TestCompletingTheSameTaskAgain:
     任務已經有校正紀錄或確認狀態時，這次的結果不寫進片段，原本的轉錄結果都留著：校正紀錄對照的
     原始轉錄不能在使用者背後換掉（ADR 0011）。這一次執行的紀錄照常更新。
 
-    第一次用 240,000 個 token（0.30 美元），第二次用 480,000 個（0.60 美元），價目見
-    TestSingleFileTask 的計價測試。掉尾的門檻改成 2 秒，見 TestTailLoss。
+    第一次以 Flex 完成，用 240,000 個 token（打五折，0.15 美元）；第二次以標準完成，用 480,000 個
+    （0.60 美元）。價目見 TestSingleFileTask 的計價測試。掉尾的門檻改成 2 秒，見 TestTailLoss。
     """
 
     @pytest.fixture(autouse=True)
     def _priced_and_tail_loss(self, fake, settings, monkeypatch):
         fake.model_capabilities = replace(fake.model_capabilities, pricing="per_token")
+        monkeypatch.setattr(settings, "flex_cost_discount", 0.5)
         monkeypatch.setattr(settings, "tail_loss_min_seconds", 2.0)
 
     @pytest.fixture
     def task_uuid(self, api, fake, redelivery):
-        """完成過一次（FIRST_RUN）的任務；再完成一次時，假供應商回 SECOND_RUN，用量是第一次的兩倍。"""
+        """完成過一次（FIRST_RUN）的任務；再完成一次時，假供應商回 SECOND_RUN，處理模式與用量都不同。"""
         fake.script = [list(FIRST_RUN), list(SECOND_RUN)]
         fake.usage = (200_000, 40_000)
+        fake.service_tier = "flex"
         done = transcribe(api, "uid-again")[-1]
         assert done["status_code"] == TaskStatus.COMPLETED
         assert [s["text"] for s in stored_segments(api, done["task_uuid"])] == FIRST_TEXTS
         assert done["result"]["tail_loss_from_seconds"] == pytest.approx(6.0)
+        assert done["result"]["cost"] == pytest.approx(0.15)
         fake.usage = (400_000, 80_000)
+        fake.service_tier = None
         return done["task_uuid"]
 
     def test_without_corrections_the_new_result_replaces_all(
@@ -3127,6 +3133,7 @@ class TestCompletingTheSameTaskAgain:
         second = completion_record(api, task_uuid)
         assert second["tail_loss_from_seconds"] is None
         assert (second["total_tokens"], second["cost"]) == (480_000, pytest.approx(0.60))
+        assert second["service_tier_used"] == "standard"
         assert second["completed_at"] > first["completed_at"]
         assert_broadcast_is_the_download(api, done)
         assert done["result"]["tail_loss_from_seconds"] is None
@@ -3135,13 +3142,13 @@ class TestCompletingTheSameTaskAgain:
         # 使用者校正了第一段的文字
         lambda engine, task_uuid, keys: correct_text(engine, task_uuid, keys[0], "おはようございます。"),
         # 只把第三段標成已確認，沒有校正
-        lambda engine, task_uuid, keys: mark_segment(engine, task_uuid, keys[2], review_state="verified"),
+        lambda engine, task_uuid, keys: mark_review_state(engine, task_uuid, keys[2], "verified"),
     ], ids=["corrected", "review-state-only"])
     def test_once_the_user_touched_the_task_its_result_is_kept(
             self, api, redelivery, task_uuid, test_engine, touch, app_log):
         touch(test_engine, task_uuid, [s["seg_key"] for s in stored_segments(api, task_uuid)])
         segments = stored_segments(api, task_uuid)
-        corrected = corrections(test_engine, task_uuid)
+        version_and_records = corrected_version_and_records(test_engine, task_uuid)
         frozen = frozen_original(test_engine, task_uuid)
         first = completion_record(api, task_uuid)
 
@@ -3150,13 +3157,14 @@ class TestCompletingTheSameTaskAgain:
         # 轉錄結果一個都不換：片段、校正紀錄與校正後版本、凍結的原始轉錄副本、掉尾的起點
         assert done["status_code"] == TaskStatus.COMPLETED
         assert stored_segments(api, task_uuid) == segments
-        assert corrections(test_engine, task_uuid) == corrected
+        assert corrected_version_and_records(test_engine, task_uuid) == version_and_records
         assert frozen_original(test_engine, task_uuid) == frozen
         second = completion_record(api, task_uuid)
         assert second["tail_loss_from_seconds"] == first["tail_loss_from_seconds"]
-        # 這一次執行的紀錄照常更新：狀態、完成時間、用量與費用
+        # 這一次執行的紀錄照常更新：狀態、完成時間、用量與費用、處理模式
         assert second["status"] == TaskStatus.COMPLETED
         assert (second["total_tokens"], second["cost"]) == (480_000, pytest.approx(0.60))
+        assert second["service_tier_used"] == "standard"
         assert second["completed_at"] > first["completed_at"]
         # 送給畫面的是留下來的結果，不是這次沒有存下來的
         assert_broadcast_is_the_download(api, done)
@@ -3166,8 +3174,8 @@ class TestCompletingTheSameTaskAgain:
         assert done["result"]["tail_loss_from_seconds"] == pytest.approx(6.0)
         assert (done["result"]["tokens_used"], done["result"]["cost"]) == (480_000, pytest.approx(0.60))
         # 日誌只寫任務 id，不寫內容
-        assert [entry for entry in app_log if "保留原本的片段" in entry] == [
-            f"任務已有校正，保留原本的片段 (task={task_uuid})"]
+        assert [entry for entry in app_log if "保留原本的轉錄結果" in entry] == [
+            f"任務已有校正紀錄或確認狀態，保留原本的轉錄結果 (task={task_uuid})"]
 
     def test_failing_to_store_the_new_segments_leaves_the_old_ones_untouched(
             self, api, redelivery, task_uuid, test_engine):
