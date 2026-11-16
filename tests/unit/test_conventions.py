@@ -178,6 +178,10 @@ USER_FACING_ERRORS = {
         "backend/app/provider/local/weights.py",
         "訊息是固定句子，只帶顯卡名稱、驅動與 PyTorch 的版本號、缺少的模型權重的 repo 名稱，以及"
         "匯入不了的套件或模組名稱（#11、#262、#311）；PyTorch 與套件的原始錯誤不放進訊息"),
+    "SpeakerNameTaken": (
+        "backend/app/repositories/correction_repository.py",
+        "訊息是固定句子，只帶同一個任務裡已經用了這個名稱的說話者編號與它的名稱，都是使用者自己在這個"
+        "任務裡看得到的內容（#359）"),
 }
 
 # 刻意把例外的原文放進回應的 except。值是理由

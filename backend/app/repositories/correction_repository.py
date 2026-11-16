@@ -6,7 +6,8 @@
 1. 一個片段在校正後版本裡的文字，是它最新一筆「文字」紀錄的改後；沒有紀錄就是原始轉錄。說話者同理。
    改過文字的片段，逐字時間照校正後的文字重算（#357），也不另外存。
 2. 刪掉片段是一筆「文字」紀錄，改後是空字串。文字是空的片段就是刪掉的片段。還原是再記一筆。
-3. 一個說話者編號現在的名稱，是它最新一筆「說話者名稱」紀錄的改後；空的就是沒有名稱。
+3. 一個說話者編號現在的名稱，是它最新一筆「說話者名稱」紀錄的改後；空的就是沒有名稱。同一個任務裡兩個說話者編號
+   不能有看起來一樣的名稱（:meth:`CorrectionRepository.set_speaker_name`，#359）。
 4. 和現在的內容相同的校正不記。
 5. 校正紀錄寫入後不改、不刪，只有刪掉整個任務時一起刪。
 
@@ -28,6 +29,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
@@ -58,6 +60,31 @@ SEGMENT_FIELDS = (CorrectionField.TEXT, CorrectionField.SPEAKER)
 
 _SPEAKER_NUMBER = re.compile(r"S(\d+)")
 """說話者編號（S0、S1…）裡的號碼：找新的說話者編號時用（:meth:`CorrectionRepository.next_speaker`）。"""
+
+
+def speaker_name_key(name: str) -> str:
+    """比對說話者名稱用的寫法：看起來一樣的名稱算同一個，英文不分大小寫，全形與半形相同（NFKC），例如 Amy、amy、
+    ＡＭＹ。"""
+    return unicodedata.normalize("NFKC", name).casefold()
+
+
+class SpeakerNameRefused(Exception):
+    """替說話者取名字被擋下，什麼都沒記（:meth:`CorrectionRepository.set_speaker_name`）。"""
+
+
+class UnknownSpeaker(SpeakerNameRefused):
+    """這個任務沒有這位說話者：校正後版本裡沒有片段是這個說話者編號。"""
+
+
+class SpeakerNameTaken(SpeakerNameRefused):
+    """另一位說話者現在的名稱和要取的名稱看起來一樣（:func:`speaker_name_key`）。
+
+    訊息寫給使用者看，api 原樣放進回應：固定句子，只帶同一個任務裡已經用了這個名稱的說話者編號與它現在的名稱，
+    兩者都是使用者自己在這個任務裡看得到的內容。
+    """
+
+    def __init__(self, speaker: str, name: str):
+        super().__init__(f"{speaker} 已經叫「{name}」：同一個任務裡兩位說話者不能取同一個名稱")
 
 
 class ReviewState(StrEnum):
@@ -296,6 +323,22 @@ class _CurrentContent:
             original = cast(Optional[str], segment.speaker)
         return _current(self._latest, key, original)
 
+    def speaker_names(self) -> Dict[str, str]:
+        """每個說話者編號現在的名稱，只列有名稱的；同一次操作裡已經記下的紀錄也算進去。"""
+        names = {target: self.value((field, target)) for field, target in self._latest
+                 if field == CorrectionField.SPEAKER_NAME}
+        return {target: name for target, name in names.items() if name}
+
+    def name_taken(self, key: _Key, value: Optional[str]) -> bool:
+        """把 ``key`` 改成 ``value`` 會讓兩位說話者同名：``key`` 是說話者名稱，``value`` 不是空的，而且另一位說話者
+        現在的名稱看起來和它一樣。"""
+        field, target = key
+        if field != CorrectionField.SPEAKER_NAME or not value:
+            return False
+        wanted = speaker_name_key(value)
+        return any(other != target and speaker_name_key(name) == wanted
+                   for other, name in self.speaker_names().items())
+
     def segments(self) -> Iterator[SegmentContent]:
         """每個片段現在的內容，依 seq 排序；同一次操作裡已經記下的紀錄也算進去。"""
         for seg_key in list(self._segments):
@@ -457,12 +500,44 @@ class CorrectionRepository:
                              if segment.speaker == source else []))
 
     @staticmethod
+    def set_speaker_name(db: Session, task_uuid, speaker: str, name: str) -> Optional[uuid.UUID]:
+        """替一個說話者編號取說話者名稱（#359），``name`` 是空字串時清掉名稱。取名字算一次校正：有變時記一筆說話者
+        名稱的校正紀錄，回傳操作編號，可以用 :meth:`undo_operation` 復原；和現在的名稱相同時什麼都不記，回傳 None。
+        名稱的格式（長度、方括號、換行、不能寫成說話者編號或時間）由呼叫的人檢查（``app.api.transcripts``）。
+
+        鎖住任務之後才判斷，同時送來的另一次校正不會讓判斷過時：
+
+        * 校正後版本裡沒有片段是 ``speaker``（刪掉的片段也算，它還原之後就是那一位）時丟 :class:`UnknownSpeaker`。
+        * 另一位說話者現在的名稱和 ``name`` 看起來一樣（:func:`speaker_name_key`）時，那一位還有片段就丟
+          :class:`SpeakerNameTaken`。那一位已經沒有片段時（片段全部換給了別人，畫面上看不到它），名稱從它移過來：
+          清掉它的名稱，和這一筆記在同一次操作裡，一次復原兩筆都回去。
+
+        丟出例外時什麼都不記；任務紀錄不在時丟 ``ValueError``。
+        """
+        operation_id = uuid.uuid4()
+        with _CurrentContent(db, _task_uuid(task_uuid)) as content:
+            present = {segment.speaker for segment in content.segments()}
+            if speaker not in present:
+                raise UnknownSpeaker(speaker)
+            if name:
+                wanted = speaker_name_key(name)
+                for other, other_name in content.speaker_names().items():
+                    if other == speaker or speaker_name_key(other_name) != wanted:
+                        continue
+                    if other in present:
+                        raise SpeakerNameTaken(other, other_name)
+                    content.change((CorrectionField.SPEAKER_NAME, other), "", operation_id)
+            content.change((CorrectionField.SPEAKER_NAME, speaker), name, operation_id)
+        return operation_id if content.recorded else None
+
+    @staticmethod
     def undo_operation(db: Session, task_uuid, operation_id) -> Optional[UndoResult]:
         """復原一次操作：那次操作的每一筆，對象現在的內容還是那一筆的改後，就再記一筆改回改前；
         之後又被改過的略過。復原也是一次操作，有自己的操作編號，所以復原可以再復原。
 
         從那次操作最後記的一筆往回處理，同一個對象在那次操作裡改了兩次時，才會一路改回操作前的內容；
-        較晚的那筆被略過時（之後又被改過），較早的也一起略過，不蓋掉之後的修改。
+        較晚的那筆被略過時（之後又被改過），較早的也一起略過，不蓋掉之後的修改。說話者名稱要改回的名稱已經被
+        另一位說話者用了時也略過（#359），兩位說話者不會因為復原而同名。
         這個任務沒有這次操作時回傳 None。
         """
         uuid_val = _task_uuid(task_uuid)
@@ -477,7 +552,7 @@ class CorrectionRepository:
         with _CurrentContent(db, uuid_val) as content:
             for record in reversed(records):
                 key = _key(record)
-                if key in changed_since or content.value(key) != _new(record):
+                if key in changed_since or content.value(key) != _new(record) or content.name_taken(key, _old(record)):
                     changed_since.add(key)
                     continue
                 content.change(key, _old(record), undo_id)

@@ -160,7 +160,10 @@ export const api = {
     replaceAll(taskUuid, find, replacement) {
       return request(`/transcripts/${taskUuid}/replace-all`, { method: 'POST', body: { find, replacement } });
     },
-    /** 復原一次操作（#341）：回 { restored, skipped, operation_id, segments }，segments 是那次操作改到的片段的新內容 */
+    /**
+     * 復原一次操作（#341）：回 { restored, skipped, operation_id, segments, speaker_names }，segments 是那次操作改到的
+     * 片段的新內容，speaker_names 是復原之後這個任務的說話者名稱（#359）
+     */
     undo(taskUuid, operationId) {
       return request(`/transcripts/${taskUuid}/operations/${operationId}/undo`, { method: 'POST' });
     },
@@ -184,6 +187,17 @@ export const api = {
       return request(`/transcripts/${taskUuid}/speakers/reassign`, {
         method: 'POST',
         body: { from_speaker: fromSpeaker, to_speaker: toSpeaker },
+      });
+    },
+    /**
+     * 替一個說話者編號設定或清掉說話者名稱（#359）：name 是空字串時清掉。算一次校正，可以復原。回
+     * { operation_id, speaker, name, speaker_names }：操作編號（名稱沒變時是 null）與這個任務現在的說話者名稱。
+     * 另一位說話者已經用了這個名稱時丟 409 的 ApiError，訊息寫明是哪一位
+     */
+    setSpeakerName(taskUuid, speaker, name) {
+      return request(`/transcripts/${taskUuid}/speakers/${encodeURIComponent(speaker)}/name`, {
+        method: 'PUT',
+        body: { name },
       });
     },
     /** 改任務的設定（#354）：{ single_speaker } 切換整份當成同一位說話者。不算校正。回改完之後的設定 */
