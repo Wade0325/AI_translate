@@ -1,9 +1,10 @@
 // @ts-nocheck
-import { Select, Switch, Typography, Input, Tooltip } from "antd"
+import { Select, Typography, Input, Tooltip } from "antd"
 import { Languages, Users, MessageSquareText, ChevronDown, CopyCheck } from "lucide-react"
 import { useState } from "react"
 import { ReasonText } from "@/components/disabled-reason"
 import { languages, formatLang } from "@/constants/languages"
+import { SPEAKER_MENU_HEIGHT, speakerCountOptions } from "@/utils/speakerCount"
 
 const { Text } = Typography
 const { TextArea } = Input
@@ -42,19 +43,20 @@ export function GlobalDefaults({ config, onChange, onApplyAll, fileCount = 0, pr
                 {/* Divider */}
                 <div style={{ height: 32, width: 1, background: '#3a3a5c', alignSelf: 'flex-end' }} />
 
-                {/* Multi-Speaker */}
+                {/* 說話者人數（#351）：Auto 照模型判斷，或 1 到 8 人；超過 8 人選 Auto */}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                     <Text style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: '#8888a8' }}>
-                        <Users size={12} /> Multi-Speaker
+                        <Users size={12} /> Speakers
                     </Text>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, height: 32 }}>
-                        <Switch
-                            size="small"
-                            aria-label="Multi-Speaker"
-                            checked={config.isMultiSpeaker}
-                            onChange={(v) => update({ isMultiSpeaker: v })}
-                        />
-                    </div>
+                    <Select
+                        value={config.speakerCount}
+                        onChange={(v) => update({ speakerCount: v })}
+                        options={speakerCountOptions}
+                        listHeight={SPEAKER_MENU_HEIGHT}
+                        aria-label="Speakers"
+                        style={{ width: 88 }}
+                        size="small"
+                    />
                 </div>
 
                 {/* Divider */}

@@ -143,7 +143,7 @@ export function correctionsBackend(segments, fields = {}) {
     const originals = new Map(segments.map((s) => [s.seg_key, s]))
     /** @type {Map<string, string | null>} */
     const reviewStates = new Map(segments.map((s) => [s.seg_key, s.review_state ?? null]))
-    const settings = { single_speaker: Boolean(fields.single_speaker) }
+    const settings = { single_speaker: Boolean(fields.single_speaker), speaker_count: fields.speaker_count ?? null }
     /** @type {{ id: number, seg_key: string, field: 'text' | 'speaker' | 'speaker_name', before: string | null,
      *   after: string | null, operation_id: string, created_at: string }[]} */
     const records = []
@@ -230,6 +230,10 @@ export function correctionsBackend(segments, fields = {}) {
                 }
             },
             'PATCH /transcripts/task-1': ({ body }) => {
+                // 和後端的 _set_single_speaker 相同：整份當成同一位寫 1 人；切到照模型分出的說話者顯示寫 'auto'，
+                // 本來就顯示的不改人數
+                if (body.single_speaker) settings.speaker_count = 1
+                else if (settings.single_speaker) settings.speaker_count = 'auto'
                 settings.single_speaker = body.single_speaker
                 return { ...settings }
             },

@@ -361,10 +361,10 @@ class TestSingleFileTask:
         # 結果頁的說話者人數是轉錄結果裡實際出現的說話者編號（S0、S1 兩位），不是使用者填的人數（#13 Q1）
         assert transcribe(api, "uid-speakers")[-1]["result"]["speaker_count"] == 2
 
-    def test_result_counts_no_speakers_when_no_segment_has_one(self, api, fake):
-        # Gemini 沒寫說話者代號的行沒有說話者編號：人數是 0，結果頁不顯示人數
+    def test_result_counts_one_speaker_when_no_segment_has_one(self, api, fake):
+        # Gemini 沒寫說話者代號的行沒有說話者編號：沒有說話者標記的行都算同一位說話者（ADR-0008），人數是 1
         fake.script = [[(0.2, 1.5, None, "おはよう。"), (2.3, 3.6, None, "こんにちは。")]]
-        assert transcribe(api, "uid-no-speakers")[-1]["result"]["speaker_count"] == 0
+        assert transcribe(api, "uid-no-speakers")[-1]["result"]["speaker_count"] == 1
 
     @pytest.mark.parametrize("fmt", ["srt", "vtt", "lrc", "txt"])
     def test_every_output_format_downloads(self, api, fmt):
@@ -547,7 +547,7 @@ class TestSpeechView:
         fake.script = [[(1.0, junction, 0, "前半。", [("前", 1.0, 3.0), ("半", 3.0, junction)]),
                         (junction, 8.0, 1, "後半。",
                          [("後", junction, junction), ("半", junction, 8.0)])]]
-        task_uuid = transcribe(api, "uid-junction", voiced=LONG_GAP, multi_speaker=True)[-1]["task_uuid"]
+        task_uuid = transcribe(api, "uid-junction", voiced=LONG_GAP)[-1]["task_uuid"]
 
         first, second = stored_segments(api, task_uuid)
         assert flat_times([first, second]) == pytest.approx([1.0, 6.3, 13.7, 15.4])
@@ -575,11 +575,11 @@ class TestSpeechView:
         fake.script = [[(1.0, junction, 0, "今日は、ありがとう。",
                          [("今", 1.0, 1.2), ("日", 1.2, 1.4), ("は", 1.4, 1.8),
                           ("ありがとう", 5.3, junction)])]]
-        task_uuid = transcribe(api, "uid-junction-end", voiced=LONG_GAP, multi_speaker=True)[-1]["task_uuid"]
+        task_uuid = transcribe(api, "uid-junction-end", voiced=LONG_GAP)[-1]["task_uuid"]
 
-        assert download(api, task_uuid, "lrc") == "[00:01.00][S0] 今日は、ありがとう。"
+        assert download(api, task_uuid, "lrc") == "[00:01.00]今日は、ありがとう。"
         assert download(api, task_uuid, "srt") == (
-            "1\n00:00:01,000 --> 00:00:06,300\n[S0] 今日は、ありがとう。\n")
+            "1\n00:00:01,000 --> 00:00:06,300\n今日は、ありがとう。\n")
 
     def test_kept_artifacts_record_what_was_sent(self, api, fake, settings, monkeypatch, data_dir):
         # 開了 VAD_KEEP_ARTIFACTS：送進模型的語音視圖與找到的有聲段存進 vad_artifacts/，給本機檢查
@@ -1377,24 +1377,25 @@ INTERJECTION = [
 class TestOutputFormatsFromSegments:
     @pytest.fixture
     def completed(self, api, fake):
-        """片段帶逐字時間的任務；不去靜音，時間軸就是送進供應商的時間。"""
+        """片段帶逐字時間的任務；不去靜音，時間軸就是送進供應商的時間。只有一位說話者，照模型判斷（預設）
+        的輸出不帶說話者標記。"""
         fake.model_capabilities = replace(fake.model_capabilities, remove_silence=False)
         # 一個片段兩句，逐字時間讓下載在句尾斷行
         fake.script = [[(0.2, 2.6, 0, "おはよう。こんにちは。",
                          [("おはよう", 0.24, 0.9), ("こんにちは", 1.5, 2.56)])]]
-        messages = transcribe(api, "uid-words", multi_speaker=True)
+        messages = transcribe(api, "uid-words")
         assert codes(messages)[-1] == TaskStatus.COMPLETED
         return messages[-1]
 
     @pytest.mark.parametrize("fmt, expected", [
-        ("lrc", "[00:00.24][S0] おはよう。\n[00:01.50][S0] こんにちは。"),
+        ("lrc", "[00:00.24]おはよう。\n[00:01.50]こんにちは。"),
         # SRT／VTT 的每一行在它最後一個詞的結束時結束（#96），不是下一行的開始或片段的結束；
         # 「おはよう」只講 0.66 秒，至少顯示 0.8 秒（ADR-0008）
-        ("srt", "1\n00:00:00,240 --> 00:00:01,040\n[S0] おはよう。\n\n"
-                "2\n00:00:01,500 --> 00:00:02,560\n[S0] こんにちは。\n"),
-        ("vtt", "WEBVTT\n\n00:00:00.240 --> 00:00:01.040\n[S0] おはよう。\n\n"
-                "00:00:01.500 --> 00:00:02.560\n[S0] こんにちは。\n"),
-        ("txt", "[S0] おはよう。\n[S0] こんにちは。"),
+        ("srt", "1\n00:00:00,240 --> 00:00:01,040\nおはよう。\n\n"
+                "2\n00:00:01,500 --> 00:00:02,560\nこんにちは。\n"),
+        ("vtt", "WEBVTT\n\n00:00:00.240 --> 00:00:01.040\nおはよう。\n\n"
+                "00:00:01.500 --> 00:00:02.560\nこんにちは。\n"),
+        ("txt", "おはよう。\nこんにちは。"),
     ])
     def test_downloads_break_and_end_lines_using_word_timings(
             self, api, completed, fmt, expected):
@@ -1405,10 +1406,13 @@ class TestOutputFormatsFromSegments:
         broadcast = completed["result"]["transcripts"][fmt]
         assert broadcast == download(api, completed["task_uuid"], fmt)
 
-    def test_frozen_original_transcription_is_the_lrc_download(self, api, completed, test_engine):
-        # 凍結的原始轉錄副本和 Multi-Speaker 開著時下載的 LRC 一樣，由輸出格式模組從轉錄結果產生
+    def test_frozen_original_transcription_is_the_lrc_download_with_labels(self, api, completed, test_engine):
+        # 凍結的原始轉錄副本由輸出格式模組從轉錄結果產生，和下載的 LRC 只差在不論說話者人數都帶說話者標記：
+        # 只有一位說話者、下載不帶時也帶（ADR-0007）
         task_uuid = completed["task_uuid"]
-        assert frozen_original(test_engine, task_uuid) == download(api, task_uuid, "lrc")
+        assert download(api, task_uuid, "lrc") == "[00:00.24]おはよう。\n[00:01.50]こんにちは。"
+        assert frozen_original(test_engine, task_uuid) == (
+            "[00:00.24][S0] おはよう。\n[00:01.50][S0] こんにちは。")
 
     @pytest.fixture
     def across_cut_silence(self, api, fake):
@@ -1420,7 +1424,7 @@ class TestOutputFormatsFromSegments:
         fake.script = [[(0.8, 8.2, 0, "今日は、ありがとう。",
                          [("今", 1.0, 1.2), ("日", 1.2, 1.4), ("は", 1.4, 1.8),
                           ("ありがとう", 7.0, 8.0)])]]
-        messages = transcribe(api, "uid-gap", voiced=LONG_GAP, multi_speaker=True)
+        messages = transcribe(api, "uid-gap", voiced=LONG_GAP)
         assert codes(messages)[-1] == TaskStatus.COMPLETED
         return messages[-1]
 
@@ -1428,15 +1432,15 @@ class TestOutputFormatsFromSegments:
             self, api, across_cut_silence):
         # 還原回原音檔超過 12 秒，在讀點斷開，第二行落在剪掉的靜音之後
         assert download(api, across_cut_silence["task_uuid"], "lrc") == (
-            "[00:01.00][S0] 今日は、\n[00:14.40][S0] ありがとう。")
+            "[00:01.00]今日は、\n[00:14.40]ありがとう。")
 
     def test_subtitle_end_times_are_restored_to_the_original_timeline(
             self, api, across_cut_silence):
         # 「は」在 1.8 秒結束；「ありがとう」在語音視圖的 8.0 秒結束，還原回原音檔是 15.4 秒。
         # 結束時間和開始時間一樣取到 0.01 秒，不受還原時的浮點誤差影響
         assert download(api, across_cut_silence["task_uuid"], "srt") == (
-            "1\n00:00:01,000 --> 00:00:01,800\n[S0] 今日は、\n\n"
-            "2\n00:00:14,400 --> 00:00:15,400\n[S0] ありがとう。\n")
+            "1\n00:00:01,000 --> 00:00:01,800\n今日は、\n\n"
+            "2\n00:00:14,400 --> 00:00:15,400\nありがとう。\n")
 
     @pytest.mark.parametrize("fmt, expected", [
         ("srt", "1\n00:00:00,500 --> 00:00:03,500\n<font color=\"#FFDD55\">[S1] 你拉不拉货。</font>\n\n"
@@ -1453,7 +1457,7 @@ class TestOutputFormatsFromSegments:
         # S1 的片段斷成的第二行排在「对」後面
         fake.model_capabilities = replace(fake.model_capabilities, remove_silence=False)
         fake.script = [list(INTERJECTION)]
-        messages = transcribe(api, "uid-interjection", multi_speaker=True)
+        messages = transcribe(api, "uid-interjection")
 
         assert codes(messages)[-1] == TaskStatus.COMPLETED
         assert download(api, messages[-1]["task_uuid"], fmt) == expected
@@ -1469,7 +1473,7 @@ class TestOutputFormatsFromSegments:
         # 供應商只給開始時間：照以前，下一行的開始，最後一行加 5 秒
         fake.model_capabilities = replace(fake.model_capabilities, remove_silence=False)
         fake.script = [[(0.25, None, 0, "おはよう。"), (2.5, None, 1, "こんにちは。")]]
-        messages = transcribe(api, "uid-no-end", multi_speaker=True)
+        messages = transcribe(api, "uid-no-end")
 
         assert codes(messages)[-1] == TaskStatus.COMPLETED
         assert download(api, messages[-1]["task_uuid"], fmt) == expected
@@ -1480,56 +1484,163 @@ class TestOutputFormatsFromSegments:
         fake.script = [[(0.2, 0.9, 0, None),
                         (1.0, 2.6, 1, "おはよう。こんにちは。",
                          [("おはよう", 1.04, 1.6), ("こんにちは", None, 2.56)])]]
-        messages = transcribe(api, "uid-untimed", multi_speaker=True)
+        messages = transcribe(api, "uid-untimed", speaker_count=2)
 
         assert codes(messages)[-1] == TaskStatus.COMPLETED
+        # 沒有文字的 S0 不在輸出裡，只剩一位說話者，不帶說話者標記
         assert download(api, messages[-1]["task_uuid"], "lrc") == (
-            "[00:01.00][S1] おはよう。こんにちは。")
+            "[00:01.00]おはよう。こんにちは。")
 
 
-# ─── Multi-Speaker 開關（#13 Q1） ───────────────────────────────────────────
+# ─── 說話者人數（#351、#352） ────────────────────────────────────────────────
 
-class TestMultiSpeakerOff:
-    """關掉時四種輸出格式都不帶說話者標記；片段與凍結的原始轉錄副本照樣有說話者編號。開著時的
-    輸出見上面 :class:`TestOutputFormatsFromSegments` 的插話。"""
+ONE_SPEAKER = [(0.2, 2.6, 0, "おはよう。こんにちは。", [("おはよう", 0.24, 0.9), ("こんにちは", 1.5, 2.56)])]
+"""只有 S0 一位說話者。"""
 
-    @pytest.fixture
-    def interjection(self, api, fake):
-        """沒帶 Multi-Speaker 的任務（請求的預設是關）：S0 在 S1 講話時插話。"""
+# 人數做出來之前的任務下載的內容，和以前逐位元組相同。帶標記的 SRT／VTT 和
+# TestOutputFormatsFromSegments 的插話相同；不帶標記的是以前 Multi-Speaker 關著時的結果
+INTERJECTION_LABELLED = {
+    "lrc": "[00:00.50][S1] 你拉不拉货。\n[00:04.00][S1] 但是。\n[00:03.00][S0] 对",
+    "txt": "[S1] 你拉不拉货。\n[S1] 但是。\n[S0] 对",
+    "srt": "1\n00:00:00,500 --> 00:00:03,500\n<font color=\"#FFDD55\">[S1] 你拉不拉货。</font>\n\n"
+           "2\n00:00:03,000 --> 00:00:03,800\n[S0] 对\n\n"
+           "3\n00:00:04,000 --> 00:00:06,500\n<font color=\"#FFDD55\">[S1] 但是。</font>\n",
+    "vtt": "WEBVTT\n\n00:00:00.500 --> 00:00:03.500\n<c.yellow>[S1] 你拉不拉货。</c>\n\n"
+           "00:00:03.000 --> 00:00:03.800\n[S0] 对\n\n"
+           "00:00:04.000 --> 00:00:06.500\n<c.yellow>[S1] 但是。</c>\n",
+}
+INTERJECTION_UNLABELLED = {
+    # LRC、TXT 照片段的順序；行首沒有說話者標記，時間戳後面直接接文字
+    "lrc": "[00:00.50]你拉不拉货。\n[00:04.00]但是。\n[00:03.00]对",
+    "txt": "你拉不拉货。\n但是。\n对",
+    # 沒有標記的行都算同一位說話者（ADR-0008）：不重疊，S1 的字幕在「对」開始時結束；也不上色
+    "srt": "1\n00:00:00,500 --> 00:00:03,000\n你拉不拉货。\n\n"
+           "2\n00:00:03,000 --> 00:00:03,800\n对\n\n"
+           "3\n00:00:04,000 --> 00:00:06,500\n但是。\n",
+    "vtt": "WEBVTT\n\n00:00:00.500 --> 00:00:03.000\n你拉不拉货。\n\n"
+           "00:00:03.000 --> 00:00:03.800\n对\n\n"
+           "00:00:04.000 --> 00:00:06.500\n但是。\n",
+}
+ONE_SPEAKER_LABELLED_LRC = "[00:00.24][S0] おはよう。\n[00:01.50][S0] こんにちは。"
+
+
+def make_old_task(engine, task_uuid: str, multi_speaker: bool | None) -> None:
+    """把任務紀錄改成人數做出來之前的樣子：沒有說話者人數，只有當時的 Multi-Speaker 開關（None 是開關
+    做出來之前，#259）。片段與凍結的原始轉錄副本照舊。"""
+    from sqlalchemy.orm import sessionmaker
+
+    from app.repositories.history_repository import HistoryRepository
+
+    with sessionmaker(bind=engine)() as db:
+        record = HistoryRepository().get_log_by_uuid(db, task_uuid)
+        record.speaker_count = None
+        record.multi_speaker = multi_speaker
+        db.commit()
+
+
+def completed_again(engine, task_uuid: str) -> dict:
+    """從任務紀錄重新產生完成時送給畫面的結果（批次取回、接回連線時用的那一份）。"""
+    from sqlalchemy.orm import sessionmaker
+
+    from app.tasks.lifecycle import completed_result
+
+    with sessionmaker(bind=engine)() as db:
+        return completed_result(db, task_uuid)
+
+
+class TestSpeakerCount:
+    """說話者人數決定輸出帶不帶說話者標記（#351 第 3 點）：整份當成同一位說話者（選 1 人）時不帶；照模型
+    判斷與 2 到 8 人時，輸出裡有兩位以上的說話者才帶。片段與凍結的原始轉錄副本照樣有說話者編號。
+    人數做出來之前的任務照當時 Multi-Speaker 開關的規則，下載結果不變。"""
+
+    def finish(self, api, fake, file_uid: str, script, **fields) -> dict:
         fake.model_capabilities = replace(fake.model_capabilities, remove_silence=False)
-        fake.script = [list(INTERJECTION)]
-        messages = transcribe(api, "uid-multi-speaker-off")
+        fake.script = [list(script)]
+        messages = transcribe(api, file_uid, **fields)
         assert codes(messages)[-1] == TaskStatus.COMPLETED
         return messages[-1]
 
-    @pytest.mark.parametrize("fmt, expected", [
-        # LRC、TXT 照片段的順序；行首沒有說話者標記，時間戳後面直接接文字
-        ("lrc", "[00:00.50]你拉不拉货。\n[00:04.00]但是。\n[00:03.00]对"),
-        ("txt", "你拉不拉货。\n但是。\n对"),
-        # 沒有標記的行都算同一位說話者（ADR-0008）：不重疊，S1 的字幕在「对」開始時結束；也不上色
-        ("srt", "1\n00:00:00,500 --> 00:00:03,000\n你拉不拉货。\n\n"
-                "2\n00:00:03,000 --> 00:00:03,800\n对\n\n"
-                "3\n00:00:04,000 --> 00:00:06,500\n但是。\n"),
-        ("vtt", "WEBVTT\n\n00:00:00.500 --> 00:00:03.000\n你拉不拉货。\n\n"
-                "00:00:03.000 --> 00:00:03.800\n对\n\n"
-                "00:00:04.000 --> 00:00:06.500\n但是。\n"),
-    ])
-    def test_downloads_have_no_speaker_labels_and_do_not_overlap(
-            self, api, interjection, fmt, expected):
-        assert download(api, interjection["task_uuid"], fmt) == expected
+    def downloads(self, api, task_uuid: str) -> dict:
+        return {fmt: download(api, task_uuid, fmt) for fmt in ("lrc", "txt", "srt", "vtt")}
 
-    @pytest.mark.parametrize("fmt", ["lrc", "srt", "vtt", "txt"])
-    def test_completion_broadcast_matches_the_download(self, api, interjection, fmt):
-        broadcast = interjection["result"]["transcripts"][fmt]
-        assert broadcast == download(api, interjection["task_uuid"], fmt)
+    def test_task_record_keeps_the_count_and_not_the_old_switch(self, api, fake, db_session):
+        # 沒帶人數是照模型判斷；新任務不再寫 multi_speaker
+        default = self.finish(api, fake, "uid-count-default", ONE_SPEAKER)
+        three = self.finish(api, fake, "uid-count-three", ONE_SPEAKER, speaker_count=3)
 
-    def test_segments_and_the_frozen_original_keep_the_speakers(
-            self, api, interjection, test_engine):
-        # 原始轉錄不少資訊（ADR-0007）：只在產生輸出格式時省略標記
-        task_uuid = interjection["task_uuid"]
+        assert [(r.speaker_count, r.multi_speaker) for r in (
+            task_record(db_session, default["task_uuid"]), task_record(db_session, three["task_uuid"]))
+        ] == [("auto", None), ("3", None)]
+
+    def test_auto_labels_several_speakers(self, api, fake):
+        end = self.finish(api, fake, "uid-count-auto", INTERJECTION)
+
+        assert self.downloads(api, end["task_uuid"]) == INTERJECTION_LABELLED
+        assert (end["result"]["speaker_count"], end["result"]["selected_speaker_count"]) == (2, "auto")
+
+    def test_auto_with_one_speaker_is_not_labelled(self, api, fake, test_engine):
+        # 結果只有一位說話者：不帶。凍結的原始轉錄副本照樣帶
+        end = self.finish(api, fake, "uid-count-auto-one", ONE_SPEAKER)
+
+        assert download(api, end["task_uuid"], "lrc") == "[00:00.24]おはよう。\n[00:01.50]こんにちは。"
+        assert end["result"]["speaker_count"] == 1
+        assert frozen_original(test_engine, end["task_uuid"]) == ONE_SPEAKER_LABELLED_LRC
+
+    def test_one_speaker_treats_the_whole_audio_as_one_speaker(self, api, fake, test_engine):
+        # 選 1 人：模型分出兩位也不帶，所有行算同一位說話者、不重疊；結果頁的人數是 1。本機照舊分說話者、
+        # 照舊存說話者編號（ADR-0007）
+        end = self.finish(api, fake, "uid-count-one", INTERJECTION, speaker_count=1)
+        task_uuid = end["task_uuid"]
+
+        assert self.downloads(api, task_uuid) == INTERJECTION_UNLABELLED
+        assert (end["result"]["speaker_count"], end["result"]["selected_speaker_count"]) == (1, 1)
         assert [s["speaker"] for s in stored_segments(api, task_uuid)] == ["S1", "S0"]
-        assert frozen_original(test_engine, task_uuid) == (
-            "[00:00.50][S1] 你拉不拉货。\n[00:04.00][S1] 但是。\n[00:03.00][S0] 对")
+        assert frozen_original(test_engine, task_uuid) == INTERJECTION_LABELLED["lrc"]
+
+    def test_count_different_from_the_result(self, api, fake):
+        # 選了 3 人，結果有 2 位：照樣帶標記、照樣完成；完成時的結果帶著兩個數字，結果頁照它們提醒
+        end = self.finish(api, fake, "uid-count-mismatch", INTERJECTION, speaker_count=3)
+
+        assert self.downloads(api, end["task_uuid"]) == INTERJECTION_LABELLED
+        assert (end["result"]["speaker_count"], end["result"]["selected_speaker_count"]) == (2, 3)
+
+    def test_count_with_only_one_speaker_in_the_result_is_not_labelled(self, api, fake):
+        # 選了 2 人、結果卻只有一位：不帶
+        end = self.finish(api, fake, "uid-count-two-got-one", ONE_SPEAKER, speaker_count=2)
+
+        assert download(api, end["task_uuid"], "txt") == "おはよう。\nこんにちは。"
+        assert (end["result"]["speaker_count"], end["result"]["selected_speaker_count"]) == (1, 2)
+
+    @pytest.mark.parametrize("speaker_count", ["auto", 1, 3])
+    def test_completion_broadcast_matches_the_download(self, api, fake, test_engine, speaker_count):
+        end = self.finish(api, fake, f"uid-count-broadcast-{speaker_count}", INTERJECTION,
+                          speaker_count=speaker_count)
+
+        assert end["result"]["transcripts"] == self.downloads(api, end["task_uuid"])
+        assert completed_again(test_engine, end["task_uuid"])["transcripts"] == end["result"]["transcripts"]
+        assert ({k: completed_again(test_engine, end["task_uuid"])[k]
+                 for k in ("speaker_count", "selected_speaker_count")}
+                == {k: end["result"][k] for k in ("speaker_count", "selected_speaker_count")})
+
+    @pytest.mark.parametrize("multi_speaker, script, expected", [
+        (True, INTERJECTION, INTERJECTION_LABELLED),
+        (None, INTERJECTION, INTERJECTION_LABELLED),
+        (False, INTERJECTION, INTERJECTION_UNLABELLED),
+        # 開關開著的舊任務只有一位說話者也帶，和以前相同
+        (True, ONE_SPEAKER, {"lrc": ONE_SPEAKER_LABELLED_LRC}),
+        (None, ONE_SPEAKER, {"lrc": ONE_SPEAKER_LABELLED_LRC}),
+    ], ids=["switch-on", "before-the-switch", "switch-off", "switch-on-one-speaker",
+            "before-the-switch-one-speaker"])
+    def test_tasks_from_before_the_count_download_as_before(
+            self, api, fake, test_engine, multi_speaker, script, expected):
+        end = self.finish(api, fake, f"uid-old-{multi_speaker}-{len(script)}", script)
+        make_old_task(test_engine, end["task_uuid"], multi_speaker)
+
+        downloads = self.downloads(api, end["task_uuid"])
+        assert {fmt: downloads[fmt] for fmt in expected} == expected
+        again = completed_again(test_engine, end["task_uuid"])
+        assert again["transcripts"] == downloads
+        assert again["selected_speaker_count"] is None
 
 
 # ─── 模型不屬於供應商 ───────────────────────────────────────────────────────
@@ -2265,13 +2376,14 @@ class TestUserSuppliedText:
         # 整段一次送出：去靜音之後的 7.2 秒（見 VOICED）
         assert fake.durations == pytest.approx([7.2], abs=0.01)
 
-    def test_supplement_and_multi_speaker_still_apply(self, api, fake):
-        # 補充說明照樣接在後面；Multi-Speaker 開著時要求標出說話者代號
-        transcribe(api, "uid-user-text-supplement", source_lang="ja", multi_speaker=True,
+    def test_supplement_and_speaker_count_still_apply(self, api, fake):
+        # 補充說明照樣接在後面；選了 2 人時寫明有幾位說話者
+        transcribe(api, "uid-user-text-supplement", source_lang="ja", speaker_count=2,
                    prompt="說話者是兩位主持人", user_supplied_text=USER_TEXT)
 
         assert fake.prompts == [build_user_text_prompt(
-            USER_TEXT, source_lang="ja", multi_speaker=True, supplement="說話者是兩位主持人")]
+            USER_TEXT, source_lang="ja", speaker_count=2, supplement="說話者是兩位主持人")]
+        assert "音檔中共有 2 位說話者" in fake.prompts[0]
 
     @pytest.mark.parametrize("user_text", [None, "", " \n"], ids=["null", "empty", "blank"])
     def test_without_user_text_the_prompt_is_unchanged(self, api, fake, user_text):
@@ -2372,7 +2484,7 @@ class TestTraditionalOutput:
         # 本機的模型寫簡體：存下的片段、四種下載、完成時的廣播與凍結的原始轉錄副本都是繁體，
         # 字形與用詞都換成台灣的（「软件的信息」→「軟體的資訊」），「台」不寫成「臺」
         fake.script = [[(0.2, 1.5, 0, "我们在台湾开会。"), (3.0, 3.6, 1, "软件的信息。")]]
-        end = transcribe(api, "uid-traditional", source_lang="zh-TW", multi_speaker=True)[-1]
+        end = transcribe(api, "uid-traditional", source_lang="zh-TW")[-1]
 
         assert end["status_code"] == TaskStatus.COMPLETED
         task_uuid = end["task_uuid"]

@@ -49,6 +49,7 @@ from app.celery.models import BatchFileItemParams, BatchTranscriptionTaskParams
 from app.core.batch_state import IN_PROGRESS, BatchState
 from app.core.config import get_settings
 from app.core.default_prompt import Prompt, build_prompt
+from app.core.speaker_count import SpeakerCount
 from app.core.error_codes import ErrorCode, TaskFailedError
 from app.core.task_status import TaskStatus
 from app.database.models import BatchFile, BatchJob
@@ -803,7 +804,7 @@ def _prompt(item: BatchFileItemParams, params: BatchTranscriptionTaskParams) -> 
     return Prompt.plain(build_prompt(
         source_lang=item.source_lang or params.source_lang,
         target_lang=item.target_lang or params.target_lang,
-        multi_speaker=_multi_speaker(item, params),
+        speaker_count=_speaker_count(item, params),
         template=params.prompt_template,
         supplement=item.prompt or params.prompt,
     ))
@@ -819,7 +820,7 @@ def _task(item: BatchFileItemParams, params: BatchTranscriptionTaskParams, promp
         provider=params.provider,
         model=params.model,
         source_lang=item.source_lang or params.source_lang,
-        multi_speaker=_multi_speaker(item, params),
+        speaker_count=_speaker_count(item, params),
         target_lang=item.target_lang or params.target_lang,
         session_id=params.session_id or params.batch_id,
         batch_id=params.batch_id,
@@ -827,9 +828,9 @@ def _task(item: BatchFileItemParams, params: BatchTranscriptionTaskParams, promp
     )
 
 
-def _multi_speaker(item: BatchFileItemParams, params: BatchTranscriptionTaskParams) -> bool:
-    """這個檔案的 Multi-Speaker 開關：個別檔案的設定優先，沒設定的用批次的。"""
-    return params.multi_speaker if item.multi_speaker is None else item.multi_speaker
+def _speaker_count(item: BatchFileItemParams, params: BatchTranscriptionTaskParams) -> SpeakerCount:
+    """這個檔案的說話者人數：個別檔案的設定優先，沒設定的用批次的。"""
+    return params.speaker_count if item.speaker_count is None else item.speaker_count
 
 
 def _create_record(db: Session, params: BatchTranscriptionTaskParams, files: Sequence[_File], *,
@@ -846,7 +847,7 @@ def _create_record(db: Session, params: BatchTranscriptionTaskParams, files: Seq
             "prompt": build_prompt(
                 source_lang=params.source_lang,
                 target_lang=params.target_lang,
-                multi_speaker=params.multi_speaker,
+                speaker_count=params.speaker_count,
                 template=params.prompt_template,
                 supplement=params.prompt,
             ),

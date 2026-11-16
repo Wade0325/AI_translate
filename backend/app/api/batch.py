@@ -309,7 +309,7 @@ def _submit_batch(request_data: WebSocketBatchRequest, batch_id: str) -> Dispatc
             source_lang=f.source_lang,
             target_lang=f.target_lang,
             prompt=f.prompt,
-            multi_speaker=f.multi_speaker,
+            speaker_count=f.speaker_count,
         ))
 
     if not file_items:
@@ -331,7 +331,7 @@ def _submit_batch(request_data: WebSocketBatchRequest, batch_id: str) -> Dispatc
         target_lang=request_data.target_lang,
         prompt=request_data.prompt,
         prompt_template=prompt_template,
-        multi_speaker=request_data.multi_speaker,
+        speaker_count=request_data.speaker_count,
         client_id=batch_id,
         batch_id=batch_id,
         session_id=request_data.session_id or batch_id,

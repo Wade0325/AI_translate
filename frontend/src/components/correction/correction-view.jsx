@@ -17,6 +17,8 @@ import {
 import { REWIND_SECONDS, keepEditorFocus } from "@/utils/segmentCorrections"
 import { isFindShortcut } from "@/utils/segmentSearch"
 import { speakerCounts } from "@/utils/speakers"
+import { speakersInVersion } from "@/utils/speakerCount"
+import { SpeakerCountNotice } from "@/components/SpeakerCountNotice"
 import { TranscriptDownloadMenu } from "@/components/transcript-download-menu"
 import { FindBar } from "./find-bar"
 import { PlayerBar } from "./player-bar"
@@ -104,6 +106,7 @@ const TOAST_STYLE = {
  * 說話者（#354）：上方的切換決定整份當成同一位說話者（不顯示說話者，也沒有改說話者的操作），或照模型分出的說話者
  * 顯示；切換是任務的設定，不算校正。顯示說話者時，點片段的說話者可以改這個片段，或把這位說話者全部換成另一位，也可以
  * 替這位說話者取名字（#359）：取了名字的說話者在每一列都寫名稱，存完出現「復原」。
+ * 任務選了 2 到 8 人、校正後版本的說話者人數卻不同時，上方多一行提醒（#351 第 4 點）。
  *
  * 尋找與全部取代（#356）：在這一頁按 Ctrl+F 開的是頁面自己的尋找列（FindBar），不是瀏覽器內建的尋找。跳到一個
  * 符合的片段時停止跟著播放捲動；那個片段被篩選掉了時篩選換回全部，才看得到它。尋找不換目前這個片段。
@@ -114,6 +117,7 @@ const TOAST_STYLE = {
  *   audio_duration_seconds?: number | null,
  *   audio_available: boolean,
  *   single_speaker?: boolean,
+ *   speaker_count?: 'auto' | number | null,
  *   next_speaker?: string,
  *   speaker_names?: Record<string, string>,
  *   segments: any[],
@@ -126,7 +130,9 @@ export function CorrectionView({ transcript }) {
     const review = useReviewStates(transcript.task_uuid, setReviewStates)
     // 正在取名字的說話者（#359）：對話框放在這裡，不放在片段那一列，那一列被捲走時才不會跟著不見
     const [renaming, setRenaming] = useState(/** @type {string | null} */ (null))
-    const { singleSpeaker, switching, switchTo } = useSingleSpeaker(transcript.task_uuid, Boolean(transcript.single_speaker))
+    const { singleSpeaker, speakerCount, switching, switchTo } = useSingleSpeaker(
+        transcript.task_uuid, Boolean(transcript.single_speaker), transcript.speaker_count ?? null,
+    )
     const total = duration ?? transcript.audio_duration_seconds ?? 0
     const canPlay = transcript.audio_available && !failed
 
@@ -360,6 +366,10 @@ export function CorrectionView({ transcript }) {
                     </TranscriptDownloadMenu>
                 </div>
             </div>
+            {/* 選的人數和校正後版本不同（#351 第 4 點）；整份當成同一位時不提醒，切換存好之前也一樣 */}
+            {!singleSpeaker && (
+                <SpeakerCountNotice selected={speakerCount} actual={speakersInVersion(segments)} paddingLeft={16} />
+            )}
             {search.open && <FindBar search={search} onReplaceAll={actions.replaceAll} onClose={onCloseFind} />}
             {renaming && (
                 <SpeakerNameDialog

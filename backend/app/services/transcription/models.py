@@ -3,6 +3,7 @@ from pydantic import BaseModel, Field
 from typing import Dict, List, Optional, Any
 
 from app.core.error_codes import ErrorCode
+from app.core.speaker_count import SpeakerCount
 
 
 class TranscriptionTaskResult(BaseModel):
@@ -78,8 +79,13 @@ class TranscriptionResponse(BaseModel):
     source_language: str = Field(..., description="來源語言")
     audio_duration_seconds: float = Field(..., description="音訊總時長（秒）")
     speaker_count: int = Field(
-        ..., description="片段裡出現幾個不同的說話者編號，結果頁顯示的人數；沒有片段帶說話者編號時"
-                         "（例如 Gemini 沒寫說話者代號）是 0")
+        ..., description="這份輸出裡有幾位說話者，結果頁顯示它：整份當成同一位說話者時是 1，否則是不同的"
+                         "說話者編號有幾個，行都沒有說話者編號時算一位；沒有任何一行時是 0"
+                         "（app.services.output_format.speakers_in_output）")
+    selected_speaker_count: Optional[SpeakerCount] = Field(
+        default=None,
+        description="使用者選的說話者人數（\"auto\" 或 1 到 8）；人數做出來之前的任務是 None。選了 2 到 8 人、"
+                    "和 speaker_count 不同時，結果頁多一行提醒（#351 第 4 點）")
     tail_loss_from_seconds: Optional[float] = Field(
         default=None,
         description="可能掉尾的起點（原音檔的秒數）：檔案卡、結果頁與 History 照它寫「從 mm:ss 起"

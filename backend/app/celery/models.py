@@ -1,6 +1,9 @@
 from pydantic import BaseModel
 from typing import Optional, List
 
+from app.core import speaker_count as speakers
+from app.core.speaker_count import SpeakerCount
+
 
 class TranscriptionTaskParams(BaseModel):
     """
@@ -22,7 +25,8 @@ class TranscriptionTaskParams(BaseModel):
     # 使用者文稿：有填時模型只替它補上時間戳，不重新轉錄（#66，app.tasks.transcribe_core）
     user_supplied_text: Optional[str] = None
     target_lang: Optional[str] = None
-    multi_speaker: bool = False
+    # 說話者人數（app.core.speaker_count）：Gemini 的提示詞與輸出帶不帶說話者標記照它
+    speaker_count: SpeakerCount = speakers.DEFAULT
     service_tier: Optional[str] = None  # 'flex' 啟用 Flex 推論，其餘視為 Standard
     session_id: Optional[str] = None
 
@@ -35,7 +39,7 @@ class BatchFileItemParams(BaseModel):
     source_lang: Optional[str] = None
     target_lang: Optional[str] = None
     prompt: Optional[str] = None  # 這個檔案的補充說明；None 時用批次層級的
-    multi_speaker: Optional[bool] = None
+    speaker_count: Optional[SpeakerCount] = None  # 這個檔案的說話者人數；None 時用批次層級的
 
 
 class BatchTranscriptionTaskParams(BaseModel):
@@ -49,7 +53,8 @@ class BatchTranscriptionTaskParams(BaseModel):
     api_keys: str
     source_lang: str
     target_lang: Optional[str] = None
-    multi_speaker: bool = False
+    # 批次層級的說話者人數：補給沒帶自己人數的檔案
+    speaker_count: SpeakerCount = speakers.DEFAULT
     # 批次層級的補充說明：補給沒帶自己補充說明的檔案
     prompt: Optional[str] = None
     # 設定頁為這個供應商存的提示詞範本，派送時從資料庫讀出；每個檔案共用，None 時用系統內建的範本

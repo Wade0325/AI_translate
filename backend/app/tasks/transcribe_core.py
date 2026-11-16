@@ -57,7 +57,7 @@ def _task(params: TranscriptionTaskParams, prompt: Optional[Prompt] = None) -> T
         provider=params.provider,
         model=params.model,
         source_lang=params.source_lang,
-        multi_speaker=params.multi_speaker,
+        speaker_count=params.speaker_count,
         target_lang=params.target_lang,
         session_id=params.session_id,
         prompt=prompt,
@@ -176,14 +176,14 @@ def _prompt(params: TranscriptionTaskParams) -> Prompt:
         return user_text_prompt(
             user_text,
             source_lang=params.source_lang,
-            multi_speaker=params.multi_speaker,
+            speaker_count=params.speaker_count,
             supplement=params.prompt,
         )
     # 設定頁存的提示詞範本，空一行接上轉錄頁填的補充說明（#144）
     return Prompt.plain(build_prompt(
         source_lang=params.source_lang,
         target_lang=params.target_lang,
-        multi_speaker=params.multi_speaker,
+        speaker_count=params.speaker_count,
         template=params.prompt_template,
         supplement=params.prompt,
     ))

@@ -842,7 +842,8 @@ class TestNewSpeaker:
 
 class TestSingleSpeaker:
     """「整份當成同一位說話者」與「照模型分出的說話者顯示」的切換（#354 第 3 點）：改的是任務的設定，不算校正，
-    不留校正紀錄，也不重新轉錄。說話者人數（#352）合併之前，寫的是任務紀錄的 Multi-Speaker 開關。"""
+    不留校正紀錄，也不重新轉錄。切換改寫任務的說話者人數（#352）：整份當成同一位是 1 人，照模型分出的說話者顯示
+    是照模型判斷。"""
 
     def _single(self, client, task_uuid) -> bool:
         return client.get(f"/api/v1/transcripts/{task_uuid}").json()["single_speaker"]
@@ -859,15 +860,16 @@ class TestSingleSpeaker:
         response = client.patch(_settings_url(log.task_uuid), json={"single_speaker": True})
 
         assert response.status_code == 200, response.text
-        assert response.json() == {"single_speaker": True}
+        assert response.json() == {"single_speaker": True, "speaker_count": 1}
         assert self._single(client, log.task_uuid) is True
         assert _download(client, log.task_uuid, "corrected") == "改過的第 0 段\n第 1 段"
         assert _download(client, log.task_uuid, "original") == "第 0 段\n第 1 段"
         assert client.get(f"/api/v1/transcripts/{log.task_uuid}").json()["segments"] == segments
         assert _records(db_session, log.task_uuid) == records
 
-        client.patch(_settings_url(log.task_uuid), json={"single_speaker": False})
+        response = client.patch(_settings_url(log.task_uuid), json={"single_speaker": False})
 
+        assert response.json() == {"single_speaker": False, "speaker_count": "auto"}
         assert self._single(client, log.task_uuid) is False
         assert _download(client, log.task_uuid, "corrected") == "[S0] 改過的第 0 段\n[S1] 第 1 段"
         assert client.get(f"/api/v1/transcripts/{log.task_uuid}").json()["segments"] == segments
@@ -887,6 +889,43 @@ class TestSingleSpeaker:
         assert self._single(client, log.task_uuid) is False
         assert _download(client, log.task_uuid, "corrected") == "[S0] 第 0 段\n[S1] 第 1 段"
 
+    def test_after_switching_to_the_model_speakers_one_speaker_is_not_labelled(self, client, db_session):
+        # 切到照模型分出的說話者顯示是照模型判斷（#351 第 3 點）：被下載的版本只有一位說話者時不帶標記。舊的開關
+        # 開著時一律帶，切換之後照新的規則
+        log = _speakers_task(db_session, ["S0", "S1"])
+        log.multi_speaker = False
+        db_session.commit()
+        client.patch(_url(log.task_uuid, "0001"), json={"speaker": "S0"})
+
+        client.patch(_settings_url(log.task_uuid), json={"single_speaker": False})
+
+        assert _download(client, log.task_uuid, "corrected") == "第 0 段\n第 1 段"
+        assert _download(client, log.task_uuid, "original") == "[S0] 第 0 段\n[S1] 第 1 段"
+
+    @pytest.mark.parametrize("column, single, speaker_count", [
+        ("1", True, 1), ("auto", False, "auto"), ("3", False, 3), (None, False, None)])
+    def test_the_page_reads_the_speaker_count(self, client, db_session, column, single, speaker_count):
+        # 選 1 人是整份當成同一位；人數做出來之前的任務（None）照開關，開關也沒有記錄時照模型分出的說話者顯示
+        log = _speakers_task(db_session, ["S0", "S1"])
+        log.speaker_count = column
+        db_session.commit()
+
+        transcript = client.get(f"/api/v1/transcripts/{log.task_uuid}").json()
+
+        assert (transcript["single_speaker"], transcript["speaker_count"]) == (single, speaker_count)
+
+    def test_a_task_already_showing_the_model_speakers_keeps_its_count(self, client, db_session):
+        # 選了 3 人的任務本來就照模型分出的說話者顯示：再切一次不改人數，校正頁照它提醒人數不同
+        log = _speakers_task(db_session, ["S0", "S1"])
+        log.speaker_count = "3"
+        db_session.commit()
+
+        response = client.patch(_settings_url(log.task_uuid), json={"single_speaker": False})
+
+        assert response.json() == {"single_speaker": False, "speaker_count": 3}
+        db_session.expire_all()
+        assert log.speaker_count == "3"
+
 
 class TestRefusedSpeakerWrites:
     """說話者的寫入照校正的規則擋：任務要能校正，編號的格式要對；擋下時什麼都不寫。"""
@@ -903,7 +942,7 @@ class TestRefusedSpeakerWrites:
         assert "還沒完成" in reassign.json()["detail"]
         assert _records(db_session, log.task_uuid) == []
         db_session.expire_all()
-        assert log.multi_speaker is None
+        assert (log.multi_speaker, log.speaker_count) == (None, None)
 
     def test_unknown_task(self, client):
         assert client.post(_reassign_url(uuid.uuid4()), json={"from_speaker": "S1", "to_speaker": "S0"}

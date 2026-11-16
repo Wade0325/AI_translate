@@ -153,15 +153,29 @@ class TestWebSocketTranscriptionRequest:
         req = WebSocketTranscriptionRequest(**self._valid_payload())
         assert req.target_lang is None
 
-    def test_multi_speaker_default_false(self):
+    def test_speaker_count_defaults_to_auto(self):
+        # 說話者人數預設照模型判斷（#351 第 1 點）
         req = WebSocketTranscriptionRequest(**self._valid_payload())
-        assert req.multi_speaker is False
+        assert req.speaker_count == "auto"
 
-    def test_multi_speaker_can_be_true(self):
-        payload = self._valid_payload()
-        payload["multi_speaker"] = True
-        req = WebSocketTranscriptionRequest(**payload)
-        assert req.multi_speaker is True
+    @pytest.mark.parametrize("speaker_count", ["auto", 1, 2, 8])
+    def test_speaker_count_is_auto_or_one_to_eight(self, speaker_count):
+        req = WebSocketTranscriptionRequest(**self._valid_payload(), speaker_count=speaker_count)
+        assert req.speaker_count == speaker_count
+
+    @pytest.mark.parametrize("speaker_count", [0, 9, -1, "2", "Auto", True, 2.5, None],
+                             ids=["zero", "nine", "negative", "string", "capitalized", "bool",
+                                  "fraction", "null"])
+    def test_other_speaker_counts_are_rejected(self, speaker_count):
+        # 字串的數字與 true 都不收：true 會被當成 1 人，整份當成同一位說話者
+        with pytest.raises(ValidationError):
+            WebSocketTranscriptionRequest(**self._valid_payload(), speaker_count=speaker_count)
+
+    def test_old_multi_speaker_field_is_ignored(self):
+        # 本機 API 沒有對外承諾，舊欄位直接拿掉：舊的請求照預設的照模型判斷
+        req = WebSocketTranscriptionRequest(**self._valid_payload(), multi_speaker=False)
+        assert req.speaker_count == "auto"
+        assert not hasattr(req, "multi_speaker")
 
     def test_prompt_optional(self):
         req = WebSocketTranscriptionRequest(**self._valid_payload())
@@ -207,6 +221,25 @@ class TestWebSocketBatchRequest:
     def test_target_lang_optional(self):
         req = WebSocketBatchRequest(**self._valid_payload())
         assert req.target_lang is None
+
+    def test_speaker_count_defaults_to_auto_and_files_follow_it(self):
+        # 批次層級預設照模型判斷；沒帶自己人數的檔案是 None，派送時補上批次層級的
+        req = WebSocketBatchRequest(**self._valid_payload())
+        assert req.speaker_count == "auto"
+        assert [f.speaker_count for f in req.files] == [None, None]
+
+    def test_each_file_may_have_its_own_speaker_count(self):
+        payload = self._valid_payload()
+        payload["speaker_count"] = 3
+        payload["files"][1]["speaker_count"] = 1
+        req = WebSocketBatchRequest(**payload)
+        assert (req.speaker_count, [f.speaker_count for f in req.files]) == (3, [None, 1])
+
+    def test_file_speaker_count_out_of_range_is_rejected(self):
+        payload = self._valid_payload()
+        payload["files"][0]["speaker_count"] = 9
+        with pytest.raises(ValidationError):
+            WebSocketBatchRequest(**payload)
 
 
 # ─── BatchFileItem ───────────────────────────────────────────────────────────

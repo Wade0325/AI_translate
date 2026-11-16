@@ -849,11 +849,19 @@ class TestLongSubtitles:
             "少しくらい甘えてもいいんですよ。"]
 
 
-# ─── Multi-Speaker 開關（#13 Q1） ────────────────────────────────────────────
+# ─── 說話者標記的規則（#351 第 3 點、#352） ─────────────────────────────────────
 
-def switched(*segments, labels: bool) -> output_format.OutputFiles:
+Labels = output_format.SpeakerLabels
+
+
+def labelled_or_not(*segments, labels: bool) -> output_format.OutputFiles:
+    """帶（一律帶）或不帶（整份當成同一位說話者）說話者標記的四種格式。"""
+    return labelled(*segments, rule=Labels.ALWAYS if labels else Labels.NONE)
+
+
+def labelled(*segments, rule: output_format.SpeakerLabels) -> output_format.OutputFiles:
     return output_format.for_result(
-        TranscriptionTaskResult(success=True, segments=list(segments)), speaker_labels=labels)
+        TranscriptionTaskResult(success=True, segments=list(segments)), speaker_labels=rule)
 
 
 GEMINI_LINES = [
@@ -861,15 +869,16 @@ GEMINI_LINES = [
     {"start": 3.0, "end": 4.0, "speaker": "S1", "text": "こんにちは。"},
 ]
 """Gemini 的片段：一行一段，沒有逐字時間；只有寫明結束的行才有結束時間。說話者編號由轉接器從
-「Speaker 1:」換來，Multi-Speaker 關著時 Gemini 自己寫了也一樣。"""
+「Speaker 1:」換來，選 1 人時 Gemini 自己寫了也一樣。"""
 
 
-class TestMultiSpeakerSwitch:
-    """開時四種格式都帶說話者標記，關時都不帶，兩個供應商的片段都一樣：本機的片段有逐字時間，
-    Gemini 的沒有。片段照樣有說話者編號，只在產生輸出格式時省略標記。"""
+class TestLabelledOrNot:
+    """帶標記時四種格式都帶，不帶時都不帶，兩個供應商的片段都一樣：本機的片段有逐字時間，
+    Gemini 的沒有。片段照樣有說話者編號，只在產生輸出格式時省略標記。帶不帶由
+    :class:`TestSpeakerLabelRule` 的規則決定。"""
 
-    def test_on_local_lines_are_labelled_in_every_format(self):
-        result = switched(*SENTENCES, labels=True)
+    def test_labelled_local_lines_carry_labels_in_every_format(self):
+        result = labelled_or_not(*SENTENCES, labels=True)
         assert result.lrc.split("\n") == [
             "[00:10.08][S0] おはようございます。", "[00:11.60][S0] 今日は、いい天気ですね！",
             "[00:14.08][S1] ラーメン食べた？", "[00:15.84][S1] 人々も来た。"]
@@ -879,8 +888,8 @@ class TestMultiSpeakerSwitch:
         assert '<font color="#FFDD55">[S1] ラーメン食べた？</font>' in result.srt
         assert "<c.yellow>[S1] ラーメン食べた？</c>" in result.vtt
 
-    def test_off_local_lines_have_no_labels_or_colors(self):
-        result = switched(*SENTENCES, labels=False)
+    def test_unlabelled_local_lines_have_no_labels_or_colors(self):
+        result = labelled_or_not(*SENTENCES, labels=False)
         assert result.lrc.split("\n") == [
             "[00:10.08]おはようございます。", "[00:11.60]今日は、いい天気ですね！",
             "[00:14.08]ラーメン食べた？", "[00:15.84]人々も来た。"]
@@ -898,8 +907,8 @@ class TestMultiSpeakerSwitch:
             "3\n00:00:14,080 --> 00:00:15,360\nラーメン食べた？\n\n"
             "4\n00:00:15,840 --> 00:00:16,800\n人々も来た。\n")
 
-    def test_on_gemini_lines_are_labelled_in_every_format(self):
-        result = switched(*GEMINI_LINES, labels=True)
+    def test_labelled_gemini_lines_carry_labels_in_every_format(self):
+        result = labelled_or_not(*GEMINI_LINES, labels=True)
         assert result.lrc == "[00:00.50][S0] おはよう。\n[00:03.00][S1] こんにちは。"
         assert result.txt == "[S0] おはよう。\n[S1] こんにちは。"
         assert result.srt == (
@@ -910,9 +919,9 @@ class TestMultiSpeakerSwitch:
             "00:00:00.500 --> 00:00:03.000\n[S0] おはよう。\n\n"
             "00:00:03.000 --> 00:00:04.000\n<c.yellow>[S1] こんにちは。</c>\n")
 
-    def test_off_gemini_lines_have_no_labels_or_colors(self):
+    def test_unlabelled_gemini_lines_have_no_labels_or_colors(self):
         # 沒有結束時間的行照以前，顯示到下一行開始
-        result = switched(*GEMINI_LINES, labels=False)
+        result = labelled_or_not(*GEMINI_LINES, labels=False)
         assert result.lrc == "[00:00.50]おはよう。\n[00:03.00]こんにちは。"
         assert result.txt == "おはよう。\nこんにちは。"
         assert result.srt == (
@@ -922,44 +931,124 @@ class TestMultiSpeakerSwitch:
             "WEBVTT\n\n00:00:00.500 --> 00:00:03.000\nおはよう。\n\n"
             "00:00:03.000 --> 00:00:04.000\nこんにちは。\n")
 
-    def test_off_lines_of_different_speakers_do_not_overlap(self):
+    def test_unlabelled_lines_of_different_speakers_do_not_overlap(self):
         # 標記在產生行的時候就拿掉，所有行算同一位說話者（ADR-0008）：S0 插話時，S1 的字幕在插話
         # 開始時結束。先產生標記再拿掉的話，兩行會重疊，畫面上卻看不出是誰
         segments = [{"start": 0.5, "end": 3.5, "speaker": "S1", "text": "你拉不拉货。"},
                     {"start": 3.0, "end": 3.25, "speaker": "S0", "text": "对"}]
         assert srt_times(*segments) == [
             "00:00:00,500 --> 00:00:03,500", "00:00:03,000 --> 00:00:03,800"]
-        assert switched(*segments, labels=False).srt == (
+        assert labelled_or_not(*segments, labels=False).srt == (
             "1\n00:00:00,500 --> 00:00:03,000\n你拉不拉货。\n\n"
             "2\n00:00:03,000 --> 00:00:03,800\n对\n")
 
-    def test_off_long_subtitles_are_split_like_lines_without_a_speaker(self):
+    def test_unlabelled_long_subtitles_are_split_like_lines_without_a_speaker(self):
         # 拆開的每一則都不帶標記、不上色，和沒有說話者編號的片段一樣（字寬不算標記）
-        off = switched({**LONG_JAPANESE, "speaker": "S1"}, labels=False)
-        assert off == formats({**LONG_JAPANESE, "speaker": None})
-        assert off.srt.count("\n\n") == 2
-        assert "[S1]" not in off.srt and "<font" not in off.srt
+        unlabelled = labelled_or_not({**LONG_JAPANESE, "speaker": "S1"}, labels=False)
+        assert unlabelled == formats({**LONG_JAPANESE, "speaker": None})
+        assert unlabelled.srt.count("\n\n") == 2
+        assert "[S1]" not in unlabelled.srt and "<font" not in unlabelled.srt
 
     def test_frozen_copy_keeps_the_labels(self):
-        # 凍結的原始轉錄副本不論開關都帶說話者標記：和開著時的 LRC 相同（ADR-0007）
+        # 凍結的原始轉錄副本不論說話者人數都帶說話者標記：和一律帶時的 LRC 相同（ADR-0007）。只有一位
+        # 說話者也帶
         result = TranscriptionTaskResult(success=True, segments=list(SENTENCES + GEMINI_LINES))
         assert output_format.frozen_copy(result) == output_format.for_result(result).lrc
         assert "[S1] こんにちは。" in output_format.frozen_copy(result)
+        one = TranscriptionTaskResult(success=True, segments=[SENTENCES[0]])
+        assert output_format.frozen_copy(one).startswith("[00:10.08][S0] おはようございます。")
         assert output_format.frozen_copy(TranscriptionTaskResult(success=True)) == ""
 
-    @pytest.mark.parametrize("multi_speaker, labels", [(True, True), (False, False), (None, True)],
-                             ids=["on", "off", "before-the-switch"])
-    def test_tasks_from_before_the_switch_count_as_on(self, multi_speaker, labels):
-        # 開關做出來之前的任務沒有這個值，當成開：下載結果不變（本機的舊任務一直都帶標記）
-        assert output_format.shows_speaker_labels(multi_speaker) is labels
+
+class TestSpeakerLabelRule:
+    """說話者標記的規則（取代 Multi-Speaker 開關的 shows_speaker_labels）：
+
+    * 整份當成同一位說話者的任務（選 1 人，或人數做出來之前、開關關著的任務）：不帶。
+    * 其他新任務（照模型判斷、2 到 8 人）：這份輸出裡有兩位以上的說話者才帶。
+    * 人數做出來之前、開關開著或沒有記錄的任務：一律帶，下載結果和以前逐位元組相同。
+    """
+
+    @pytest.mark.parametrize("speaker_count, multi_speaker, rule", [
+        (1, None, Labels.NONE),
+        ("auto", None, Labels.IF_SEVERAL),
+        (2, None, Labels.IF_SEVERAL),
+        (8, None, Labels.IF_SEVERAL),
+        (None, False, Labels.NONE),
+        (None, True, Labels.ALWAYS),
+        (None, None, Labels.ALWAYS),
+    ], ids=["one", "auto", "two", "eight", "old-switch-off", "old-switch-on", "before-the-switch"])
+    def test_rule_of_a_task(self, speaker_count, multi_speaker, rule):
+        assert output_format.speaker_labels_for(speaker_count, multi_speaker) is rule
+
+    def test_new_tasks_do_not_read_the_old_switch(self):
+        # 新任務不寫 multi_speaker；就算有值也只看人數
+        assert output_format.speaker_labels_for("auto", False) is Labels.IF_SEVERAL
+        assert output_format.speaker_labels_for(1, True) is Labels.NONE
+
+    def test_several_speakers_are_labelled(self):
+        assert labelled(*SENTENCES, rule=Labels.IF_SEVERAL) == labelled_or_not(*SENTENCES, labels=True)
+
+    def test_one_speaker_is_not_labelled(self):
+        # 照模型判斷或選了 2 到 8 人，結果卻只有一位：不帶，所有行算同一位說話者
+        one = [{**s, "speaker": "S1"} for s in SENTENCES]
+        assert labelled(*one, rule=Labels.IF_SEVERAL) == labelled_or_not(*one, labels=False)
+        assert "[S1]" not in labelled(*one, rule=Labels.IF_SEVERAL).lrc
+
+    def test_lines_without_a_speaker_do_not_count_as_another_speaker(self):
+        # Gemini 沒寫說話者代號的行沒有說話者編號：S0 和沒有編號的行合起來仍只有一位
+        segments = [GEMINI_LINES[0], {**GEMINI_LINES[1], "speaker": None}]
+        assert labelled(*segments, rule=Labels.IF_SEVERAL) == labelled_or_not(*segments, labels=False)
+
+    def test_speakers_are_counted_in_this_output_only(self):
+        # 沒有文字的片段不產生行（校正後版本裡刪掉的片段也是）：它的說話者不算在這份輸出裡
+        segments = [SENTENCES[0], {**SENTENCES[1], "text": "", "words": None}]
+        assert labelled(*segments, rule=Labels.IF_SEVERAL) == labelled_or_not(*segments, labels=False)
+
+    def test_treated_as_one_speaker_is_never_labelled(self):
+        assert labelled(*SENTENCES, rule=Labels.NONE) == labelled_or_not(*SENTENCES, labels=False)
+
+    def test_old_tasks_with_the_switch_on_are_always_labelled(self):
+        # 只有一位說話者也帶：和人數做出來之前下載的相同
+        one = [SENTENCES[0]]
+        assert labelled(*one, rule=Labels.ALWAYS).lrc.split("\n") == [
+            "[00:10.08][S0] おはようございます。", "[00:11.60][S0] 今日は、いい天気ですね！"]
+
+    def test_for_result_labels_like_the_frozen_copy_by_default(self):
+        # 評測（tools.eval）與凍結的原始轉錄副本照舊一律帶
+        result = TranscriptionTaskResult(success=True, segments=[SENTENCES[0]])
+        assert output_format.for_result(result) == labelled(SENTENCES[0], rule=Labels.ALWAYS)
+
+
+class TestSpeakerCountShown:
+    """結果頁顯示的說話者人數：照說話者標記的規則，整份當成同一位時是 1。"""
+
+    @pytest.mark.parametrize("rule", list(Labels))
+    def test_two_speakers(self, rule):
+        expected = 1 if rule is Labels.NONE else 2
+        assert output_format.speakers_in_output(SENTENCES, rule) == expected
+
+    @pytest.mark.parametrize("rule", list(Labels))
+    def test_lines_without_speaker_ids_count_as_one_speaker(self, rule):
+        # 沒有說話者標記的行都算同一位說話者（ADR-0008）
+        segments = [{**s, "speaker": None} for s in GEMINI_LINES]
+        assert output_format.speakers_in_output(segments, rule) == 1
+
+    def test_segments_without_text_are_not_counted(self):
+        segments = [SENTENCES[0], {**SENTENCES[1], "text": " "}]
+        assert output_format.speakers_in_output(segments, Labels.IF_SEVERAL) == 1
+
+    @pytest.mark.parametrize("rule", list(Labels))
+    def test_nothing_transcribed(self, rule):
+        assert output_format.speakers_in_output([], rule) == 0
+        assert output_format.speakers_in_output([{**SENTENCES[0], "text": ""}], rule) == 0
 
 
 # ─── 說話者名稱（#359） ──────────────────────────────────────────────────────
 
-def named(fmt: str, *segments, names: dict, labels: bool = True) -> str:
+def named(fmt: str, *segments, names: dict, rule: Labels = Labels.ALWAYS) -> str:
     """校正後版本的輸出：取了說話者名稱的說話者，說話者標記寫名稱。"""
     return output_format.for_segments(list(segments), output_format.OutputFormat(fmt),
-                                      speaker_labels=labels, speaker_names=names)
+                                      speaker_labels=rule, speaker_names=names)
 
 
 PROGRESS = [
@@ -1040,5 +1129,11 @@ class TestSpeakerNames:
 
     def test_without_speaker_labels_names_are_not_written_either(self):
         # 不帶說話者標記時（整份當成同一位說話者），取了名字也不寫
-        assert named("txt", *PROGRESS, names={"S0": "王小明"}, labels=False) == "今天先看進度。\n好。"
-        assert "<font" not in named("srt", *PROGRESS, names={"S0": "王小明"}, labels=False)
+        assert named("txt", *PROGRESS, names={"S0": "王小明"}, rule=Labels.NONE) == "今天先看進度。\n好。"
+        assert "<font" not in named("srt", *PROGRESS, names={"S0": "王小明"}, rule=Labels.NONE)
+
+    def test_names_follow_the_rule_for_the_speakers_left(self):
+        # 照模型判斷的任務（#352）：兩位都在時寫名稱；只剩一位時不帶標記，名稱也不寫
+        assert named("txt", *PROGRESS, names={"S0": "王小明"}, rule=Labels.IF_SEVERAL) == (
+            "[王小明] 今天先看進度。\n[S1] 好。")
+        assert named("txt", PROGRESS[0], names={"S0": "王小明"}, rule=Labels.IF_SEVERAL) == "今天先看進度。"

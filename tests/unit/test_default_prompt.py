@@ -17,6 +17,16 @@ from app.core.default_prompt import (
     user_text_prompt,
 )
 
+AUTO_SPEAKERS = "音檔中有多位說話者時，請用 Speaker 1:、Speaker 2: 等標籤區分不同說話者；只有一位說話者時不要加標籤。"
+"""照模型判斷時的說話者指示（不含編號）：有多位說話者才標。"""
+
+
+def counted_speakers(n: int) -> str:
+    """選了 2 到 8 人時的說話者指示（不含編號）：分段轉錄時每一段是分開的請求，不逼它每一段都湊滿人數。"""
+    return (f"整份音檔共有 {n} 位說話者，請用 Speaker 1:、Speaker 2: 等標籤區分不同說話者。"
+            f"你收到的可能只是整份音檔的其中一段，這一段不一定每一位都出現，"
+            f"不要為了湊滿 {n} 位而把同一個人分成不同的說話者。")
+
 FRONTEND_LANGUAGES = (
     Path(__file__).resolve().parents[2] / "frontend" / "src" / "constants" / "languages.js"
 )
@@ -86,23 +96,16 @@ class TestBuildPrompt:
         prompt = build_prompt(source_lang="ja-JP", target_lang="en-US")
         assert "英文" in prompt
 
-    def test_no_multi_speaker_no_speaker_instruction(self):
-        prompt = build_prompt(source_lang="ja-JP", multi_speaker=False)
-        assert "Speaker" not in prompt
+    def test_translate_instruction_number_is_6_without_speaker_instruction(self):
+        """選 1 人時沒有說話者的指示，翻譯指令編號是 6"""
+        prompt = build_prompt(source_lang="ja-JP", target_lang="zh-TW", speaker_count=1)
+        assert "6. 請將所有轉錄內容翻譯為繁體中文輸出。" in prompt
 
-    def test_multi_speaker_has_speaker_instruction(self):
-        prompt = build_prompt(source_lang="ja-JP", multi_speaker=True)
-        assert "Speaker" in prompt
-
-    def test_translate_instruction_number_is_6_without_multi_speaker(self):
-        """無多人模式時翻譯指令編號應為 6"""
-        prompt = build_prompt(source_lang="ja-JP", target_lang="zh-TW", multi_speaker=False)
-        assert "6." in prompt
-
-    def test_translate_instruction_number_is_7_with_multi_speaker(self):
-        """有多人模式時翻譯指令編號應為 7（因為多人模式佔了第 6 條）"""
-        prompt = build_prompt(source_lang="ja-JP", target_lang="zh-TW", multi_speaker=True)
-        assert "7." in prompt
+    @pytest.mark.parametrize("speaker_count", ["auto", 2])
+    def test_translate_instruction_number_is_7_after_speaker_instruction(self, speaker_count):
+        """有說話者的指示時它佔了第 6 條，翻譯指令編號是 7"""
+        prompt = build_prompt(source_lang="ja-JP", target_lang="zh-TW", speaker_count=speaker_count)
+        assert "7. 請將所有轉錄內容翻譯為繁體中文輸出。" in prompt
 
     def test_custom_template_overrides_default(self):
         custom = "Custom: {source_lang}{speaker_instruction}{translate_instruction}"
@@ -123,16 +126,75 @@ class TestBuildPrompt:
         assert not result.endswith("\n")
 
     def test_full_combination(self):
-        """完整組合：有翻譯 + 多人模式"""
+        """完整組合：有翻譯 + 說話者人數"""
         prompt = build_prompt(
             source_lang="ja-JP",
             target_lang="zh-TW",
-            multi_speaker=True,
+            speaker_count=3,
         )
         assert "日文" in prompt
         assert "繁體中文" in prompt
         assert "Speaker" in prompt
         assert "7." in prompt
+
+
+# ─── 說話者人數（#351、#352） ─────────────────────────────────────────────────
+
+class TestSpeakerCountInPrompt:
+    """提示詞範本的 {speaker_instruction} 照說話者人數代入：照模型判斷時請它有多位說話者才標，2 到 8 人時
+    寫明整份音檔有幾位（分段轉錄的每一段不一定每一位都出現），1 人時不請它分說話者。"""
+
+    def test_auto_asks_for_labels_only_when_there_are_several_speakers(self):
+        prompt = build_prompt(source_lang="ja-JP", speaker_count="auto")
+
+        assert prompt.endswith(f"\n5. 每行文字請盡量簡短。\n6. {AUTO_SPEAKERS}")
+
+    def test_auto_is_the_default(self):
+        assert build_prompt(source_lang="ja-JP") == build_prompt(source_lang="ja-JP", speaker_count="auto")
+
+    def test_one_speaker_asks_for_no_labels(self):
+        # 整份當成同一位說話者：和以前 Multi-Speaker 關著時相同，不提說話者
+        prompt = build_prompt(source_lang="ja-JP", speaker_count=1)
+
+        assert "Speaker" not in prompt
+        assert "說話者" not in prompt
+        assert prompt.endswith("\n5. 每行文字請盡量簡短。")
+
+    @pytest.mark.parametrize("n", range(2, 9))
+    def test_two_to_eight_speakers_says_how_many_in_the_whole_audio(self, n):
+        prompt = build_prompt(source_lang="ja-JP", speaker_count=n)
+
+        assert prompt.endswith(f"\n5. 每行文字請盡量簡短。\n6. {counted_speakers(n)}")
+
+    def test_count_does_not_force_every_chunk_to_have_everyone(self):
+        # 分段轉錄時每一段是分開的請求，同一份提示詞送給每一段：寫明這一段不一定每一位都出現
+        prompt = build_prompt(source_lang="ja-JP", speaker_count=4)
+
+        assert "整份音檔共有 4 位說話者" in prompt
+        assert "這一段不一定每一位都出現" in prompt
+
+    @pytest.mark.parametrize("speaker_count, instruction", [
+        ("auto", f"6. {AUTO_SPEAKERS}\n"),
+        (3, f"6. {counted_speakers(3)}\n"),
+        (1, ""),
+    ], ids=["auto", "three", "one"])
+    def test_template_saved_in_settings_gets_the_same_instruction(self, speaker_count, instruction):
+        # 使用者改過的範本裡的 {speaker_instruction} 照樣代入新的句子；沒有寫它的範本就不帶
+        template = "請把{source_lang}音檔轉成 LRC。\n{speaker_instruction}（以上）"
+
+        prompt = build_prompt(source_lang="ja-JP", speaker_count=speaker_count, template=template)
+
+        assert prompt == f"請把日文音檔轉成 LRC。\n{instruction}（以上）"
+        assert build_prompt(source_lang="ja-JP", speaker_count=speaker_count,
+                            template="請把{source_lang}音檔轉成 LRC。") == "請把日文音檔轉成 LRC。"
+
+    def test_template_that_cannot_be_formatted_still_gets_the_instruction(self):
+        # 範本裡有 JSON（str.format 代入不了，#143）：已知變數照樣換成新的句子
+        template = '每一行寫成 {"text": "…"}\n{speaker_instruction}'
+
+        prompt = build_prompt(source_lang="ja-JP", speaker_count=2, template=template)
+
+        assert prompt == f'每一行寫成 {{"text": "…"}}\n6. {counted_speakers(2)}'
 
 
 # ─── 提示詞寫語言名稱，Auto Detect 時不寫語言（#261） ─────────────────────────
@@ -182,11 +244,11 @@ class TestSourceLanguageInPrompt:
     def test_auto_detect_writes_no_language_in_the_template_saved_in_settings(self):
         template = "請把{source_lang}音檔轉成 LRC。\n{speaker_instruction}"
 
-        assert build_prompt(source_lang="auto", template=template) == "請把音檔轉成 LRC。"
-        assert build_prompt(source_lang="ja", template=template) == "請把日文音檔轉成 LRC。"
+        assert build_prompt(source_lang="auto", speaker_count=1, template=template) == "請把音檔轉成 LRC。"
+        assert build_prompt(source_lang="ja", speaker_count=1, template=template) == "請把日文音檔轉成 LRC。"
 
     def test_auto_detect_keeps_the_translation_instruction(self):
-        prompt = build_prompt(source_lang="auto", target_lang="zh-TW")
+        prompt = build_prompt(source_lang="auto", target_lang="zh-TW", speaker_count=1)
 
         assert prompt.endswith("6. 請將所有轉錄內容翻譯為繁體中文輸出。")
 
@@ -194,10 +256,10 @@ class TestSourceLanguageInPrompt:
 # ─── 提示詞範本裡的大括號（#143） ────────────────────────────────────────────
 
 # 以前能用的提示詞範本與送出的字串。期望值寫死，是 #143 修正前的 build_prompt 算出來的；
-# 系統內建範本的措辭改了，default-template 這一項要跟著改
+# 系統內建範本或說話者指示的措辭改了，要跟著改（#352 把 Multi-Speaker 開著時的句子換成照模型判斷的）
 PROMPTS_THAT_WORKED_BEFORE = [
     pytest.param(
-        {"source_lang": "ja-JP", "target_lang": "zh-TW", "multi_speaker": True},
+        {"source_lang": "ja-JP", "target_lang": "zh-TW", "speaker_count": "auto"},
         "你是一位專業的逐字稿專家。請將以下日文音檔精確轉錄為 LRC 格式。\n"
         "注意：\n"
         "1. 這是 ASMR 音檔，可能包含耳語、口腔音、環境音效等非語音聲音。\n"
@@ -205,27 +267,27 @@ PROMPTS_THAT_WORKED_BEFORE = [
         "3. 時間戳格式為 [mm:ss.xxx]（毫秒精確到三位），必須精確對應聲音的起始位置。\n"
         "4. 純靜默段落不要產生任何行。\n"
         "5. 每行文字請盡量簡短。\n"
-        "6. 音檔中有多位說話者，請用 Speaker 1:、Speaker 2: 等標籤區分不同說話者。\n"
+        f"6. {AUTO_SPEAKERS}\n"
         "7. 請將所有轉錄內容翻譯為繁體中文輸出。",
         id="default-template"),
     pytest.param(
-        {"source_lang": "ja-JP", "target_lang": "zh-TW", "multi_speaker": True,
+        {"source_lang": "ja-JP", "target_lang": "zh-TW", "speaker_count": "auto",
          "template": "請把{source_lang}音檔轉成 LRC。\n{speaker_instruction}{translate_instruction}"},
         "請把日文音檔轉成 LRC。\n"
-        "6. 音檔中有多位說話者，請用 Speaker 1:、Speaker 2: 等標籤區分不同說話者。\n"
+        f"6. {AUTO_SPEAKERS}\n"
         "7. 請將所有轉錄內容翻譯為繁體中文輸出。",
         id="custom-template-three-variables"),
     pytest.param(
-        {"source_lang": "ja-JP",
+        {"source_lang": "ja-JP", "speaker_count": 1,
          "template": "請把{source_lang}音檔轉成 LRC。\n{speaker_instruction}{translate_instruction}"},
         "請把日文音檔轉成 LRC。",
         id="custom-template-empty-instructions"),
     pytest.param(
-        {"source_lang": "ja-JP", "multi_speaker": True,
+        {"source_lang": "ja-JP", "speaker_count": "auto",
          "template": '每一行輸出成 {{"speaker": "S0", "text": "…"}}，音檔是{source_lang}。\n'
                      "{speaker_instruction}"},
         '每一行輸出成 {"speaker": "S0", "text": "…"}，音檔是日文。\n'
-        "6. 音檔中有多位說話者，請用 Speaker 1:、Speaker 2: 等標籤區分不同說話者。",
+        f"6. {AUTO_SPEAKERS}",
         id="escaped-braces"),
     pytest.param(
         {"source_lang": "ja-JP", "template": "{{source_lang}} 會換成{source_lang}"},
@@ -249,11 +311,11 @@ class TestBracesInTemplate:
         template = '請轉錄{source_lang}音檔，每一行寫成 {"text": "…"}\n{speaker_instruction}{translate_instruction}'
 
         prompt = build_prompt(
-            source_lang="ja-JP", target_lang="zh-TW", multi_speaker=True, template=template)
+            source_lang="ja-JP", target_lang="zh-TW", speaker_count="auto", template=template)
 
         assert prompt == (
             '請轉錄日文音檔，每一行寫成 {"text": "…"}\n'
-            "6. 音檔中有多位說話者，請用 Speaker 1:、Speaker 2: 等標籤區分不同說話者。\n"
+            f"6. {AUTO_SPEAKERS}\n"
             "7. 請將所有轉錄內容翻譯為繁體中文輸出。")
 
     @pytest.mark.parametrize("template", [
@@ -294,13 +356,13 @@ class TestSupplementAfterTemplate:
 
     def test_supplement_follows_the_template_saved_in_settings(self):
         prompt = build_prompt(
-            source_lang="ja-JP", multi_speaker=True,
+            source_lang="ja-JP", speaker_count="auto",
             template="請把{source_lang}音檔轉成 LRC。\n{speaker_instruction}",
             supplement="人名照寫：佐藤、鈴木")
 
         assert prompt == (
             "請把日文音檔轉成 LRC。\n"
-            "6. 音檔中有多位說話者，請用 Speaker 1:、Speaker 2: 等標籤區分不同說話者。\n"
+            f"6. {AUTO_SPEAKERS}\n"
             "\n"
             "人名照寫：佐藤、鈴木")
 
@@ -310,8 +372,8 @@ class TestSupplementAfterTemplate:
         pytest.param("{speaker_instruction}{translate_instruction}", id="template-variables"),
     ])
     @pytest.mark.parametrize("settings", [
-        pytest.param({}, id="single-speaker"),
-        pytest.param({"multi_speaker": True, "target_lang": "zh-TW"}, id="speakers-and-translation"),
+        pytest.param({"speaker_count": 1}, id="single-speaker"),
+        pytest.param({"speaker_count": 2, "target_lang": "zh-TW"}, id="speakers-and-translation"),
     ])
     def test_template_instructions_are_always_kept(self, supplement, settings):
         # 範本整份留在前面：要求 LRC 與時間戳的指示，以及說話者、翻譯的指示，一個字都不少
@@ -334,9 +396,9 @@ class TestSupplementAfterTemplate:
     ])
     def test_braces_in_the_supplement_are_sent_as_written(self, supplement):
         # 補充說明不代入變數：範本已經代入過，再代入一次，說話者與翻譯的指示會重複
-        prompt = build_prompt(source_lang="ja-JP", multi_speaker=True, supplement=supplement)
+        prompt = build_prompt(source_lang="ja-JP", speaker_count=2, supplement=supplement)
 
-        assert prompt == build_prompt(source_lang="ja-JP", multi_speaker=True) + "\n\n" + supplement
+        assert prompt == build_prompt(source_lang="ja-JP", speaker_count=2) + "\n\n" + supplement
 
     @pytest.mark.parametrize("supplement", [None, "", " \n\t", "　"],
                              ids=["none", "empty", "blank", "full-width-space"])
@@ -363,7 +425,8 @@ class TestUserTextPrompt:
     """附了使用者文稿時改用只補時間戳的提示詞：不用提示詞範本，文稿照寫的放在最後，補充說明接在後面。"""
 
     def test_asks_only_for_timestamps_on_the_text_as_written(self):
-        assert build_user_text_prompt("おはよう。\nこんにちは。", source_lang="ja") == (
+        # 選 1 人：不提說話者
+        assert build_user_text_prompt("おはよう。\nこんにちは。", source_lang="ja", speaker_count=1) == (
             "你是一位專業的逐字稿專家。下面是使用者為這個日文音檔提供的完整逐字稿。"
             "請不要重新轉錄，只替這份逐字稿補上時間戳，輸出 LRC 格式。\n"
             "注意：\n"
@@ -376,12 +439,27 @@ class TestUserTextPrompt:
             "おはよう。\nこんにちは。\n"
             "---")
 
-    def test_multi_speaker_asks_for_speaker_codes(self):
-        # Gemini 轉接器照提示詞範本的說話者代號（Speaker 1:）解析
-        prompt = build_user_text_prompt("おはよう。", source_lang="ja", multi_speaker=True)
+    def test_auto_asks_for_speaker_codes_only_when_there_are_several_speakers(self):
+        # Gemini 轉接器照提示詞範本的說話者代號（Speaker 1:）解析；照模型判斷是預設
+        prompt = build_user_text_prompt("おはよう。", source_lang="ja", speaker_count="auto")
 
-        assert "4. 音檔中有多位說話者，請用 Speaker 1:、Speaker 2: 等標籤區分不同說話者。\n" in prompt
-        assert "Speaker" not in build_user_text_prompt("おはよう。", source_lang="ja")
+        assert f"3. 逐字稿裡沒有的聲音不要寫出來。\n4. {AUTO_SPEAKERS}\n\n完整逐字稿：" in prompt
+        assert build_user_text_prompt("おはよう。", source_lang="ja") == prompt
+
+    @pytest.mark.parametrize("n", [2, 8])
+    def test_count_says_how_many_speakers(self, n):
+        # 附了使用者文稿時整段一次送出、不分段轉錄（#66），不必說這一段不一定每一位都出現
+        prompt = build_user_text_prompt("おはよう。", source_lang="ja", speaker_count=n)
+
+        assert (f"3. 逐字稿裡沒有的聲音不要寫出來。\n"
+                f"4. 音檔中共有 {n} 位說話者，請用 Speaker 1:、Speaker 2: 等標籤區分不同說話者。\n"
+                f"\n完整逐字稿：") in prompt
+
+    def test_one_speaker_asks_for_no_speaker_codes(self):
+        prompt = build_user_text_prompt("おはよう。", source_lang="ja", speaker_count=1)
+
+        assert "Speaker" not in prompt
+        assert "說話者" not in prompt
 
     @pytest.mark.parametrize("source_lang", ["auto", "Auto", ""])
     def test_auto_detect_writes_no_language(self, source_lang):
@@ -428,7 +506,7 @@ class TestRecordedPrompt:
     def test_with_user_text_only_the_text_is_left_out_of_the_recorded_prompt(self):
         # 送出的和記下的由同一個函式組出，只差在文稿換成一句說明：指示與補充說明逐字相同
         text = "\n  おはようございます。\n今日は晴れです。  \n"
-        options = {"source_lang": "ja", "multi_speaker": True, "supplement": "說話者是兩位主持人"}
+        options = {"source_lang": "ja", "speaker_count": 2, "supplement": "說話者是兩位主持人"}
 
         prompt = user_text_prompt(text, **options)
 

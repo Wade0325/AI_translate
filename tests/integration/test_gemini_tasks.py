@@ -15,7 +15,7 @@ from unittest.mock import MagicMock
 import pytest
 from fastapi.testclient import TestClient
 
-from app.core.default_prompt import SPEAKER_INSTRUCTION, USER_TEXT_OMITTED, build_user_text_prompt
+from app.core.default_prompt import USER_TEXT_OMITTED, build_user_text_prompt, speaker_instruction
 from app.core.error_codes import ErrorCode
 from app.core.task_status import TaskStatus
 from app.core.version import APP_VERSION
@@ -129,13 +129,16 @@ def test_gemini_gets_neither_the_original_filename_nor_does_the_log(
 
 
 def test_single_file_stores_segments_labelled_like_the_local_provider(api, in_process_run_mode, genai):
-    # Gemini 的 LRC 在轉接器裡解析一次就變成片段：任務存下片段，Multi-Speaker 開著時字幕的說話者
-    # 標記和本機一樣
+    # Gemini 的 LRC 在轉接器裡解析一次就變成片段：任務存下片段，有兩位說話者時字幕的說話者標記和本機一樣
     genai.replies = [Reply(text="[00:00.50]Speaker 1: おはよう。\n[00:03.00]Speaker 2: こんにちは。")]
 
-    end = transcribe(api, in_process_run_mode, "gemini-single-speakers.wav", multi_speaker=True)[-1]
+    end = transcribe(api, in_process_run_mode, "gemini-single-speakers.wav", speaker_count=2)[-1]
 
     assert end["status_code"] == TaskStatus.COMPLETED
+    # 提示詞寫明整份音檔有幾位說話者（#352）
+    assert genai.prompts[0].endswith(speaker_instruction(2).rstrip("\n"))
+    assert "整份音檔共有 2 位說話者" in genai.prompts[0]
+    assert (end["result"]["speaker_count"], end["result"]["selected_speaker_count"]) == (2, 2)
     segments = api.get(f"/api/v1/transcripts/{end['task_uuid']}").json()["segments"]
     assert [(s["speaker"], s["text"]) for s in segments] == [("S0", "おはよう。"), ("S1", "こんにちは。")]
     # 去靜音之後的時間還原回原音檔：第二句落在第二個有聲段（5–7 秒），不在被剪掉的靜音裡
@@ -145,16 +148,17 @@ def test_single_file_stores_segments_labelled_like_the_local_provider(api, in_pr
     assert "Speaker" not in srt
 
 
-def test_speaker_codes_gemini_writes_with_multi_speaker_off_are_not_output(
+def test_speaker_codes_gemini_writes_for_one_speaker_are_not_output(
         api, in_process_run_mode, genai):
-    # Multi-Speaker 關（預設）：提示詞不要求標說話者，Gemini 自己寫了「Speaker 1:」也不輸出；片段照樣
-    # 存說話者編號（#13 Q1）
+    # 選 1 人（整份當成同一位說話者）：提示詞不提說話者，Gemini 自己寫了「Speaker 1:」也不輸出；片段照樣
+    # 存說話者編號（#13 Q1、#351）。結果頁的人數是 1
     genai.replies = [Reply(text="[00:00.50]Speaker 1: おはよう。\n[00:03.00]Speaker 2: こんにちは。")]
 
-    end = transcribe(api, in_process_run_mode, "gemini-single-speakers-off.wav")[-1]
+    end = transcribe(api, in_process_run_mode, "gemini-single-speakers-off.wav", speaker_count=1)[-1]
 
     assert end["status_code"] == TaskStatus.COMPLETED
-    assert SPEAKER_INSTRUCTION not in genai.prompts[0]
+    assert "Speaker" not in genai.prompts[0] and "說話者" not in genai.prompts[0]
+    assert (end["result"]["speaker_count"], end["result"]["selected_speaker_count"]) == (1, 1)
     task_uuid = end["task_uuid"]
     segments = api.get(f"/api/v1/transcripts/{task_uuid}").json()["segments"]
     assert [(s["speaker"], s["text"]) for s in segments] == [("S0", "おはよう。"), ("S1", "こんにちは。")]
@@ -163,6 +167,20 @@ def test_speaker_codes_gemini_writes_with_multi_speaker_off_are_not_output(
         content = api.get(f"/api/v1/history/{task_uuid}/download/{fmt}").text
         assert "[S" not in content and "Speaker" not in content
         assert content == end["result"]["transcripts"][fmt]
+
+
+def test_auto_asks_for_labels_only_when_there_are_several_speakers(api, in_process_run_mode, genai):
+    # 預設照模型判斷：提示詞請它有多位說話者才標。只有一個人說話、Gemini 照做沒寫代號時，輸出不帶
+    # 說話者標記，結果頁的人數是 1
+    genai.replies = [Reply(text="[00:00.50]おはよう。\n[00:03.00]こんにちは。")]
+
+    end = transcribe(api, in_process_run_mode, "gemini-auto-one-speaker.wav")[-1]
+
+    assert end["status_code"] == TaskStatus.COMPLETED
+    assert genai.prompts[0].endswith(speaker_instruction("auto").rstrip("\n"))
+    assert "只有一位說話者時不要加標籤" in genai.prompts[0]
+    assert end["result"]["transcripts"]["txt"] == "おはよう。\nこんにちは。"
+    assert (end["result"]["speaker_count"], end["result"]["selected_speaker_count"]) == (1, "auto")
 
 
 def test_subtitles_end_where_gemini_wrote_it_and_otherwise_follow_the_old_rule(
@@ -441,13 +459,13 @@ def speakers(api: TestClient, task_uuid: str) -> list[tuple]:
 
 
 def transcribe_two_speakers(api: TestClient, run_mode, genai: FakeGenaiClient, name: str) -> list[dict]:
-    """轉錄 TWO_SPEAKERS（Multi-Speaker 開）。每一段 Gemini 都把先聽到的人標成 Speaker 1：後一段的 Speaker 1
+    """轉錄 TWO_SPEAKERS（選 2 人）。每一段 Gemini 都把先聽到的人標成 Speaker 1：後一段的 Speaker 1
     是 B。只寫開始時間，各段最後一個片段後面寫了結束時間。"""
     genai.replies = [
         Reply(text="[00:00.00]Speaker 1: おはよう。\n[00:01.50]Speaker 2: こんにちは。\n[00:03.00]"),
         Reply(text="[00:00.30]Speaker 1: はい。\n[00:01.80]Speaker 2: またね。\n[00:03.30]"),
     ]
-    return transcribe(api, run_mode, name, multi_speaker=True, voiced=TWO_SPEAKERS)
+    return transcribe(api, run_mode, name, speaker_count=2, voiced=TWO_SPEAKERS)
 
 
 def test_speaker_numbers_follow_the_voice_across_chunks(
@@ -459,6 +477,9 @@ def test_speaker_numbers_follow_the_voice_across_chunks(
     end = messages[-1]
     assert end["status_code"] == TaskStatus.COMPLETED
     assert len(genai.prompts) == 2
+    # 每一段是分開的請求，送的是同一份提示詞：寫明整份音檔有 2 位，這一段不一定每一位都出現（#352）
+    assert all("整份音檔共有 2 位說話者" in prompt and "這一段不一定每一位都出現" in prompt
+               for prompt in genai.prompts)
     assert speakers(api, end["task_uuid"]) == [
         ("S0", "おはよう。"), ("S1", "こんにちは。"), ("S1", "はい。"), ("S0", "またね。")]
     assert "對齊各段的說話者..." in [m["status_text"] for m in messages]
@@ -498,7 +519,7 @@ def test_audio_sent_in_one_request_needs_no_embedder(api, in_process_run_mode, g
     # 一次送得完：同一次請求裡的兩個代號一定是不同的人，不必對齊，也不載入（不下載）說話者嵌入
     genai.replies = [Reply(text="[00:00.50]Speaker 1: おはよう。\n[00:03.00]Speaker 2: こんにちは。")]
 
-    end = transcribe(api, in_process_run_mode, "gemini-one-request-speakers.wav", multi_speaker=True)[-1]
+    end = transcribe(api, in_process_run_mode, "gemini-one-request-speakers.wav")[-1]
 
     assert end["status_code"] == TaskStatus.COMPLETED
     assert speakers(api, end["task_uuid"]) == [("S0", "おはよう。"), ("S1", "こんにちは。")]

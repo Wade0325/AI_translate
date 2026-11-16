@@ -55,8 +55,8 @@ export default function TranscribePage() {
         isProcessing,
         processingMode,
         setProcessingMode,
-        multiSpeaker,
-        setMultiSpeaker,
+        speakerCount,
+        setSpeakerCount,
         globalPrompt,
         setGlobalPrompt,
         handleStartTranscription,
@@ -100,14 +100,14 @@ export default function TranscribePage() {
 
     const [globalConfig, setGlobalConfig] = useState({
         language: sourceLang,
-        isMultiSpeaker: multiSpeaker,
+        speakerCount,
         prompt: globalPrompt,
     })
 
     const handleGlobalConfigChange = (newConfig) => {
         setGlobalConfig(newConfig)
         if (newConfig.language !== sourceLang) setSourceLang(newConfig.language)
-        if (newConfig.isMultiSpeaker !== multiSpeaker) setMultiSpeaker(newConfig.isMultiSpeaker)
+        if (newConfig.speakerCount !== speakerCount) setSpeakerCount(newConfig.speakerCount)
         if (newConfig.prompt !== globalPrompt) setGlobalPrompt(newConfig.prompt)
     }
 
@@ -415,7 +415,7 @@ export default function TranscribePage() {
                             name: file.name,
                             size: file.size ? `${(file.size / (1024 * 1024)).toFixed(1)} MB` : "",
                             language: file.language || globalConfig.language,
-                            isMultiSpeaker: file.isMultiSpeaker ?? globalConfig.isMultiSpeaker,
+                            speakerCount: file.speakerCount ?? globalConfig.speakerCount,
                             // 這個檔案自己的提示詞（每檔設定裡編輯的就是它）；清空就回到跟著全域
                             prompt: file.prompt ?? "",
                             followsGlobalPrompt: followsGlobalPrompt(file),

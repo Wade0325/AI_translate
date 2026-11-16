@@ -14,6 +14,7 @@ import {
 import { downloadFormatsDetailed } from "@/constants/downloadFormats"
 import { formatDuration } from "@/utils/formatters"
 import { TailLossNotice } from "@/components/TailLossNotice"
+import { SpeakerCountNotice } from "@/components/SpeakerCountNotice"
 import { correctionPath } from "@/utils/correction"
 
 const { Text } = Typography
@@ -89,8 +90,9 @@ export function ResultFileCard({ file, onDownload }) {
                     {/* Row 2: stats */}
                     <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px 16px' }}>
                         <StatChip icon={Languages} label={file.language || "Unknown"} />
-                        {/* 轉錄結果裡實際出現的說話者人數（後端從片段算）；不知道或沒有說話者編號時不顯示 */}
-                        {fData.speakerCount > 0 && <StatChip icon={Users} label={`${fData.speakerCount} speaker(s)`} />}
+                        {/* 這份輸出裡有幾位說話者（後端照說話者標記的規則算，整份當成同一位說話者時是 1）；
+                            不知道或沒有任何一行時不顯示 */}
+                        {fData.resultSpeakerCount > 0 && <StatChip icon={Users} label={`${fData.resultSpeakerCount} speaker(s)`} />}
                         <StatChip icon={Clock} label={formatDuration(file.audioDurationSec || 0)} />
                         {fData.cost !== undefined && <StatChip icon={Coins} label={`$${fData.cost.toFixed(4)}`} highlight />}
                     </div>
@@ -142,7 +144,9 @@ export function ResultFileCard({ file, onDownload }) {
                     </Dropdown>
                 </div>
             </div>
-            {/* 轉錄結果可能少了一段（#257）：文字和檔名對齊（左邊距 12 + 圖示 36 + 間距 12） */}
+            {/* 選了 2 到 8 人、結果的人數不同（#351 第 4 點）；文字和檔名對齊（左邊距 12 + 圖示 36 + 間距 12） */}
+            <SpeakerCountNotice selected={fData.selectedSpeakerCount} actual={fData.resultSpeakerCount} paddingLeft={60} />
+            {/* 轉錄結果可能少了一段（#257） */}
             <TailLossNotice seconds={fData.tailLossFrom} paddingLeft={60} />
         </div>
     )

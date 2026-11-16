@@ -11,7 +11,7 @@ import {
 } from './transcribeRequest.js';
 
 // 轉錄頁按 Start 時的設定：全域預設（含全域提示詞）與所選的模型支援的輸入
-const DEFAULTS = { sourceLang: 'ja-JP', multiSpeaker: false, serviceTier: null, prompt: '人名照寫：佐藤' };
+const DEFAULTS = { sourceLang: 'ja-JP', speakerCount: 'auto', serviceTier: null, prompt: '人名照寫：佐藤' };
 const TAKES_PROMPT = { prompt: true, userText: true, batch: true };
 const NO_PROMPT = { prompt: false, userText: false, batch: false };
 
@@ -94,7 +94,7 @@ describe('批次送出的提示詞（補充說明）', () => {
 
 describe('檔案卡顯示的提示詞', () => {
   it('跟著全域：沒有自己的提示詞（沒填過，或清空、只剩空白），套用全域設定之後也是', () => {
-    const globalConfig = { language: 'ja-JP', isMultiSpeaker: false };
+    const globalConfig = { language: 'ja-JP', speakerCount: 'auto' };
     expect([
       followsGlobalPrompt(untouched()),
       followsGlobalPrompt(untouched({ prompt: '這個檔案是關西腔' })),
@@ -133,15 +133,27 @@ describe('重新轉錄', () => {
       singlePrompt({ file: again }),
     ]).toEqual(['waiting', null, true, '人名照寫：佐藤', '人名照寫：佐藤']);
   });
+
+  it('每檔設定的說話者人數照舊，上一次結果的人數清掉', () => {
+    const done = {
+      ...untouched({ speakerCount: 3 }),
+      status: 'completed', result: { txt: '上一次的結果' }, resultSpeakerCount: 2, selectedSpeakerCount: 3,
+    };
+
+    const again = forRetranscription(done);
+
+    expect([again.speakerCount, again.resultSpeakerCount, again.selectedSpeakerCount, singlePayload({ file: again }).speaker_count])
+      .toEqual([3, undefined, undefined, 3]);
+  });
 });
 
 describe('按 Start 時的全域預設', () => {
-  const onPage = { language: 'ja-JP', multiSpeaker: true, processingMode: 'standard', globalPrompt: '人名照寫：佐藤' };
+  const onPage = { language: 'ja-JP', speakerCount: 3, processingMode: 'standard', globalPrompt: '人名照寫：佐藤' };
 
   it('全域提示詞會進到送出的內容：沒有自己提示詞的檔案帶它', () => {
     const payload = singlePayload({ defaults: requestDefaults(onPage) });
-    expect([payload.prompt, payload.source_lang, payload.multi_speaker])
-      .toEqual(['人名照寫：佐藤', 'ja-JP', true]);
+    expect([payload.prompt, payload.source_lang, payload.speaker_count])
+      .toEqual(['人名照寫：佐藤', 'ja-JP', 3]);
   });
 
   it('只有 Flex 帶 service_tier', () => {
@@ -151,18 +163,19 @@ describe('按 Start 時的全域預設', () => {
 });
 
 describe('套用全域設定（Apply to All、Reset to global）', () => {
-  it('套用之後，檔案跟著全域提示詞走：之後改的全域提示詞也會送出；語言照套用當下的全域值', () => {
+  it('套用之後，檔案跟著全域提示詞走：之後改的全域提示詞也會送出；語言與說話者人數照套用當下的全域值', () => {
     const globalConfig = {
-      language: 'zh-TW', isMultiSpeaker: true,
+      language: 'zh-TW', speakerCount: 4,
       prompt: '套用當下的全域提示詞',
     };
     const file = {
-      ...untouched({ prompt: '這個檔案是關西腔', language: 'en-US', hasOverride: true }),
+      ...untouched({ prompt: '這個檔案是關西腔', language: 'en-US', speakerCount: 1, hasOverride: true }),
       ...globalSettingsPatch(globalConfig),
     };
 
     const payload = singlePayload({ file, defaults: { ...DEFAULTS, prompt: '後來改過的全域提示詞' } });
-    expect([payload.prompt, payload.source_lang]).toEqual(['後來改過的全域提示詞', 'zh-TW']);
+    expect([payload.prompt, payload.source_lang, payload.speaker_count])
+      .toEqual(['後來改過的全域提示詞', 'zh-TW', 4]);
   });
 });
 
@@ -193,9 +206,34 @@ describe('單檔任務送出的內容', () => {
       source_lang: 'ja-JP',
       prompt: null,
       user_supplied_text: null,
-      multi_speaker: false,
+      speaker_count: 'auto',
       service_tier: null,
       session_id: 's1',
     });
+  });
+});
+
+describe('送出的說話者人數（#352）', () => {
+  it('每檔設定的人數優先，沒設定的用全域的；選 1 人也照送', () => {
+    expect([
+      singlePayload({ file: untouched({ speakerCount: 1 }) }).speaker_count,
+      singlePayload({ file: untouched({ speakerCount: 5 }), defaults: { ...DEFAULTS, speakerCount: 2 } }).speaker_count,
+      singlePayload({ defaults: { ...DEFAULTS, speakerCount: 2 } }).speaker_count,
+      singlePayload().speaker_count,
+    ]).toEqual([1, 5, 2, 'auto']);
+  });
+
+  it('批次：每個檔案帶自己的人數，批次層級帶全域的', () => {
+    const payload = buildBatchPayload({
+      files: [
+        { ...untouched({ uid: 'f1', speakerCount: 1 }), serverFilename: 'srv-a.wav' },
+        { ...untouched({ uid: 'f2', name: 'b.wav' }), serverFilename: 'srv-b.wav' },
+      ],
+      provider: 'google', model: 'gemini-2.5-flash',
+      defaults: { ...DEFAULTS, speakerCount: 3 }, supports: TAKES_PROMPT, sessionId: 's1',
+    });
+    expect([payload.speaker_count, payload.files.map((f) => f.speaker_count)]).toEqual([3, [1, 3]]);
+    expect(payload).not.toHaveProperty('multi_speaker');
+    expect(payload.files[0]).not.toHaveProperty('multi_speaker');
   });
 });

@@ -28,6 +28,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
+from app.core import speaker_count as speakers
 from app.core import text_replacement
 from app.database.models import TranscriptionLog, TranscriptSegment
 from app.database.session import get_db
@@ -147,6 +148,7 @@ def get_transcript(task_uuid: str, db: Session = Depends(get_db)):
         correctable=blocker is None,
         uncorrectable_reason=blocker,
         single_speaker=_single_speaker(log),
+        speaker_count=speakers.from_column(cast(Optional[str], log.speaker_count)),
         next_speaker=CorrectionRepository.next_speaker(db, log.task_uuid),
         speaker_names=CorrectionRepository.speaker_names(db, log.task_uuid),
         segment_count=len(segments),
@@ -155,23 +157,26 @@ def get_transcript(task_uuid: str, db: Session = Depends(get_db)):
 
 
 def _single_speaker(log: TranscriptionLog) -> bool:
-    """任務整份當成同一位說話者：下載不帶說話者標記的任務（和下載用同一條規則）。
-
-    說話者人數（#352）合併之前，這個設定是任務紀錄的 Multi-Speaker 開關：關著（False）是整份當成同一位，
-    開著與開關做出來之前的 None 是照模型分出的說話者顯示。照當時的規則，開著的任務一律帶說話者標記，所以切到
-    照模型分出的說話者顯示之後，校正後版本只剩一位說話者時也帶。
-
-    人數合併之後改看人數，設定也改寫人數（:func:`_set_single_speaker`），只改這兩處：整份當成同一位寫 1 人，
-    照模型分出的說話者顯示寫照模型判斷，下載照「下載的那個版本裡有兩位以上才帶」（#351 第 3 點）。
+    """任務整份當成同一位說話者：下載不帶說話者標記的任務，和下載用同一條規則
+    （:func:`app.services.output_format.speaker_labels_for`）。選 1 人的任務是；人數做出來之前的任務照當時的
+    Multi-Speaker 開關，關著的是。照模型判斷與選了 2 到 8 人的任務照模型分出的說話者顯示。
     """
-    return not output_format.shows_speaker_labels(cast(Optional[bool], log.multi_speaker))
+    return output_format.task_speaker_labels(log) is output_format.SpeakerLabels.NONE
 
 
 def _set_single_speaker(db: Session, log: TranscriptionLog, single_speaker: bool) -> Optional[TranscriptionLog]:
     """把任務切換成整份當成同一位說話者，或照模型分出的說話者顯示（:func:`_single_speaker` 的反向），並 commit。
-    回傳改好的任務紀錄；任務紀錄剛好被刪掉時是 None。"""
+    回傳改好的任務紀錄；任務紀錄剛好被刪掉時是 None。
+
+    切換改寫說話者人數（#351、#352）：整份當成同一位寫 1 人；照模型分出的說話者顯示寫照模型判斷，下載照
+    「被下載的那個版本裡有兩位以上的說話者才帶」。本來就照模型分出的說話者顯示的任務（照模型判斷、選了 2 到 8 人、
+    人數做出來之前開關開著的）不改，所選的人數留著，校正頁照它提醒人數不同。
+    """
+    if not single_speaker and not _single_speaker(log):
+        return log
+    count = 1 if single_speaker else speakers.AUTO
     return TranscriptionLogRepository().update_log(
-        db, cast(uuid.UUID, log.task_uuid), {"multi_speaker": not single_speaker})
+        db, cast(uuid.UUID, log.task_uuid), {"speaker_count": speakers.to_column(count)})
 
 
 def _normalized_text(text: str) -> str:
@@ -451,13 +456,16 @@ def set_speaker_name(task_uuid: str, speaker: str, body: SpeakerNameRequest, db:
 def update_transcript_settings(task_uuid: str, body: TranscriptSettingsRequest, db: Session = Depends(get_db)):
     """改任務的設定：在「整份當成同一位說話者」與「照模型分出的說話者顯示」之間切換（#354）。
 
-    改的是任務的設定，不算校正，不留校正紀錄，也不重新轉錄；片段照樣存著模型分出的說話者編號。切換之後，
-    下載帶不帶說話者標記照輸出格式模組的規則（:func:`app.services.output_format.shows_speaker_labels`）。
+    改的是任務的設定，不算校正，不留校正紀錄，也不重新轉錄；片段照樣存著模型分出的說話者編號。切換改寫說話者
+    人數（見 :func:`_set_single_speaker`），下載帶不帶說話者標記照輸出格式模組的規則
+    （:func:`app.services.output_format.speaker_labels_for`）。
     """
     updated = _set_single_speaker(db, _correctable_log(db, task_uuid), body.single_speaker)
     if updated is None:  # 任務剛好被刪掉
         raise HTTPException(status_code=404, detail="找不到此任務紀錄")
-    return TranscriptSettingsResponse(single_speaker=_single_speaker(updated))
+    return TranscriptSettingsResponse(
+        single_speaker=_single_speaker(updated),
+        speaker_count=speakers.from_column(cast(Optional[str], updated.speaker_count)))
 
 
 @router.get("/{task_uuid}/audio")

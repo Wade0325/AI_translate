@@ -568,6 +568,33 @@ class TestDownloadVersions:
         assert _download(client, log, "txt").text == "おはようございます。\nこんにちは。\nさようなら。"
         assert "color" not in _download(client, log, "srt").text
 
+    def test_labels_follow_the_speakers_left_in_the_corrected_version(
+            self, client: TestClient, db_session: Session):
+        # 照模型判斷的任務（#352）：輸出有兩位以上的說話者才帶標記，對著被下載的那個版本算。校正把 S1 的
+        # 兩段改成 S0 之後只剩一位，校正後版本不帶也不上色；原始轉錄照樣有兩位、帶標記
+        log = _with_segments(db_session, _create_log(db_session, speaker_count="auto"), FOUR_SEGMENTS)
+        CorrectionRepository.record_operation(db_session, log.task_uuid, [
+            Correction("0001", CorrectionField.SPEAKER, "S0"),
+            Correction("0002", CorrectionField.SPEAKER, "S0")])
+
+        assert _download(client, log, "txt").text == "おはよう。\nえーと。\nこんにちは。\nさようなら。"
+        assert "color" not in _download(client, log, "srt").text
+        assert _download(client, log, "lrc", "original").text == FOUR_ORIGINAL["lrc"]
+
+    def test_completed_result_counts_speakers_in_the_corrected_version(self, db_session: Session):
+        # 批次取回的結果是校正後版本（#346）：結果頁的說話者數目和四種格式對著同一個版本算（#352）
+        from app.tasks.lifecycle import completed_result
+
+        log = _with_segments(db_session, _create_log(db_session, speaker_count="auto"), FOUR_SEGMENTS)
+        CorrectionRepository.record_operation(db_session, log.task_uuid, [
+            Correction("0001", CorrectionField.SPEAKER, "S0"),
+            Correction("0002", CorrectionField.SPEAKER, "S0")])
+
+        result = completed_result(db_session, log.task_uuid)
+        assert result is not None
+        assert (result["speaker_count"], result["selected_speaker_count"]) == (1, "auto")
+        assert "[S" not in result["transcripts"]["lrc"]
+
     @pytest.mark.parametrize("fmt", ["lrc", "srt", "vtt", "txt"])
     def test_corrected_version_writes_speaker_names_and_the_original_stays(
             self, client: TestClient, db_session: Session, fmt):

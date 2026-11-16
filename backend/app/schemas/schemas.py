@@ -3,6 +3,9 @@ from typing import Dict, List, Optional
 from uuid import UUID
 from pydantic import ConfigDict, StrictBool, StrictStr
 
+from app.core import speaker_count as speakers
+from app.core.speaker_count import SpeakerCount
+
 
 class ProviderConfigRequest(BaseModel):
     """用於接收前端發送的模型介面設定的請求體。"""
@@ -64,7 +67,8 @@ class WebSocketTranscriptionRequest(BaseModel):
     target_lang: Optional[str] = None
     prompt: Optional[str] = None  # 補充說明：接在設定頁存的提示詞範本後面送出（#144）
     user_supplied_text: Optional[str] = None
-    multi_speaker: bool = False
+    # 說話者人數：照模型判斷（"auto"，預設）或 1 到 8 人（app.core.speaker_count）
+    speaker_count: SpeakerCount = speakers.DEFAULT
     service_tier: Optional[str] = None  # 'flex' 啟用 Flex 推論
     session_id: Optional[str] = None  # 同一次 Start 的任務群組 ID
 
@@ -77,7 +81,7 @@ class BatchFileItem(BaseModel):
     source_lang: Optional[str] = None
     target_lang: Optional[str] = None
     prompt: Optional[str] = None
-    multi_speaker: Optional[bool] = None
+    speaker_count: Optional[SpeakerCount] = None
 
 
 class WebSocketBatchRequest(BaseModel):
@@ -89,7 +93,7 @@ class WebSocketBatchRequest(BaseModel):
     source_lang: str
     target_lang: Optional[str] = None
     prompt: Optional[str] = None  # 補充說明：補給沒帶自己的檔案，一樣接在提示詞範本後面
-    multi_speaker: bool = False
+    speaker_count: SpeakerCount = speakers.DEFAULT  # 補給沒帶自己人數的檔案
     session_id: Optional[str] = None
 
 
@@ -368,6 +372,9 @@ class TranscriptSettingsRequest(BaseModel):
 class TranscriptSettingsResponse(BaseModel):
     """改完之後任務的設定。"""
     single_speaker: bool
+    speaker_count: Optional[SpeakerCount] = None
+    """切換之後任務記下的說話者人數（整份當成同一位是 1，切到照模型分出的說話者顯示是 "auto"，見
+    TranscriptResponse.speaker_count）。"""
 
 
 class ReplaceAllRequest(BaseModel):
@@ -435,6 +442,9 @@ class TranscriptResponse(BaseModel):
     uncorrectable_reason: Optional[str] = None
     single_speaker: bool = False
     """整份當成同一位說話者（#354）：下載不帶說話者標記，校正頁不顯示說話者與改說話者的操作。"""
+    speaker_count: Optional[SpeakerCount] = None
+    """任務記下的說話者人數（"auto" 或 1 到 8，#352）；人數做出來之前的任務是 None。選了 2 到 8 人、校正後版本的
+    說話者人數卻不同時，校正頁上方提醒（#351 第 4 點）。"""
     next_speaker: str = "S0"
     """新的說話者編號：這個任務還沒用過的下一個號碼（#354）。"""
     speaker_names: Dict[str, str] = {}

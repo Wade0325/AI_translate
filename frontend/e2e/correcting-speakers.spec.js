@@ -160,6 +160,35 @@ test('整份當成同一位說話者時不顯示說話者與相關操作；切�
     await expect(page.locator('.correction-speaker')).toHaveCount(0)
 })
 
+test('選了 2 到 8 人、校正後版本的說話者人數不同時，上方多一行提醒（#351 第 4 點）', async ({ page, mockBackend }) => {
+    // 選了 2 人、模型分出兩位：人數相同，不提醒
+    const fake = correctionsBackend(MEETING, { speaker_count: 2 })
+    await openCorrection(page, mockBackend, { routes: fake.routes })
+    const notice = page.getByTestId('speaker-count-notice')
+    await expect(speakers(page)).toHaveText(['S0', 'S1', 'S0', 'S1'])
+    await expect(notice).toHaveCount(0)
+
+    // 把 S0 全部換成 S1：校正後版本只剩一位
+    await speakerButton(page, 0).click()
+    await pick(page, 'S0 的 2 個片段全部換成', 'S1')
+    await expect(notice).toHaveText('選了 2 人，結果有 1 位說話者')
+
+    // 整份當成同一位時不提醒；切回照模型分出的說話者顯示是照模型判斷，也不提醒
+    await switchSpeakerMode(page, '整份當成同一位')
+    await expect(notice).toHaveCount(0)
+    await switchSpeakerMode(page, '照模型分出的說話者顯示')
+    await expect(speakerMode(page, '照模型分出的說話者顯示')).toBeChecked()
+    await expect(notice).toHaveCount(0)
+    expect(fake.settings.speaker_count).toBe('auto')
+})
+
+test('選了 3 人、模型只分出兩位的任務，一打開就提醒', async ({ page, mockBackend }) => {
+    const fake = correctionsBackend(MEETING, { speaker_count: 3 })
+    await openCorrection(page, mockBackend, { routes: fake.routes })
+
+    await expect(page.getByTestId('speaker-count-notice')).toHaveText('選了 3 人，結果有 2 位說話者')
+})
+
 test('切換存不進去時切回來，並寫出原因', async ({ page, mockBackend }) => {
     const fake = correctionsBackend(MEETING)
     await openCorrection(page, mockBackend, {
