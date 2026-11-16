@@ -23,11 +23,14 @@ def _write(path, text):
 
 
 def _manifest(lrc, commit, *, sha256="ab" * 32, duration=30.0, rtf=0.1234, vram=10.5,
-              dirty=False, audio="demo.wav", language="zh-TW", driver="576.02", revision=REVISION):
-    """transcribe 在轉錄結果旁邊寫的 manifest（環境只留每一類的一項）。"""
+              dirty=False, audio="demo.wav", language="zh-TW", driver="576.02", revision=REVISION,
+              speakers=None):
+    """transcribe 在轉錄結果旁邊寫的 manifest（環境只留每一類的一項）。``speakers`` 是 None 時不寫說話者人數，
+    像加上 --speakers 之前的 manifest。"""
     manifest = {
         "command": "transcribe",
-        "request": {"provider": "local", "model": "moss-align", "language": language},
+        "request": {"provider": "local", "model": "moss-align", "language": language,
+                    **({"speaker_count": speakers} if speakers is not None else {})},
         "audio": {"file": audio, "sha256": sha256, "duration_seconds": duration},
         "code": {"commit": commit, "dirty": dirty},
         "environment": {
@@ -121,6 +124,20 @@ def test_compares_main_and_the_pull_request(lab, runs, tmp_path, capsys):
     assert "- 環境相同，可以直接和基準比。" in out
     assert "| 中文 | demo_A | 8 | 12.50%（1 個錯） → 0.00%（0 個錯） | 12.50%（1 個錯） → 0.00%（0 個錯） | 通過 |" in out
     assert out.rstrip().endswith("- 判定：通過（中文）")
+
+
+def test_a_chosen_speaker_count_is_shown_with_the_model(lab, runs, tmp_path, capsys):
+    # 基準照模型判斷（加上 --speakers 之前的 manifest 沒寫，和 auto 相同），PR 指定 7 人（#377）
+    _manifest(runs[0], "1" * 40)
+    _manifest(runs[1], "2" * 40, speakers=7)
+    path = _eval(capsys, tmp_path / "eval.json", *runs)
+
+    _, out, _ = _summary(capsys, path)
+
+    assert "| 模型與語言 | local／moss-align／zh-TW | local／moss-align／zh-TW／說話者 7 人 |" in out
+    assert ("`python -m tools.eval transcribe --audio demo.wav --provider local --model moss-align "
+            "--language zh-TW`；`python -m tools.eval transcribe --audio demo.wav --provider local "
+            "--model moss-align --language zh-TW --speakers 7`") in out
 
 
 @pytest.mark.parametrize(("change", "row"), [

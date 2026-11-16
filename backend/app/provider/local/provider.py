@@ -89,6 +89,9 @@ def _capabilities(model: str) -> ModelCapabilities:
         # MOSS 只在單次輸入內編號說話者：分段轉錄合併時用 CAM++ 把各段的編號對齊（#93）。舊版的
         # VibeVoice 不對齊
         align_speakers_across_chunks=weights.is_moss_model(model),
+        # MOSS 不能指定說話者人數（寫進提示詞會讓輸出不帶時間戳），又常多分：使用者選了 2 到 8 人時，用 CAM++
+        # 照聲音收斂到所選人數（#377）
+        converge_to_speaker_count=weights.is_moss_model(model),
         accepts_prompt=False,
         accepts_user_text=False,
         supports_batch=False,

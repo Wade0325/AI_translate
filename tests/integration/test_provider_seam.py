@@ -1214,6 +1214,105 @@ class TestSpeakersAcrossChunks:
         assert embedder.opened == 1
 
 
+LONG_TURNS = [(0.0, 10.0, TONE_A), (12.0, 22.0, TONE_B), (24.0, 34.0, TONE_A), (36.0, 47.0, TONE_B)]
+"""47 秒、4 句的合成音檔：每一句說 10 或 11 秒（不少於收斂時「說太少話」的 10 秒），A、B 輪流。"""
+SPLIT_IN_FOUR = [(0.0, 10.0, 0, "一"), (12.0, 22.0, 1, "二"), (24.0, 34.0, 2, "三"), (36.0, 47.0, 3, "四")]
+"""模型把 LONG_TURNS 分成 4 位：A、B 第二次說話時各拿到新的編號（像 MOSS 隔一段時間後換了編號）。"""
+
+
+class TestSpeakerCountConvergence:
+    """照所選人數收斂（#377）：本機選 2 到 8 人、分出的說話者比所選多時，用說話者嵌入收斂到所選人數；照模型判斷、
+    1 人、不能指定人數以外的模型（Gemini 由提示詞寫人數）不收斂。只改說話者編號，時間、文字與片段 key 不變。
+
+    假供應商照劇本把同一個人分成兩個編號；假的說話者嵌入聽頻率（tests/support/fake_embedder.py），同一位說話者
+    的相似度是 1，不同的是 0。收斂的規則本身（說太少話的編號、同時說話、相似度的下限）見
+    tests/unit/test_speaker_alignment.py 的 TestConvergingToTheSpeakerCount。
+    """
+
+    @pytest.fixture(autouse=True)
+    def _like_local(self, fake):
+        fake.model_capabilities = replace(
+            fake.model_capabilities, remove_silence=False, align_speakers_across_chunks=True,
+            converge_to_speaker_count=True)
+
+    def test_audio_transcribed_in_one_pass_converges_to_the_chosen_count(
+            self, api, fake, embedder, data_dir):
+        fake.script = [SPLIT_IN_FOUR]
+        messages = transcribe(api, "uid-converge-one-pass", "voice.flac", voiced=LONG_TURNS,
+                              speaker_count=2)
+
+        assert codes(messages)[-1] == TaskStatus.COMPLETED
+        segments = stored_segments(api, messages[-1]["task_uuid"])
+        assert [s["speaker"] for s in segments] == ["S0", "S1", "S0", "S1"]
+        assert [(s["start"], s["end"], s["text"], s["seg_key"]) for s in segments] == [
+            (start, end, text, f"{i:04d}") for i, (start, end, _, text) in enumerate(SPLIT_IN_FOUR)]
+        assert (messages[-1]["result"]["speaker_count"],
+                messages[-1]["result"]["selected_speaker_count"]) == (2, 2)
+        assert "照所選人數收斂說話者..." in [m["status_text"] for m in messages]
+        assert embedder.opened == 1
+        # 取嵌入時轉成的 wav 用完就清掉
+        assert leftovers(data_dir) == []
+
+    @pytest.mark.parametrize("speaker_count", ["auto", 1, 4, 5])
+    def test_left_as_it_is_without_more_speakers_than_chosen(
+            self, api, fake, embedder, speaker_count):
+        # 照模型判斷、選 1 人不收斂；選的人數不比分出的少時不必收斂。都不取嵌入
+        fake.script = [SPLIT_IN_FOUR]
+        messages = transcribe(api, f"uid-converge-none-{speaker_count}", voiced=LONG_TURNS,
+                              speaker_count=speaker_count)
+
+        assert [s["speaker"] for s in stored_segments(api, messages[-1]["task_uuid"])] == [
+            "S0", "S1", "S2", "S3"]
+        assert embedder.opened == 0
+
+    def test_model_that_is_told_the_count_is_left_as_it_is(self, api, fake, embedder):
+        # Gemini 由提示詞寫人數（#352），不收斂
+        fake.model_capabilities = replace(fake.model_capabilities, converge_to_speaker_count=False)
+        fake.script = [SPLIT_IN_FOUR]
+        messages = transcribe(api, "uid-converge-told", voiced=LONG_TURNS, speaker_count=2)
+
+        assert [s["speaker"] for s in stored_segments(api, messages[-1]["task_uuid"])] == [
+            "S0", "S1", "S2", "S3"]
+        assert embedder.opened == 0
+
+    @pytest.mark.parametrize("speaker_count, expected", [
+        ("auto", ["S0", "S1", "S0", "S2", "S1"]),
+        (2, ["S0", "S1", "S0", "S0", "S1"]),
+    ])
+    def test_chunks_are_aligned_first_then_converged(
+            self, api, fake, embedder, speaker_count, expected):
+        # 單次只能處理 40 秒：53 秒的音檔切在最接近中點的靜音 23 秒。後一段把 A 分成 S0、S1（同一次分離裡
+        # 的兩個編號，對齊不併，S1 拿新的 S2），B 是 S2（配回前一段的 S1）。選 2 人時再收斂，S2 併進 S0
+        fake.model_capabilities = replace(fake.model_capabilities, single_pass_seconds=40.0)
+        fake.script = [[(0.0, 10.0, 0, "一"), (12.0, 22.0, 1, "二")],
+                       [(1.0, 11.0, 0, "三"), (13.0, 24.0, 1, "四"), (26.0, 30.0, 2, "五")]]
+        messages = transcribe(api, f"uid-converge-chunks-{speaker_count}",
+                              voiced=[(0.0, 10.0, TONE_A), (12.0, 22.0, TONE_B), (24.0, 34.0, TONE_A),
+                                      (36.0, 47.0, TONE_A), (49.0, 53.0, TONE_B)],
+                              speaker_count=speaker_count)
+
+        assert codes(messages)[-1] == TaskStatus.COMPLETED
+        assert fake.durations == pytest.approx([23.0, 30.0], abs=0.01)
+        segments = stored_segments(api, messages[-1]["task_uuid"])
+        assert [s["speaker"] for s in segments] == expected
+        assert [s["seg_key"] for s in segments] == ["a.0000", "a.0001", "b.0000", "b.0001", "b.0002"]
+        assert embedder.opened == 1
+
+    def test_without_the_embedder_the_numbers_are_left_as_they_are(self, api, fake, embedder):
+        # 嵌入用不了（例如權重載入失敗）：任務照樣完成、編號不變，狀態說明寫明沒有收斂；結果比所選多，結果頁
+        # 照 #351 第 4 點提醒
+        embedder.open_error = RuntimeError("權重壞了")
+        fake.script = [SPLIT_IN_FOUR]
+        messages = transcribe(api, "uid-converge-no-embedder", voiced=LONG_TURNS, speaker_count=2)
+
+        assert codes(messages)[-1] == TaskStatus.COMPLETED
+        assert [s["speaker"] for s in stored_segments(api, messages[-1]["task_uuid"])] == [
+            "S0", "S1", "S2", "S3"]
+        assert "說話者嵌入用不了：說話者沒有照所選人數收斂" in [m["status_text"] for m in messages]
+        assert (messages[-1]["result"]["speaker_count"],
+                messages[-1]["result"]["selected_speaker_count"]) == (4, 2)
+
+
 class TestEmptyChunk:
     """空段（#327）：分段轉錄的一段跑完了，卻沒有轉錄出任何內容，例如會議錄影開頭的長段靜音或測試音。
     不讓任務失敗，其他段的片段照樣保留；這一段有沒有漏掉內容照掉尾的規則看。每一段都是空段時才失敗。
@@ -2053,6 +2152,7 @@ class TestModelCapabilitiesEndpoint:
             "split_retry_on_failure": False,
             "continuation": False,
             "align_speakers_across_chunks": False,
+            "converge_to_speaker_count": False,
             "accepts_prompt": False,
             "accepts_user_text": True,
             "supports_batch": False,
@@ -2079,6 +2179,15 @@ class TestModelCapabilitiesEndpoint:
 
         assert models
         assert models == {(provider, model): provider == "google" for provider, model in models}
+
+    def test_only_local_models_converge_to_the_speaker_count(self, api):
+        # 本機的 MOSS 不能指定人數，選了 2 到 8 人時轉錄完照聲音收斂（#377）；Gemini 由提示詞寫人數（#352）
+        listed = listed_capabilities(api)
+        models = {(provider, model): c["converge_to_speaker_count"]
+                  for (provider, model), c in listed.items() if provider in ("local", "google")}
+
+        assert models
+        assert models == {(provider, model): provider == "local" for provider, model in models}
 
     def test_only_gemini_models_take_user_text(self, api):
         # 轉錄頁只在所選的模型吃使用者文稿時提供附加的按鈕（#13 Q4）：Gemini 只替文稿補上時間戳（#66），

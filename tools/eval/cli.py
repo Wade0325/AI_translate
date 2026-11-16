@@ -280,6 +280,9 @@ def _parser() -> argparse.ArgumentParser:
                    help="供應商（預設 local）；要 API 金鑰的供應商會拒絕，音檔不離開這台電腦")
     p.add_argument("--model", help="模型（預設：供應商的預設模型）")
     p.add_argument("--language", required=True, help="音檔的語言，和轉錄頁送出的相同，例如 zh-TW")
+    p.add_argument("--speakers", default="auto", choices=["auto", *map(str, range(1, 9))],
+                   help="說話者人數，和轉錄頁選的相同（預設 auto，照模型判斷）；本機選 2 到 8 人時，分出的說話者"
+                        "比所選多就照聲音收斂（#377）")
     p.add_argument("--out", required=True, metavar="資料夾",
                    help="輸出資料夾：寫 <音檔名稱>.lrc 與 <音檔名稱>.manifest.json，已經有時拒絕；"
                         "不能是標準答案的資料夾")

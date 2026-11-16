@@ -7,7 +7,8 @@
 
 * Gemini 的提示詞（:mod:`app.core.default_prompt`）：照模型判斷時請它有多位說話者才標，2 到 8 人時
   寫明有幾位，1 人時不請它分。本機的模型不吃提示詞，照舊自己分說話者、存下說話者編號（ADR-0007）；
-  照所選人數收斂等 #353 的結果。
+  選了 2 到 8 人（:func:`several`）、分出的比所選多時，轉錄完照聲音收斂到所選人數（#377，
+  :func:`app.services.speaker_alignment.converge`），存的是收斂後的編號。
 * 輸出帶不帶說話者標記（:func:`app.services.output_format.speaker_labels`）。
 
 請求、任務參數與完成時送給畫面的結果寫成 ``"auto"`` 或 1 到 8 的整數。任務紀錄存成字串（見
@@ -37,6 +38,11 @@ DEFAULT: Final[SpeakerCount] = AUTO
 def is_single(speaker_count: SpeakerCount) -> bool:
     """選了 1 人：整份音檔當成同一位說話者。"""
     return speaker_count == 1
+
+
+def several(speaker_count: SpeakerCount) -> Optional[int]:
+    """選了 2 到 8 人時是那個人數；照模型判斷與 1 人是 None。"""
+    return speaker_count if isinstance(speaker_count, int) and speaker_count >= 2 else None
 
 
 def to_column(speaker_count: Optional[SpeakerCount]) -> Optional[str]:

@@ -81,11 +81,13 @@ def cmd_transcribe(args) -> int:
     # 應用程式的暫存上傳區由 API 模組在 import 時建立，這個指令不經 API。少了它，WAV 以外的
     # 音檔轉不成 WAV，去靜音會悄悄退回送原音檔，結果就和應用程式不同
     get_settings().temp_uploads_path.mkdir(parents=True, exist_ok=True)
-    run = _run(audio, provider, model, args.language, transcript, duration)
+    speaker_count = "auto" if args.speakers == "auto" else int(args.speakers)
+    run = _run(audio, provider, model, args.language, speaker_count, transcript, duration)
     manifest = {
         "command": "transcribe",
         "created_at": datetime.now().isoformat(timespec="seconds"),
-        "request": {"provider": provider, "model": model, "language": args.language},
+        "request": {"provider": provider, "model": model, "language": args.language,
+                    "speaker_count": speaker_count},
         "audio": {"file": audio.name, "sha256": _sha256(audio), "duration_seconds": duration},
         "code": code,
         "environment": environment_manifest.describe(provider, model),
@@ -137,10 +139,10 @@ def _resolve_model(provider: str, model: str | None):
     return entry.provider, model, capabilities
 
 
-def _run(audio: Path, provider: str, model: str, language: str, transcript: Path,
-         duration: float | None) -> dict[str, Any]:
-    """轉錄一次，成功時寫出 LRC；回傳 manifest 的 run 區塊。``duration`` 是音檔長度（秒），
-    算 RTF 用。"""
+def _run(audio: Path, provider: str, model: str, language: str, speaker_count: str | int,
+         transcript: Path, duration: float | None) -> dict[str, Any]:
+    """轉錄一次，成功時寫出 LRC；回傳 manifest 的 run 區塊。``speaker_count`` 是說話者人數（``"auto"`` 或
+    1 到 8），``duration`` 是音檔長度（秒），算 RTF 用。"""
     from app.celery.models import TranscriptionTaskParams
     from app.provider.base import ProgressAndCancel
     from app.services import output_format
@@ -149,7 +151,7 @@ def _run(audio: Path, provider: str, model: str, language: str, transcript: Path
     task_id = f"eval-{uuid.uuid4().hex[:12]}"
     params = TranscriptionTaskParams(
         file_path=str(audio), provider=provider, model=model, api_keys="",
-        source_lang=language, original_filename=audio.name,
+        source_lang=language, speaker_count=speaker_count, original_filename=audio.name,
         client_id="tools.eval", file_uid=task_id)
     start = time.perf_counter()
     reports: list[tuple[float, str]] = [(0.0, FIRST_STAGE)]
