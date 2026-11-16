@@ -343,7 +343,7 @@ class TestConvergingToTheSpeakerCount:
         # 照 #353 的 ja5（7 人分成 14 位）：7 位真人 S0～S6 彼此的相似度只有 0.365；S3 隔一段時間後換了
         # 編號 S13（0.97）；6 個說不到 10 秒的零碎編號 S7～S12（1.5～8.4 秒）彼此很像（0.9），和真人 0.37。
         # 零碎編號先併進說最多話的 S6，再併 S3 與 S13，剛好剩 7 位。不先處理零碎編號的話，它們會併成一個
-        # 「假的人」，為了湊人數再把兩位真人併在一起
+        # 「假的人」，停在 8 位（0.5 的下限擋住兩位真人互併；#353 沒有下限的做法 A 就是在這裡把真人硬併）
         basis = np.linalg.qr(np.random.default_rng(353).standard_normal((20, 20)))[0]
         common, fragment = basis[0], basis[1]
         vectors = {f"S{i}": 0.365 ** 0.5 * common + 0.635 ** 0.5 * basis[2 + i] for i in range(7)}

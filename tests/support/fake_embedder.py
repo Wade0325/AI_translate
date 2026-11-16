@@ -25,6 +25,8 @@ class FakeEmbedder:
         self.open_error: Optional[Exception] = None
         # 建立時回報給使用者的進度，例如第一次用時下載權重
         self.notice: Optional[str] = None
+        # 取嵌入時拋的錯，例如讀不到音檔
+        self.embed_error: Optional[Exception] = None
         # 每次取嵌入收到的（音檔, 窗）
         self.calls: List[Tuple[Path, Tuple[Tuple[float, float], ...]]] = []
 
@@ -38,6 +40,8 @@ class FakeEmbedder:
 
     def embed(self, audio: Path, spans: Sequence[Tuple[float, float]]) -> List[Optional[np.ndarray]]:
         self.calls.append((audio, tuple(spans)))
+        if self.embed_error is not None:
+            raise self.embed_error
         samples, rate = sf.read(str(audio), dtype="float32", always_2d=True)
         mono = samples.mean(axis=1)
         return [_voice(mono[int(start * rate):int(end * rate)], end - start)

@@ -202,19 +202,19 @@ def separate(pieces: Sequence[Piece]) -> List[Dict[str, str]]:
     return _numbered([[i] for i in range(len(units))], units, len(pieces))
 
 
-def converge(pieces: Sequence[Piece], speakers: int, open_embedder: EmbedderFactory = open_embedder, *,
+def converge(pieces: Sequence[Piece], speaker_count: int, open_embedder: EmbedderFactory = open_embedder, *,
              check: Callable[[], None] = lambda: None,
              report: Report = lambda text: None) -> Dict[str, str]:
     """照所選人數收斂（見模組說明的「照所選人數收斂」）：回傳 {原本的編號: 收斂後的編號}，含轉錄結果裡的每一個編號。
 
-    ``pieces`` 的說話者編號已經是同一套（分段轉錄先對齊）；``speakers`` 是使用者選的人數。編號不比它多時不取嵌入，
+    ``pieces`` 的說話者編號已經是同一套（分段轉錄先對齊）；``speaker_count`` 是使用者選的說話者人數。編號不比它多時不取嵌入，
     編號照舊。收斂前後的對應、相似度與停下的原因寫進日誌（不寫文字）。``check`` 與 ``report`` 同 :func:`align`。
 
     Raises:
         Exception: ``open_embedder`` 或取嵌入失敗時，原本的錯誤；由呼叫端照原本的編號完成任務。
     """
     people = _people(pieces)
-    if len(people) <= speakers:
+    if len(people) <= speaker_count:
         return {person.label: person.label for person in people}
     started = time.monotonic()
     embedder = open_embedder(report)
@@ -226,14 +226,14 @@ def converge(pieces: Sequence[Piece], speakers: int, open_embedder: EmbedderFact
             spans.extend(windows)
             vectors.extend(embedder.embed(pieces[index].audio, windows))
         person.centroid = _centroid(spans, vectors)
-    groups, steps, stopped = _converged(people, speakers)
+    groups, steps, stopped = _converge_groups(people, speaker_count)
     mapping: Dict[str, str] = {}
     for group in groups:
         # people 依第一次說話的先後排好：索引最小的就是最早說話的
         name = people[min(group)].label
         for i in group:
             mapping[people[i].label] = name
-    _log_convergence(people, speakers, mapping, steps, stopped, time.monotonic() - started)
+    _log_convergence(people, speaker_count, mapping, steps, stopped, time.monotonic() - started)
     return mapping
 
 
@@ -501,7 +501,8 @@ def _overlap(a: Sequence[Span], b: Sequence[Span]) -> float:
     return total
 
 
-def _converged(people: Sequence[_Speaker], speakers: int) -> Tuple[List[List[int]], List[str], Optional[str]]:
+def _converge_groups(people: Sequence[_Speaker],
+                     speaker_count: int) -> Tuple[List[List[int]], List[str], Optional[str]]:
     """收斂的兩步（模組說明的收斂第 1、2 點）：回傳（每一群的說話者（``people`` 的索引）, 每一步做了什麼, 停下時仍比
     所選多的原因；到了所選人數時是 None）。"""
     biggest = max(range(len(people)), key=lambda i: people[i].seconds)
@@ -511,7 +512,7 @@ def _converged(people: Sequence[_Speaker], speakers: int) -> Tuple[List[List[int
                     if i != biggest and (people[i].seconds < MIN_TALK_SECONDS or people[i].centroid is None)),
                    key=lambda i: (people[i].seconds, i))
     for i in minor:
-        if len(people) - len(absorbed) <= speakers:
+        if len(people) - len(absorbed) <= speaker_count:
             break
         absorbed.append(i)
         why = ("取不到嵌入" if people[i].centroid is None
@@ -523,7 +524,7 @@ def _converged(people: Sequence[_Speaker], speakers: int) -> Tuple[List[List[int
                 for i in range(len(people)) for j in range(i + 1, len(people))}
     clusters = [[i] for i in range(len(people)) if i not in absorbed]
     stopped: Optional[str] = None
-    while len(clusters) > speakers:
+    while len(clusters) > speaker_count:
         best = _best_pair(clusters, similarity,
                           lambda i, j: overlaps[(min(i, j), max(i, j))] >= OVERLAP_APART_SECONDS)
         if best is None:
@@ -546,12 +547,12 @@ def _names(people: Sequence[_Speaker], cluster: Sequence[int]) -> str:
     return "、".join(people[i].label for i in cluster)
 
 
-def _log_convergence(people: Sequence[_Speaker], speakers: int, mapping: Mapping[str, str],
+def _log_convergence(people: Sequence[_Speaker], speaker_count: int, mapping: Mapping[str, str],
                      steps: Sequence[str], stopped: Optional[str], seconds: float) -> None:
     """收斂前後的對應、每一步的依據與停下的原因寫進日誌，不寫文字。"""
     left = len(set(mapping.values()))
     renamed = "、".join(f"{label}→{name}" for label, name in mapping.items() if label != name)
-    logger.info(f"照所選人數收斂說話者：模型分出 {len(people)} 位，所選 {speakers} 位，收斂後 {left} 位"
+    logger.info(f"照所選人數收斂說話者：模型分出 {len(people)} 位，所選 {speaker_count} 位，收斂後 {left} 位"
                 f"（取嵌入與分群 {seconds:.1f} 秒）。" + "；".join(steps)
                 + (f"。停下：{stopped}，結果比所選多" if stopped else "")
                 + (f"。對應：{renamed}" if renamed else ""))

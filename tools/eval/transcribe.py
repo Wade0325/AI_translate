@@ -71,6 +71,7 @@ def cmd_transcribe(args) -> int:
                 return 1
 
     from app.core.config import get_settings
+    from app.core.speaker_count import from_column
     from app.services import environment_manifest
     from app.utils.audio import get_audio_duration
 
@@ -81,7 +82,7 @@ def cmd_transcribe(args) -> int:
     # 應用程式的暫存上傳區由 API 模組在 import 時建立，這個指令不經 API。少了它，WAV 以外的
     # 音檔轉不成 WAV，去靜音會悄悄退回送原音檔，結果就和應用程式不同
     get_settings().temp_uploads_path.mkdir(parents=True, exist_ok=True)
-    speaker_count = "auto" if args.speakers == "auto" else int(args.speakers)
+    speaker_count = from_column(args.speakers)
     run = _run(audio, provider, model, args.language, speaker_count, transcript, duration)
     manifest = {
         "command": "transcribe",

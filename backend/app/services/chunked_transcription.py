@@ -60,7 +60,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
-from app.core import speaker_count as speakers
+from app.core.speaker_count import several_count
 from app.core.config import get_settings
 from app.core.error_codes import ErrorCode, Failure, describe
 from app.exceptions import TranscriptionCancelledError, TransientError
@@ -203,7 +203,7 @@ class _ChunkedTranscription:
         self._split_retry = capabilities.split_retry_on_failure and not whole
         self._continuation = capabilities.continuation and not whole
         self._align_speakers = capabilities.align_speakers_across_chunks
-        self._converge_to = (speakers.several(request.speaker_count)
+        self._converge_to = (several_count(request.speaker_count)
                              if capabilities.converge_to_speaker_count else None)
         """照所選人數收斂時的人數（#377）；不收斂時是 None。"""
         self._embedder: Optional[speaker_alignment.SpeakerEmbedder] = None
@@ -554,8 +554,7 @@ class _ChunkedTranscription:
         if len({name for mapping in mappings for name in mapping.values()}) <= count:
             return aligned
         if self._embedder_unusable:
-            logger.warning("說話者嵌入用不了，說話者沒有照所選人數收斂")
-            self._progress.report("說話者嵌入用不了：說話者沒有照所選人數收斂")
+            self._not_converged("對齊時已經失敗過")
             return aligned
         self._progress.report("照所選人數收斂說話者...")
         try:
@@ -569,11 +568,14 @@ class _ChunkedTranscription:
         except TranscriptionCancelledError:
             raise
         except Exception as e:
-            logger.warning(f"說話者嵌入用不了，說話者沒有照所選人數收斂: {type(e).__name__}: {e}",
-                           exc_info=True)
-            self._progress.report("說話者嵌入用不了：說話者沒有照所選人數收斂")
+            self._not_converged(f"{type(e).__name__}: {e}", exc_info=True)
             return aligned
         return [{label: merged.get(name, name) for label, name in mapping.items()} for mapping in mappings]
+
+    def _not_converged(self, why: str, *, exc_info: bool = False) -> None:
+        """說話者嵌入用不了、沒有照所選人數收斂：寫進日誌（``why`` 是原因）與處理中的狀態說明。"""
+        logger.warning(f"說話者嵌入用不了，說話者沒有照所選人數收斂: {why}", exc_info=exc_info)
+        self._progress.report("說話者嵌入用不了：說話者沒有照所選人數收斂")
 
     def _open_embedder(self, report: speaker_alignment.Report) -> speaker_alignment.SpeakerEmbedder:
         """對齊與收斂共用的說話者嵌入：第一次用到時建立（:func:`speaker_alignment.open_embedder`）。"""
@@ -662,7 +664,7 @@ def _nearest_to_middle(silences: Sequence[float], duration: float) -> Optional[f
 def _merge(transcribed: Sequence[_TranscribedChunk],
            speakers: Optional[Sequence[Mapping[str, str]]] = None) -> List[Dict[str, Any]]:
     """合併：每一段的片段平移到它在語音視圖上的起點，片段 key 加上這一段的前綴；``speakers`` 給了時，
-    說話者編號照它換（每一段一份 {原本的編號: 對齊後的編號}）。
+    說話者編號照它換（每一段一份 {原本的編號: 對齊與收斂後的編號}，見 :meth:`_ChunkedTranscription._speaker_mappings`）。
 
     拿到的是所有轉完的段，依時間先後。
     """

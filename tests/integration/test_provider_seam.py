@@ -1298,12 +1298,17 @@ class TestSpeakerCountConvergence:
         assert [s["seg_key"] for s in segments] == ["a.0000", "a.0001", "b.0000", "b.0001", "b.0002"]
         assert embedder.opened == 1
 
-    def test_without_the_embedder_the_numbers_are_left_as_they_are(self, api, fake, embedder):
-        # 嵌入用不了（例如權重載入失敗）：任務照樣完成、編號不變，狀態說明寫明沒有收斂；結果比所選多，結果頁
-        # 照 #351 第 4 點提醒
-        embedder.open_error = RuntimeError("權重壞了")
+    @pytest.mark.parametrize("broken", ["open", "embed"])
+    def test_without_the_embedder_the_numbers_are_left_as_they_are(self, api, fake, embedder, broken):
+        # 嵌入用不了（權重載入失敗，或取嵌入時讀不到音檔）：任務照樣完成、編號不變，狀態說明寫明沒有收斂；
+        # 結果比所選多，結果頁照 #351 第 4 點提醒
+        if broken == "open":
+            embedder.open_error = RuntimeError("權重壞了")
+        else:
+            embedder.embed_error = OSError("讀不到音檔")
         fake.script = [SPLIT_IN_FOUR]
-        messages = transcribe(api, "uid-converge-no-embedder", voiced=LONG_TURNS, speaker_count=2)
+        messages = transcribe(api, f"uid-converge-no-embedder-{broken}", voiced=LONG_TURNS,
+                              speaker_count=2)
 
         assert codes(messages)[-1] == TaskStatus.COMPLETED
         assert [s["speaker"] for s in stored_segments(api, messages[-1]["task_uuid"])] == [
@@ -1311,6 +1316,25 @@ class TestSpeakerCountConvergence:
         assert "說話者嵌入用不了：說話者沒有照所選人數收斂" in [m["status_text"] for m in messages]
         assert (messages[-1]["result"]["speaker_count"],
                 messages[-1]["result"]["selected_speaker_count"]) == (4, 2)
+
+    def test_embedder_that_failed_to_align_is_not_tried_again(self, api, fake, embedder):
+        # 分段轉錄對齊時嵌入就用不了：後面的段改用新的編號（#93），收斂不再建立一次嵌入，狀態說明兩件事都寫
+        embedder.open_error = RuntimeError("權重壞了")
+        fake.model_capabilities = replace(fake.model_capabilities, single_pass_seconds=40.0)
+        fake.script = [[(0.0, 10.0, 0, "一"), (12.0, 22.0, 1, "二")],
+                       [(1.0, 11.0, 0, "三"), (13.0, 24.0, 1, "四"), (26.0, 30.0, 2, "五")]]
+        messages = transcribe(api, "uid-converge-after-failed-alignment",
+                              voiced=[(0.0, 10.0, TONE_A), (12.0, 22.0, TONE_B), (24.0, 34.0, TONE_A),
+                                      (36.0, 47.0, TONE_A), (49.0, 53.0, TONE_B)],
+                              speaker_count=2)
+
+        assert codes(messages)[-1] == TaskStatus.COMPLETED
+        assert [s["speaker"] for s in stored_segments(api, messages[-1]["task_uuid"])] == [
+            "S0", "S1", "S2", "S3", "S4"]
+        texts = [m["status_text"] for m in messages]
+        assert "說話者嵌入用不了：各段的說話者編號沒有對齊，後面的段改用新的編號" in texts
+        assert "說話者嵌入用不了：說話者沒有照所選人數收斂" in texts
+        assert embedder.opened == 1
 
 
 class TestEmptyChunk:

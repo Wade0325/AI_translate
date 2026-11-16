@@ -26,10 +26,10 @@ class TestColumn:
         assert speakers.from_column(column) == speakers.AUTO
 
 
-@pytest.mark.parametrize("speaker_count, several", [("auto", None), (1, None), (2, 2), (8, 8)])
-def test_several_is_a_count_of_two_to_eight(speaker_count, several):
+@pytest.mark.parametrize("speaker_count, count", [("auto", None), (1, None), (2, 2), (8, 8)])
+def test_several_count_is_a_count_of_two_to_eight(speaker_count, count):
     """本機選 2 到 8 人時照所選人數收斂（#377）；照模型判斷與 1 人沒有要收斂到的人數。"""
-    assert speakers.several(speaker_count) == several
+    assert speakers.several_count(speaker_count) == count
 
 
 def test_frontend_menu_offers_the_same_counts():

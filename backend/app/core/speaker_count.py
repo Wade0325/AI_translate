@@ -7,7 +7,7 @@
 
 * Gemini 的提示詞（:mod:`app.core.default_prompt`）：照模型判斷時請它有多位說話者才標，2 到 8 人時
   寫明有幾位，1 人時不請它分。本機的模型不吃提示詞，照舊自己分說話者、存下說話者編號（ADR-0007）；
-  選了 2 到 8 人（:func:`several`）、分出的比所選多時，轉錄完照聲音收斂到所選人數（#377，
+  選了 2 到 8 人（:func:`several_count`）、分出的比所選多時，轉錄完照聲音收斂到所選人數（#377，
   :func:`app.services.speaker_alignment.converge`），存的是收斂後的編號。
 * 輸出帶不帶說話者標記（:func:`app.services.output_format.speaker_labels`）。
 
@@ -40,7 +40,7 @@ def is_single(speaker_count: SpeakerCount) -> bool:
     return speaker_count == 1
 
 
-def several(speaker_count: SpeakerCount) -> Optional[int]:
+def several_count(speaker_count: SpeakerCount) -> Optional[int]:
     """選了 2 到 8 人時是那個人數；照模型判斷與 1 人是 None。"""
     return speaker_count if isinstance(speaker_count, int) and speaker_count >= 2 else None
 
