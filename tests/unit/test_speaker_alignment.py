@@ -14,7 +14,7 @@ import numpy as np
 import pytest
 
 from app.services import speaker_alignment
-from app.services.speaker_alignment import Piece, align, needs_alignment, separate
+from app.services.speaker_alignment import Piece, align, converge, needs_alignment, separate
 
 FIRST, SECOND = Path("first.wav"), Path("second.wav")
 
@@ -224,3 +224,141 @@ class TestNumbering:
                   Piece(SECOND, 10.0, [segment(0, 3, "S0")])]
         assert align(pieces, downloading, report=reports.append) == [{"S0": "S0"}, {"S0": "S0"}]
         assert reports == ["下載權重..."]
+
+
+class TestConvergingToTheSpeakerCount:
+    """照所選人數收斂（#377）：使用者選了 2 到 8 人、本機分出的說話者比所選多時，先把說話合計不到 10 秒或取不到
+    嵌入的編號併進說最多話的那位，再照聲音相似度（平均連結）併，剩下所選人數就停。規則與數字的依據見 #353。
+
+    這裡的片段都是同一段音檔裡、已經對齊成同一套的說話者編號；分段轉錄怎麼先對齊再收斂，見
+    tests/integration/test_provider_seam.py 的 TestSpeakerCountConvergence。"""
+
+    @staticmethod
+    def voices(segments, vectors) -> dict:
+        """每個片段的時間照它的說話者給向量（``vectors[編號]``）。"""
+        return {FIRST: [(s["start"], s["end"], vectors[s["speaker"]]) for s in segments]}
+
+    def test_short_speakers_go_to_whoever_speaks_most_whatever_their_voice(self):
+        # S2 只說了 6 秒（不到 10 秒）：聲音和 S1 一樣，照樣併進說最多話的 S0
+        segments = [segment(0, 20, "S0"), segment(21, 33, "S1"), segment(34, 40, "S2")]
+        embedder = Embedder(self.voices(segments, {"S0": A, "S1": B, "S2": B}))
+
+        assert converge([Piece(FIRST, 0.0, segments)], 2, embedder) == {
+            "S0": "S0", "S1": "S1", "S2": "S0"}
+
+    def test_short_speakers_go_from_the_least_talk_until_the_count_is_reached(self):
+        # 選 3 人：說最少話的 S3（3 秒）併進 S0 就剩 3 位，S2（5 秒）留著
+        segments = [segment(0, 30, "S0"), segment(31, 51, "S1"), segment(52, 57, "S2"),
+                    segment(58, 61, "S3")]
+        embedder = Embedder(self.voices(segments, {"S0": A, "S1": B, "S2": C, "S3": D}))
+
+        assert converge([Piece(FIRST, 0.0, segments)], 3, embedder) == {
+            "S0": "S0", "S1": "S1", "S2": "S2", "S3": "S0"}
+
+    def test_speaker_without_an_embedding_goes_to_whoever_speaks_most(self):
+        # S2 說了 12 秒，但都和 S0 同時說話：照取窗的規則一窗都沒有，取不到嵌入
+        segments = [segment(0, 30, "S0"), segment(5, 17, "S2"), segment(31, 50, "S1")]
+        embedder = Embedder(self.voices(segments, {"S0": A, "S1": B, "S2": C}))
+
+        assert converge([Piece(FIRST, 0.0, segments)], 2, embedder) == {
+            "S0": "S0", "S2": "S0", "S1": "S1"}
+
+    @pytest.mark.parametrize("s2_starts, expected", [
+        (39.0, "S0"),  # 和 S1 同時說話 1 秒：不併進 S1，改併第二像的 S0（0.55）
+        (39.1, "S1"),  # 0.9 秒：照聲音併進最像的 S1
+    ])
+    def test_two_speaking_at_the_same_time_for_a_second_are_not_merged(self, s2_starts, expected):
+        # S2 的聲音和 S1 最像（0.835），和 S0 第二像（0.55）
+        segments = [segment(0, 20, "S0"), segment(20, 40, "S1"), segment(s2_starts, 55, "S2")]
+        embedder = Embedder({FIRST: [(0, 20, voice(1, 0)), (20, 39, voice(0, 1)),
+                                     (39, 55, voice(0.55, 0.835))]})
+
+        assert converge([Piece(FIRST, 0.0, segments)], 2, embedder)["S2"] == expected
+
+    @pytest.mark.parametrize("similarity, expected", [
+        (0.45, {"S0": "S0", "S1": "S1", "S2": "S2"}),  # 最像的兩位不到 0.5：停下，比所選的 2 人多
+        (0.55, {"S0": "S0", "S1": "S1", "S2": "S0"}),
+    ])
+    def test_stops_when_no_two_are_alike_enough(self, similarity, expected):
+        segments = [segment(0, 15, "S0"), segment(16, 31, "S1"), segment(32, 47, "S2")]
+        other = voice(similarity, 0, (1 - similarity ** 2) ** 0.5)
+        embedder = Embedder(self.voices(segments, {"S0": voice(1, 0, 0), "S1": voice(0, 1, 0),
+                                                   "S2": other}))
+
+        assert converge([Piece(FIRST, 0.0, segments)], 2, embedder) == expected
+
+    @pytest.mark.parametrize("speakers, expected", [
+        (2, {"S0": "S0", "S1": "S1", "S2": "S0", "S3": "S1"}),
+        # 選 3 人：只併最像的一對（0.9），剩 3 位就停
+        (3, {"S0": "S0", "S1": "S1", "S2": "S0", "S3": "S3"}),
+    ])
+    def test_merges_the_most_alike_until_the_count_is_reached(self, speakers, expected):
+        segments = [segment(0, 15, "S0"), segment(16, 31, "S1"), segment(32, 47, "S2"),
+                    segment(48, 63, "S3")]
+        embedder = Embedder(self.voices(segments, {
+            "S0": voice(1, 0, 0, 0), "S1": voice(0, 1, 0, 0),
+            "S2": voice(0.9, 0, 0.19 ** 0.5, 0), "S3": voice(0, 0.8, 0, 0.6)}))
+
+        assert converge([Piece(FIRST, 0.0, segments)], speakers, embedder) == expected
+
+    def test_merged_speakers_take_the_number_of_whoever_spoke_first(self):
+        # S3 一開始說了 2 秒就併進說最多話的 S1：S1 改成 S3。S2 不動
+        segments = [segment(0, 2, "S3"), segment(5, 35, "S1"), segment(36, 56, "S2")]
+        embedder = Embedder(self.voices(segments, {"S1": A, "S2": B, "S3": C}))
+
+        assert converge([Piece(FIRST, 0.0, segments)], 2, embedder) == {
+            "S3": "S3", "S1": "S3", "S2": "S2"}
+
+    def test_no_more_speakers_than_chosen_needs_no_embedding(self):
+        segments = [segment(0, 3, "S0"), segment(4, 7, "S1"), segment(8, 9, None)]
+        embedder = Embedder({})
+
+        assert converge([Piece(FIRST, 0.0, segments)], 2, embedder) == {"S0": "S0", "S1": "S1"}
+        assert embedder.opened == 0
+
+    def test_failing_embedder_is_left_to_the_caller(self):
+        # 嵌入用不了時不收斂：由呼叫端照原本的編號完成任務
+        def broken(report):
+            raise OSError("讀不到權重")
+
+        segments = [segment(0, 15, "S0"), segment(16, 31, "S1"), segment(32, 47, "S2")]
+        with pytest.raises(OSError):
+            converge([Piece(FIRST, 0.0, segments)], 2, broken)
+
+    def test_speakers_are_counted_across_pieces(self, monkeypatch):
+        # 分段轉錄對齊之後的 S0 在兩段各說 6 秒，合計 12 秒，不算說太少話：照聲音和 S2 併。取嵌入的窗兩段
+        # 一起從長的取起，最多 MAX_SECONDS_PER_UNIT 秒
+        monkeypatch.setattr(speaker_alignment, "MAX_SECONDS_PER_UNIT", 10.0)
+        pieces = [Piece(FIRST, 0.0, [segment(0, 6, "S0"), segment(7, 30, "S1")]),
+                  Piece(SECOND, 30.0, [segment(0, 6, "S0"), segment(7, 20, "S1"),
+                                       segment(21, 32, "S2")])]
+        embedder = Embedder({FIRST: [(0, 6, A), (7, 30, B)],
+                             SECOND: [(0, 6, A), (7, 20, B), (21, 32, A)]})
+
+        assert converge(pieces, 2, embedder) == {"S0": "S0", "S1": "S1", "S2": "S0"}
+        assert [(audio, spans) for audio, spans in embedder.spans if (0.0, 6.0) in spans] == [
+            (FIRST, ((0.0, 6.0),)), (SECOND, ((0.0, 6.0),))]
+
+    def test_fragments_alike_each_other_do_not_force_two_people_together(self):
+        # 照 #353 的 ja5（7 人分成 14 位）：7 位真人 S0～S6 彼此的相似度只有 0.365；S3 隔一段時間後換了
+        # 編號 S13（0.97）；6 個說不到 10 秒的零碎編號 S7～S12（1.5～8.4 秒）彼此很像（0.9），和真人 0.37。
+        # 零碎編號先併進說最多話的 S6，再併 S3 與 S13，剛好剩 7 位。不先處理零碎編號的話，它們會併成一個
+        # 「假的人」，停在 8 位（0.5 的下限擋住兩位真人互併；#353 沒有下限的做法 A 就是在這裡把真人硬併）
+        basis = np.linalg.qr(np.random.default_rng(353).standard_normal((20, 20)))[0]
+        common, fragment = basis[0], basis[1]
+        vectors = {f"S{i}": 0.365 ** 0.5 * common + 0.635 ** 0.5 * basis[2 + i] for i in range(7)}
+        vectors["S13"] = 0.97 * vectors["S3"] + (1 - 0.97 ** 2) ** 0.5 * basis[9]
+        for k in range(6):
+            vectors[f"S{7 + k}"] = 0.6125 * common + 0.525 ** 0.5 * fragment + 0.1 ** 0.5 * basis[10 + k]
+        talk = {**{f"S{i}": 40.0 + 10 * i for i in range(7)},
+                "S7": 1.5, "S8": 2.4, "S9": 3.1, "S10": 5.0, "S11": 8.2, "S12": 8.4, "S13": 30.0}
+        segments, clock = [], 0.0
+        for label, seconds in talk.items():
+            segments.append(segment(clock, clock + seconds, label))
+            clock += seconds + 1.0
+        embedder = Embedder(self.voices(segments, vectors))
+
+        merged = converge([Piece(FIRST, 0.0, segments)], 7, embedder)
+
+        assert merged == {**{f"S{i}": f"S{i}" for i in range(7)},
+                          **{f"S{7 + k}": "S6" for k in range(6)}, "S13": "S3"}

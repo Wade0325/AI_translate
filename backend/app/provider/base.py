@@ -17,6 +17,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Literal, Mapping, Optional, Protocol, Sequence, Tuple
 
+from app.core import speaker_count as speakers
+from app.core.speaker_count import SpeakerCount
 from app.exceptions import TranscriptionCancelledError
 from app.services.transcription.models import TranscriptionTaskResult
 
@@ -51,6 +53,10 @@ class ModelCapabilities:
     """分段轉錄合併時，要不要用說話者嵌入把各段的說話者編號對齊成同一套（#93）。各段（與接續段）的說話者
     分離互相獨立的模型才需要；只改片段的說話者編號，送進模型的音檔不變（見
     :mod:`app.services.speaker_alignment`）。"""
+    converge_to_speaker_count: bool
+    """使用者選了 2 到 8 人、轉錄結果的說話者比所選多時，要不要用說話者嵌入收斂到所選人數（#377）。不能指定人數的
+    模型才需要（本機的 MOSS：把人數寫進提示詞會讓輸出不帶時間戳，#353）；Gemini 由提示詞寫人數（#352）。只改片段的
+    說話者編號（見 :func:`app.services.speaker_alignment.converge`）。"""
     accepts_prompt: bool
     accepts_user_text: bool
     supports_batch: bool
@@ -100,6 +106,9 @@ class TranscribeRequest:
     source_lang: Optional[str] = None
     service_tier: Optional[str] = None
     """處理模式：None／"standard" 或 "flex"；只有模型能力標明 ``supports_flex`` 的模型會收到 "flex"。"""
+    speaker_count: SpeakerCount = speakers.DEFAULT
+    """使用者選的說話者人數（:mod:`app.core.speaker_count`）。模型能力標明 ``converge_to_speaker_count`` 時，分段轉錄
+    在合併時照它收斂；送進模型的提示詞已經照它組好，轉接器不必看。"""
     single_pass_only: bool = False
     """整段一次送出：提示詞綁著整段音檔的內容（附了使用者文稿，#66），切開的段拿到的也是整份。分段轉錄
     不依單次長度切段、失敗後不切段重試，也不接續；暫時錯誤照樣重送同一段。音檔超過單次長度時要不要送，

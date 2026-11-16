@@ -155,7 +155,16 @@ def _commit(system: _System) -> str:
 def _request(system: _System) -> str:
     request = _get(system.manifest, "request") or {}
     parts = [request.get(k) for k in ("provider", "model", "language")]
+    speakers = _speakers(request)
+    if speakers:
+        parts.append(f"說話者 {speakers} 人")
     return "／".join(p for p in parts if p) or "—"
+
+
+def _speakers(request: dict[str, Any]) -> int | None:
+    """``transcribe --speakers`` 指定的說話者人數；照模型判斷，或 manifest 是加上這個選項之前寫的時是 None。"""
+    count = request.get("speaker_count")
+    return count if isinstance(count, int) else None
 
 
 def _rtf(system: _System) -> str:
@@ -184,8 +193,10 @@ def _tail(system: _System) -> str:
 def _transcribe_command(manifest: dict[str, Any]) -> str:
     request = manifest.get("request") or {}
     audio = _get(manifest, "audio", "file") or "<音檔>"
+    speakers = _speakers(request)
     return (f"python -m tools.eval transcribe --audio {audio} --provider {request.get('provider')} "
-            f"--model {request.get('model')} --language {request.get('language')}")
+            f"--model {request.get('model')} --language {request.get('language')}"
+            + (f" --speakers {speakers}" if speakers else ""))
 
 
 def render(run: _Eval) -> str:

@@ -30,6 +30,9 @@
    （#93，規則見 :mod:`app.services.speaker_alignment`）：只改說話者編號，時間、文字與片段 key 不變。本機
    還沒有說話者嵌入的權重時（例如只用 Gemini、沒下載過本機模型，#335）先下載，狀態說明寫明。嵌入用不了
    時不讓任務失敗，後面的段的每個人改用新的編號，處理中的狀態說明與日誌寫明沒有對齊。
+   模型能力開著 ``converge_to_speaker_count``、使用者選了 2 到 8 人、對齊之後的說話者編號又比所選多時，接著
+   照聲音收斂到所選人數（#377，:func:`app.services.speaker_alignment.converge`）；單次轉完的音檔也一樣。同樣只改
+   說話者編號；嵌入用不了時編號照對齊的結果，任務照樣完成，狀態說明與日誌寫明沒有收斂。
 5. 放回原音檔的時間軸（:meth:`SpeechTimeline.in_original_order`）：時間還原回原音檔，依開始時間
    排好、重編序號。批次不分段，結果回來之後也經過同一步。
 6. 掉尾（#257）：每一段各自檢查停下的地方（轉接器回報的擔保點，沒有時是最後一個片段的結束）之後還有
@@ -57,6 +60,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
+from app.core.speaker_count import several_count
 from app.core.config import get_settings
 from app.core.error_codes import ErrorCode, Failure, describe
 from app.exceptions import TranscriptionCancelledError, TransientError
@@ -199,6 +203,15 @@ class _ChunkedTranscription:
         self._split_retry = capabilities.split_retry_on_failure and not whole
         self._continuation = capabilities.continuation and not whole
         self._align_speakers = capabilities.align_speakers_across_chunks
+        self._converge_to = (several_count(request.speaker_count)
+                             if capabilities.converge_to_speaker_count else None)
+        """照所選人數收斂時的人數（#377）；不收斂時是 None。"""
+        self._embedder: Optional[speaker_alignment.SpeakerEmbedder] = None
+        """對齊與收斂共用的說話者嵌入，第一次用到才建立。"""
+        self._embedder_unusable = False
+        """說話者嵌入用不了（對齊時已經失敗過）：收斂不再試。"""
+        self._wavs: Dict[Path, Path] = {}
+        """取嵌入時轉成的 wav（:meth:`_as_wav`）：對齊與收斂共用，不轉兩次。"""
         self._transcribed: List[_TranscribedChunk] = []
         """轉完的段，依時間先後。"""
         self._usage: Optional[TranscriptionTaskResult] = None
@@ -493,36 +506,94 @@ class _ChunkedTranscription:
                             tail_loss_from=self._tail_loss_from())
 
     def _speaker_mappings(self) -> Optional[List[Dict[str, str]]]:
-        """每一段的 {原本的說話者編號: 對齊後的編號}（:mod:`app.services.speaker_alignment`）；不必對齊
-        （模型能力沒開，或沒有任何兩位可能是同一個人）時是 None。嵌入用不了時改用
-        :func:`speaker_alignment.separate`：後面的段的每個人都拿新的編號。"""
-        if not self._align_speakers:
-            return None
+        """每一段的 {原本的說話者編號: 換成的編號}：先對齊各段（:func:`_aligned`），再照所選人數收斂
+        （:func:`_converged`）；兩樣都不必做時是 None。"""
         pieces = [speaker_alignment.Piece(piece.chunk.audio, piece.chunk.start, piece.result.segments,
                                           duration=piece.chunk.duration)
                   for piece in self._transcribed]
-        if not speaker_alignment.needs_alignment(pieces):
+        aligned = self._aligned(pieces)
+        if self._converge_to is None:
+            return aligned
+        return self._converged(pieces, aligned, self._converge_to)
+
+    def _aligned(self, pieces: Sequence[speaker_alignment.Piece]) -> Optional[List[Dict[str, str]]]:
+        """每一段的 {原本的說話者編號: 對齊後的編號}（:mod:`app.services.speaker_alignment`）；不必對齊
+        （模型能力沒開，或沒有任何兩位可能是同一個人）時是 None。嵌入用不了時改用
+        :func:`speaker_alignment.separate`：後面的段的每個人都拿新的編號。"""
+        if not self._align_speakers or not speaker_alignment.needs_alignment(pieces):
             return None
         self._progress.report("對齊各段的說話者...")
         try:
             readable = [replace(piece, audio=self._as_wav(piece.audio)) for piece in pieces]
-            return speaker_alignment.align(readable, check=self._progress.raise_if_cancelled,
+            return speaker_alignment.align(readable, self._open_embedder,
+                                           check=self._progress.raise_if_cancelled,
                                            report=self._progress.report)
         except TranscriptionCancelledError:
             raise
         except Exception as e:
+            self._embedder_unusable = True
             logger.warning(f"說話者嵌入用不了，各段的說話者編號沒有對齊，後面的段改用新的編號: "
                            f"{type(e).__name__}: {e}", exc_info=True)
             self._progress.report("說話者嵌入用不了：各段的說話者編號沒有對齊，後面的段改用新的編號")
             return speaker_alignment.separate(pieces)
 
+    def _converged(self, pieces: Sequence[speaker_alignment.Piece],
+                   aligned: Optional[List[Dict[str, str]]], count: int) -> Optional[List[Dict[str, str]]]:
+        """``aligned``（對齊的結果，None 是編號照舊）再照所選人數 ``count`` 收斂（#377）：回傳每一段的
+        {原本的說話者編號: 收斂後的編號}。對齊之後的編號不比所選多時照 ``aligned``；嵌入用不了時也照它，
+        狀態說明與日誌寫明沒有收斂。"""
+        mappings: List[Dict[str, str]] = []
+        for index, piece in enumerate(pieces):
+            own: Mapping[str, str] = aligned[index] if aligned else {}
+            mapping: Dict[str, str] = {}
+            for segment in piece.segments:
+                label = segment.get("speaker")
+                if label is not None:
+                    mapping[label] = own[label] if label in own else label
+            mappings.append(mapping)
+        if len({name for mapping in mappings for name in mapping.values()}) <= count:
+            return aligned
+        if self._embedder_unusable:
+            self._not_converged("對齊時已經失敗過")
+            return aligned
+        self._progress.report("照所選人數收斂說話者...")
+        try:
+            # 換成對齊後的編號，各段的同一個人是同一個編號
+            readable = [replace(piece, audio=self._as_wav(piece.audio),
+                                segments=[_renamed(segment, mapping) for segment in piece.segments])
+                        for piece, mapping in zip(pieces, mappings, strict=True)]
+            merged = speaker_alignment.converge(readable, count, self._open_embedder,
+                                                check=self._progress.raise_if_cancelled,
+                                                report=self._progress.report)
+        except TranscriptionCancelledError:
+            raise
+        except Exception as e:
+            self._not_converged(f"{type(e).__name__}: {e}", exc_info=True)
+            return aligned
+        return [{label: merged.get(name, name) for label, name in mapping.items()} for mapping in mappings]
+
+    def _not_converged(self, why: str, *, exc_info: bool = False) -> None:
+        """說話者嵌入用不了、沒有照所選人數收斂：寫進日誌（``why`` 是原因）與處理中的狀態說明。"""
+        logger.warning(f"說話者嵌入用不了，說話者沒有照所選人數收斂: {why}", exc_info=exc_info)
+        self._progress.report("說話者嵌入用不了：說話者沒有照所選人數收斂")
+
+    def _open_embedder(self, report: speaker_alignment.Report) -> speaker_alignment.SpeakerEmbedder:
+        """對齊與收斂共用的說話者嵌入：第一次用到時建立（:func:`speaker_alignment.open_embedder`）。"""
+        if self._embedder is None:
+            self._embedder = speaker_alignment.open_embedder(report)
+        return self._embedder
+
     def _as_wav(self, audio: Path) -> Path:
-        """取嵌入要讀得到的 wav：切出的段本來就是 wav；沒有分段時可能是原音檔，先轉成 wav（暫存檔）。"""
+        """取嵌入要讀得到的 wav：切出的段本來就是 wav；沒有分段時可能是原音檔，先轉成 wav（暫存檔，對齊與收斂
+        共用）。"""
+        if audio in self._wavs:
+            return self._wavs[audio]
         wav = convert_to_wav(audio, self._temp_dir)
         if wav is None:
             raise RuntimeError(f"無法把 {audio.name} 轉成 wav 取說話者嵌入")
         if wav != audio:
             self._temp_files.append(wav)
+        self._wavs[audio] = wav
         return wav
 
     def _tail_loss_from(self) -> Optional[float]:
@@ -593,7 +664,7 @@ def _nearest_to_middle(silences: Sequence[float], duration: float) -> Optional[f
 def _merge(transcribed: Sequence[_TranscribedChunk],
            speakers: Optional[Sequence[Mapping[str, str]]] = None) -> List[Dict[str, Any]]:
     """合併：每一段的片段平移到它在語音視圖上的起點，片段 key 加上這一段的前綴；``speakers`` 給了時，
-    說話者編號照它換（每一段一份 {原本的編號: 對齊後的編號}）。
+    說話者編號照它換（每一段一份 {原本的編號: 對齊與收斂後的編號}，見 :meth:`_ChunkedTranscription._speaker_mappings`）。
 
     拿到的是所有轉完的段，依時間先後。
     """
@@ -601,12 +672,17 @@ def _merge(transcribed: Sequence[_TranscribedChunk],
     for index, piece in enumerate(transcribed):
         mapping = speakers[index] if speakers is not None else {}
         for segment in piece.result.segments:
-            placed = _placed(segment, piece.chunk)
-            speaker = placed.get("speaker")
-            if speaker is not None and speaker in mapping:
-                placed["speaker"] = mapping[speaker]
-            merged.append(placed)
+            merged.append(_renamed(_placed(segment, piece.chunk), mapping))
     return merged
+
+
+def _renamed(segment: Mapping[str, Any], mapping: Mapping[str, str]) -> Dict[str, Any]:
+    """片段的說話者編號照 ``mapping`` 換，回傳新的片段；沒有說話者編號或 ``mapping`` 裡沒有的照舊。"""
+    renamed = dict(segment)
+    speaker = renamed.get("speaker")
+    if speaker is not None and speaker in mapping:
+        renamed["speaker"] = mapping[speaker]
+    return renamed
 
 
 def _placed(segment: Mapping[str, Any], chunk: _Chunk) -> Dict[str, Any]:

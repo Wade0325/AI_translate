@@ -122,7 +122,9 @@ def test_manifest_records_the_run_without_any_transcript_text(fake, uploads, aud
     text = (out / "meeting.manifest.json").read_text(encoding="utf-8")
     assert "第一句測試" not in text and "第二句測試" not in text
     manifest = json.loads(text)
-    assert manifest["request"] == {"provider": "fake", "model": FAKE_MODEL, "language": "zh-TW"}
+    # 沒給 --speakers：照模型判斷，和應用程式的預設相同
+    assert manifest["request"] == {"provider": "fake", "model": FAKE_MODEL, "language": "zh-TW",
+                                   "speaker_count": "auto"}
     assert manifest["audio"] == {
         "file": "meeting.wav",
         "sha256": hashlib.sha256(audio.read_bytes()).hexdigest(),
@@ -251,6 +253,39 @@ def test_refuses_more_than_one_gpu(fake, uploads, audio, tmp_path, monkeypatch, 
     assert "一張" in capsys.readouterr().err
     assert fake.opened == 0
     assert not out.exists()
+
+
+@pytest.mark.parametrize("speakers, expected", [
+    (None, ["S0", "S1", "S2", "S3"]),
+    ("2", ["S0", "S1", "S0", "S1"]),
+])
+def test_speaker_count_is_used_and_recorded(fake, uploads, embedder, tmp_path, no_prompt, speakers,
+                                            expected):
+    # --speakers 和轉錄頁選的說話者人數相同：本機的模型分出的比所選多時收斂（#377）。模型把 A、B 第二次說話
+    # 時各分成新的編號；假的說話者嵌入聽頻率，同一位的相似度是 1
+    fake.model_capabilities = replace(fake.model_capabilities, remove_silence=False,
+                                      converge_to_speaker_count=True)
+    fake.script = [[(0.0, 10.0, 0, "一"), (12.0, 22.0, 1, "二"), (24.0, 34.0, 2, "三"),
+                    (36.0, 47.0, 3, "四")]]
+    audio = tmp_path / "turns.wav"
+    audio.write_bytes(synthetic_audio(voiced=[(0.0, 10.0, 440), (12.0, 22.0, 660), (24.0, 34.0, 440),
+                                              (36.0, 47.0, 660)]))
+    out = tmp_path / "out"
+
+    assert _run(audio, out, "--yes", *(["--speakers", speakers] if speakers else [])) == 0
+
+    assert [line.speaker for line in lrc.read(out / "turns.lrc").lines] == expected
+    manifest = json.loads((out / "turns.manifest.json").read_text(encoding="utf-8"))
+    assert manifest["request"]["speaker_count"] == (int(speakers) if speakers else "auto")
+
+
+@pytest.mark.parametrize("speakers", ["0", "9", "two"])
+def test_refuses_a_speaker_count_the_screen_does_not_offer(audio, tmp_path, capsys, no_prompt, speakers):
+    with pytest.raises(SystemExit):
+        _run(audio, tmp_path / "out", "--yes", "--speakers", speakers)
+
+    assert "--speakers" in capsys.readouterr().err
+    assert not (tmp_path / "out").exists()
 
 
 def test_failed_transcription_writes_only_the_manifest(fake, uploads, audio, tmp_path, no_prompt):

@@ -26,6 +26,12 @@ class TestColumn:
         assert speakers.from_column(column) == speakers.AUTO
 
 
+@pytest.mark.parametrize("speaker_count, count", [("auto", None), (1, None), (2, 2), (8, 8)])
+def test_several_count_is_a_count_of_two_to_eight(speaker_count, count):
+    """本機選 2 到 8 人時照所選人數收斂（#377）；照模型判斷與 1 人沒有要收斂到的人數。"""
+    assert speakers.several_count(speaker_count) == count
+
+
 def test_frontend_menu_offers_the_same_counts():
     """前端的 Speakers 選單（utils/speakerCount.js）和後端收的值相同：Auto 的值與最多的人數。"""
     source = FRONTEND_SPEAKER_COUNT.read_text(encoding="utf-8")

@@ -98,6 +98,8 @@ def _capabilities() -> ModelCapabilities:
         # 各段是分開的請求，「Speaker 1」只是那一段裡先說話的人：合併時用說話者嵌入對齊（#335）。片段多半
         # 沒有結束時間，取嵌入的規則見 app.services.speaker_alignment
         align_speakers_across_chunks=True,
+        # 說話者人數由提示詞寫明（#352），不另外收斂
+        converge_to_speaker_count=False,
         accepts_prompt=True,
         # 附了使用者文稿時只替它補上時間戳（#66）；第一版整段一次送出，超過單次長度的音檔以失敗結束
         accepts_user_text=True,

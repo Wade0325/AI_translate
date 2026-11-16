@@ -137,6 +137,7 @@ def _transcribe_speech_view(
                 prompt=prompt.text,
                 source_lang=params.source_lang,
                 service_tier=params.service_tier,
+                speaker_count=params.speaker_count,
                 single_pass_only=prompt.user_text_attached,
             ),
             progress,

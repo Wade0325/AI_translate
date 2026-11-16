@@ -74,6 +74,7 @@ backend\.venv\Scripts\python.exe -m tools.eval eval --reference rec17_A.draft --
 
 - `transcribe` 只要應用程式的依賴；拿它的結果計分的 `eval` 要先裝 `requirements-dev.txt`（見[安裝](#安裝)）。
 - `--provider` 預設 `local`；`--model` 預設是供應商的預設模型（`local` 是 `moss-align`）。
+- `--speakers` 是說話者人數，和轉錄頁選的相同：預設 `auto`（照模型判斷），或 1 到 8。本機選 2 到 8 人、分出的說話者比所選多時，照聲音收斂到所選人數（#377）。評測集照預設轉，不會收斂；動到收斂的 PR 要另外指定人數轉一次。
 - 一次只用一張顯卡：沒設 `CUDA_VISIBLE_DEVICES` 時設成 `0`，設了不只一張時拒絕。本機的 ASR 模型用 `device_map="auto"`，看得到幾張顯卡就攤到幾張。
 - 輸出資料夾寫 `<音檔名稱>.lrc` 與 `<音檔名稱>.manifest.json`；LRC 的格式和應用程式下載的相同（只用 LF）。已經有同名的檔案時拒絕，不覆寫上一次的結果；也不能寫進標準答案的資料夾。
 - 不做簡轉繁與台灣用詞替換（#242）：錯字率量的是轉換前的結果，本機的中文照模型寫的簡體與講者說的詞。應用程式下載的中文是繁體輸出（`backend/app/services/traditional_output.py`），由單元測試與 `regression/` 的輸出比對把關，不靠錯字率。
@@ -86,7 +87,7 @@ backend\.venv\Scripts\python.exe -m tools.eval eval --reference rec17_A.draft --
 
 | 欄位 | 內容 |
 |---|---|
-| `request` | 供應商、模型、語言 |
+| `request` | 供應商、模型、語言、說話者人數（`speaker_count`：`auto` 或 1 到 8；加上 `--speakers` 之前的 manifest 沒有這一項，等於 `auto`） |
 | `audio` | 檔名、SHA-256、長度（秒） |
 | `code` | commit，以及工作區有沒有沒 commit 的改動（`dirty`） |
 | `environment.packages` | torch、transformers、moss-transcribe-diarize 的版本；從網址安裝的另記網址 |
