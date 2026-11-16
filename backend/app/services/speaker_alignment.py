@@ -552,7 +552,7 @@ def _log_convergence(people: Sequence[_Speaker], speaker_count: int, mapping: Ma
     """收斂前後的對應、每一步的依據與停下的原因寫進日誌，不寫文字。"""
     left = len(set(mapping.values()))
     renamed = "、".join(f"{label}→{name}" for label, name in mapping.items() if label != name)
-    logger.info(f"照所選人數收斂說話者：模型分出 {len(people)} 位，所選 {speaker_count} 位，收斂後 {left} 位"
-                f"（取嵌入與分群 {seconds:.1f} 秒）。" + "；".join(steps)
-                + (f"。停下：{stopped}，結果比所選多" if stopped else "")
-                + (f"。對應：{renamed}" if renamed else ""))
+    parts = [f"照所選人數收斂說話者：模型分出 {len(people)} 位，所選 {speaker_count} 位，收斂後 {left} 位"
+             f"（取嵌入與分群 {seconds:.1f} 秒）", "；".join(steps),
+             f"停下：{stopped}，結果比所選多" if stopped else "", f"對應：{renamed}" if renamed else ""]
+    logger.info("。".join(part for part in parts if part))
