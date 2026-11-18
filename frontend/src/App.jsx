@@ -16,7 +16,11 @@ import { TranscriptionProvider } from './context/TranscriptionContext'
 // 刻意不包 <Suspense>：包了的話，React 會先畫出頁首與空的內容區，而且載入中的畫面一出現就至少維持
 // 0.3 秒才換成頁面（react-dom 的 FALLBACK_THROTTLE_MS，用來避免畫面閃爍），開這一頁反而慢約 0.2 秒。
 // 不包時 React 等這一頁載入完才畫，整個畫面一次畫出來，和打包在一起時一樣；在 app 裡切過來時則是
-// 原本的頁面留到這一頁載入完
+// 原本的頁面留到這一頁載入完。這要從這條路由往上都沒有 <Suspense> 才成立：包在版面外層一樣慢約 0.2 秒。
+// React 的文件示範的是包 <Suspense>，沒有寫不包時會怎樣，所以由 e2e/navigation.spec.js 守住：升級 React
+// 後那裡的測試失敗，就要重新決定這裡的寫法。
+// 這一頁的檔載不到時沒有另外處理，React 會卸載整個畫面：直接開是空白頁，用瀏覽器的上一頁切過來時
+// 原本的頁面也會消失
 const BillingPage = lazy(() => import('./pages/BillingPage'))
 
 export default function App() {
