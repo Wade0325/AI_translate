@@ -1,15 +1,23 @@
+import { lazy } from 'react'
 import { Navigate, Routes, Route } from 'react-router-dom'
 import { DashboardLayout } from './layouts/DashboardLayout'
 import TranscribePage from './pages/TranscribePage'
 import ResultPage from './pages/ResultPage'
 import TaskPage from './pages/TaskPage'
 import HistoryPage from './pages/HistoryPage'
-import BillingPage from './pages/BillingPage'
 import SettingsPage from './pages/SettingsPage'
 import CorrectionPage from './pages/CorrectionPage'
 import { CORRECTION_PATH } from './utils/correction'
 import ModelManagerProvider from './components/ModelManager'
 import { TranscriptionProvider } from './context/TranscriptionContext'
+
+// Usage & Billing 頁開那一頁才載入：側欄沒有入口（#18），又只有它用到圖表套件 recharts，
+// 和其他頁打包在一起的話，開任何一頁都要先載入、執行它們。
+// 刻意不包 <Suspense>：包了的話，React 會先畫出頁首與空的內容區，而且載入中的畫面一出現就至少維持
+// 0.3 秒才換成頁面（react-dom 的 FALLBACK_THROTTLE_MS，用來避免畫面閃爍），開這一頁反而慢約 0.2 秒。
+// 不包時 React 等這一頁載入完才畫，整個畫面一次畫出來，和打包在一起時一樣；在 app 裡切過來時則是
+// 原本的頁面留到這一頁載入完
+const BillingPage = lazy(() => import('./pages/BillingPage'))
 
 export default function App() {
     return (
