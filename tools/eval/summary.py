@@ -15,6 +15,11 @@ revision 或設定有一項不同，或基準的 commit 不在這個 PR 的歷�
 
 只輸出數字、雜湊、檔名與「cpMER 不計」的理由，不輸出錯誤範例或任何轉錄文字：評測集的原文不進 PR（#15 的 Q4）。
 結尾核對只讀 LRC 每一行的時間戳。
+
+標準答案註明「不公開」的片段，名稱與數字都不能出現在 GitHub 上（ADR 0009）。預設（要貼進 PR 的輸出）不印
+它所在音檔的摘要，判定表的名稱、token 與數字也只算公開的片段；判定欄照樣把它和同一種語言的片段合起來算，
+只多印一行「不公開的片段 N 段」。同一份 JSON 裡只要有一段不公開，整個音檔都當成不公開。``--show-private``
+印出全部，只在本機看。
 """
 
 from __future__ import annotations
@@ -75,6 +80,15 @@ class _Eval:
         return {_get(m, "audio", "sha256") for m in self.manifests}
 
     @property
+    def private(self) -> bool:
+        """這個音檔有標準答案註明「不公開」：預設不印它的名稱與數字。"""
+        return any(_private(e) for s in self.systems for e in s.score.get("per_excerpt") or [])
+
+    @property
+    def excerpts(self) -> int:
+        return len(self.references)
+
+    @property
     def languages(self) -> set[str]:
         """manifest 寫的語言，只留主要的語言代碼（zh-TW → zh）。"""
         codes = (_get(m, "request", "language") for m in self.manifests)
@@ -96,6 +110,11 @@ def _percent(value: float | None) -> str:
 def _cp_scored(excerpt: dict[str, Any]) -> bool:
     """這一段的 cpMER 算不算進判定：標準答案註明「cpMER 不計」時不算（舊的 JSON 沒有這一欄，照算）。"""
     return excerpt.get("cp_mer_scored", True) is not False
+
+
+def _private(excerpt: dict[str, Any]) -> bool:
+    """標準答案註明「不公開」（舊的 JSON 沒有這一欄，當成公開）。"""
+    return excerpt.get("private") is True
 
 
 def _cp_cell(system: _System) -> str:
@@ -305,14 +324,32 @@ class _Language:
             return PASS
         return UNDECIDED
 
-    def row(self, *, judged: bool = True) -> str:
-        """判定表的一列；``judged`` 是 False 時（兩邊的環境不能直接比）判定欄寫「不判定」。"""
+    def add(self, run: _Eval) -> None:
+        """把一個音檔（兩份轉錄結果）每段標準答案的 token 與錯誤數加進來。"""
+        self.references += run.references
+        base, head = (s.score["per_excerpt"] for s in run.systems)
+        for b, h in zip(base, head, strict=True):
+            cp = _cp_scored(b) and _cp_scored(h)
+            self.tokens += b["ref_len"]
+            self.cp_tokens += b["ref_len"] if cp else 0
+            self.base.add(b, cp=cp)
+            self.head.add(h, cp=cp)
+
+    def row(self, *, judged: bool = True, verdict: str | None = None, hidden: int = 0) -> str:
+        """判定表的一列；``judged`` 是 False 時（兩邊的環境不能直接比）判定欄寫「不判定」。
+
+        ``hidden`` 段不公開的片段不在這一列的名稱與數字裡；判定欄寫 ``verdict``（把它們算進去的判定）。
+        """
         base, head, tokens, cp_tokens = self.base, self.head, self.tokens, self.cp_tokens
-        cp = (f"{_rate(base.cp_low, base.cp_high, cp_tokens)} → {_rate(head.cp_low, head.cp_high, cp_tokens)}"
-              if cp_tokens else "不計")
-        return (f"| {self.name} | {'、'.join(self.references)} | {tokens} "
-                f"| {_rate(base.mer, base.mer, tokens)} → {_rate(head.mer, head.mer, tokens)} "
-                f"| {cp} | {self.verdict if judged else '不判定'} |")
+        names = self.references + ([f"不公開 {hidden} 段"] if hidden else [])
+        if tokens:
+            mer = f"{_rate(base.mer, base.mer, tokens)} → {_rate(head.mer, head.mer, tokens)}"
+            cp = (f"{_rate(base.cp_low, base.cp_high, cp_tokens)} → {_rate(head.cp_low, head.cp_high, cp_tokens)}"
+                  if cp_tokens else "不計")
+        else:  # 這種語言只有不公開的片段
+            mer = cp = "—"
+        shown = (verdict or self.verdict) if judged else "不判定"
+        return f"| {self.name} | {'、'.join(names)} | {tokens or '—'} | {mer} | {cp} | {shown} |"
 
 
 def _cp_skipped(run: _Eval) -> list[str]:
@@ -375,48 +412,64 @@ def compare_environments(runs: list[_Eval]) -> environment.Comparison | None:
                                [head.manifest for _, head in pairs if head.manifest])
 
 
-def render_verdict(runs: list[_Eval], comparison: environment.Comparison | None) -> str:
+def render_verdict(runs: list[_Eval], comparison: environment.Comparison | None,
+                   *, show_private: bool = False) -> str:
     """所有音檔合起來，每種語言一個判定（Markdown）。``comparison`` 是兩邊環境的比對
-    （:func:`compare_environments`）；有一項不能直接比時，數字照列，但不下判定。"""
-    languages: dict[str, _Language] = {}
+    （:func:`compare_environments`）；有一項不能直接比時，數字照列，但不下判定。
+
+    ``show_private`` 是 False 時，不公開的音檔不印名稱與數字：判定照樣把它們算進去（``totals``），表裡的
+    名稱與數字只算公開的（``shown``）。"""
+    totals: dict[str, _Language] = {}
+    shown: dict[str, _Language] = {}
+    hidden: dict[str, int] = {}
     excluded: list[str] = []
+    hidden_excluded = 0
     for run in runs:
+        hide = run.private and not show_private
         reason = _excluded(run)
         if reason:
-            excluded.append(f"{run.title}（{reason}）")
+            if hide:
+                hidden_excluded += run.excerpts
+            else:
+                excluded.append(f"{run.title}（{reason}）")
             continue
         (code,) = run.languages
-        language = languages.setdefault(code, _Language(code))
-        language.references += run.references
-        base, head = (s.score["per_excerpt"] for s in run.systems)
-        for b, h in zip(base, head, strict=True):
-            cp = _cp_scored(b) and _cp_scored(h)
-            language.tokens += b["ref_len"]
-            language.cp_tokens += b["ref_len"] if cp else 0
-            language.base.add(b, cp=cp)
-            language.head.add(h, cp=cp)
+        totals.setdefault(code, _Language(code)).add(run)
+        language = shown.setdefault(code, _Language(code))
+        if hide:
+            hidden[code] = hidden.get(code, 0) + run.excerpts
+        else:
+            language.add(run)
+    if hidden_excluded:
+        excluded.append(f"不公開的片段 {hidden_excluded} 段（原因用 --show-private 看）")
 
     out = ["### 回歸判定", "",
            "只算沒有草稿標記的標準答案。同一種語言的片段合起來，錯字率或 cpMER 比基準高就是回歸"
            "（docs/adr/0009）；註明「cpMER 不計」的片段只算錯字率；95% CI 只列出，不參與判定。", ""]
-    if languages:
+    if totals:
         out += ["| 語言 | 標準答案 | token | 錯字率：基準 → 這個 PR | cpMER：基準 → 這個 PR | 判定 |",
                 "|---|---|---|---|---|---|"]
         judged = comparison is None or comparison.ok
-        out += [language.row(judged=judged) for language in languages.values()]
+        out += [shown[code].row(judged=judged, verdict=total.verdict, hidden=hidden.get(code, 0))
+                for code, total in totals.items()]
         out.append("")
+    if hidden:
+        out.append(f"- 不公開的片段 {sum(hidden.values())} 段（標準答案註明「不公開」）：名稱、數字與所在音檔的"
+                   "摘要只留在本機，要看加 --show-private。判定欄照 docs/adr/0009 把它們和同一種語言的片段合起來算，"
+                   "表裡的標準答案、token、錯字率與 cpMER 只算公開的片段")
     if excluded:
         out.append(f"- 沒算進判定：{'；'.join(excluded)}")
-    out.append(f"- 判定：{_overall(list(languages.values()), comparison)}")
+    out.append(f"- 判定：{_overall(list(totals.values()), comparison)}")
     return "\n".join(out) + "\n"
 
 
 def cmd_summary(args) -> int:
     runs = [_read(Path(p)) for p in args.eval_json]
+    show_private = getattr(args, "show_private", False)
     comparison = compare_environments(runs)
-    sections = [render(run) for run in runs]
+    sections = [render(run) for run in runs if show_private or not run.private]
     if comparison is not None:
         sections.append(environment.render(comparison))
-    sections.append(render_verdict(runs, comparison))
+    sections.append(render_verdict(runs, comparison, show_private=show_private))
     print("\n".join(sections), end="")
     return 0

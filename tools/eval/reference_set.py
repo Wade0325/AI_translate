@@ -15,6 +15,8 @@
   * ``A?:`` 與 ``(?)`` 是草稿標記，正式的標準答案不該有；沒有允許草稿時拒絕讀取
   * ``# cpMER 不計：理由`` 的註解行：這一段只算錯字率，cpMER 不進回歸判定（ADR 0009）。用在說話者的
     安排量不到說話者分離的片段，例如幾位說話者唸同一份台本、依序接成區塊；理由一定要寫
+  * ``# 不公開`` 的註解行（後面可以接「：理由」）：這一段的名稱與數字不能出現在 GitHub 上（ADR 0009）。
+    ``summary`` 預設不印它的名稱、數字與所在音檔的摘要，判定照樣把它算進去；理由只留在這個檔案裡
 
 轉錄結果讀的是 LRC（見 :mod:`.lrc`），依標準答案的時間範圍裁切。
 """
@@ -37,6 +39,8 @@ UTT_RE = re.compile(
 UNCLEAR = "[聽不清]"
 # 這一段不算 cpMER：「# cpMER 不計：理由」
 CP_SKIP_RE = re.compile(r"^#\s*cpMER\s*不計\s*(?:[:：]\s*(?P<reason>.*))?$")
+# 這一段的名稱與數字不能出現在 GitHub 上：「# 不公開」或「# 不公開：理由」
+PRIVATE_RE = re.compile(r"^#\s*不公開\s*(?:[:：].*)?$")
 DOUBT_RE = re.compile(r"\(\?[^)]*\)")
 
 # 轉錄結果裡沒有說話者標記的行，全部算這一位說話者
@@ -66,6 +70,7 @@ class Excerpt:
     utterances: list[Utterance] = field(default_factory=list)
     draft_marks: int = 0
     cp_mer_skip: str | None = None  # 不算 cpMER 的理由；None 是照常計分
+    private: bool = False  # 標準答案註明「不公開」：名稱與數字不能出現在 GitHub 上
 
 
 def _ts_to_sec(s: str) -> float:
@@ -93,8 +98,11 @@ def read_reference(path: str | Path, allow_draft: bool = False) -> Excerpt:
     utts: list[Utterance] = []
     marks = 0
     cp_skip: str | None = None
+    private = False
     for line in raw:
         s = line.strip()
+        if PRIVATE_RE.match(s):
+            private = True
         if s.startswith("#") and (m := CP_SKIP_RE.match(s)):
             cp_skip = (m.group("reason") or "").strip()
             if not cp_skip:
@@ -121,7 +129,7 @@ def read_reference(path: str | Path, allow_draft: bool = False) -> Excerpt:
             f"確認完請刪掉標記；若只是想先試跑工具，加 --allow-draft。")
 
     return Excerpt(name=name, start=start, end=end, utterances=utts, draft_marks=marks,
-                   cp_mer_skip=cp_skip)
+                   cp_mer_skip=cp_skip, private=private)
 
 
 def clip_transcript(lrc_path: str | Path, start: float, end: float) -> list[Utterance]:

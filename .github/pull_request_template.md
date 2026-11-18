@@ -65,6 +65,8 @@ transcription_max_duration_seconds）不列：Gemini 的改動不附評測，照
 
 - 只貼數字。不要貼 tools/eval 的完整報告、LRC 或任何逐字稿文字：報告裡的錯誤範例是評測集的原文片段，
   其中有只能留在本機的素材。
+- 貼 summary 預設的輸出，不要加 --show-private：標準答案註明「不公開」的片段，名稱與數字都不能出現在
+  GitHub 上，summary 預設只印「不公開的片段 N 段」，判定照樣把它們算進去（docs/adr/0009）。
 - 評測要在本機 GPU 上跑（GitHub 的 runner 沒有 GPU）。外部貢獻者的 PR 由維護者代跑：只留本機的片段不能交給
   外部的人。
 - 標準答案分批啟用：summary 只用沒有草稿標記（經使用者確認）的標準答案判定，並列出用了哪幾段。還沒有任何日文
