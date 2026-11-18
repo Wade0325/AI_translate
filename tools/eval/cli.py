@@ -1,9 +1,10 @@
 """``python -m tools.eval`` 的指令：eval（對標準答案計分）、summary（整理成 PR 的評測摘要）、
-selftest（自我驗證）、transcribe（跑正式的轉錄路徑，產生要計分的轉錄結果）與 three-way（三方對照，
-起草標準答案）。
+selftest（自我驗證）、transcribe（跑正式的轉錄路徑，產生要計分的轉錄結果）、three-way（三方對照，
+起草標準答案）與 proofread（逐句校對，起草標準答案）。
 
-在 repo 根目錄執行，用法見同一個資料夾的 README.md。eval、summary、selftest 與 three-way 離線執行，
-不呼叫任何 API、不讀音檔；transcribe 讀音檔、用本機模型轉錄，見 transcribe.py。
+在 repo 根目錄執行，用法見同一個資料夾的 README.md。eval、summary、selftest、three-way 與 proofread
+離線執行，不呼叫任何 API、不解碼音檔（proofread draft 只讀 WAV 的檔頭取得長度）；transcribe 讀音檔、
+用本機模型轉錄，見 transcribe.py。
 """
 
 from __future__ import annotations
@@ -231,6 +232,15 @@ def cmd_three_way(args) -> int:
     return three_way.cmd_apply(args)
 
 
+def cmd_proofread(args) -> int:
+    # 用到時才 import：proofread 要 rapidfuzz 與 opencc（requirements-dev.txt）
+    from . import proofread
+
+    if args.proofread_cmd == "draft":
+        return proofread.cmd_draft(args)
+    return proofread.cmd_finalize(args)
+
+
 def cmd_selftest(_) -> int:
     from . import selftest
 
@@ -314,6 +324,31 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--confirmed-by", metavar="名字",
                    help="每一處都決定了時，在標準答案記下確認者與今天的日期")
     p.set_defaults(fn=cmd_three_way)
+
+    p = sub.add_parser("proofread", help="逐句校對：把一個模型的轉錄結果寫成標準答案的草稿與校對頁，"
+                                         "使用者每一句都聽過、改好，再確認成標準答案")
+    proofread = p.add_subparsers(dest="proofread_cmd", required=True)
+    p = proofread.add_parser("draft", help="寫草稿（<名稱>.draft.txt）、校對頁（<名稱>.proofread.html）與資料"
+                                           "（<名稱>.proofread.json）；終端機只印數量")
+    p.add_argument("--transcript", required=True, help="當草稿的轉錄結果 LRC（預設模型 moss-align）")
+    p.add_argument("--second-hypothesis",
+                   help="另一個模型的轉錄結果 LRC（例如 moss-qwen3-asr）；校對頁把它在同一段時間的寫法列在下面")
+    p.add_argument("--audio", help="音檔；校對頁用它播放每一句。WAV 會讀檔頭取得長度，當成表頭的時間範圍")
+    p.add_argument("--name", required=True, help="標準答案的名稱（表頭與檔名），例如 demo_A")
+    p.add_argument("--range", metavar="起-訖",
+                   help="標準答案的時間範圍 mm:ss.xx-mm:ss.xx；不給時用 WAV 的長度（從 00:00.00 起）")
+    p.add_argument("--private", action="store_true",
+                   help="在表頭下面加「# 不公開」：名稱與數字不能出現在 GitHub 上的片段（ADR 0009）")
+    p.add_argument("--out", required=True, metavar="資料夾",
+                   help="已經有同名的檔案時拒絕；不能是標準答案的資料夾")
+    p.set_defaults(fn=cmd_proofread)
+    p = proofread.add_parser("finalize", help="確認校對頁下載的標準答案：沒有草稿標記、讀得進來，"
+                                              "記下確認者與日期，寫成 <名稱>.txt")
+    p.add_argument("--draft", required=True, help="校對頁下載的 <名稱>.proofread.txt")
+    p.add_argument("--confirmed-by", required=True, metavar="名字", help="確認者，和今天的日期一起記下")
+    p.add_argument("--out", required=True, metavar="資料夾",
+                   help="寫 <名稱>.txt，已經有時拒絕；不能是標準答案的資料夾，確認後再自己複製過去")
+    p.set_defaults(fn=cmd_proofread)
     return ap
 
 
