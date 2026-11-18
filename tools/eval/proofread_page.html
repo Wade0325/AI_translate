@@ -1,0 +1,539 @@
+<!doctype html>
+<!--
+  逐句校對頁（python -m tools.eval proofread draft 產生，見 tools/eval/proofread.py）。
+  只在使用者的電腦上用瀏覽器打開，不連網路、不上傳任何東西；資料由 draft 嵌在下面的
+  <script id="data">。進度存在瀏覽器（localStorage），按「下載標準答案」存成 <名稱>.proofread.txt，
+  交給 python -m tools.eval proofread finalize。
+-->
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>逐句校對 __TITLE__</title>
+<style>
+  :root {
+    --bg: #fbfbf9; --fg: #1d1d1b; --muted: #6b6b66; --card: #ffffff; --line: #e2e1dc;
+    --accent: #2f6fdf; --mark: #fff1c2; --done: #eef6ee; --warn: #a3471f; --del: #f6e9e6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #161615; --fg: #ecebe6; --muted: #a09f99; --card: #20201e; --line: #34332f;
+      --accent: #7aa7ff; --mark: #4a3f17; --done: #1d2a1e; --warn: #f0a07a; --del: #3a2522;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+         font: 16px/1.5 system-ui, "Noto Sans TC", "Noto Sans JP", "Microsoft JhengHei", sans-serif; }
+  header { position: sticky; top: 0; z-index: 2; background: var(--bg); border-bottom: 1px solid var(--line);
+           padding: 10px 16px; }
+  h1 { font-size: 18px; margin: 0 0 6px; }
+  audio { width: 100%; }
+  .bar { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; margin-top: 6px; font-size: 14px; }
+  .bar select, .bar button, .bar label { font: inherit; }
+  button { cursor: pointer; border: 1px solid var(--line); background: var(--card); color: var(--fg);
+           border-radius: 6px; padding: 3px 9px; font: inherit; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button:disabled { opacity: .5; cursor: default; }
+  details { font-size: 14px; color: var(--muted); margin-top: 6px; }
+  details p { margin: 4px 0; }
+  .warn { color: var(--warn); }
+  main { max-width: 1000px; margin: 0 auto; padding: 12px 16px 40vh; }
+  .row { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px;
+         margin-bottom: 8px; }
+  .row.current { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent); }
+  .row.done { background: var(--done); }
+  .row.deleted { background: var(--del); }
+  .row.deleted .text { text-decoration: line-through; color: var(--muted); }
+  .meta { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; font-size: 13px; color: var(--muted); }
+  .meta .time { font-variant-numeric: tabular-nums; color: var(--fg); min-width: 5.5em; }
+  .meta .tag { border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; }
+  .meta .grow { flex: 1; }
+  .meta select, .meta input { font: inherit; }
+  .text { display: block; width: 100%; margin-top: 6px; font: inherit; font-size: 17px; padding: 5px 8px;
+          border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg); }
+  .alt { margin-top: 6px; font-size: 14px; padding: 4px 8px; border-radius: 6px; background: var(--mark); }
+  .alt .who { color: var(--muted); margin-right: 6px; }
+  .alt button { margin-left: 8px; font-size: 13px; padding: 1px 7px; }
+  .orig { margin-top: 4px; font-size: 13px; color: var(--muted); }
+  #list.hide-done .row.done, #list.hide-done .row.deleted { display: none; }
+  #list.only-diff .row:not(.diff) { display: none; }
+  #speakers { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 6px 0; }
+  #speakers label { white-space: nowrap; }
+  #speakers input { width: 9em; font: inherit; }
+  kbd { border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title"></h1>
+  <audio id="audio" controls preload="metadata"></audio>
+  <p id="no-audio" class="warn" hidden>沒有音檔：draft 時沒有給 --audio，或瀏覽器找不到檔案。</p>
+  <p id="no-store" class="warn" hidden>這個瀏覽器存不了進度：關掉頁面前記得按「下載進度」。</p>
+  <div class="bar">
+    <strong id="progress"></strong>
+    <label>速度 <select id="rate"><option>0.75</option><option selected>1</option><option>1.25</option><option>1.5</option></select></label>
+    <label><input type="checkbox" id="autoplay" checked> 確認後自動播下一句</label>
+    <label><input type="checkbox" id="hide-done"> 只顯示還沒確認的</label>
+    <label><input type="checkbox" id="only-diff"> 只顯示和對照不同的</label>
+    <button id="next-todo">跳到下一句沒確認的</button>
+  </div>
+  <div class="bar">
+    <button id="export" class="primary">下載標準答案</button>
+    <button id="backup">下載進度</button>
+    <label>載入進度 <input type="file" id="restore" accept=".json,application/json"></label>
+  </div>
+  <details>
+    <summary>說話者的名字</summary>
+    <p>代號是草稿依說話者第一次出現的順序編的。名字只寫進標準答案開頭的註解，方便之後辨認；可以留空。</p>
+    <div id="speakers"></div>
+    <button id="add-speaker">新增說話者</button>
+  </details>
+  <details>
+    <summary>怎麼用</summary>
+    <p>每一列是一句：按 ▶ 聽這一句（從這一句開始播到下一句開始），改說話者與文字，聽過、改好就打勾「確認」。
+      黃底是另一個模型在同一段時間的寫法，按「改用這個」換進來。</p>
+    <p>兩個模型都漏掉的話，按「＋ 插入」在下面加一句，播到那裡時按「⏱」把開始時間設成播放器目前的位置。
+      多出來的句子（例如把配樂或笑聲聽成字）按「刪除」。聽不出來的地方按「[聽不清]」插進文字，那裡不計分。
+      對方講話時插進來的附和（嗯、對）勾「附和」。</p>
+    <p>鍵盤：<kbd>Ctrl</kbd>+<kbd>Enter</kbd> 確認這一句並跳到下一句；<kbd>Shift</kbd>+<kbd>Enter</kbd> 重播這一句；
+      <kbd>Alt</kbd>+<kbd>↓</kbd>／<kbd>Alt</kbd>+<kbd>↑</kbd> 下一句／上一句；<kbd>Esc</kbd> 暫停。</p>
+    <p>進度存在這個瀏覽器裡，關掉再開還在；換電腦或清瀏覽器資料前按「下載進度」備份。做完按「下載標準答案」，
+      把 <code>&lt;名稱&gt;.proofread.txt</code> 交給 <code>python -m tools.eval proofread finalize</code>。
+      沒確認的句子在下載的檔案裡帶草稿標記（代號後面的「?」），評測不會拿它判定。</p>
+  </details>
+</header>
+<main id="list"></main>
+<script id="data" type="application/json">__DATA__</script>
+<script>
+"use strict";
+const data = JSON.parse(document.getElementById("data").textContent);
+const storeKey = `proofread:${data.name}:${data.digest}`;
+const PRE = 0.3;     // 播放時往前多放幾秒
+const POST = 0.4;    // 播到下一句開始之後再多放幾秒
+const MIN = 1.5;     // 至少播幾秒
+const LAST = 8;      // 最後一句播幾秒
+const UNCLEAR = "[聽不清]";
+const audio = document.getElementById("audio");
+const list = document.getElementById("list");
+const labels = data.systems.map(s => s.label);
+let state = null;
+let current = 0;
+let stopAt = null;
+const els = new Map();   // row.k → 元素
+
+// ------------------------------------------------------------ 進度
+function freshState() {
+  return {
+    format: "proofread-progress", name: data.name, digest: data.digest,
+    rows: data.rows.map(r => ({ k: r.id, id: r.id, seconds: r.seconds, speaker: r.speaker,
+                                ov: false, text: r.text, done: false, del: false })),
+    names: {}, extra: [], nextKey: data.rows.length,
+  };
+}
+function load() {
+  try {
+    const raw = localStorage.getItem(storeKey);
+    if (raw) { const s = JSON.parse(raw); if (s && Array.isArray(s.rows)) return s; }
+  } catch (e) { /* 讀不到就從草稿開始 */ }
+  return freshState();
+}
+function save() {
+  try { localStorage.setItem(storeKey, JSON.stringify(state)); }
+  catch (e) { document.getElementById("no-store").hidden = false; }
+}
+
+// ------------------------------------------------------------ 小工具
+function clock(sec) {
+  const centis = Math.floor(Math.round(sec * 1000) / 10);
+  const m = Math.floor(centis / 6000), rest = centis % 6000;
+  return `${String(m).padStart(2, "0")}:${String(Math.floor(rest / 100)).padStart(2, "0")}.${String(rest % 100).padStart(2, "0")}`;
+}
+function clean(text) { return text.replace(/\s+/g, " ").trim(); }
+function orig(row) { return row.id === null ? null : data.rows[row.id]; }
+function codes() {
+  const out = Object.keys(data.speakers);
+  for (const c of state.extra) if (!out.includes(c)) out.push(c);
+  for (const r of state.rows) if (!out.includes(r.speaker)) out.push(r.speaker);
+  return out;
+}
+function speakerLabel(code) {
+  const name = (state.names[code] || "").trim();
+  return name ? `${code} ${name}` : code;
+}
+function nextFreeCode() {
+  const used = new Set(codes());
+  for (const ch of "ABCDEFGHIJKLMNOPQRSTUVWXYZ") if (!used.has(ch)) return ch;
+  let n = used.size + 1;
+  while (used.has(`S${n}`)) n++;
+  return `S${n}`;
+}
+function edited(row) {
+  const o = orig(row);
+  return o !== null && (clean(row.text) !== clean(o.text) || row.speaker !== o.speaker || row.ov);
+}
+
+// ------------------------------------------------------------ 播放
+function nextStart(i) {
+  const here = state.rows[i].seconds;
+  for (let j = i + 1; j < state.rows.length; j++) {
+    const r = state.rows[j];
+    if (!r.del && r.seconds > here) return r.seconds;
+  }
+  return null;
+}
+function playRow(i) {
+  if (!data.audio) return;
+  const r = state.rows[i];
+  const start = Math.max(0, r.seconds - PRE);
+  const next = nextStart(i);
+  let end = next === null ? Math.min(r.seconds + LAST, data.window[1]) : next + POST;
+  if (end - start < MIN) end = start + MIN;
+  stopAt = end;
+  audio.currentTime = start;
+  audio.play().catch(() => {});
+}
+
+// ------------------------------------------------------------ 畫面
+function rowEl(row) {
+  const el = document.createElement("article");
+  el.className = "row";
+  el.dataset.k = row.k;
+  const meta = document.createElement("div");
+  meta.className = "meta";
+
+  const done = document.createElement("label");
+  const doneBox = document.createElement("input");
+  doneBox.type = "checkbox";
+  doneBox.className = "done-box";
+  done.append(doneBox, " 確認");
+  doneBox.addEventListener("change", () => { row.done = doneBox.checked; changed(row); });
+
+  const play = document.createElement("button");
+  play.textContent = "▶";
+  play.title = "聽這一句（Shift+Enter）";
+  play.addEventListener("click", () => { focusRow(indexOf(row), false); playRow(indexOf(row)); });
+
+  const time = document.createElement("span");
+  time.className = "time";
+  const setTime = document.createElement("button");
+  setTime.textContent = "⏱";
+  setTime.title = "把這一句的開始時間設成播放器目前的位置";
+  setTime.addEventListener("click", () => {
+    row.seconds = Math.round(audio.currentTime * 100) / 100;
+    changed(row);
+  });
+
+  const spk = document.createElement("select");
+  spk.className = "spk";
+  spk.title = "說話者";
+  spk.addEventListener("change", () => { row.speaker = spk.value; changed(row); });
+
+  const ov = document.createElement("label");
+  const ovBox = document.createElement("input");
+  ovBox.type = "checkbox";
+  ovBox.className = "ov-box";
+  ov.append(ovBox, " 附和");
+  ov.title = "對方講話時插進來的附和（標準答案寫成 ~代號）";
+  ovBox.addEventListener("change", () => { row.ov = ovBox.checked; changed(row); });
+
+  const tag = document.createElement("span");
+  tag.className = "tag";
+
+  const grow = document.createElement("span");
+  grow.className = "grow";
+
+  const unclear = document.createElement("button");
+  unclear.textContent = UNCLEAR;
+  unclear.title = "在游標的位置插入「聽不清」，那裡不計分";
+  const ins = document.createElement("button");
+  ins.textContent = "＋ 插入";
+  ins.title = "在下面插入一句（兩個模型都漏掉的話）";
+  ins.addEventListener("click", () => insertAfter(indexOf(row)));
+  const revert = document.createElement("button");
+  revert.className = "revert";
+  revert.textContent = "還原";
+  revert.title = "改回草稿的說話者與文字";
+  revert.addEventListener("click", () => {
+    const o = orig(row);
+    if (!o) return;
+    row.text = o.text; row.speaker = o.speaker; row.ov = false;
+    el.querySelector(".text").value = row.text;
+    changed(row);
+  });
+  const del = document.createElement("button");
+  del.className = "del";
+  del.addEventListener("click", () => { row.del = !row.del; changed(row); });
+
+  meta.append(done, play, time, setTime, spk, ov, tag, grow, unclear, ins, revert, del);
+
+  const text = document.createElement("input");
+  text.type = "text";
+  text.className = "text";
+  text.value = row.text;
+  text.addEventListener("input", () => { row.text = text.value; changed(row, false); });
+  unclear.addEventListener("click", () => {
+    const a = text.selectionStart ?? text.value.length, b = text.selectionEnd ?? a;
+    text.value = text.value.slice(0, a) + UNCLEAR + text.value.slice(b);
+    row.text = text.value;
+    text.focus();
+    text.setSelectionRange(a + UNCLEAR.length, a + UNCLEAR.length);
+    changed(row);
+  });
+
+  el.append(meta, text);
+  const o = orig(row);
+  if (o && o.alt !== null && o.alt_differs) {
+    el.classList.add("diff");
+    const alt = document.createElement("div");
+    alt.className = "alt";
+    const who = document.createElement("span");
+    who.className = "who";
+    who.textContent = `${labels[1] || "對照"}：`;
+    const body = document.createElement("span");
+    body.textContent = o.alt || "（這段時間沒有字）";
+    alt.append(who, body);
+    if (o.alt) {
+      const use = document.createElement("button");
+      use.textContent = "改用這個";
+      use.addEventListener("click", () => { row.text = o.alt; text.value = o.alt; changed(row); });
+      alt.append(use);
+    }
+    el.append(alt);
+  }
+  const was = document.createElement("div");
+  was.className = "orig";
+  el.append(was);
+
+  el.addEventListener("focusin", () => focusRow(indexOf(row), false, false));
+  refreshEl(row, el);
+  return el;
+}
+
+function refreshEl(row, el) {
+  el.classList.toggle("done", row.done && !row.del);
+  el.classList.toggle("deleted", row.del);
+  el.querySelector(".done-box").checked = row.done;
+  el.querySelector(".done-box").disabled = row.del;
+  el.querySelector(".ov-box").checked = row.ov;
+  el.querySelector(".time").textContent = clock(row.seconds);
+  const spk = el.querySelector(".spk");
+  spk.replaceChildren(...codes().map(c => new Option(speakerLabel(c), c)));
+  spk.value = row.speaker;
+  const text = el.querySelector(".text");
+  text.disabled = row.del;
+  if (text.value !== row.text) text.value = row.text;
+  el.querySelector(".del").textContent = row.del ? "還原刪除" : "刪除";
+  const o = orig(row);
+  el.querySelector(".tag").textContent = o === null ? "新增" : (edited(row) ? "改過" : "");
+  el.querySelector(".tag").hidden = !(o === null || edited(row));
+  el.querySelector(".revert").hidden = !edited(row);
+  const was = el.querySelector(".orig");
+  was.hidden = !(o && edited(row));
+  if (o) was.textContent = `草稿：${o.speaker}: ${o.text}`;
+}
+
+function indexOf(row) { return state.rows.indexOf(row); }
+
+function changed(row, redraw = true) {
+  if (redraw) refreshEl(row, els.get(row.k));
+  else {
+    const el = els.get(row.k);
+    const o = orig(row);
+    el.querySelector(".tag").textContent = o === null ? "新增" : (edited(row) ? "改過" : "");
+    el.querySelector(".tag").hidden = !(o === null || edited(row));
+    el.querySelector(".revert").hidden = !edited(row);
+    el.querySelector(".orig").hidden = !(o && edited(row));
+  }
+  save();
+  progress();
+}
+
+function counts() {
+  const c = { total: 0, done: 0, same: 0, edited: 0, added: 0, deleted: 0 };
+  for (const r of state.rows) {
+    if (r.del) { if (r.id !== null) c.deleted++; continue; }
+    if (!clean(r.text)) continue;
+    c.total++;
+    if (!r.done) continue;
+    c.done++;
+    if (r.id === null) c.added++; else if (edited(r)) c.edited++; else c.same++;
+  }
+  return c;
+}
+
+function progress() {
+  const c = counts();
+  const pct = c.total ? Math.floor(c.done * 100 / c.total) : 0;
+  document.getElementById("progress").textContent =
+    `已確認 ${c.done}／${c.total} 句（${pct}%）　改過 ${c.edited}、新增 ${c.added}、刪掉 ${c.deleted}`;
+}
+
+function renderAll() {
+  els.clear();
+  const frag = document.createDocumentFragment();
+  for (const row of state.rows) {
+    const el = rowEl(row);
+    els.set(row.k, el);
+    frag.append(el);
+  }
+  list.replaceChildren(frag);
+  renderSpeakers();
+  progress();
+  focusRow(Math.min(current, state.rows.length - 1), false, false);
+}
+
+function renderSpeakers() {
+  const box = document.getElementById("speakers");
+  box.replaceChildren(...codes().map(code => {
+    const label = document.createElement("label");
+    const input = document.createElement("input");
+    input.value = state.names[code] || "";
+    input.placeholder = data.speakers[code] ? `草稿的 ${data.speakers[code]}` : "新增的說話者";
+    input.addEventListener("change", () => {
+      state.names[code] = input.value;
+      save();
+      for (const row of state.rows) refreshEl(row, els.get(row.k));
+    });
+    label.append(`${code} = `, input);
+    return label;
+  }));
+}
+
+function focusRow(i, scroll = true, focusText = true) {
+  if (i < 0 || i >= state.rows.length) return;
+  const prev = els.get(state.rows[current]?.k);
+  if (prev) prev.classList.remove("current");
+  current = i;
+  const el = els.get(state.rows[i].k);
+  el.classList.add("current");
+  if (scroll) el.scrollIntoView({ block: "center" });
+  if (focusText) el.querySelector(".text").focus({ preventScroll: true });
+}
+
+function step(from, dir) {
+  for (let j = from + dir; j >= 0 && j < state.rows.length; j += dir) {
+    const el = els.get(state.rows[j].k);
+    if (el.offsetParent !== null && !state.rows[j].del) return j;
+  }
+  return -1;
+}
+
+function insertAfter(i) {
+  const here = state.rows[i];
+  const next = nextStart(i);
+  const seconds = next === null ? here.seconds + 1 : Math.round((here.seconds + next) / 2 * 100) / 100;
+  const row = { k: state.nextKey++, id: null, seconds, speaker: here.speaker, ov: false, text: "",
+                done: false, del: false };
+  state.rows.splice(i + 1, 0, row);
+  const el = rowEl(row);
+  els.set(row.k, el);
+  els.get(here.k).after(el);
+  save();
+  progress();
+  focusRow(i + 1);
+}
+
+// ------------------------------------------------------------ 下載
+function referenceText() {
+  const out = [data.header];
+  if (data.private) out.push("# 不公開");
+  const named = codes().filter(c => (state.names[c] || "").trim()).map(c => `${c}=${clean(state.names[c])}`);
+  if (named.length) out.push(`# ${named.join(" ")}`);
+  const c = counts();
+  out.push(`# 逐句校對：${data.provenance}；共 ${c.total} 句，已確認 ${c.done} 句`
+           + `（照草稿 ${c.same}、改過 ${c.edited}、新增 ${c.added}），刪掉草稿的 ${c.deleted} 句`);
+  out.push("");
+  for (const r of state.rows) {
+    const text = clean(r.text);
+    if (r.del || !text) continue;
+    out.push(`[${clock(r.seconds)}] ${r.ov ? "~" : ""}${r.speaker}${r.done ? "" : "?"}: ${text}`);
+  }
+  return out.join("\n") + "\n";
+}
+
+function download(name, body, type) {
+  const blob = new Blob([body], { type });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  document.body.append(a);
+  a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+}
+
+// ------------------------------------------------------------ 啟動
+function start() {
+  state = load();
+  document.getElementById("title").textContent =
+    `逐句校對：${data.name}（${data.rows.length} 句；草稿 ${labels[0]}${labels[1] ? `、對照 ${labels[1]}` : ""}）`;
+  if (data.audio) audio.src = data.audio.src;
+  else { audio.hidden = true; document.getElementById("no-audio").hidden = false; }
+  audio.addEventListener("error", () => { document.getElementById("no-audio").hidden = false; });
+  audio.addEventListener("timeupdate", () => {
+    if (stopAt !== null && audio.currentTime >= stopAt) { audio.pause(); stopAt = null; }
+  });
+  audio.addEventListener("seeking", () => { if (audio.paused) stopAt = null; });
+  document.getElementById("rate").addEventListener("change", e => { audio.playbackRate = Number(e.target.value); });
+  document.getElementById("hide-done").addEventListener("change", e => list.classList.toggle("hide-done", e.target.checked));
+  document.getElementById("only-diff").addEventListener("change", e => list.classList.toggle("only-diff", e.target.checked));
+  document.getElementById("next-todo").addEventListener("click", () => {
+    const j = state.rows.findIndex((r, idx) => idx > current && !r.done && !r.del);
+    const k = j >= 0 ? j : state.rows.findIndex(r => !r.done && !r.del);
+    if (k >= 0) focusRow(k);
+  });
+  document.getElementById("add-speaker").addEventListener("click", () => {
+    state.extra.push(nextFreeCode());
+    save();
+    renderSpeakers();
+    for (const row of state.rows) refreshEl(row, els.get(row.k));
+  });
+  document.getElementById("export").addEventListener("click", () => {
+    const c = counts();
+    if (c.done < c.total && !confirm(`還有 ${c.total - c.done} 句沒確認，下載的檔案裡它們會帶草稿標記。照樣下載？`)) return;
+    download(`${data.name}.proofread.txt`, referenceText(), "text/plain;charset=utf-8");
+  });
+  document.getElementById("backup").addEventListener("click", () => {
+    download(`${data.name}.progress.json`, JSON.stringify(state), "application/json");
+  });
+  document.getElementById("restore").addEventListener("change", async e => {
+    const file = e.target.files[0];
+    e.target.value = "";
+    if (!file) return;
+    try {
+      const s = JSON.parse(await file.text());
+      if (s.format !== "proofread-progress" || s.name !== data.name || !Array.isArray(s.rows)) {
+        alert("這不是這一段的進度檔。"); return;
+      }
+      if (s.digest !== data.digest) { alert("這份進度是另一份草稿的（重跑過 draft）：不能載入。"); return; }
+      if (!confirm("用這份進度取代這個瀏覽器裡現在的進度？")) return;
+      state = s;
+      save();
+      renderAll();
+    } catch (err) { alert(`讀不了這個檔案：${err}`); }
+  });
+
+  document.addEventListener("keydown", e => {
+    if (e.isComposing || e.keyCode === 229) return;   // 輸入法選字中
+    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault();
+      const row = state.rows[current];
+      if (!row.del) { row.done = true; changed(row); }
+      const j = step(current, 1);
+      if (j >= 0) { focusRow(j); if (document.getElementById("autoplay").checked) playRow(j); }
+    } else if (e.key === "Enter" && e.shiftKey) {
+      e.preventDefault();
+      playRow(current);
+    } else if (e.altKey && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+      e.preventDefault();
+      const j = step(current, e.key === "ArrowDown" ? 1 : -1);
+      if (j >= 0) { focusRow(j); playRow(j); }
+    } else if (e.key === "Escape") {
+      audio.pause(); stopAt = null;
+    }
+  });
+  renderAll();
+}
+start();
+</script>
+</body>
+</html>
