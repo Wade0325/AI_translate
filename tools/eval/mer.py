@@ -367,6 +367,7 @@ class Result:
     mapping_local: dict[str, str] = field(default_factory=dict)
     cp_mer_global: float = 0.0
     cp_mer_skip: str | None = None  # 標準答案註明不算 cpMER 的理由（reference_set.Excerpt）
+    private: bool = False  # 標準答案註明「不公開」（reference_set.Excerpt）：summary 預設不印它
     budget: dict[str, int] = field(default_factory=dict)
     examples: dict[str, list[str]] = field(default_factory=dict)
     term_total: int = 0
@@ -397,6 +398,7 @@ class Result:
             "cp_mer_global": round(self.cp_mer_global, 4),
             "cp_mer_scored": self.cp_mer_skip is None,
             "cp_mer_skip": self.cp_mer_skip,
+            "private": self.private,
             "mapping_local": self.mapping_local,
             "term_recall": round(self.term_recall, 4),
             "term_hit": self.term_hit, "term_total": self.term_total,
@@ -437,7 +439,8 @@ def evaluate(excerpt: Excerpt, transcript: Sequence[Utterance], vocabulary: Cust
 
     res = Result(name=excerpt.name, window=(excerpt.start, excerpt.end),
                  n_utts=len(excerpt.utterances), ref_len=len(ref) - unk,
-                 transcript_len=len(hyp_tokens), unk=unk, cp_mer_skip=excerpt.cp_mer_skip)
+                 transcript_len=len(hyp_tokens), unk=unk, cp_mer_skip=excerpt.cp_mer_skip,
+                 private=excerpt.private)
 
     n_lines = len(ref_lines)
     res.line_errors = [0] * n_lines

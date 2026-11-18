@@ -272,6 +272,8 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("eval_json", nargs="+", metavar="eval 的 JSON",
                    help="eval --json 寫的檔案，評測集的每個音檔一份，同一種語言的合起來判定；"
                         "manifest 從轉錄結果旁邊找（<音檔名稱>.manifest.json）")
+    p.add_argument("--show-private", action="store_true",
+                   help="連標準答案註明「不公開」的片段也印出名稱與數字（只在本機看，不要貼上 GitHub）")
     p.set_defaults(fn=cmd_summary)
 
     p = sub.add_parser("transcribe", help="跑正式的轉錄路徑，輸出轉錄結果（LRC）與 manifest（會用顯卡）")

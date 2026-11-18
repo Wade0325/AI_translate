@@ -77,6 +77,16 @@ def test_refuses_cpmer_skip_without_a_reason(tmp_path, line):
         read_reference(path)
 
 
+@pytest.mark.parametrize("line", ["# 不公開", "# 不公開：只限個人研究使用", "#不公開: 理由"])
+def test_reads_the_private_mark(tmp_path, line):
+    # 名稱與數字不能出現在 GitHub 上的片段（ADR 0009）：理由可寫可不寫，只留在這個檔案裡
+    path = _write(tmp_path / "demo_P.txt", f"# demo_P  00:00.00-00:30.00\n{line}\nA: 好\n")
+
+    assert read_reference(path).private is True
+    assert read_reference(_write(tmp_path / "demo_A.txt", "# demo_A  00:00.00-00:30.00\nA: 好\n")
+                          ).private is False
+
+
 def test_refuses_file_without_time_range(tmp_path):
     path = _write(tmp_path / "demo_A.txt", "A: 沒有表頭。\n")
 

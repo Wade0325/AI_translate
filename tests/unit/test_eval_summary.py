@@ -510,6 +510,90 @@ def test_a_run_without_manifests_is_left_out(lab, runs, tmp_path, capsys):
     assert "- 判定：無法判定" in out
 
 
+PRIVATE_TEXT = "東京大学図書館"
+
+
+def _private_audio(lab, tmp_path, capsys, *, base_text, head_text, language="zh-TW", draft=False):
+    """評測集裡標準答案註明「不公開」的音檔（ADR 0009）：名稱與數字都不能出現在要貼進 PR 的摘要裡。"""
+    mark = " (?)" if draft else ""
+    _write(lab / "data" / "eval" / "secret_P.txt",
+           f"# secret_P  00:00.00-00:30.00\n# 不公開：只限個人研究使用\nA: {PRIVATE_TEXT}{mark}\n")
+    lrcs = [_write(tmp_path / "runs" / side / "secret.lrc", f"[00:01.00][S0] {text}\n")
+            for side, text in (("main", base_text), ("pr", head_text))]
+    for lrc in lrcs:
+        _manifest(lrc, "1" * 40, sha256="ef" * 32, audio="secret.wav", duration=4321.0, language=language)
+    extra = ("--allow-draft",) if draft else ()
+    return _eval(capsys, tmp_path / "secret.json", *lrcs, reference="secret_P", extra=extra)
+
+
+def _assert_nothing_private(out):
+    for leak in ("secret", "efefefef", "1:12:01", PRIVATE_TEXT, "只限個人研究使用"):
+        assert leak not in out, leak
+
+
+def test_eval_marks_the_private_reference(lab, tmp_path, capsys):
+    path = _private_audio(lab, tmp_path, capsys, base_text=PRIVATE_TEXT, head_text=PRIVATE_TEXT)
+
+    result = json.loads(path.read_text(encoding="utf-8"))
+    assert [e["private"] for s in result["systems"] for e in s["per_excerpt"]] == [True, True]
+
+
+def test_a_private_audio_is_judged_but_never_shown(lab, runs, tmp_path, capsys):
+    # 公開的 demo：PR 少錯 1 個（1 → 0）；不公開的 secret：PR 多錯 2 個（0 → 2）。
+    # 中文合起來 PR 多錯 1 個，是回歸；但表裡只能看到 demo 的數字，secret 的名稱、雜湊、長度與文字都不出現
+    for lrc in runs:
+        _manifest(lrc, "1" * 40)
+    demo = _eval(capsys, tmp_path / "demo.json", *runs)
+    secret = _private_audio(lab, tmp_path, capsys, base_text=PRIVATE_TEXT, head_text="東京大学図")
+
+    _, out, _ = _summary(capsys, demo, secret)
+
+    _assert_nothing_private(out)
+    assert "### 評測摘要：demo.wav" in out
+    assert "### 環境比對" in out
+    assert ("| 中文 | demo_A、不公開 1 段 | 8 | 12.50%（1 個錯） → 0.00%（0 個錯） "
+            "| 12.50%（1 個錯） → 0.00%（0 個錯） | 回歸 |") in out
+    assert "- 不公開的片段 1 段（標準答案註明「不公開」）：名稱、數字與所在音檔的摘要只留在本機" in out
+    assert out.rstrip().endswith("- 判定：回歸（中文）：代理不合併，等使用者明確接受並在 PR 上記下理由")
+
+
+def test_show_private_prints_everything_for_local_use(lab, runs, tmp_path, capsys):
+    for lrc in runs:
+        _manifest(lrc, "1" * 40)
+    demo = _eval(capsys, tmp_path / "demo.json", *runs)
+    secret = _private_audio(lab, tmp_path, capsys, base_text=PRIVATE_TEXT, head_text="東京大学図")
+
+    assert cli.main(["summary", str(demo), str(secret), "--show-private"]) == 0
+    out = capsys.readouterr().out
+
+    assert "### 評測摘要：secret.wav" in out
+    assert "| 中文 | demo_A、secret_P | 15 | 6.67%（1 個錯） → 13.33%（2 個錯） |" in out
+    assert "不公開的片段" not in out
+
+
+def test_a_language_with_only_private_audio_shows_no_numbers(lab, tmp_path, capsys):
+    secret = _private_audio(lab, tmp_path, capsys, base_text="東京大学図", head_text=PRIVATE_TEXT)
+
+    _, out, _ = _summary(capsys, secret)
+
+    _assert_nothing_private(out)
+    assert "| 中文 | 不公開 1 段 | — | — | — | 通過 |" in out
+    assert out.rstrip().endswith("- 判定：通過（中文）")
+
+
+def test_a_private_audio_left_out_of_the_verdict_is_not_named(lab, runs, tmp_path, capsys):
+    for lrc in runs:
+        _manifest(lrc, "1" * 40)
+    demo = _eval(capsys, tmp_path / "demo.json", *runs)
+    secret = _private_audio(lab, tmp_path, capsys, base_text=PRIVATE_TEXT, head_text=PRIVATE_TEXT, draft=True)
+
+    _, out, _ = _summary(capsys, demo, secret)
+
+    _assert_nothing_private(out)
+    assert "- 沒算進判定：不公開的片段 1 段（原因用 --show-private 看）" in out
+    assert "| 中文 | demo_A | 8 |" in out
+
+
 def test_cpmer_too_coarse_to_tell_is_undecided(tmp_path, capsys):
     # eval 的 JSON 只存 cpMER 的比率（小數第四位）：一段有 30000 個 token 時，0.1000 可能是
     # 2999～3001 個錯，兩邊都寫 0.1000 就分不出 PR 有沒有比基準多錯
