@@ -3,7 +3,7 @@ import { Button } from "antd"
 import { Check, ChevronDown, ChevronRight, Flag, Trash2 } from "lucide-react"
 import { formatClock } from "@/utils/formatters"
 import { wordPieces } from "@/utils/playhead"
-import { FLAGGED, VERIFIED } from "@/utils/reviewStates"
+import { FLAGGED, VERIFIED, needsSpeakerCheck } from "@/utils/reviewStates"
 import { isUserDeleted, keepEditorFocus, shownText } from "@/utils/segmentCorrections"
 import { shownSpeaker, showsAsCorrected } from "@/utils/speakers"
 import { splitByMatches } from "@/utils/segmentSearch"
@@ -54,6 +54,25 @@ const CHIP_STYLE = {
 
 /** @type {import("react").CSSProperties} */
 const HISTORY_CHIP_STYLE = { ...CHIP_STYLE, borderColor: "#3a3a5c", background: "transparent", color: "#8888a8" }
+
+/** @type {import("react").CSSProperties} */
+const UNSURE_CHIP_STYLE = {
+    ...CHIP_STYLE,
+    borderStyle: "dashed",
+    borderColor: "#a78bfa99",
+    background: "rgba(167, 139, 250, 0.1)",
+    color: "#b9a4fb",
+    cursor: "help",
+}
+
+/**
+ * 「說話者不確定」的說明：模型給這位說話者的機率（說話者機率），以及接下來怎麼做。
+ *
+ * @param {number} confidence
+ */
+function unsureTitle(confidence) {
+    return `模型拿不定這句是誰說的（說話者機率 ${Math.round(confidence * 100)}%）。聽一下，說話者對就按 V，不對就點說話者改`
+}
 
 /**
  * 確認狀態的按鈕（#349）：已確認與待查各一個，標上的那個上色。
@@ -116,6 +135,8 @@ function marked(text, ranges, className, offset = 0) {
  *   只改過說話者的片段不標「校正過」（標「歷程」），歷程裡也不列說話者的校正。
  * - 確認狀態（#349）：已確認與待查各一個按鈕，按一下標上，再按一次清掉；和校正互不影響。用滑鼠按時不拿走焦點：
  *   焦點留在按鈕上時，接著按空白鍵會再按一次這個按鈕，不是播放。
+ * - 說話者不確定、還沒看過的片段標「說話者不確定」（見 reviewStates.js）：標了確認狀態或改過之後就不標。整份當成
+ *   同一位說話者時不標。
  * - 目前這個片段（快捷鍵作用的片段，#349）加一圈框。點這一列的任何地方，這一列就是目前這個片段。
  * - 尋找時標出符合的字（#356），現在跳到的那個片段標得更明顯。
  *
@@ -158,6 +179,7 @@ function SegmentRowView({
     const clock = formatClock(segment.start)
     const saving = save?.status === "saving"
     const corrected = showsAsCorrected(segment, singleSpeaker)
+    const speakerUnsure = !singleSpeaker && !deleted && needsSpeakerCheck(segment)
     // 這一列正在改時，按這一列的按鈕不讓文字框失去焦點
     const onButtonMouseDown = editing ? keepEditorFocus : undefined
 
@@ -272,6 +294,11 @@ function SegmentRowView({
             <div style={{ display: "flex", alignItems: "flex-start", gap: 6, flexShrink: 0 }}>
                 {saving && <span style={STATUS_STYLE}>存檔中…</span>}
                 {save?.status === "saved" && <span style={{ ...STATUS_STYLE, color: "#2dd4a8" }}>已存</span>}
+                {speakerUnsure && (
+                    <span className="correction-speaker-unsure" title={unsureTitle(segment.speaker_confidence)} style={UNSURE_CHIP_STYLE}>
+                        說話者不確定
+                    </span>
+                )}
                 {deleted && (
                     <>
                         <span style={STATUS_STYLE}>已刪掉</span>

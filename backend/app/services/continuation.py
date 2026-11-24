@@ -32,6 +32,7 @@ import re
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from app.core.config import get_settings
+from app.services import speaker_confidence
 from app.services.silence_removal import Span
 from app.utils.logger import setup_logger
 
@@ -70,7 +71,7 @@ def splice(earlier: Sequence[Segment], later: Sequence[Segment], *,
     ``overlap`` 是（接續段的起點, 前段停下的地方），兩邊都轉了這一段。接續點（:func:`_junction`）
     之前的片段用前段的，之後用接續段的：片段的中點在接續點之前算前段，之後算接續段。接續點兩邊都不在
     片段中間時，每個片段整個落在一邊，句子不會被切開。接續段的說話者編號換成前段的
-    （:func:`match_speakers`）。
+    （:func:`match_speakers`），說話者機率跟著換（:func:`speaker_confidence.renamed`）。
     """
     begin, stopped = overlap
     cut = _junction(earlier, later, begin, stopped)
@@ -79,8 +80,11 @@ def splice(earlier: Sequence[Segment], later: Sequence[Segment], *,
     for segment in later:
         if _middle(segment) >= cut:
             speaker = segment.get("speaker")
-            kept.append({**segment,
-                         "speaker": None if speaker is None else speakers.get(speaker, speaker)})
+            spliced = {**segment, "speaker": None if speaker is None else speakers.get(speaker, speaker)}
+            probs = speaker_confidence.renamed(segment, speakers)
+            if probs is not None:
+                spliced[speaker_confidence.PROBS] = probs
+            kept.append(spliced)
     return kept
 
 

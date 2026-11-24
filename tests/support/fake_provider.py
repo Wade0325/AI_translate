@@ -160,6 +160,10 @@ class FakeProvider:
         self.service_tier: Optional[str] = None
         # 成功的結果寫明的模型版本（像 Gemini 回應的 model_version）；None 是不寫
         self.model_version: Optional[str] = None
+        # 說話者機率（像本機的 MOSS，見 app.services.speaker_confidence）：{說話者編號: {說話者編號: 機率}}，
+        # 例如 {"S0": {"S0": 0.9, "S1": 0.1}}。轉錄結果裡說話者是這個編號的片段都附上這一份（各段、各次接續
+        # 用的是同一份），沒列到的片段不附
+        self.speaker_probs: Dict[str, Dict[str, float]] = {}
         # hold 設定後，轉錄會停在這裡直到 hold 被 set 或使用者取消
         self.hold: Optional[threading.Event] = None
         self.started = threading.Event()
@@ -315,6 +319,9 @@ class FakeProvider:
             return TranscriptionTaskResult(success=False, text=f"[[{step.message}]]", **usage)
         # 和真的轉接器一樣，轉錄結果只有片段與用量，不附著 LRC 文字
         segments = [_segment(i, line) for i, line in enumerate(step)]
+        for segment in segments:
+            if segment["speaker"] in self.speaker_probs:
+                segment["speaker_probs"] = dict(self.speaker_probs[segment["speaker"]])
         versions = [self.model_version] if self.model_version and step else []
         return TranscriptionTaskResult(success=bool(step), segments=segments, model_versions=versions,
                                        **usage)

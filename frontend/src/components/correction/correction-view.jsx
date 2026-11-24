@@ -11,8 +11,8 @@ import { useSegmentSearch } from "@/hooks/useSegmentSearch"
 import { useSingleSpeaker } from "@/hooks/useSingleSpeaker"
 import { lastStarted, segmentSpans, segmentsAt, wordAt } from "@/utils/playhead"
 import {
-    FLAGGED, VERIFIED, cursorAfterSeek, filterCounts, keysWithoutReviewState, matchesFilter, nearestVisible,
-    reviewProgress, stepVisible, visibleIndexes,
+    FLAGGED, VERIFIED, cursorAfterSeek, filterCounts, hasSpeakerConfidence, keysWithoutReviewState, matchesFilter,
+    nearestVisible, reviewProgress, stepVisible, visibleIndexes,
 } from "@/utils/reviewStates"
 import { REWIND_SECONDS, keepEditorFocus } from "@/utils/segmentCorrections"
 import { isFindShortcut } from "@/utils/segmentSearch"
@@ -55,6 +55,7 @@ const EMPTY_TEXT = {
     all: "沒有片段",
     flagged: "沒有待查的片段",
     unseen: "沒有還沒看過的片段",
+    unsure: "沒有說話者不確定、還沒看過的片段",
 }
 
 /** 篩選的狀態：選的是哪一種，以及選的時候符合的片段鍵（之後不符合了也留在列表裡，見 visibleIndexes）。一開始不篩選。 */
@@ -99,7 +100,8 @@ const TOAST_STYLE = {
  * 復原」。正在改的時候不跟著播放捲動，免得改到一半那一列被捲走；改完再接著跟。
  *
  * 確認狀態、快捷鍵、進度與篩選（#349）：上方寫「已確認或校正過的片段數／全部的片段數」；列表可以只看待查的或
- * 還沒看過的；整個流程可以只用鍵盤做完。快捷鍵作用在「目前這個片段」（加一圈框）：↑、↓ 換片段時播放位置跟著跳到
+ * 還沒看過的，任務有說話者機率（本機的 MOSS 轉錄的）時另外可以只看說話者不確定、還沒看過的片段，那幾列也標出來；
+ * 整個流程可以只用鍵盤做完。快捷鍵作用在「目前這個片段」（加一圈框）：↑、↓ 換片段時播放位置跟著跳到
  * 它的開頭；點一列、拖播放進度也會換。播放往下走時不跟著換，聽完一段才按 V 也標得到剛聽完的那一段
  * （見 reviewStates.js）。
  *
@@ -147,9 +149,12 @@ export function CorrectionView({ transcript }) {
     const followIndex = canPlay ? lastStarted(spans, time) : -1
     const [following, setFollowing] = useState(true)
 
-    // 篩選（#349）與進度
+    // 篩選（#349）與進度。整份當成同一位說話者時不分說話者，沒有「只看說話者不確定的」：選著它時照全部顯示，切回照
+    // 模型分出的說話者時回到它
     const [filter, setFilter] = useState(NO_FILTER)
-    const visible = useMemo(() => visibleIndexes(segments, filter.kind, filter.kept), [segments, filter])
+    const offersUnsure = useMemo(() => !singleSpeaker && hasSpeakerConfidence(segments), [singleSpeaker, segments])
+    const filterKind = filter.kind === "unsure" && !offersUnsure ? "all" : filter.kind
+    const visible = useMemo(() => visibleIndexes(segments, filterKind, filter.kept), [segments, filterKind, filter.kept])
     const visibleSet = useMemo(() => new Set(visible), [visible])
     const counts = useMemo(() => filterCounts(segments), [segments])
     const progress = useMemo(() => reviewProgress(segments), [segments])
@@ -393,9 +398,10 @@ export function CorrectionView({ transcript }) {
                 }}
             />
             <ReviewToolbar
-                filter={filter.kind}
+                filter={filterKind}
                 counts={counts}
                 onFilter={changeFilter}
+                offersUnsure={offersUnsure}
                 withoutReviewState={withoutReviewState}
                 bulkPending={review.bulkPending}
                 confirmOpen={confirmOpen}
@@ -412,7 +418,7 @@ export function CorrectionView({ transcript }) {
                     visible={visible}
                     currentIndex={current}
                     reveal={reveal}
-                    emptyText={EMPTY_TEXT[filter.kind]}
+                    emptyText={EMPTY_TEXT[filterKind]}
                     activeSet={activeSet}
                     activeWords={activeWords}
                     followIndex={followIndex}

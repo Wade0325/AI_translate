@@ -252,7 +252,9 @@ class TranscriptSegmentResponse(BaseModel):
     """有校正紀錄；改回和原始轉錄相同之後仍是 True。"""
     text_alt: Optional[str] = None
     source: Optional[str] = None
-    confidence: Optional[float] = None
+    speaker_confidence: Optional[float] = None
+    """說話者機率（GLOSSARY）：本機的模型寫這個片段的說話者時，給原始轉錄的說話者（original_speaker）的機率，0 到 1。
+    Gemini、加上這一欄之前的任務、沒有自己的說話者標籤的片段是 None。校正頁照它標出說話者不確定的片段。"""
     review_state: Optional[str] = None
     """確認狀態：verified（已確認）、flagged（待查）或 None。"""
     words: Optional[List[TranscriptWord]] = None

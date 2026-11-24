@@ -68,6 +68,18 @@ class TestMatchSpeakers:
         spliced = continuation.splice(earlier, later, overlap=(6.0, 11.0))
         assert [s["speaker"] for s in spliced] == [None, "S0", None]
 
+    def test_speaker_probabilities_follow_the_matched_numbers(self):
+        # 接續段把 S0、S1 對調了：說話者機率跟著換回前段的編號（app.services.speaker_confidence）
+        earlier = [segment(6.0, 8.0, "S0"), segment(8.5, 10.5, "S1")]
+        later = [{**segment(6.0, 8.0, "S1"), "speaker_probs": {"S1": 0.9, "S0": 0.1}},
+                 {**segment(8.5, 10.5, "S0"), "speaker_probs": {"S0": 0.8, "S1": 0.2}},
+                 {**segment(13.0, 15.0, "S0"), "speaker_probs": {"S0": 0.6, "S1": 0.3, "S7": 0.1}}]
+
+        spliced = continuation.splice(earlier, later, overlap=(6.0, 12.0))
+
+        assert [(s["speaker"], s.get("speaker_probs")) for s in spliced] == [
+            ("S0", None), ("S1", None), ("S1", {"S1": 0.6, "S0": 0.3})]
+
 
 class TestOnePersonSplitInTwo:
     """#322：接續段的說話者分離把同一個人分成兩位（例如語氣在重疊區裡變了）時，兩位都配回前段的同一個

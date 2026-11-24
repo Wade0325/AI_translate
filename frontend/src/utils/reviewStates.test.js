@@ -1,12 +1,16 @@
 import { describe, it, expect } from 'vitest';
 import {
   FLAGGED,
+  SPEAKER_UNSURE_BELOW,
   VERIFIED,
   bulkUndoMessage,
   filterCounts,
   cursorAfterSeek,
+  hasSpeakerConfidence,
+  isSpeakerUnsure,
   isUnseen,
   matchesFilter,
+  needsSpeakerCheck,
   nearestVisible,
   reviewProgress,
   reviewToggle,
@@ -92,7 +96,7 @@ describe('篩選：只看待查的、只看還沒看過的', () => {
   });
 
   it('每種篩選有幾個片段', () => {
-    expect(filterCounts(segments)).toEqual({ all: 5, flagged: 2, unseen: 1 });
+    expect(filterCounts(segments)).toEqual({ all: 5, flagged: 2, unseen: 1, unsure: 0 });
   });
 
   it('列表照篩選只留符合的片段，順序不變', () => {
@@ -110,6 +114,54 @@ describe('篩選：只看待查的、只看還沒看過的', () => {
   it('之後才符合的片段也出現（例如復原了一次校正，它又變回還沒看過）', () => {
     const after = segments.map((s) => (s.seg_key === 'corrected' ? { ...s, corrected: false } : s));
     expect(visibleIndexes(after, 'unseen', new Set(['untouched']))).toEqual([2, 4]);
+  });
+});
+
+describe('說話者不確定：說話者機率低於門檻', () => {
+  const unsure = SPEAKER_UNSURE_BELOW - 0.01;
+
+  it.each([
+    [SPEAKER_UNSURE_BELOW - 0.01, true],
+    [0, true],
+    [SPEAKER_UNSURE_BELOW, false],
+    [1, false],
+    [null, false],
+    [undefined, false],
+  ])('說話者機率 %s：說話者不確定是 %s', (confidence, expected) => {
+    expect(isSpeakerUnsure(seg('a', { speaker_confidence: confidence }))).toBe(expected);
+  });
+
+  it('還沒看過的才要聽：標了確認狀態或校正過（改了說話者、文字，或刪掉）之後就不算', () => {
+    expect(needsSpeakerCheck(seg('a', { speaker_confidence: unsure }))).toBe(true);
+    expect(needsSpeakerCheck(seg('a', { speaker_confidence: unsure, review_state: VERIFIED }))).toBe(false);
+    expect(needsSpeakerCheck(seg('a', { speaker_confidence: unsure, review_state: FLAGGED }))).toBe(false);
+    expect(needsSpeakerCheck(seg('a', { speaker_confidence: unsure, corrected: true }))).toBe(false);
+    expect(needsSpeakerCheck(seg('a', { speaker_confidence: SPEAKER_UNSURE_BELOW }))).toBe(false);
+  });
+
+  it('只看說話者不確定的：列表與篩選上的數字', () => {
+    const segments = [
+      seg('sure', { speaker_confidence: 0.99 }),
+      seg('unsure', { speaker_confidence: unsure }),
+      seg('unsure-verified', { speaker_confidence: unsure, review_state: VERIFIED }),
+      seg('without-probability'),
+      seg('unsure-too', { speaker_confidence: 0.3 }),
+    ];
+    expect(visibleIndexes(segments, 'unsure', new Set())).toEqual([1, 4]);
+    expect(filterCounts(segments)).toEqual({ all: 5, flagged: 0, unseen: 4, unsure: 2 });
+  });
+
+  it('在只看說話者不確定的裡按了 V：片段不會在眼前消失，數字少一個', () => {
+    const segments = [seg('a', { speaker_confidence: unsure }), seg('b', { speaker_confidence: unsure })];
+    const after = [{ ...segments[0], review_state: VERIFIED }, segments[1]];
+    expect(visibleIndexes(after, 'unsure', new Set(['a', 'b']))).toEqual([0, 1]);
+    expect(filterCounts(after).unsure).toBe(1);
+  });
+
+  it('任務有沒有說話者機率：一個片段有就算有（Gemini 與加上說話者機率之前的任務都沒有）', () => {
+    expect(hasSpeakerConfidence([seg('a'), seg('b', { speaker_confidence: 1 })])).toBe(true);
+    expect(hasSpeakerConfidence([seg('a'), seg('b', { speaker_confidence: null })])).toBe(false);
+    expect(hasSpeakerConfidence([])).toBe(false);
   });
 });
 

@@ -10,6 +10,7 @@ import { ApiError } from '../services/api';
  * @typedef {{ seg_key: string, start: number, end?: number | null, text: string, original_text: string,
  *   speaker?: string | null, original_speaker?: string | null, corrected: boolean, deleted: boolean,
  *   deleted_text?: string | null, has_correction_records: boolean, review_state?: string | null,
+ *   speaker_confidence?: number | null,
  *   words?: { text?: string | null, start: number, end?: number | null }[] | null }} Segment
  *   GET /transcripts/{task_uuid} 的一個片段（校正後版本加上原始轉錄）
  * @typedef {{ text?: string, speaker?: string | null }} SegmentRequest PATCH 的 body

@@ -32,7 +32,8 @@
    時不讓任務失敗，後面的段的每個人改用新的編號，處理中的狀態說明與日誌寫明沒有對齊。
    模型能力開著 ``converge_to_speaker_count``、使用者選了 2 到 8 人、對齊之後的說話者編號又比所選多時，接著
    照聲音收斂到所選人數（#377，:func:`app.services.speaker_alignment.converge`）；單次轉完的音檔也一樣。同樣只改
-   說話者編號；嵌入用不了時編號照對齊的結果，任務照樣完成，狀態說明與日誌寫明沒有收斂。
+   說話者編號；嵌入用不了時編號照對齊的結果，任務照樣完成，狀態說明與日誌寫明沒有收斂。轉接器附了說話者機率
+   （本機）時，機率跟著換編號，合併完成時每個片段只留下它的說話者的機率（:mod:`app.services.speaker_confidence`）。
 5. 放回原音檔的時間軸（:meth:`SpeechTimeline.in_original_order`）：時間還原回原音檔，依開始時間
    排好、重編序號。批次不分段，結果回來之後也經過同一步。
 6. 掉尾（#257）：每一段各自檢查停下的地方（轉接器回報的擔保點，沒有時是最後一個片段的結束）之後還有
@@ -65,7 +66,7 @@ from app.core.config import get_settings
 from app.core.error_codes import ErrorCode, Failure, describe
 from app.exceptions import TranscriptionCancelledError, TransientError
 from app.provider.base import ProgressAndCancel, Provider, TranscribeRequest
-from app.services import continuation, speaker_alignment, tail_loss
+from app.services import continuation, speaker_alignment, speaker_confidence, tail_loss
 from app.services.silence_removal import SpeechView
 from app.services.transcription.models import TranscriptionTaskResult
 from app.services.inspection_artifacts import persist_split
@@ -495,7 +496,8 @@ class _ChunkedTranscription:
     # ── 合併與結果 ───────────────────────────────────────────────
     def _merged(self) -> TranscriptionTaskResult:
         """合併轉完的段、放回原音檔的時間軸，回傳成功的轉錄結果。"""
-        segments = _merge(self._transcribed, self._speaker_mappings())
+        segments = [speaker_confidence.settled(segment)
+                    for segment in _merge(self._transcribed, self._speaker_mappings())]
         if self._view.removed_silence:
             self._progress.report("時間還原回原音檔...")
             logger.info("片段的時間還原回原音檔的時間軸")
@@ -677,11 +679,15 @@ def _merge(transcribed: Sequence[_TranscribedChunk],
 
 
 def _renamed(segment: Mapping[str, Any], mapping: Mapping[str, str]) -> Dict[str, Any]:
-    """片段的說話者編號照 ``mapping`` 換，回傳新的片段；沒有說話者編號或 ``mapping`` 裡沒有的照舊。"""
+    """片段的說話者編號照 ``mapping`` 換，回傳新的片段；沒有說話者編號或 ``mapping`` 裡沒有的照舊。說話者機率
+    跟著換（:func:`speaker_confidence.renamed`）。"""
     renamed = dict(segment)
     speaker = renamed.get("speaker")
     if speaker is not None and speaker in mapping:
         renamed["speaker"] = mapping[speaker]
+    probs = speaker_confidence.renamed(segment, mapping)
+    if probs is not None:
+        renamed[speaker_confidence.PROBS] = probs
     return renamed
 
 

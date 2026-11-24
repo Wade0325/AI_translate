@@ -246,6 +246,69 @@ test('進度寫已確認或校正過的片段數；可以只看待查的或還�
     await expect(page.locator('[data-index]')).toHaveCount(4)
 })
 
+test('說話者不確定：只看模型拿不定是誰說的、還沒看過的片段，那幾列標出來，聽過就不標', async ({ page, mockBackend }) => {
+    // 說話者機率（本機的 MOSS 才有）：第 2、4 個片段模型拿不定是誰說的
+    const confidences = [1, 0.35, 1, 0.4]
+    const segments = MEETING.map((s, i) => ({ ...s, speaker_confidence: confidences[i] }))
+    const fake = correctionsBackend(segments)
+    const backend = await openCorrection(page, mockBackend, { segments, routes: fake.routes })
+    const unsure = (index) => rowAt(page, index).getByText('說話者不確定', { exact: true })
+
+    await expect(page.getByText('說話者不確定', { exact: true })).toHaveCount(2)
+    await expect(unsure(1)).toHaveAttribute('title', /說話者機率 35%/)
+    await expect(unsure(3)).toHaveAttribute('title', /說話者機率 40%/)
+
+    await filterOption(page, '只看說話者不確定的 2').click()
+    await expect(page.locator('[data-index]')).toHaveCount(2)
+    await expect(rowAt(page, 0)).toContainText('前端的校正頁可以播放了。')
+    await expectCurrent(page, 0)
+
+    // 說話者對：按 V，不再標，換到下一個；列表裡還留著它，數字少一個
+    await page.keyboard.press('v')
+    await expect(reviewButton(page, 0, '已確認')).toHaveAttribute('aria-pressed', 'true')
+    await expect(unsure(0)).toHaveCount(0)
+    await expect(filterOption(page, '只看說話者不確定的 1')).toBeVisible()
+    await expectCurrent(page, 1)
+
+    // 說話者不對：改說話者之後也不再標
+    await rowAt(page, 1).locator('.correction-speaker').click()
+    const menu = page.locator('.ant-dropdown:not(.ant-dropdown-hidden)')
+    await menu.locator('.ant-dropdown-menu-item-group', { hasText: '這個片段改成' })
+        .getByRole('menuitem', { name: 'S0', exact: true }).click()
+    await expect(rowAt(page, 1).locator('.correction-speaker')).toHaveText('S0')
+    await expect(unsure(1)).toHaveCount(0)
+    await expect(filterOption(page, '只看說話者不確定的 0')).toBeVisible()
+
+    // 重新篩選（換到別的再選回來）：都聽過了
+    await filterOption(page, '全部 4').click()
+    await filterOption(page, '只看說話者不確定的 0').click()
+    await expect(page.getByText('沒有說話者不確定、還沒看過的片段')).toBeVisible()
+
+    // 整份當成同一位說話者時不分說話者：沒有這個篩選，列表照全部顯示；切回來時回到它
+    await page.locator('.ant-segmented-item', { hasText: '整份當成同一位' }).click()
+    await expect(page.locator('[data-index]')).toHaveCount(4)
+    await expect(page.getByRole('radiogroup', { name: '篩選片段' }).getByRole('radio', { name: /^全部/ })).toBeChecked()
+    await expect(filterOption(page, '只看說話者不確定的')).toHaveCount(0)
+    await page.locator('.ant-segmented-item', { hasText: '照模型分出的說話者顯示' }).click()
+    await expect(page.getByText('沒有說話者不確定、還沒看過的片段')).toBeVisible()
+
+    expect(patches(backend)).toEqual([
+        ['0.0001', { review_state: 'verified' }],
+        ['0.0003', { speaker: 'S0' }],
+        ['task-1', { single_speaker: true }],
+        ['task-1', { single_speaker: false }],
+    ])
+})
+
+test('沒有說話者機率的任務（Gemini、之前轉錄的任務）不給只看說話者不確定的，也不標', async ({ page, mockBackend }) => {
+    const fake = correctionsBackend(MEETING)
+    await openCorrection(page, mockBackend, { routes: fake.routes })
+
+    await expect(filterOption(page, '全部 4')).toBeVisible()
+    await expect(filterOption(page, '只看說話者不確定的')).toHaveCount(0)
+    await expect(page.getByText('說話者不確定', { exact: true })).toHaveCount(0)
+})
+
 test('其餘全部標成已確認：先問一次寫明幾個，做完可以馬上復原，在這之間改成待查的不動', async ({ page, mockBackend }) => {
     const segments = [{ ...MEETING[0], review_state: 'flagged' }, MEETING[1], MEETING[2], MEETING[3]]
     const fake = correctionsBackend(segments)
