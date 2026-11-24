@@ -255,8 +255,9 @@ test('說話者不確定：只看模型拿不定是誰說的、還沒看過的�
     const unsure = (index) => rowAt(page, index).getByText('說話者不確定', { exact: true })
 
     await expect(page.getByText('說話者不確定', { exact: true })).toHaveCount(2)
-    await expect(unsure(1)).toHaveAttribute('title', /說話者機率 35%/)
-    await expect(unsure(3)).toHaveAttribute('title', /說話者機率 40%/)
+    // 不寫機率的數字：模型常常過度自信，寫出來反而讓人以為不必聽
+    await expect(unsure(1)).toHaveAttribute('title', /^模型拿不定這句是誰說的/)
+    await expect(unsure(3)).not.toHaveAttribute('title', /%/)
 
     await filterOption(page, '只看說話者不確定的 2').click()
     await expect(page.locator('[data-index]')).toHaveCount(2)

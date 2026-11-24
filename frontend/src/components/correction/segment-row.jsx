@@ -66,13 +66,10 @@ const UNSURE_CHIP_STYLE = {
 }
 
 /**
- * 「說話者不確定」的說明：模型給這位說話者的機率（說話者機率），以及接下來怎麼做。
- *
- * @param {number} confidence
+ * 「說話者不確定」的說明與接下來怎麼做。不寫說話者機率的數字：模型常常過度自信，25 場公開會議實測，機率 99%～99.9%
+ * 的片段每 8～11 個就有 1 個確定標錯（見 SPEAKER_UNSURE_BELOW），寫出「99%」反而讓人以為不必聽。
  */
-function unsureTitle(confidence) {
-    return `模型拿不定這句是誰說的（說話者機率 ${Math.round(confidence * 100)}%）。聽一下，說話者對就按 V，不對就點說話者改`
-}
+const UNSURE_ROW_TITLE = "模型拿不定這句是誰說的。聽一下，說話者對就按 V，不對就點說話者改"
 
 /**
  * 確認狀態的按鈕（#349）：已確認與待查各一個，標上的那個上色。
@@ -295,7 +292,7 @@ function SegmentRowView({
                 {saving && <span style={STATUS_STYLE}>存檔中…</span>}
                 {save?.status === "saved" && <span style={{ ...STATUS_STYLE, color: "#2dd4a8" }}>已存</span>}
                 {speakerUnsure && (
-                    <span className="correction-speaker-unsure" title={unsureTitle(segment.speaker_confidence)} style={UNSURE_CHIP_STYLE}>
+                    <span className="correction-speaker-unsure" title={UNSURE_ROW_TITLE} style={UNSURE_CHIP_STYLE}>
                         說話者不確定
                     </span>
                 )}

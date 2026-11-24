@@ -11,7 +11,8 @@ import { lastStarted } from './playhead';
  * 走時不跟著換。一路聽下去時，聽完一段才按 V，播放已經進到下一段，V 照樣標剛聽完的那一段（#25 故事 64）。
  *
  * 說話者不確定（GLOSSARY 的說話者機率）：模型寫這個片段的說話者時給它的機率低於門檻，表示模型拿不定是誰說的。
- * 還沒看過的這種片段可以單獨篩出來，只聽這幾句、不必整份聽完。
+ * 還沒看過的這種片段可以單獨篩出來先聽。模型很有把握卻標錯的片段不會被標出來，聽完這幾句不等於說話者都對了
+ * （實測見 SPEAKER_UNSURE_BELOW）。
  *
  * @typedef {'verified' | 'flagged'} ReviewState
  * @typedef {{ seg_key: string, review_state?: string | null, corrected: boolean, deleted?: boolean,
