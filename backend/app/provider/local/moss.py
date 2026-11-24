@@ -523,6 +523,8 @@ class SpeakerTagReader:
 class _SpeakerTagRecorder:
     """把 generate 每一步看到的 token 交給 :class:`SpeakerTagReader`：記住看過幾個 token，每次只讀新生成的；
     token 解碼出的文字記在快取裡，同一個 token 只解碼一次。不碰 torch（logits 的部分在 :func:`_make_speaker_probabilities`）。
+
+    說話者機率是附帶的：記的時候出錯，寫進 log、這次不再記（:meth:`finish` 回 None，片段不附說話者機率），轉錄照常。
     """
 
     def __init__(self, tokenizer) -> None:
@@ -531,10 +533,33 @@ class _SpeakerTagRecorder:
         self._tokenizer = tokenizer
         self._texts: Dict[int, str] = {}
         self._seen: Optional[int] = None
+        self._failed = False
 
-    def observe(self, length: int, tail: Callable[[int], Sequence[int]]) -> None:
-        """到目前為止共 ``length`` 個 token（提示詞加生成的），``tail(i)`` 給第 i 個以後的 token：每一步只把新生成的
-        那一個從顯卡搬回來，不搬整串。第一次看到的是提示詞，不讀。"""
+    def step(self, length: int, tail: Callable[[int], Sequence[int]],
+             digit_probabilities: Callable[[], Sequence[float]]) -> None:
+        """generate 的一步，到目前為止共 ``length`` 個 token（提示詞加生成的），``tail(i)`` 給第 i 個以後的 token：
+        讀新生成的 token（第一步看到的是提示詞，不讀）；下一個 token 可能是說話者編號的一位數字時，把
+        ``digit_probabilities()``（0 到 9 的機率）交給 :class:`SpeakerTagReader`，其他步不算。"""
+        if self._failed:
+            return
+        try:
+            self._observe(length, tail)
+            if self.reader.wants_probabilities:
+                self.reader.record(digit_probabilities())
+        except Exception as e:
+            self._fail(e)
+
+    def finish(self, length: int, tail: Callable[[int], Sequence[int]]) -> Optional[List[SpeakerTag]]:
+        """生成結束：讀最後一個 token（它之後沒有下一步），回傳讀到的說話者標籤；記的時候出錯過時是 None。"""
+        if not self._failed:
+            try:
+                self._observe(length, tail)
+            except Exception as e:
+                self._fail(e)
+        return None if self._failed else self.reader.tags
+
+    def _observe(self, length: int, tail: Callable[[int], Sequence[int]]) -> None:
+        """每一步只把新生成的那一個 token 從顯卡搬回來，不搬整串。"""
         if self._seen is None:
             self._seen = length
             return
@@ -542,6 +567,11 @@ class _SpeakerTagRecorder:
             for token_id in tail(self._seen):
                 self.reader.push(self._text(int(token_id)))
         self._seen = length
+
+    def _fail(self, error: Exception) -> None:
+        self._failed = True
+        logger.warning(f"記說話者機率時出錯，這次的片段沒有說話者機率，轉錄照常: {type(error).__name__}: {error}",
+                       exc_info=True)
 
     def _text(self, token_id: int) -> str:
         if token_id not in self._texts:
@@ -551,8 +581,8 @@ class _SpeakerTagRecorder:
 
 def _make_speaker_probabilities(tokenizer):
     """generate 的 logits processor：logits 原樣傳回（輸出一字不變），只在說話者編號的每一位數字之前，把 0 到 9 的
-    機率交給 :class:`SpeakerTagReader`。生成結束之後呼叫它的 ``finish``（最後一個 token 生成之後沒有下一步），
-    拿到讀到的說話者標籤。
+    機率交給 :class:`SpeakerTagReader`（經 :class:`_SpeakerTagRecorder`）。生成結束之後呼叫它的 ``finish``（最後一個
+    token 生成之後沒有下一步），拿到讀到的說話者標籤；記的時候出錯過時是 None。
 
     每個片段只多算約三次 softmax（每一位數字與結尾各一次），轉錄的時間看不出差別。
     """
@@ -565,16 +595,17 @@ def _make_speaker_probabilities(tokenizer):
             self._digit_ids = torch.tensor(self.recorder.digit_ids)
 
         def __call__(self, input_ids, scores):
-            self.recorder.observe(int(input_ids.shape[-1]), lambda start: input_ids[0, start:].tolist())
-            if self.recorder.reader.wants_probabilities:
+            def digit_probabilities():
                 probabilities = torch.softmax(scores[0].float(), dim=-1)
-                self.recorder.reader.record(probabilities[self._digit_ids.to(probabilities.device)].tolist())
+                return probabilities[self._digit_ids.to(probabilities.device)].tolist()
+
+            self.recorder.step(int(input_ids.shape[-1]), lambda start: input_ids[0, start:].tolist(),
+                               digit_probabilities)
             return scores
 
-        def finish(self, sequence) -> List[SpeakerTag]:
+        def finish(self, sequence) -> Optional[List[SpeakerTag]]:
             """``sequence`` 是 generate 輸出的整串 token（一維）。"""
-            self.recorder.observe(int(sequence.shape[-1]), lambda start: sequence[start:].tolist())
-            return self.recorder.reader.tags
+            return self.recorder.finish(int(sequence.shape[-1]), lambda start: sequence[start:].tolist())
 
     return _SpeakerProbabilities()
 
@@ -586,7 +617,8 @@ class MossOutput:
     """MOSS 跑一次的結果。"""
 
     segments: List[dict]
-    """解析出的片段（:func:`parse_output`），每一段另有生成時記下的說話者機率 ``SpeakerProbs``（見 :func:`_parse`）。"""
+    """解析出的片段（:func:`parse_output`），每一段另有生成時記下的說話者機率 ``SpeakerProbs``（見 :func:`_parse`）；
+    記說話者機率時出錯過，就沒有這一欄。"""
     text: str
     """未解析的輸出文字。"""
     covered_until: Optional[float]
@@ -698,8 +730,9 @@ def _vram_peaks() -> str:
 
 
 def _generate(model, processor, wav_path: Path, duration: float,
-              stopping_criteria, status_callback) -> Tuple[str, int, int, List[SpeakerTag]]:
-    """跑一次 generate，回傳（輸出文字, 生成了幾個 token, max_new_tokens, 讀到的說話者標籤）。"""
+              stopping_criteria, status_callback) -> Tuple[str, int, int, Optional[List[SpeakerTag]]]:
+    """跑一次 generate，回傳（輸出文字, 生成了幾個 token, max_new_tokens, 讀到的說話者標籤）；記說話者機率時出錯過，
+    讀到的說話者標籤是 None。"""
     import torch
     from moss_transcribe_diarize.inference_utils import (
         DEFAULT_PROMPT,
@@ -742,6 +775,7 @@ def _generate(model, processor, wav_path: Path, duration: float,
     generated_tokens = int(generated.numel())
     tags = speaker_probabilities.finish(output_ids[0])
     logger.info(f"MOSS 生成 {generated_tokens} tokens；{_vram_peaks()}；"
-                f"生成中釋放閒置顯存 {release.releases} 次；說話者標籤 {len(tags)} 個")
+                f"生成中釋放閒置顯存 {release.releases} 次；"
+                f"說話者標籤 {'沒有記到' if tags is None else f'{len(tags)} 個'}")
     text = processor.tokenizer.decode(generated, skip_special_tokens=True).strip()
     return text, generated_tokens, max_new_tokens, tags

@@ -235,31 +235,62 @@ class FakeTokenizer:
         return self.TEXTS[ids[0]]
 
 
+def run_generate(recorder, prompt: list[int], generated: list[int], probabilities) -> list | None:
+    """照 generate 的順序呼叫：生成每個 token 之前一步（看到的是到目前為止的整串），最後一個 token 生成之後收尾。
+    ``probabilities`` 是每一步要機率時呼叫的函式。回傳 ``finish`` 的結果。"""
+    sequence = list(prompt)
+    for token_id in generated:
+        recorder.step(len(sequence), lambda start: sequence[start:], probabilities)
+        sequence.append(token_id)
+    return recorder.finish(len(sequence), lambda start: sequence[start:])
+
+
+# 「][S01]你好」＋結束的特殊 token
+ONE_TAG_IDS = [1457, 50, 15, 16, 60, 108386, 151645]
+
+
 class TestSpeakerTagRecorder:
     def test_reads_only_what_was_generated_after_the_prompt(self):
         tokenizer = FakeTokenizer()
         recorder = moss._SpeakerTagRecorder(tokenizer)
-        sequence = [7, 8, 9]  # 提示詞
-        recorder.observe(len(sequence), lambda start: sequence[start:])
-        # 「][S01]你好」＋結束的特殊 token，每一步多一個
-        for token_id in [1457, 50, 15, 16, 60, 108386, 151645]:
-            if recorder.reader.wants_probabilities:
-                recorder.reader.record(digits(d0=1.0) if token_id == 15 else digits(d1=0.8, d2=0.2))
-            sequence.append(token_id)
-            recorder.observe(len(sequence), lambda start: sequence[start:])
+        # 只在說話者編號的每一位數字（與結尾的「]」）之前算機率：一共 3 次
+        asked = iter([digits(d0=1.0), digits(d1=0.8, d2=0.2), digits()])
+        tags = run_generate(recorder, [7, 8, 9], ONE_TAG_IDS, lambda: next(asked))
         assert recorder.digit_ids == list(range(15, 25))
-        assert recorder.reader.tags == [moss.SpeakerTag(1, pytest.approx({1: 0.8, 2: 0.2}))]
+        assert tags == [moss.SpeakerTag(1, pytest.approx({1: 0.8, 2: 0.2}))]
+        assert next(asked, None) is None
         # 提示詞不解碼；每個 token 只解碼一次
-        assert tokenizer.decoded == [1457, 50, 15, 16, 60, 108386, 151645]
+        assert tokenizer.decoded == ONE_TAG_IDS
 
     def test_tokens_are_decoded_once(self):
         tokenizer = FakeTokenizer()
         recorder = moss._SpeakerTagRecorder(tokenizer)
-        sequence = [7]
-        recorder.observe(1, lambda start: sequence[start:])
-        sequence += [58, 15, 13, 15, 60, 58, 15, 13, 15, 60]  # 「[0.0][0.0]」
-        recorder.observe(len(sequence), lambda start: sequence[start:])
+        run_generate(recorder, [7], [58, 15, 13, 15, 60, 58, 15, 13, 15, 60], digits)  # 「[0.0][0.0]」
         assert sorted(tokenizer.decoded) == [13, 15, 58, 60]
+
+    def test_an_error_while_recording_leaves_the_transcription_alone(self, app_log):
+        # 說話者機率是附帶的：算機率時出錯，寫進 log、之後不再記也不再算，片段不附說話者機率（None），轉錄照常
+        calls = []
+
+        def broken():
+            calls.append(1)
+            raise RuntimeError("顯卡上的張量讀不到")
+
+        recorder = moss._SpeakerTagRecorder(FakeTokenizer())
+        assert run_generate(recorder, [7], ONE_TAG_IDS, broken) is None
+        assert len(calls) == 1
+        assert any("記說話者機率時出錯，這次的片段沒有說話者機率，轉錄照常: RuntimeError: 顯卡上的張量讀不到" in entry
+                   for entry in app_log)
+
+    def test_an_error_while_reading_the_last_token_gives_no_probabilities(self):
+        recorder = moss._SpeakerTagRecorder(FakeTokenizer())
+        sequence = [7]
+        recorder.step(len(sequence), lambda start: sequence[start:], digits)
+
+        def unreadable(start):
+            raise RuntimeError("讀不到")
+
+        assert recorder.finish(2, unreadable) is None
 
 
 class TestParseWithSpeakerProbs:
