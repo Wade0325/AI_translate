@@ -141,7 +141,7 @@ describe('說話者不確定：說話者機率低於門檻', () => {
 
   it('只看說話者不確定的：列表與篩選上的數字', () => {
     const segments = [
-      seg('sure', { speaker_confidence: 0.99 }),
+      seg('sure', { speaker_confidence: SPEAKER_UNSURE_BELOW }),
       seg('unsure', { speaker_confidence: unsure }),
       seg('unsure-verified', { speaker_confidence: unsure, review_state: VERIFIED }),
       seg('without-probability'),
