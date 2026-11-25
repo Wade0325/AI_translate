@@ -1337,6 +1337,92 @@ class TestSpeakerCountConvergence:
         assert embedder.opened == 1
 
 
+class TestSpeakerConfidence:
+    """說話者機率（GLOSSARY）：本機的模型給每個片段附上各說話者編號的機率，分段轉錄、接續與照所選人數收斂換說話者
+    編號時，機率跟著換；存下來的片段只留它最後的說話者的機率（``speaker_confidence``），校正頁照它標出說話者
+    不確定的片段。換的規則本身見 tests/unit/test_speaker_confidence.py。
+
+    假供應商照片段的說話者編號附上機率（``fake.speaker_probs``），各段、各次接續都用同一份。說話者編號照各段、
+    各次接續自己聽到的先後編，同一個人在不同段可能拿到不同的編號、附上不同的機率，看得出換編號時機率有沒有跟著換：
+    沒跟著換時，換了編號的片段存下來的會是別人的機率。
+    """
+
+    PROBS = {"S0": {"S0": 0.9, "S1": 0.1}, "S1": {"S1": 0.6, "S0": 0.4}}
+
+    def test_each_segment_keeps_the_probability_of_its_speaker(self, api, fake):
+        fake.script = list(SCRIPT)
+        fake.speaker_probs = self.PROBS
+        messages = transcribe(api, "uid-speaker-confidence")
+
+        assert codes(messages)[-1] == TaskStatus.COMPLETED
+        segments = stored_segments(api, messages[-1]["task_uuid"])
+        assert [(s["speaker"], s["speaker_confidence"]) for s in segments] == [
+            ("S0", 0.9), ("S1", 0.6), ("S0", 0.9)]
+
+    def test_unknown_without_probabilities(self, api, fake):
+        # Gemini、VibeVoice 的片段沒有說話者機率
+        fake.script = list(SCRIPT)
+        messages = transcribe(api, "uid-speaker-confidence-unknown")
+
+        assert codes(messages)[-1] == TaskStatus.COMPLETED
+        assert [s["speaker_confidence"] for s in stored_segments(api, messages[-1]["task_uuid"])] == [
+            None, None, None]
+
+    def test_follows_the_numbers_matched_across_chunks(self, api, fake, embedder):
+        # 照 TestSpeakersAcrossChunks：26 秒切成兩段。後一段從第 5 句（B）聽起，B 是它的 S0、A 是 S1，附上的
+        # 機率也對調；對齊把它們配回 S1、S0，機率跟著換回去
+        fake.model_capabilities = replace(
+            fake.model_capabilities, remove_silence=False, single_pass_seconds=20.0,
+            align_speakers_across_chunks=True)
+        fake.script = [Listen(), Listen()]
+        fake.speaker_probs = self.PROBS
+        messages = transcribe(api, "uid-speaker-confidence-chunks",
+                              voiced=turns(TONE_A, TONE_B, TONE_B, TONE_A, TONE_B, TONE_A, TONE_B, TONE_A))
+
+        assert codes(messages)[-1] == TaskStatus.COMPLETED
+        segments = stored_segments(api, messages[-1]["task_uuid"])
+        assert [(heard_tone(s), s["speaker"], s["speaker_confidence"]) for s in segments] == [
+            (400, "S0", 0.9), (700, "S1", 0.6), (700, "S1", 0.6), (400, "S0", 0.9),
+            (700, "S1", 0.9), (400, "S0", 0.6), (700, "S1", 0.9), (400, "S0", 0.6)]
+
+    def test_follows_the_numbers_matched_in_a_continuation(self, api, fake, settings, monkeypatch):
+        # 照 TestContinuation：第一次轉到第 4 句就停，接續兩次。第一次接續從第 3 句（B）聽起，B 是它的 S0、A 是
+        # S1，和第一次相反；接回時配成同一位，第 5、6 句的機率跟著換回去。第二次接續的編號和前面相同
+        fake.model_capabilities = replace(
+            fake.model_capabilities, remove_silence=False, continuation=True)
+        monkeypatch.setattr(settings, "tail_loss_min_seconds", 2.0)
+        monkeypatch.setattr(settings, "continuation_overlap_seconds", 4.0)
+        monkeypatch.setattr(settings, "continuation_min_progress_seconds", 2.0)
+        fake.script = [Listen(stops_after=15.0)] * 3
+        fake.speaker_probs = self.PROBS
+        messages = transcribe(api, "uid-speaker-confidence-continued", voiced=SPEAKING)
+
+        assert codes(messages)[-1] == TaskStatus.COMPLETED
+        segments = stored_segments(api, messages[-1]["task_uuid"])
+        assert [s["seg_key"] for s in segments] == [
+            "0000", "0001", "0002", "0003", "c1.0002", "c1.0003", "c2.0002", "c2.0003"]
+        assert [(heard_tone(s), s["speaker"], s["speaker_confidence"]) for s in segments] == [
+            (400, "S0", 0.9), (700, "S1", 0.6), (700, "S1", 0.6), (400, "S0", 0.9),
+            (400, "S0", 0.6), (700, "S1", 0.9), (400, "S0", 0.9), (700, "S1", 0.6)]
+
+    def test_numbers_merged_by_converging_add_up(self, api, fake, embedder):
+        # 照 TestSpeakerCountConvergence：選 2 人，S2 併進 S0、S3 併進 S1。S0 在 S0、S2 之間猶豫，兩個是同一位，
+        # 不算不確定；S2 考慮過的 S9 沒有人用，不知道是誰，丟掉
+        fake.model_capabilities = replace(
+            fake.model_capabilities, remove_silence=False, align_speakers_across_chunks=True,
+            converge_to_speaker_count=True)
+        fake.script = [SPLIT_IN_FOUR]
+        fake.speaker_probs = {"S0": {"S0": 0.6, "S2": 0.4}, "S1": {"S1": 0.7, "S0": 0.3},
+                              "S2": {"S2": 0.5, "S9": 0.5}, "S3": {"S3": 0.8, "S1": 0.2}}
+        messages = transcribe(api, "uid-speaker-confidence-converged", "voice.flac", voiced=LONG_TURNS,
+                              speaker_count=2)
+
+        assert codes(messages)[-1] == TaskStatus.COMPLETED
+        segments = stored_segments(api, messages[-1]["task_uuid"])
+        assert [s["speaker"] for s in segments] == ["S0", "S1", "S0", "S1"]
+        assert [s["speaker_confidence"] for s in segments] == pytest.approx([1.0, 0.7, 0.5, 1.0])
+
+
 class TestEmptyChunk:
     """空段（#327）：分段轉錄的一段跑完了，卻沒有轉錄出任何內容，例如會議錄影開頭的長段靜音或測試音。
     不讓任務失敗，其他段的片段照樣保留；這一段有沒有漏掉內容照掉尾的規則看。每一段都是空段時才失敗。

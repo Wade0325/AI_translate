@@ -19,6 +19,10 @@ transformers 5.x 在無遮罩時送 GQA → 退回 math kernel，prefill 顯存 
 顯存：KV cache 每生成一個 token 就用 ``torch.cat`` 變長，PyTorch 的配置器留下一堆空著、卻接不了更長
 張量的區段；Windows 的驅動在顯卡記憶體滿了之後改給共用記憶體，配置器不會失敗，也就不會自己釋放，
 生成慢好幾倍（#326）。生成中定期把閒置的顯存還給驅動（:class:`_IdleVramRelease`）。
+
+說話者機率（GLOSSARY）：MOSS 寫說話者標籤的每一位數字之前，都先算出每個數字的機率，原本只取最高的那個。生成時
+順便記下（:class:`SpeakerTagReader`，logits 不改，輸出一字不變），每個片段附上它的說話者標籤寫下時各說話者編號的
+機率（``SpeakerProbs``），校正頁照它標出說話者不確定的片段。
 """
 
 from __future__ import annotations
@@ -29,7 +33,7 @@ import re
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from app.core.config import get_settings
 from app.provider.local import packages
@@ -89,6 +93,9 @@ _UNTAGGED_BOUNDARY_RE = re.compile(rf"\[({_TIME})\]\s*\[({_TIME})\]")
 _SPEAKER_TAG_RE = re.compile(r"\[S\d+\]")
 # 進度回報只看段落開頭（後面接說話者標籤）的時間戳
 _SEGMENT_START_RE = re.compile(rf"\[({_NUM})\]\[S\d+\]")
+# 輸出裡的每一個說話者標籤，連同文字裡夾著的：和生成時讀到的說話者標籤（SpeakerTagReader）一個對一個
+_SPEAKER_NUMBER_RE = re.compile(r"\[S(\d+)\]")
+_DIGITS = "0123456789"
 
 _attention_registered = False
 
@@ -261,29 +268,65 @@ class _Parsed:
     """最後一個完整的段在輸出裡結束的位置；一段都沒有時是 0。"""
 
 
-def _parse(text: str) -> _Parsed:
-    """解析輸出，見 :func:`parse_output`。"""
+def _parse(text: str, tags: Optional[Sequence["SpeakerTag"]] = None) -> _Parsed:
+    """解析輸出，見 :func:`parse_output`。
+
+    ``tags`` 是生成時讀到的說話者標籤（:class:`SpeakerTagReader`），給了時每一段多一個 ``SpeakerProbs``：
+    {說話者編號: 機率}（編號和 ``Speaker`` 同一套，S01 是 0），是這一段的說話者標籤寫下時模型給各編號的機率。
+    沒有自己的說話者標籤、沿用前一段說話者的段（#134），以及輸出和生成時讀到的對不上時，是 None。
+    """
     text = text or ""
+    probs_at = None if tags is None else _probs_by_tag_position(text, tags)
     # 第一個說話者標籤之前（整份都沒有標籤時就是全部）沒有說話者可以沿用，當成第一位
     first_tag = _SEGMENT_START_RE.search(text)
     head = text[:first_tag.start()] if first_tag else text
     matches = list(_UNTAGGED_SEGMENT_RE.finditer(head))
-    pieces = [(float(m[1]), 0, m[2], float(m[3])) for m in matches]
+    pieces: List[Tuple[float, int, str, float, Optional[Dict[int, float]]]] = [
+        (float(m[1]), 0, m[2], float(m[3]), None) for m in matches]
     untagged = len(pieces)
     consumed = matches[-1].end() if matches else 0
     if first_tag:
         for m in _SEGMENT_RE.finditer(text, first_tag.start()):
             split = _split_untagged(float(m[1]), m[3], float(m[4]))
             untagged += len(split) - 1
-            pieces.extend((start, max(int(m[2]) - 1, 0), body, end) for start, body, end in split)
+            # 說話者標籤「[Sxx]」從數字前兩個字開始；拆出來的、沒有標籤的段沒有自己的說話者機率
+            probs = probs_at.get(m.start(2) - 2) if probs_at else None
+            pieces.extend((start, max(int(m[2]) - 1, 0), body, end, probs if i == 0 else None)
+                          for i, (start, body, end) in enumerate(split))
             consumed = m.end()
     if untagged:
         logger.warning(f"MOSS 輸出有 {untagged} 段沒有說話者標籤，沿用前一位說話者")
-    timed = [(start, speaker, body, end) for start, speaker, body, end in pieces if end >= start]
-    _log_speaker_tags_in_text([body for _, _, body, _ in timed])
-    shaped = [{"Start": start, "End": end, "Speaker": speaker, "Content": _without_speaker_tags(body)}
-              for start, speaker, body, end in timed]
+    timed = [piece for piece in pieces if piece[3] >= piece[0]]
+    _log_speaker_tags_in_text([body for _, _, body, _, _ in timed])
+    shaped = [{"Start": start, "End": end, "Speaker": speaker, "Content": _without_speaker_tags(body),
+               **({} if tags is None else {"SpeakerProbs": probs})}
+              for start, speaker, body, end, probs in timed]
     return _Parsed([piece for piece in shaped if piece["Content"]], shaped, consumed)
+
+
+def _probs_by_tag_position(text: str, tags: Sequence["SpeakerTag"]) -> Dict[int, Optional[Dict[int, float]]]:
+    """{說話者標籤在輸出裡的位置: 那個標籤的各說話者編號的機率（:func:`_speaker_probs`）}。
+
+    生成時讀到的說話者標籤和輸出文字裡的照順序一個對一個：兩邊看的是同一串 token。個數或編號對不上時寫進 log、
+    一個都不給，任務照樣完成：機率給錯片段，比沒有機率更糟。
+    """
+    found = list(_SPEAKER_NUMBER_RE.finditer(text))
+    if len(found) != len(tags) or any(int(m[1]) != tag.number for m, tag in zip(found, tags, strict=True)):
+        logger.warning(f"生成時讀到的說話者標籤（{len(tags)} 個）和輸出裡的（{len(found)} 個）對不上，"
+                       "這次的片段沒有說話者機率")
+        return {}
+    return {m.start(): _speaker_probs(tag) for m, tag in zip(found, tags, strict=True)}
+
+
+def _speaker_probs(tag: "SpeakerTag") -> Optional[Dict[int, float]]:
+    """一個說話者標籤的機率換成片段的說話者編號（S01 → 0，和 ``Speaker`` 相同）；沒有記到機率時是 None。"""
+    if not tag.probabilities:
+        return None
+    probs: Dict[int, float] = {}
+    for number, probability in tag.probabilities.items():
+        speaker = max(number - 1, 0)
+        probs[speaker] = probs.get(speaker, 0.0) + probability
+    return probs
 
 
 def _without_speaker_tags(body: str) -> str:
@@ -397,6 +440,176 @@ def _make_progress_streamer(tokenizer, duration: float, status_callback: Callabl
     return _ProgressStreamer()
 
 
+# ─── 說話者機率 ──────────────────────────────────────────────────────────
+
+SPEAKER_PROBABILITY_FLOOR = 0.001
+"""其他說話者編號的機率低於這個值就不記：片段上只留得到寫下的編號，以及模型真的考慮過的其他編號。"""
+
+
+@dataclass(frozen=True)
+class SpeakerTag:
+    """輸出裡一個說話者標籤（例如 ``[S01]``）寫下時，模型給各說話者編號的機率。"""
+
+    number: int
+    """寫下的編號：``[S01]`` 是 1。"""
+    probabilities: Dict[int, float]
+    """{編號: 機率}：寫下的編號，以及只差最後一位數字、機率不低於 :data:`SPEAKER_PROBABILITY_FLOOR` 的編號。
+    寫下的編號的機率是每一位數字的機率相乘；其他編號用同樣的前幾位、換最後一位數字（第一位就不同的編號，例如
+    寫 S01 時的 S1x，只知道合計，不記）。沒有記到機率時（例如生成中途才開始讀）是空的。"""
+
+
+class SpeakerTagReader:
+    """從生成的 token 依序讀出說話者標籤，以及寫每一位數字時各數字的機率（:class:`SpeakerTag`）。
+
+    MOSS 的 tokenizer（Qwen3）把數字一位切成一個 token，說話者標籤 ``][S01]`` 是 ``][``、``S``、``0``、``1``、
+    ``]``。到目前為止的文字結尾是 ``[S`` 時，接下來的數字 token 都是說話者編號的一位，直到 ``]`` 開頭的 token
+    （後面可能黏著文字）；中間出現別的 token 就不是說話者標籤。和解析輸出時找說話者標籤（``[S`` 加數字加 ``]``）
+    看的是同一串 token，讀到的說話者標籤和輸出文字裡的照順序一個對一個（:func:`_probs_by_tag_position`）。
+
+    每生成一個 token 呼叫一次 :meth:`push`；:attr:`wants_probabilities` 為真時，下一個 token 可能是編號的一位
+    數字，那一步的 0 到 9 的機率交給 :meth:`record`。不碰 torch，可以直接測試。
+    """
+
+    def __init__(self) -> None:
+        self.tags: List[SpeakerTag] = []
+        """讀完的說話者標籤，依輸出的順序。"""
+        self._tail = ""
+        self._digits: Optional[str] = None
+        self._steps: List[Tuple[float, ...]] = []
+
+    @property
+    def wants_probabilities(self) -> bool:
+        """下一個 token 可能是說話者編號的一位數字（或結束標記的 ``]``）。"""
+        return self._digits is not None
+
+    def record(self, digit_probabilities: Sequence[float]) -> None:
+        """下一個 token 是 0 到 9 的機率，依序 10 個。"""
+        if self._digits is not None:
+            self._steps.append(tuple(float(p) for p in digit_probabilities))
+
+    def push(self, text: str) -> None:
+        """生成了一個 token，``text`` 是它解碼出的文字。"""
+        if self._digits is not None:
+            if len(text) == 1 and text in _DIGITS:
+                self._digits += text
+                self._tail = text
+                return
+            if self._digits and text.startswith("]"):
+                self.tags.append(self._read(self._digits, self._steps))
+            self._digits = None
+            self._steps = []
+        self._tail = (self._tail + text)[-2:]
+        if self._tail == "[S":
+            self._digits = ""
+
+    @staticmethod
+    def _read(digits: str, steps: Sequence[Sequence[float]]) -> SpeakerTag:
+        number = int(digits)
+        if len(steps) < len(digits):
+            return SpeakerTag(number, {})
+        prefix = 1.0
+        for digit, step in zip(digits[:-1], steps[:len(digits) - 1], strict=True):
+            prefix *= step[int(digit)]
+        last = steps[len(digits) - 1]
+        probabilities = {number: prefix * last[int(digits[-1])]}
+        for digit in range(10):
+            other = int(digits[:-1] + str(digit))
+            probability = prefix * last[digit]
+            if other not in probabilities and other > 0 and probability >= SPEAKER_PROBABILITY_FLOOR:
+                probabilities[other] = probability
+        return SpeakerTag(number, probabilities)
+
+
+class _SpeakerTagRecorder:
+    """把 generate 每一步看到的 token 交給 :class:`SpeakerTagReader`：記住看過幾個 token，每次只讀新生成的；
+    token 解碼出的文字記在快取裡，同一個 token 只解碼一次。不碰 torch（logits 的部分在 :func:`_make_speaker_probabilities`）。
+
+    說話者機率是附帶的：記的時候出錯，寫進 log、這次不再記（:meth:`finish` 回 None，片段不附說話者機率），轉錄照常。
+    """
+
+    def __init__(self, tokenizer) -> None:
+        self.reader = SpeakerTagReader()
+        self.digit_ids = [int(tokenizer.convert_tokens_to_ids(d)) for d in _DIGITS]
+        self._tokenizer = tokenizer
+        self._texts: Dict[int, str] = {}
+        self._seen: Optional[int] = None
+        self._failed = False
+
+    def step(self, length: int, tail: Callable[[int], Sequence[int]],
+             digit_probabilities: Callable[[], Sequence[float]]) -> None:
+        """generate 的一步，到目前為止共 ``length`` 個 token（提示詞加生成的），``tail(i)`` 給第 i 個以後的 token：
+        讀新生成的 token（第一步看到的是提示詞，不讀）；下一個 token 可能是說話者編號的一位數字時，把
+        ``digit_probabilities()``（0 到 9 的機率）交給 :class:`SpeakerTagReader`，其他步不算。"""
+        if self._failed:
+            return
+        try:
+            self._observe(length, tail)
+            if self.reader.wants_probabilities:
+                self.reader.record(digit_probabilities())
+        except Exception as e:
+            self._fail(e)
+
+    def finish(self, length: int, tail: Callable[[int], Sequence[int]]) -> Optional[List[SpeakerTag]]:
+        """生成結束：讀最後一個 token（它之後沒有下一步），回傳讀到的說話者標籤；記的時候出錯過時是 None。"""
+        if not self._failed:
+            try:
+                self._observe(length, tail)
+            except Exception as e:
+                self._fail(e)
+        return None if self._failed else self.reader.tags
+
+    def _observe(self, length: int, tail: Callable[[int], Sequence[int]]) -> None:
+        """每一步只把新生成的那一個 token 從顯卡搬回來，不搬整串。"""
+        if self._seen is None:
+            self._seen = length
+            return
+        if length > self._seen:
+            for token_id in tail(self._seen):
+                self.reader.push(self._text(int(token_id)))
+        self._seen = length
+
+    def _fail(self, error: Exception) -> None:
+        self._failed = True
+        logger.warning(f"記說話者機率時出錯，這次的片段沒有說話者機率，轉錄照常: {type(error).__name__}: {error}",
+                       exc_info=True)
+
+    def _text(self, token_id: int) -> str:
+        if token_id not in self._texts:
+            self._texts[token_id] = self._tokenizer.decode([token_id], skip_special_tokens=True)
+        return self._texts[token_id]
+
+
+def _make_speaker_probabilities(tokenizer):
+    """generate 的 logits processor：logits 原樣傳回（輸出一字不變），只在說話者編號的每一位數字之前，把 0 到 9 的
+    機率交給 :class:`SpeakerTagReader`（經 :class:`_SpeakerTagRecorder`）。生成結束之後呼叫它的 ``finish``（最後一個
+    token 生成之後沒有下一步），拿到讀到的說話者標籤；記的時候出錯過時是 None。
+
+    每個片段只多算約三次 softmax（每一位數字與結尾各一次），轉錄的時間看不出差別。
+    """
+    import torch
+    from transformers import LogitsProcessor
+
+    class _SpeakerProbabilities(LogitsProcessor):
+        def __init__(self) -> None:
+            self.recorder = _SpeakerTagRecorder(tokenizer)
+            self._digit_ids = torch.tensor(self.recorder.digit_ids)
+
+        def __call__(self, input_ids, scores):
+            def digit_probabilities():
+                probabilities = torch.softmax(scores[0].float(), dim=-1)
+                return probabilities[self._digit_ids.to(probabilities.device)].tolist()
+
+            self.recorder.step(int(input_ids.shape[-1]), lambda start: input_ids[0, start:].tolist(),
+                               digit_probabilities)
+            return scores
+
+        def finish(self, sequence) -> Optional[List[SpeakerTag]]:
+            """``sequence`` 是 generate 輸出的整串 token（一維）。"""
+            return self.recorder.finish(int(sequence.shape[-1]), lambda start: sequence[start:].tolist())
+
+    return _SpeakerProbabilities()
+
+
 # ─── 推論 ────────────────────────────────────────────────────────────────
 
 @dataclass(frozen=True)
@@ -404,7 +617,8 @@ class MossOutput:
     """MOSS 跑一次的結果。"""
 
     segments: List[dict]
-    """解析出的片段（:func:`parse_output`）。"""
+    """解析出的片段（:func:`parse_output`），每一段另有生成時記下的說話者機率 ``SpeakerProbs``（見 :func:`_parse`）；
+    記說話者機率時出錯過，就沒有這一欄。"""
     text: str
     """未解析的輸出文字。"""
     covered_until: Optional[float]
@@ -449,14 +663,14 @@ def transcribe(
         ).to(dtype=torch.bfloat16).to("cuda").eval()
         # 推論放在獨立函式裡：返回時輸入特徵、輸出等 GPU 張量都已離開作用域，
         # 下面的 empty_cache 才真的釋放得掉
-        text, generated_tokens, max_new_tokens = _generate(
+        text, generated_tokens, max_new_tokens, tags = _generate(
             model, processor, wav_path, duration, stopping_criteria, status_callback)
     finally:
         del model
         gc.collect()
         torch.cuda.empty_cache()
 
-    parsed = _parse(text)
+    parsed = _parse(text, tags)
     incomplete = bool(text[parsed.consumed:].strip())
     return MossOutput(parsed.segments, text, covered_until(
         parsed.pieces, incomplete=incomplete,
@@ -516,15 +730,16 @@ def _vram_peaks() -> str:
 
 
 def _generate(model, processor, wav_path: Path, duration: float,
-              stopping_criteria, status_callback) -> Tuple[str, int, int]:
-    """跑一次 generate，回傳（輸出文字, 生成了幾個 token, max_new_tokens）。"""
+              stopping_criteria, status_callback) -> Tuple[str, int, int, Optional[List[SpeakerTag]]]:
+    """跑一次 generate，回傳（輸出文字, 生成了幾個 token, max_new_tokens, 讀到的說話者標籤）；記說話者機率時出錯過，
+    讀到的說話者標籤是 None。"""
     import torch
     from moss_transcribe_diarize.inference_utils import (
         DEFAULT_PROMPT,
         build_transcription_messages,
         prepare_inputs,
     )
-    from transformers import StoppingCriteriaList
+    from transformers import LogitsProcessorList, StoppingCriteriaList
 
     device = torch.device("cuda")
     messages = build_transcription_messages(str(wav_path), DEFAULT_PROMPT)
@@ -543,6 +758,7 @@ def _generate(model, processor, wav_path: Path, duration: float,
     streamer = (_make_progress_streamer(processor.tokenizer, duration, status_callback)
                 if status_callback else None)
     release = _IdleVramRelease()
+    speaker_probabilities = _make_speaker_probabilities(processor.tokenizer)
     with torch.inference_mode(), torch.amp.autocast("cuda", dtype=torch.bfloat16):
         output_ids = model.generate(
             input_ids=inputs["input_ids"],
@@ -551,12 +767,15 @@ def _generate(model, processor, wav_path: Path, duration: float,
             audio_feature_lengths=inputs["audio_feature_lengths"],
             audio_chunk_mapping=inputs["audio_chunk_mapping"],
             generation_config=generation_config,
+            logits_processor=LogitsProcessorList([speaker_probabilities]),
             stopping_criteria=StoppingCriteriaList([*(stopping_criteria or ()), release]),
             streamer=streamer,
         )
     generated = output_ids[0][prompt_len:]
     generated_tokens = int(generated.numel())
+    tags = speaker_probabilities.finish(output_ids[0])
     logger.info(f"MOSS 生成 {generated_tokens} tokens；{_vram_peaks()}；"
-                f"生成中釋放閒置顯存 {release.releases} 次")
+                f"生成中釋放閒置顯存 {release.releases} 次；"
+                f"說話者標籤 {'沒有記到' if tags is None else f'{len(tags)} 個'}")
     text = processor.tokenizer.decode(generated, skip_special_tokens=True).strip()
-    return text, generated_tokens, max_new_tokens
+    return text, generated_tokens, max_new_tokens, tags

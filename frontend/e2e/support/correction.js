@@ -37,7 +37,7 @@ export function wordsOf(text, start, end) {
 export const segment = (seq, start, end, speaker, text, { words = true } = {}) => ({
     seg_key: `0.${String(seq).padStart(4, '0')}`, seq, start, end, speaker, text,
     original_speaker: speaker, original_text: text, corrected: false, deleted: false, deleted_text: null,
-    has_correction_records: false, text_alt: null, source: words ? 'aligned' : null, confidence: null, review_state: null,
+    has_correction_records: false, text_alt: null, source: words ? 'aligned' : null, speaker_confidence: null, review_state: null,
     words: words ? wordsOf(text, start, end) : null,
 })
 

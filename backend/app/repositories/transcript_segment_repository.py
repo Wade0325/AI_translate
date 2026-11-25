@@ -30,7 +30,7 @@ def _to_row_values(seg: Dict[str, Any], seq: int) -> Dict[str, Any]:
         "text_alt": seg.get("text_alt"),
         "source": seg.get("source"),
         "words_json": json.dumps(words, ensure_ascii=False) if words else None,
-        "confidence": seg.get("confidence"),
+        "speaker_confidence": seg.get("speaker_confidence"),
     }
 
 
@@ -89,7 +89,7 @@ class TranscriptSegmentRepository:
             {"seg_key": row.seg_key, "seq": row.seq, "start": row.start_sec, "end": row.end_sec,
              "speaker": row.speaker, "text": row.text, "text_alt": row.text_alt,
              "source": row.source, "words": TranscriptSegmentRepository.words(row),
-             "confidence": row.confidence, "review_state": row.review_state or None}
+             "speaker_confidence": row.speaker_confidence, "review_state": row.review_state or None}
             for row in TranscriptSegmentRepository.list_for_task(db, task_uuid, seg_keys)
         ]
 

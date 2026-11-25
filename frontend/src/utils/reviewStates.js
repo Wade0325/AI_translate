@@ -10,10 +10,16 @@ import { lastStarted } from './playhead';
  * 「下一個要處理的片段」，不是播放位置：只在換片段（↑、↓，以及 V、F 標完）、點一列、拖播放進度時換，播放往下
  * 走時不跟著換。一路聽下去時，聽完一段才按 V，播放已經進到下一段，V 照樣標剛聽完的那一段（#25 故事 64）。
  *
+ * 說話者不確定（GLOSSARY 的說話者機率）：模型寫這個片段的說話者時給它的機率低於門檻，表示模型拿不定是誰說的。
+ * 還沒看過的這種片段可以單獨篩出來先聽。模型很有把握卻標錯的片段不會被標出來，聽完這幾句不等於說話者都對了
+ * （實測見 SPEAKER_UNSURE_BELOW）。
+ *
  * @typedef {'verified' | 'flagged'} ReviewState
- * @typedef {{ seg_key: string, review_state?: string | null, corrected: boolean, deleted?: boolean }} ReviewedSegment
+ * @typedef {{ seg_key: string, review_state?: string | null, corrected: boolean, deleted?: boolean,
+ *   speaker_confidence?: number | null }} ReviewedSegment
  *   片段裡和確認狀態、進度有關的欄位（GET /transcripts/{task_uuid} 的片段）
- * @typedef {'all' | 'flagged' | 'unseen'} ReviewFilter 列表的篩選：全部、只看待查的、只看還沒看過的
+ * @typedef {'all' | 'flagged' | 'unseen' | 'unsure'} ReviewFilter
+ *   列表的篩選：全部、只看待查的、只看還沒看過的、只看說話者不確定的
  */
 
 /** 已確認。 */
@@ -63,12 +69,53 @@ export function isUnseen(segment) {
 }
 
 /**
+ * 說話者不確定的門檻：說話者機率低於這個值的片段算說話者不確定。
+ *
+ * 0.999 是 2026-11-24 在 25 場公開的中文會議上量的（AliMeeting 6 場、AISHELL-4 19 場，#353 的 MOSS 輸出，PR #388）：
+ * 每場平均標出 43～58 個片段、約 2 分鐘的錄音，含確定標錯的片段的 40%～63%。到 0.999 為止，多標的片段每 8～11 個
+ * 就有 1 個確定標錯；再往上要多標 14～32 個才多 1 個。模型很有把握卻標錯的片段很多（確定標錯的有 37%～60% 機率在
+ * 0.999 以上），所以標出的片段是先聽的，不是全部的標錯。日文與其他內容沒有量。
+ */
+export const SPEAKER_UNSURE_BELOW = 0.999;
+
+/**
+ * 說話者不確定：模型寫這個片段的說話者時，給它的機率（說話者機率，speaker_confidence）低於門檻。沒有說話者機率的
+ * 片段（Gemini、VibeVoice、加上說話者機率之前轉錄的任務）不算。
+ *
+ * @param {ReviewedSegment} segment
+ */
+export function isSpeakerUnsure(segment) {
+  const confidence = segment.speaker_confidence;
+  return typeof confidence === 'number' && confidence < SPEAKER_UNSURE_BELOW;
+}
+
+/**
+ * 要聽一下是誰說的片段：說話者不確定，而且還沒看過。標了確認狀態（V 或 F）、改了說話者（或文字、刪掉）之後就不算：
+ * 聽過了。
+ *
+ * @param {ReviewedSegment} segment
+ */
+export function needsSpeakerCheck(segment) {
+  return isSpeakerUnsure(segment) && isUnseen(segment);
+}
+
+/**
+ * 這個任務有沒有說話者機率（本機的 MOSS 轉錄的才有）：沒有時不給「只看說話者不確定的」。
+ *
+ * @param {ReviewedSegment[]} segments
+ */
+export function hasSpeakerConfidence(segments) {
+  return segments.some((s) => typeof s.speaker_confidence === 'number');
+}
+
+/**
  * @param {ReviewedSegment} segment
  * @param {ReviewFilter} filter
  */
 export function matchesFilter(segment, filter) {
   if (filter === 'flagged') return segment.review_state === FLAGGED;
   if (filter === 'unseen') return isUnseen(segment);
+  if (filter === 'unsure') return needsSpeakerCheck(segment);
   return true;
 }
 
@@ -83,6 +130,7 @@ export function filterCounts(segments) {
     all: segments.length,
     flagged: segments.filter((s) => matchesFilter(s, 'flagged')).length,
     unseen: segments.filter(isUnseen).length,
+    unsure: segments.filter(needsSpeakerCheck).length,
   };
 }
 

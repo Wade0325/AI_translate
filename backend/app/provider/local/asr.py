@@ -164,13 +164,15 @@ def _run_moss(wav_path: Path, progress: ProgressAndCancel) -> MossOutput:
 
 
 def _entries_from_segments(segments: List[dict]) -> List[dict]:
-    """moss-align：直接採用 MOSS 的文字，不再經 Qwen3-ASR 轉錄（沒有第二份假設）。
+    """moss-align：直接採用 MOSS 的文字，不再經 Qwen3-ASR 轉錄（沒有第二份假設）。說話者機率照帶
+    （``speaker_probs``，見 :func:`_build_segment_records`）。
 
     parse_output 已丟棄空文字片段；這裡再擋一次是因為對齊器不能處理空文字。
     """
     return [
         {"start": float(seg["Start"]), "end": float(seg["End"]),
-         "speaker": int(seg.get("Speaker", 0)), "text": seg["Content"], "text_alt": None}
+         "speaker": int(seg.get("Speaker", 0)), "text": seg["Content"], "text_alt": None,
+         "speaker_probs": seg.get("SpeakerProbs")}
         for seg in segments if (seg.get("Content") or "").strip()
     ]
 
@@ -279,6 +281,8 @@ def _transcribe_segments(
                     # 分離模型（VibeVoice 或 MOSS）本來就會產出文字，留著當第二份假設：
                     # 與 Qwen 不一致處就是需要人工複查的候選
                     "text_alt": (seg.get("Content") or "").strip() or None,
+                    # 說話者照樣是 MOSS 分的（VibeVoice 沒有說話者機率）
+                    "speaker_probs": seg.get("SpeakerProbs"),
                 })
             if i % 10 == 0 or i == total:
                 progress.report(f"本機模型：Qwen3-ASR 轉錄中 {i}/{total}...")
@@ -366,6 +370,10 @@ def _build_segment_records(entries: List[dict], source: str = "qwen") -> List[di
 
     ``seg_key`` 是序號而非時間，因為重新轉錄時片段順序穩定、時間可能微幅
     浮動；以序號為鍵才能覆寫而不是長出重複資料。``source`` 記錄主要文字的來源模型。
+
+    MOSS 分的說話者另帶 ``speaker_probs``：{說話者編號: 機率}，編號和 ``speaker`` 同一套（例如 ``S0``），是 MOSS
+    寫這個片段的說話者標籤時給各編號的機率。分段轉錄換說話者編號時跟著換，最後只留下片段的說話者的機率
+    （:mod:`app.services.speaker_confidence`）。沒有的片段（VibeVoice、沒有自己的說話者標籤的段）不帶。
     """
     records: List[dict] = []
     for i, e in enumerate(entries):
@@ -376,7 +384,7 @@ def _build_segment_records(entries: List[dict], source: str = "qwen") -> List[di
             for w in (e.get("words") or [])
             if w.get("start_time") is not None and w.get("end_time") is not None
         ]
-        records.append({
+        record = {
             "seg_key": f"{i:04d}",
             "seq": i,
             "start": e["start"],
@@ -386,7 +394,10 @@ def _build_segment_records(entries: List[dict], source: str = "qwen") -> List[di
             "text_alt": e.get("text_alt"),
             "source": source,
             "words": words or None,
-        })
+        }
+        if e.get("speaker_probs") is not None:
+            record["speaker_probs"] = {f"S{speaker}": p for speaker, p in e["speaker_probs"].items()}
+        records.append(record)
     return records
 
 

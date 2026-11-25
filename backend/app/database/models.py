@@ -192,7 +192,10 @@ class TranscriptSegment(Base):
     text_alt = Column(Text, nullable=True)        # 另一模型的轉錄（分歧偵測用）
     source = Column(String, nullable=True)        # 原始轉錄的來源：qwen / vibevoice / aligned
     words_json = Column(Text, nullable=True)      # [{"text","start","end"}]，絕對時間
-    confidence = Column(Float, nullable=True)
+    # 說話者機率（GLOSSARY，app.services.speaker_confidence）：本機的 MOSS 寫這個片段的說話者時，給原始轉錄的這位說話者
+    # 的機率（0 到 1）；校正頁照它標出說話者不確定的片段。沒有的是 NULL：Gemini、加上這一欄之前的任務、沒有自己的
+    # 說話者標籤的片段。欄名沿用一開始就有、從來沒有寫過值的 confidence，不必加欄位
+    speaker_confidence = Column("confidence", Float, nullable=True)
     review_state = Column(String, nullable=True)  # None / flagged / verified
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)

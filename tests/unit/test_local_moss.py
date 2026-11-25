@@ -129,6 +129,213 @@ class TestParseOutput:
         ]
 
 
+# ─── 說話者機率 ──────────────────────────────────────────────────────────
+
+def digits(**probabilities: float) -> list[float]:
+    """0 到 9 的機率，依序 10 個；沒寫的是 0。例如 ``digits(d1=0.7, d2=0.3)``。"""
+    return [probabilities.get(f"d{d}", 0.0) for d in range(10)]
+
+
+def generate(tokens: list[str], steps: list[list[float]]) -> moss.SpeakerTagReader:
+    """照 generate 的順序把 token 交給讀的人：生成每個 token 之前，讀的人要機率時給 ``steps`` 的下一個。
+
+    token 照 MOSS 的 tokenizer（Qwen3）真的切法：數字一位一個，``][`` 是一個 token。"""
+    reader = moss.SpeakerTagReader()
+    remaining = list(steps)
+    for token in tokens:
+        if reader.wants_probabilities:
+            reader.record(remaining.pop(0) if remaining else digits())
+        reader.push(token)
+    assert not remaining, "給的機率比要的多"
+    return reader
+
+
+# 「[0.48][S01]你好[1.20]」
+ONE_SEGMENT = ["[", "0", ".", "4", "8", "][", "S", "0", "1", "]", "你好", "[", "1", ".", "2", "0", "]"]
+
+
+class TestSpeakerTagReader:
+    """生成時讀出說話者標籤與它的機率（GLOSSARY 的說話者機率）。"""
+
+    def test_reads_the_number_and_multiplies_the_probability_of_each_digit(self):
+        reader = generate(ONE_SEGMENT, [digits(d0=0.99, d1=0.01), digits(d1=0.7, d2=0.25, d3=0.05),
+                                        digits()])
+        [tag] = reader.tags
+        assert tag.number == 1
+        # 其他編號用同一個第一位數字（0）、換最後一位；S00 不是說話者編號，不記
+        assert tag.probabilities == pytest.approx({1: 0.99 * 0.7, 2: 0.99 * 0.25, 3: 0.99 * 0.05})
+
+    def test_other_numbers_below_the_floor_are_left_out(self):
+        reader = generate(ONE_SEGMENT, [digits(d0=1.0), digits(d1=0.9995, d2=0.0005), digits()])
+        assert reader.tags[0].probabilities == pytest.approx({1: 0.9995})
+
+    def test_two_digit_numbers(self):
+        # 「[3.00][S12]好[4.00]」：第一位數字的機率乘進每個編號
+        tokens = ["[", "3", ".", "0", "0", "][", "S", "1", "2", "]", "好", "[", "4", ".", "0", "0", "]"]
+        reader = generate(tokens, [digits(d1=0.9, d0=0.1), digits(d2=0.8, d0=0.2), digits()])
+        assert reader.tags[0].number == 12
+        assert reader.tags[0].probabilities == pytest.approx({12: 0.72, 10: 0.18})
+
+    def test_closing_bracket_glued_to_the_text_ends_the_tag(self):
+        # 「]」可能和後面的文字黏成一個 token
+        tokens = ["[", "0", ".", "5", "0", "][", "S", "0", "2", "]O", "K", "[", "1", ".", "0", "0", "]"]
+        reader = generate(tokens, [digits(d0=1.0), digits(d2=0.6, d1=0.4), digits()])
+        assert [(t.number, t.probabilities) for t in reader.tags] == [(2, pytest.approx({2: 0.6, 1: 0.4}))]
+
+    def test_timestamps_and_other_brackets_are_not_speaker_tags(self):
+        # 時間戳的數字、文字裡的 [Some]（「[S」後面接的不是數字）都不是說話者標籤，也不要機率
+        tokens = ["[", "1", ".", "2", "0", "]", "看", "[S", "ome", "]", "[", "3", "]"]
+        reader = moss.SpeakerTagReader()
+        asked = []
+        for token in tokens:
+            asked.append(reader.wants_probabilities)
+            if reader.wants_probabilities:
+                reader.record(digits(d1=1.0))
+            reader.push(token)
+        assert reader.tags == []
+        # 只有「[S」之後那一步要過機率
+        assert asked == [False] * 8 + [True] + [False] * 4
+
+    def test_repeated_tags_are_read_one_by_one(self):
+        # #325：MOSS 在長段無聲處重複說話者標籤，「[S01][S01]」的兩個都讀
+        tokens = ["][", "S", "0", "1", "][", "S", "0", "1", "][", "1", "4", "6", ".", "3", "0", "]"]
+        reader = generate(tokens, [digits(d0=1.0), digits(d1=1.0), digits(),
+                                   digits(d0=1.0), digits(d1=0.5, d2=0.5), digits()])
+        assert [(t.number, t.probabilities) for t in reader.tags] == [
+            (1, pytest.approx({1: 1.0})), (1, pytest.approx({1: 0.5, 2: 0.5}))]
+
+    def test_tag_cut_off_before_its_closing_bracket_is_not_read(self):
+        # 生成被截斷、停在「[S01」：輸出文字裡也找不到這個說話者標籤
+        reader = generate(["][", "S", "0", "1"], [digits(d0=1.0), digits(d1=1.0)])
+        assert reader.tags == []
+
+    def test_tag_without_probabilities_is_read_without_them(self):
+        # 沒有記到機率（例如從中途才開始讀）：照樣讀出編號，說話者標籤才和輸出文字一個對一個
+        reader = moss.SpeakerTagReader()
+        for token in ["][", "S", "0", "3", "]"]:
+            reader.push(token)
+        assert reader.tags == [moss.SpeakerTag(3, {})]
+
+
+class FakeTokenizer:
+    """MOSS 的 tokenizer 裡用得到的部分：數字 token 的 id 是 15 到 24（和 Qwen3 相同）。"""
+
+    TEXTS = {15 + d: str(d) for d in range(10)} | {58: "[", 60: "]", 1457: "][", 50: "S", 13: ".",
+                                                     108386: "你好", 151645: ""}
+
+    def __init__(self):
+        self.decoded: list[int] = []
+
+    def convert_tokens_to_ids(self, token: str) -> int:
+        return 15 + int(token)
+
+    def decode(self, ids: list[int], skip_special_tokens: bool = False) -> str:
+        assert skip_special_tokens
+        self.decoded.extend(ids)
+        return self.TEXTS[ids[0]]
+
+
+def run_generate(recorder, prompt: list[int], generated: list[int], probabilities) -> list | None:
+    """照 generate 的順序呼叫：生成每個 token 之前一步（看到的是到目前為止的整串），最後一個 token 生成之後收尾。
+    ``probabilities`` 是每一步要機率時呼叫的函式。回傳 ``finish`` 的結果。"""
+    sequence = list(prompt)
+    for token_id in generated:
+        recorder.step(len(sequence), lambda start: sequence[start:], probabilities)
+        sequence.append(token_id)
+    return recorder.finish(len(sequence), lambda start: sequence[start:])
+
+
+# 「][S01]你好」＋結束的特殊 token
+ONE_TAG_IDS = [1457, 50, 15, 16, 60, 108386, 151645]
+
+
+class TestSpeakerTagRecorder:
+    def test_reads_only_what_was_generated_after_the_prompt(self):
+        tokenizer = FakeTokenizer()
+        recorder = moss._SpeakerTagRecorder(tokenizer)
+        # 只在說話者編號的每一位數字（與結尾的「]」）之前算機率：一共 3 次
+        asked = iter([digits(d0=1.0), digits(d1=0.8, d2=0.2), digits()])
+        tags = run_generate(recorder, [7, 8, 9], ONE_TAG_IDS, lambda: next(asked))
+        assert recorder.digit_ids == list(range(15, 25))
+        assert tags == [moss.SpeakerTag(1, pytest.approx({1: 0.8, 2: 0.2}))]
+        assert next(asked, None) is None
+        # 提示詞不解碼；每個 token 只解碼一次
+        assert tokenizer.decoded == ONE_TAG_IDS
+
+    def test_tokens_are_decoded_once(self):
+        tokenizer = FakeTokenizer()
+        recorder = moss._SpeakerTagRecorder(tokenizer)
+        run_generate(recorder, [7], [58, 15, 13, 15, 60, 58, 15, 13, 15, 60], digits)  # 「[0.0][0.0]」
+        assert sorted(tokenizer.decoded) == [13, 15, 58, 60]
+
+    def test_an_error_while_recording_leaves_the_transcription_alone(self, app_log):
+        # 說話者機率是附帶的：算機率時出錯，寫進 log、之後不再記也不再算，片段不附說話者機率（None），轉錄照常
+        calls = []
+
+        def broken():
+            calls.append(1)
+            raise RuntimeError("顯卡上的張量讀不到")
+
+        recorder = moss._SpeakerTagRecorder(FakeTokenizer())
+        assert run_generate(recorder, [7], ONE_TAG_IDS, broken) is None
+        assert len(calls) == 1
+        assert any("記說話者機率時出錯，這次的片段沒有說話者機率，轉錄照常: RuntimeError: 顯卡上的張量讀不到" in entry
+                   for entry in app_log)
+
+    def test_an_error_while_reading_the_last_token_gives_no_probabilities(self):
+        recorder = moss._SpeakerTagRecorder(FakeTokenizer())
+        sequence = [7]
+        recorder.step(len(sequence), lambda start: sequence[start:], digits)
+
+        def unreadable(start):
+            raise RuntimeError("讀不到")
+
+        assert recorder.finish(2, unreadable) is None
+
+
+class TestParseWithSpeakerProbs:
+    """生成時讀到的說話者標籤照順序對到輸出裡的說話者標籤，每一段附上它自己的標記的機率。"""
+
+    def test_each_segment_gets_the_probabilities_of_its_own_tag(self):
+        text = "[0.48][S01]こんにちは[1.66][12.26][S02]元気？[13.81]"
+        tags = [moss.SpeakerTag(1, {1: 0.9, 2: 0.1}), moss.SpeakerTag(2, {2: 0.6, 1: 0.4})]
+        assert moss._parse(text, tags).segments == [
+            {"Start": 0.48, "End": 1.66, "Speaker": 0, "Content": "こんにちは", "SpeakerProbs": {0: 0.9, 1: 0.1}},
+            {"Start": 12.26, "End": 13.81, "Speaker": 1, "Content": "元気？", "SpeakerProbs": {1: 0.6, 0: 0.4}},
+        ]
+
+    def test_dropped_segments_do_not_shift_the_rest(self):
+        # #325：只有說話者標籤的段丟掉，它的兩個標記照樣佔位，後面的段拿到的還是自己的
+        text = "[0.48][S01]開會前[1.66][145.80][S01][S01][146.30][1440.14][S02]早安[1442.00]"
+        tags = [moss.SpeakerTag(1, {1: 0.99}), moss.SpeakerTag(1, {1: 0.5}), moss.SpeakerTag(1, {1: 0.4}),
+                moss.SpeakerTag(2, {2: 0.7, 1: 0.3})]
+        segments = moss._parse(text, tags).segments
+        assert [(s["Content"], s["SpeakerProbs"]) for s in segments] == [
+            ("開會前", {0: 0.99}), ("早安", {1: 0.7, 0: 0.3})]
+
+    def test_tags_that_do_not_match_the_output_give_no_probabilities(self):
+        # 個數或編號對不上時一個都不給：機率給錯片段比沒有更糟
+        text = "[0.48][S01]こんにちは[1.66][12.26][S02]元気？[13.81]"
+        for tags in ([moss.SpeakerTag(1, {1: 0.9})],
+                     [moss.SpeakerTag(1, {1: 0.9}), moss.SpeakerTag(3, {3: 0.6})]):
+            assert [s["SpeakerProbs"] for s in moss._parse(text, tags).segments] == [None, None]
+
+    def test_pieces_without_their_own_tag_have_no_probabilities(self):
+        # 第一個說話者標籤之前沒有標籤的段（#134）、併進一段裡又拆出來的段：說話者是沿用的，不是模型寫的
+        text = "[0.00]開頭[1.00][2.00][S02]甲[3.00][4.00]乙[5.00]"
+        segments = moss._parse(text, [moss.SpeakerTag(2, {2: 0.8, 1: 0.2})]).segments
+        assert [(s["Content"], s["Speaker"], s["SpeakerProbs"]) for s in segments] == [
+            ("開頭", 0, None), ("甲", 1, {1: 0.8, 0: 0.2}), ("乙", 1, None)]
+
+    def test_tag_without_probabilities_gives_none(self):
+        segments = moss._parse("[0.48][S01]好[1.00]", [moss.SpeakerTag(1, {})]).segments
+        assert segments[0]["SpeakerProbs"] is None
+
+    def test_parse_output_has_no_probabilities(self):
+        # 只解析文字（沒有生成時讀到的說話者標籤）時，片段和以前一樣
+        assert "SpeakerProbs" not in moss.parse_output("[0.48][S01]好[1.00]")[0]
+
+
 # ─── 擔保轉錄到哪一秒（#94） ──────────────────────────────────────────────
 
 SEVEN = [{"Start": float(i), "End": float(i) + 0.5, "Speaker": 0, "Content": "x"} for i in range(7)]
@@ -676,6 +883,29 @@ class TestNothingTranscribed:
         assert [s["text"] for s in result["segments"]] == ["おはよう。"]
         assert (result["error_code"], result["text"]) == (None, "")
         assert len(aligned) == 1
+
+
+class TestSpeakerProbsInTheResult:
+    """MOSS 每一段的說話者機率照片段的說話者編號（S0、S1…）交給分段轉錄（app.services.speaker_confidence）。"""
+
+    @pytest.fixture(autouse=True)
+    def _no_ffmpeg_or_aligner(self, monkeypatch, tmp_path):
+        wav = tmp_path / "in_mono16k.wav"
+        wav.write_bytes(b"")
+        monkeypatch.setattr(asr, "_to_mono", lambda path, rate: wav)
+        monkeypatch.setattr(asr, "_align_with_fallback", lambda wav, entries, progress: None)
+
+    def test_probabilities_use_the_segments_speaker_numbers(self, monkeypatch):
+        segments = [{"Start": 0.5, "End": 2.0, "Speaker": 0, "Content": "おはよう。", "SpeakerProbs": {0: 0.7, 1: 0.3}},
+                    {"Start": 3.0, "End": 4.0, "Speaker": 1, "Content": "はい", "SpeakerProbs": None},
+                    {"Start": 5.0, "End": 6.0, "Speaker": 1, "Content": "うん"}]
+        monkeypatch.setattr(asr, "_run_moss", lambda wav, progress: moss.MossOutput(segments, "", None))
+
+        result = asr.transcribe_with_local_models(Path("in.wav"), "ja", _progress(cancelled=False))
+
+        # 沒有說話者機率的片段不帶這一欄
+        assert [(s["speaker"], s.get("speaker_probs", "沒有")) for s in result["segments"]] == [
+            ("S0", {"S0": 0.7, "S1": 0.3}), ("S1", "沒有"), ("S1", "沒有")]
 
 
 # ─── 模型能力 ────────────────────────────────────────────────────────────
